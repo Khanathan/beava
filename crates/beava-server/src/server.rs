@@ -713,6 +713,10 @@ struct MioClient {
     /// Serialized response bytes waiting to be written to the socket.
     /// Populated by the write-phase IoPool worker (off-apply).
     write_buf: bytes::BytesMut,
+    /// Currently-registered mio interest. Tracked so we only reregister
+    /// when the desired interest changes (avoids per-tick reregister syscall).
+    /// `true` = WRITABLE bit currently set; `false` = READABLE-only.
+    interest_writable: bool,
     /// True when the client has been closed / should be removed.
     closed: bool,
 }
@@ -944,7 +948,12 @@ fn run_mio_event_loop(
 
     loop {
         // ── Phase 1: poll mio ────────────────────────────────────────────────
-        let events = match event_loop.tick(Some(Duration::from_millis(5))) {
+        // Plan 18-04.7: use a 1ms timeout — short enough to keep tail latency
+        // low when there's no load (shutdown flag is checked once per ms),
+        // but long enough that we don't burn CPU spinning on poll() when the
+        // server is idle. Active load: poll() returns immediately when any
+        // event fires, so the timeout only matters when truly idle.
+        let events = match event_loop.tick(Some(Duration::from_millis(1))) {
             Ok(events) => {
                 let tokens: Vec<(mio::Token, bool, bool)> = events
                     .map(|e| (e.token(), e.is_readable(), e.is_writable()))
@@ -1107,7 +1116,10 @@ fn run_mio_event_loop(
         }
 
         // ── Phase 6: post-write registration adjustments ──────────────────────
-        // After write_phase, re-register interest based on remaining write work.
+        // Reregister ONLY when the desired interest actually differs from the
+        // client's currently-registered interest (`interest_writable` flag).
+        // Saves the per-tick syscall in the common case where the IoPool
+        // write worker drains write_buf completely and we stay READABLE-only.
         for &idx in &write_set {
             let client = match clients[idx].as_mut() {
                 Some(c) => c,
@@ -1116,16 +1128,24 @@ fn run_mio_event_loop(
             if client.closed {
                 continue;
             }
-            let interest = if client.has_write_work() {
-                mio::Interest::READABLE | mio::Interest::WRITABLE
-            } else {
-                mio::Interest::READABLE
-            };
-            let _ = event_loop.reregister(&mut client.stream, client.token, interest);
+            let want_writable = client.has_write_work();
+            if want_writable != client.interest_writable {
+                let interest = if want_writable {
+                    mio::Interest::READABLE | mio::Interest::WRITABLE
+                } else {
+                    mio::Interest::READABLE
+                };
+                let _ = event_loop.reregister(&mut client.stream, client.token, interest);
+                client.interest_writable = want_writable;
+            }
         }
 
         // ── Phase 7: cleanup closed clients ──────────────────────────────────
-        for idx in 0..MAX_CONCURRENT_CLIENTS {
+        // Only scan the slots touched this tick (read_set ∪ write_set) plus
+        // any explicitly-tracked-closed slots. Scanning all MAX_CONCURRENT_CLIENTS
+        // every tick is O(MAX) overhead even when no clients closed.
+        let touched_slots: Vec<usize> = read_set.iter().chain(write_set.iter()).copied().collect();
+        for idx in touched_slots {
             let should_close = clients[idx].as_ref().map(|c| c.closed).unwrap_or(false);
             if should_close {
                 if let Some(mut client) = clients[idx].take() {
@@ -1221,6 +1241,7 @@ fn accept_clients<L>(
                     parse_error: None,
                     output_queue: std::collections::VecDeque::new(),
                     write_buf: bytes::BytesMut::new(),
+                    interest_writable: false,
                     closed: false,
                 };
                 if let Err(e) = event_loop.register(
