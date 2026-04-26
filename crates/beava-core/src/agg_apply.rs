@@ -71,9 +71,7 @@ pub fn apply_event_to_aggregations(
     fn trace_agg_enabled() -> bool {
         use std::sync::OnceLock;
         static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| {
-            std::env::var("BEAVA_TRACE_AGG_TIMING").ok().as_deref() == Some("1")
-        })
+        *FLAG.get_or_init(|| std::env::var("BEAVA_TRACE_AGG_TIMING").ok().as_deref() == Some("1"))
     }
     let trace = trace_agg_enabled();
     let t0 = if trace {
