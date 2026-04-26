@@ -327,9 +327,11 @@ pub async fn execute_push(
         idx.insert(
             ack_lsn,
             EventIdEntry::Stream {
-                // Plan 18-12 step 1: type-fit allocation (still allocates;
-                // Task 12.3 replaces with descriptor.name_arc.clone()).
-                event_name: Arc::from(event_name),
+                // Plan 18-12 D-3: refcount bump on the registry-resident
+                // Arc<str> — no per-push heap alloc. `descriptor` is the
+                // Arc<EventDescriptor> from the Plan 18-11 D-6 lookup
+                // earlier in this function.
+                event_name: Arc::clone(&descriptor.name_arc),
             },
         );
     }

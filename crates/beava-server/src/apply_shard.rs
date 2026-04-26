@@ -436,10 +436,11 @@ impl ApplyShard {
             idx.insert(
                 ack_lsn,
                 EventIdEntry::Stream {
-                    // Plan 18-12 step 1: type-fit allocation (still allocates;
-                    // Task 12.3 replaces with descriptor.name_arc.clone()
-                    // refcount bump for the actual hot-path win).
-                    event_name: Arc::from(event_name),
+                    // Plan 18-12 D-3: refcount bump on the registry-resident
+                    // Arc<str> — no per-push heap alloc. `descriptor` is the
+                    // Arc<EventDescriptor> from the Plan 18-11 D-6 lookup at
+                    // step 2; `name_arc` was populated at registration.
+                    event_name: Arc::clone(&descriptor.name_arc),
                 },
             );
         }
