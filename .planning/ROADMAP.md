@@ -519,6 +519,54 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Why this matters:** Phase 18 closes the throughput gap between Phase 13.3's apply-loop ceiling (~16k EPS/core measured) and the 3M EPS/core ship-gate target. Each stage has a clear perf gate, so regressions surface incrementally instead of at the end.
 
+### Phase 19: 1M-EPS bench harness — Python + Rust × multiple workload sizes — 📋 PLANNED
+
+**Status:** Planned post Phase 18 wrap (added 2026-04-26). Follows up on the WIP `--total-events` + pre-encoded-frame work stashed during the Plan 18-06 perf push (`git stash list` → "wip: --total-events + pre-encoded-frame bench").
+
+**Goal:** Ship a saturation bench that pushes a fixed number of events (default 1,000,000) at the server as fast as possible, isolated from per-event encoding cost on the bench side, and reports wall-clock time + server-side EPS. Run the bench from BOTH the existing Rust harness and a new Python SDK harness so the published "Beava processes 1M events in <Xs" number reflects the realistic Python-client path users will hit.
+
+**Sub-goals:**
+
+1. **Rust bench finalization** — finish the WIP `--total-events N` flag in `crates/beava-bench/src/bin/beava-bench-v18.rs`. Pre-encode ONE event frame at sender startup, blast that buffer N times across many TCP connections, drain acks, report `wall_clock`, `send_drain_time` (last byte left bench), and `ack_lag` (server queueing past send-drain). Debug the WIP stall (probably the watcher polling logic).
+2. **Python bench** — equivalent harness using the existing Python SDK (`beava` package) over both HTTP/JSON and TCP/MessagePack transports. Pre-build once, blast N times. Report the same three metrics. Compare to Rust harness to surface SDK-side overhead.
+3. **Multi-size workload matrix** — run each harness against `small`, `medium`, `large`, `large_phase9` (15-feature) configs from `crates/beava-bench/configs/`. Tabulate results per `(size, transport, format)` tuple in `.planning/throughput-baselines.md` under a new "1M-event blast" section. Threshold goals (M4): small ≤2 s, medium ≤4 s, large ≤8 s, large_phase9 ≤12 s.
+4. **`--isolation-mode` flag** — split the timing into "bench-bound" (last byte sent) vs "server-bound" (last ack received). Helps users (and us) tell when their workload is rate-limited by bench/SDK encoding cost vs by Beava itself.
+5. **Saturation bench architectural notes** — document the design decisions (pre-encoded blast vs varied-key, no inflight semaphore vs continuous pipelining, multiple TCP connections vs single conn) in `.planning/phases/19-1m-bench/19-CONTEXT.md` so future bench changes don't accidentally regress measurement honesty.
+
+**Depends on:** Phase 18 wrap (SUMMARY + verification). The 1M-event ceiling is only meaningful once the hand-rolled hot path is the data-plane runtime — measuring against the legacy `IoPool` would give a misleadingly lower number.
+
+**Success criteria:**
+- `--total-events N` works end-to-end, no stall (debug WIP)
+- Python harness produces matching `(size, transport, format)` rows in `throughput-baselines.md`
+- Server-side EPS for `small + msgpack + TCP` clears 1M EPS on M4 OR documented gap reports concretely why (SDK overhead, syscall cost, …)
+- Per-size thresholds met or recorded as known-deficits
+
+**Why this matters:** "Can Beava handle 1M events per second" is the most common ship-readiness question users ask. We need a reproducible, defensible answer for both the curl/Rust path AND the Python path — not just the apply-thread microbench number from `criterion`. Without the Python harness the marketed number is misleading because most users will go through the SDK.
+
+### Phase 20: Operator catalogue + streaming-semantics audit — 📋 PLANNED
+
+**Status:** Planned post Phase 19 (added 2026-04-26).
+
+**Goal:** Systematic review of every shipped aggregation operator (Phases 5/8/9/10/11/11.5: 55+ ops) and every streaming-semantics decision (event-time, watermarks, retraction, MVCC, modifiability tiers, dedupe, idempotency) for correctness, test coverage, and documented behavior. Treat this as the "before-public-launch QA" pass — every operator must have a written contract that matches its implementation, and every streaming edge case must have a test.
+
+**Sub-goals:**
+
+1. **Operator-by-operator audit** — for each of the 55+ ops shipped in Phases 5/8/9/10/11/11.5, write/refresh a one-page contract covering: numeric domain, NaN/null handling, window semantics (if windowed), retraction semantics (subtractive-OK / approx-modifiable / reject-modifiable / Tier-A/B/C), determinism guarantees, snapshot serialization shape, restart behavior. Cross-check the contract against the implementation; raise issues for divergence.
+2. **Streaming-semantics audit** — re-derive the v0 contract for: event-time vs ingest-time, watermark behavior, out-of-order delivery, dedupe windows, idempotency cache, MVCC retention, retraction primitives. Check each against `register_validate.rs` warnings/errors and the existing tests.
+3. **Test-coverage matrix** — for each operator × {happy path, null/missing field, NaN/Inf, retraction, restart from snapshot, restart with WAL replay past snapshot}, confirm a test exists. File `.planning/phases/20-op-audit/20-COVERAGE-MATRIX.md` listing all tests by op, flag missing cells.
+4. **Validity tests** — write the missing tests surfaced by the matrix audit. TDD red-green per task per CLAUDE.md §Conventions.
+5. **Documented edge-cases** — produce `docs/operators.md` and `docs/streaming-semantics.md` (or update if present) with every decision pulled from CONTEXT.md / memory / locked architectural decisions, in user-facing prose.
+
+**Depends on:** Phase 19 (we want to know the throughput ceiling before adding more operator coverage tests, since some tests are slow). Optional dependency on Phase 14.1 (modifiability) and Phase 15 (event-time PIT) if those land first — otherwise the audit baselines against current behavior.
+
+**Success criteria:**
+- Every op has a one-page contract committed to `docs/operators/`
+- Streaming-semantics decisions audited; mismatches between contract and code closed
+- Test-coverage matrix shows no missing cells in the {operator × edge-case} grid
+- All new tests green; cargo clippy + cargo fmt clean
+
+**Why this matters:** Beava's v0 ship gate is "users can declare a feature, push events, query it — in under 10 minutes, with curl alone." That promise breaks the moment a user hits an undocumented edge case (NaN behavior, retraction semantics, restart determinism). Phase 20 closes that gap before public launch.
+
 ---
 
 ## Traceability (preview)
