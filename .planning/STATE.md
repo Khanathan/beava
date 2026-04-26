@@ -3,14 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-stopped_at: "Phase 18 in flight — 18-04.8 (body→Row on IoPool) running; 18-12 + continuous pipelining queued; Phase 13.3 REJECTED"
-last_updated: "2026-04-26T00:00:00.000Z"
+last_updated: "2026-04-26T05:24:33.842Z"
 progress:
   total_phases: 23
   completed_phases: 9
-  total_plans: 94
-  completed_plans: 65
-  percent: 69
+  total_plans: 95
+  completed_plans: 64
+  percent: 67
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -99,7 +98,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 | # | Task | Where | Status |
 |---|------|-------|--------|
-| 1 | **Plan 18-04.8** — body→Row migration from apply thread to IoPool worker + IoPool runtime timing trace | In flight via background Opus executor on `v2/greenfield` | ⏳ in flight |
+| 1 | **Plan 18-04.8** — body→Row migration from apply thread to IoPool worker + IoPool runtime timing trace | DONE 2026-04-26 (commits 9a1daec/6ed8b97/677d3ea on v2/greenfield). Apply parse 193 → 77 ns (-60%); apply TOTAL 974 → 941 ns; IoPool parse_body=4,265 ns mean; EPS p=16/pd=256 json 346k / msgpack 357k; new TRACE_APPLY io trace lives under same BEAVA_TRACE_APPLY_TIMING var | ✅ done |
 | 2 | **Plan 18-12** — `Arc<str>` event_name to kill bookkeeping String alloc | Queued; awaits 18-04.8 (file conflict on apply_shard.rs) | ⏳ queued |
 | 3 | **Continuous pipelining for bench-v18** — split sender/receiver + Semaphore; replaces burst pattern | Queued (bundled with 18-12 dispatch) | ⏳ queued |
 
