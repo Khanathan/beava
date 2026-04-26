@@ -71,11 +71,23 @@ struct Cli {
     #[arg(long)]
     no_ledger: bool,
 
-    /// TCP pipeline depth — send N pushes back-to-back before reading N acks.
-    /// Default 1 (no pipelining, request-response per event). Set higher to
-    /// amortise loopback RTT across multiple events. HTTP transport ignores this.
+    /// TCP pipeline depth — caps inflight pushes per worker connection.
+    /// In burst mode (--continuous-pipeline=false), each batch sends N
+    /// pushes back-to-back then reads N acks. In continuous mode (default),
+    /// this is the inflight semaphore size: sender keeps up to N pushes
+    /// in-flight concurrently with receiver. Default 1 (request-response
+    /// per event). HTTP transport ignores this.
     #[arg(long, default_value_t = 1)]
     pipeline_depth: usize,
+
+    /// TCP continuous pipelining (default true) — split sender/receiver
+    /// tasks with a semaphore-gated inflight queue. Eliminates the burst-
+    /// mode sawtooth (apply thread idles between batches while the bench
+    /// is reading N acks then re-sending N events) and produces constant
+    /// load on the apply thread. Set `--continuous-pipeline=false` to
+    /// fall back to the burst pattern. HTTP transport ignores this.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    continuous_pipeline: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -441,6 +453,7 @@ async fn run_workload(
         let wf = wire_format;
         let client = Arc::clone(&http_client);
         let pipeline_depth = cli.pipeline_depth.max(1);
+        let continuous_pipeline = cli.continuous_pipeline;
 
         workers.push(tokio::spawn(async move {
             run_push_worker(
@@ -458,6 +471,7 @@ async fn run_workload(
                 deadline,
                 client,
                 pipeline_depth,
+                continuous_pipeline,
             )
             .await;
         }));
@@ -515,7 +529,30 @@ async fn run_push_worker(
     deadline: Instant,
     http_client: Arc<reqwest::Client>,
     pipeline_depth: usize,
+    continuous_pipeline: bool,
 ) {
+    // Plan 18-12 follow-up: continuous pipelining for TCP.
+    // When enabled (default), the TCP path uses a split sender/receiver
+    // pattern with a semaphore-gated inflight queue, eliminating the
+    // burst-mode sawtooth (apply-thread idles between batches). HTTP and
+    // burst-mode TCP keep their existing single-task loop.
+    if matches!(transport, Transport::Tcp) && continuous_pipeline {
+        run_tcp_continuous_push_worker(
+            seed,
+            stop,
+            pushes,
+            errors,
+            push_hist,
+            pipeline,
+            wire_format,
+            tcp_addr,
+            deadline,
+            pipeline_depth,
+        )
+        .await;
+        return;
+    }
+
     let mut rng = sampling_rng(seed);
     match transport {
         Transport::Http => {
@@ -639,6 +676,210 @@ async fn run_push_worker(
             }
         }
     }
+}
+
+/// Continuous pipelining TCP worker. Splits the TcpStream into independent
+/// read/write halves and drives them with two cooperating tasks gated by a
+/// semaphore.
+///
+/// **Why:** Burst mode (`send_n → read_n → send_n → ...`) leaves the apply
+/// thread idle while the bench reads N acks then re-encodes N pushes, producing
+/// a sawtooth load profile. Continuous mode keeps `pipeline_depth` pushes
+/// always-in-flight: the sender writes whenever a permit is available; the
+/// receiver decodes acks and returns permits as fast as the server can
+/// respond. The apply thread sees constant pressure.
+///
+/// **Per-event latency** is captured via an unbounded mpsc<Instant> queue
+/// from sender to receiver. Each ack pops the matching send-timestamp and
+/// records `now() - send_ts` into the histogram. FIFO ordering is the wire
+/// contract (Redis-style strict-FIFO, no request_id), so the timestamp queue
+/// pairs correctly with acks one-to-one.
+#[allow(clippy::too_many_arguments)]
+async fn run_tcp_continuous_push_worker(
+    seed: u64,
+    stop: Arc<AtomicBool>,
+    pushes: Arc<AtomicU64>,
+    errors: Arc<AtomicU64>,
+    push_hist: Arc<AsyncMutex<Histogram<u64>>>,
+    pipeline: PipelineConfig,
+    wire_format: WireFormat,
+    tcp_addr: std::net::SocketAddr,
+    deadline: Instant,
+    pipeline_depth: usize,
+) {
+    use beava_core::wire::{decode_frame, encode_frame, Frame};
+    use bytes::BytesMut;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    use tokio::sync::Semaphore;
+
+    let pdepth = pipeline_depth.max(1);
+    let stream = match TcpStream::connect(tcp_addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("continuous_pipeline TcpStream::connect failed: {e}");
+            return;
+        }
+    };
+    let _ = stream.set_nodelay(true);
+    let (mut read_half, write_half) = tokio::io::split(stream);
+
+    let sem = Arc::new(Semaphore::new(pdepth));
+    let (ts_tx, mut ts_rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
+
+    // ─── Sender task ──────────────────────────────────────────────────────
+    let sender_stop = Arc::clone(&stop);
+    let sender_errors = Arc::clone(&errors);
+    let sender_sem = Arc::clone(&sem);
+    let sender_pipeline = PipelineConfig {
+        name: pipeline.name.clone(),
+        description: pipeline.description.clone(),
+        register: pipeline.register.clone(),
+        event_name: pipeline.event_name.clone(),
+        features: pipeline.features.clone(),
+        key_field: pipeline.key_field.clone(),
+        extra_fields: pipeline.extra_fields.clone(),
+    };
+    let sender_handle = tokio::spawn(async move {
+        let mut rng = sampling_rng(seed);
+        let mut seq = 0_u64;
+        let mut write_half = write_half;
+        let mut buf = BytesMut::with_capacity(4 * 1024);
+        loop {
+            if sender_stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                break;
+            }
+            // Acquire one inflight slot. `acquire_owned` returns a permit
+            // bound to the sem Arc. We `forget()` it: the receiver is the
+            // one that gives the permit back via `add_permits(1)` once the
+            // ack arrives. Without `forget`, the permit would be returned
+            // here on drop and the gate would have no effect.
+            let permit = match Arc::clone(&sender_sem).acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break, // semaphore closed
+            };
+            permit.forget();
+
+            let body = make_event_payload(&sender_pipeline, seq, &mut rng);
+            let (ct, payload_bytes) = match wire_format {
+                WireFormat::Json => {
+                    let envelope = serde_json::json!({
+                        "event": sender_pipeline.event_name,
+                        "body": body,
+                    });
+                    (CT_JSON, serde_json::to_vec(&envelope).unwrap())
+                }
+                WireFormat::Msgpack => {
+                    use serde::Serialize;
+                    #[derive(Serialize)]
+                    struct Envelope<'a> {
+                        event: &'a str,
+                        body: &'a serde_json::Value,
+                    }
+                    let envelope = Envelope {
+                        event: &sender_pipeline.event_name,
+                        body: &body,
+                    };
+                    (CT_MSGPACK, rmp_serde::to_vec_named(&envelope).unwrap())
+                }
+            };
+            let frame = Frame {
+                op: OP_PUSH,
+                content_type: ct,
+                payload: Bytes::from(payload_bytes),
+            };
+            buf.clear();
+            encode_frame(&frame, &mut buf);
+
+            let send_ts = Instant::now();
+            if write_half.write_all(&buf).await.is_err() {
+                sender_errors.fetch_add(1, Ordering::Relaxed);
+                break;
+            }
+            // Notify receiver of the send-timestamp for this in-flight ack.
+            // unbounded_send only fails if receiver dropped the channel; in
+            // that case the receiver task has exited and we should too.
+            if ts_tx.send(send_ts).is_err() {
+                break;
+            }
+            seq = seq.wrapping_add(1);
+        }
+        // Drop ts_tx to signal EOF to the receiver after we've written
+        // everything.
+        drop(ts_tx);
+    });
+
+    // ─── Receiver loop (this task) ────────────────────────────────────────
+    //
+    // Latency batching: burst mode locks `push_hist` ONCE per N-event batch
+    // and records N values inside the lock. Continuous mode would otherwise
+    // lock once per event — 256× more lock ops at pd=256, contending with
+    // the other 15 workers' receivers. We mirror burst's batching by
+    // accumulating elapsed_us into a local Vec and flushing every
+    // HIST_FLUSH_BATCH records (or on shutdown) in a single lock.
+    let mut read_buf = BytesMut::with_capacity(8 * 1024);
+    const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
+    const HIST_FLUSH_BATCH: usize = 64;
+    let mut latency_batch: Vec<u64> = Vec::with_capacity(HIST_FLUSH_BATCH);
+
+    async fn flush_latencies(push_hist: &AsyncMutex<Histogram<u64>>, latency_batch: &mut Vec<u64>) {
+        if latency_batch.is_empty() {
+            return;
+        }
+        let mut h = push_hist.lock().await;
+        for us in latency_batch.iter() {
+            let _ = h.record(*us);
+        }
+        drop(h);
+        latency_batch.clear();
+    }
+
+    'recv: loop {
+        // Drain any frames already buffered.
+        loop {
+            match decode_frame(&mut read_buf, MAX_FRAME_BYTES) {
+                Ok(Some(f)) => {
+                    // Pair the ack with the matching send-timestamp.
+                    let send_ts = match ts_rx.recv().await {
+                        Some(t) => t,
+                        None => break 'recv, // sender finished + drained
+                    };
+                    let elapsed_us = send_ts.elapsed().as_micros() as u64;
+                    if f.op == OP_PUSH {
+                        pushes.fetch_add(1, Ordering::Relaxed);
+                        latency_batch.push(elapsed_us.max(1));
+                        if latency_batch.len() >= HIST_FLUSH_BATCH {
+                            flush_latencies(&push_hist, &mut latency_batch).await;
+                        }
+                    } else {
+                        errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // Release the inflight slot.
+                    sem.add_permits(1);
+                }
+                Ok(None) => break, // need more bytes
+                Err(_e) => {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                    break 'recv;
+                }
+            }
+        }
+        if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
+            break;
+        }
+        match read_half.read_buf(&mut read_buf).await {
+            Ok(0) => break, // peer closed
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+
+    // Flush any tail-batch latencies before exiting.
+    flush_latencies(&push_hist, &mut latency_batch).await;
+
+    // Wait for the sender to finish before returning so the worker doesn't
+    // outlive its sender task (avoids Tokio "task stopped" warnings).
+    let _ = sender_handle.await;
 }
 
 struct Report {
