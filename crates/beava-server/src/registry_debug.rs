@@ -463,6 +463,36 @@ mod tests {
         }
     }
 
+    // Plan 18-12 RED: EventIdEntry::Stream stores `event_name: Arc<str>`
+    // so the bookkeeping site can clone it (refcount bump) instead of
+    // re-allocating a String per push. This test feeds an `Arc<str>` value
+    // into the Stream variant and proves it round-trips with the same
+    // allocation. Compiles only when the field type is `Arc<str>` — under
+    // the prior `String` shape the test fails type-checking, which is the
+    // strongest form of RED.
+    #[test]
+    fn event_id_entry_stream_takes_arc_str() {
+        let arc_name: Arc<str> = Arc::from("Txn");
+        let entry = EventIdEntry::Stream {
+            event_name: arc_name.clone(),
+        };
+
+        match entry {
+            EventIdEntry::Stream { event_name } => {
+                assert_eq!(
+                    event_name.as_ref(),
+                    "Txn",
+                    "Stream.event_name must round-trip the input Arc<str> content"
+                );
+                assert!(
+                    Arc::ptr_eq(&event_name, &arc_name),
+                    "Stream.event_name must hold the SAME Arc allocation, not a re-derive"
+                );
+            }
+            EventIdEntry::TableWrite { .. } => panic!("expected EventIdEntry::Stream variant"),
+        }
+    }
+
     #[tokio::test]
     async fn get_registry_empty_returns_version_0() {
         let registry = Arc::new(Registry::new());
