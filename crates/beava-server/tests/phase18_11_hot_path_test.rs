@@ -111,3 +111,61 @@ fn test_row_serialize_yields_flat_object_keys() {
     assert!(json.contains("\"a\""), "serialised JSON must contain key 'a'");
     assert!(json.contains("\"b\""), "serialised JSON must contain key 'b'");
 }
+
+/// Task 11.7 contract: Registry exposes Arc<EventDescriptor> lookup so
+/// dispatch_push_sync no longer clones the EventDescriptor on every push.
+/// The Plan 18-11 D-6 contract: `Registry::get_event_descriptor(name)` returns
+/// `Option<Arc<EventDescriptor>>` — Arc::clone is a refcount bump, not a deep
+/// clone.
+#[test]
+fn test_registry_get_event_descriptor_returns_arc() {
+    use beava_core::registry::{EventDescriptor, OutputKind, Registry};
+    use beava_core::registry_diff::PayloadNode;
+    use beava_core::schema::{EventSchema, FieldType};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let registry = Registry::new();
+    let mut fields = BTreeMap::new();
+    fields.insert("user_id".to_string(), FieldType::Str);
+    let event = EventDescriptor {
+        name: "Txn".to_string(),
+        schema: EventSchema {
+            fields,
+            optional_fields: vec![],
+        },
+        event_time_field: None,
+        dedupe_key: None,
+        dedupe_window_ms: None,
+        keep_events_for_ms: None,
+        tolerate_delay_ms: None,
+        registered_at_version: 0,
+    };
+    registry.apply_registration(
+        vec![PayloadNode::Event(event)],
+        vec![],
+        vec![],
+        vec![],
+    );
+
+    let _ = OutputKind::Event; // keep import alive
+
+    // The new method must return Arc<EventDescriptor>.
+    let arc: Arc<EventDescriptor> = registry
+        .get_event_descriptor("Txn")
+        .expect("Txn must be registered");
+    assert_eq!(arc.name, "Txn");
+
+    // Arc::clone is a refcount bump — strong_count goes up by 1 then down.
+    let count_before = Arc::strong_count(&arc);
+    {
+        let _arc2 = Arc::clone(&arc);
+        let count_during = Arc::strong_count(&arc);
+        assert_eq!(count_during, count_before + 1, "Arc::clone bumps refcount");
+    }
+    assert_eq!(
+        Arc::strong_count(&arc),
+        count_before,
+        "refcount drops back when arc2 is dropped"
+    );
+}
