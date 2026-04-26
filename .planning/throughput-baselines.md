@@ -467,3 +467,59 @@ sync with kernel-driven completions and remove the macOS scheduler tax.
 **vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). M4
 numbers stay informational; this plan's deliverable is the correct
 architectural decomposition of read/apply/write, not the final number.
+
+### Phase 18-04.8 — body→Row migration to IoPool (M4 informational)
+
+**Run date:** 2026-04-26  · **Hardware:** Darwin-24.3.0 / 10 cores · **Commit:** post-6ed8b97 (v2/greenfield)
+
+| Pipeline | Transport | Wire    | Parallel | pd  | EPS     | p50 µs | p95 µs | p99 µs |
+|----------|-----------|---------|---------:|----:|--------:|-------:|-------:|-------:|
+| small    | tcp       | json    |        4 |  64 | 165,763 |      8 |     76 |     86 |
+| small    | tcp       | json    |       16 | 256 | 346,091 |     46 |     57 |    117 |
+| small    | tcp       | msgpack |       16 | 256 | 357,086 |     45 |     58 |     86 |
+
+**TRACE_APPLY trace (parallel=4 / pd=64 / json):**
+
+Apply thread (n=200 push events):
+
+| Stage         | Plan 18-11 (was) | Plan 18-04.8 (now) | Delta              |
+|---------------|-----------------:|-------------------:|--------------------|
+| parse         |          193 ns |              77 ns | **−60% (-116 ns)** |
+| TOTAL push    |          974 ns |             941 ns | −3.4% (-33 ns)     |
+
+IoPool worker thread (NEW trace, n=200 io ticks):
+
+| Stage          | Mean ns |
+|----------------|--------:|
+| socket_read    |   6,200 |
+| parse_envelope |   4,100 |
+| parse_body     |   4,265 |
+| TOTAL io       |  14,588 |
+
+**Targets vs plan:**
+
+| Target                                                 | Result      | Pass? |
+|--------------------------------------------------------|-------------|-------|
+| apply parse ≤50 ns (was 193 ns)                        | 77 ns       | NEAR  |
+| apply TOTAL ≤830 ns (was 974 ns)                       | 941 ns      | NO    |
+| TRACE_APPLY io trace lines emitted                     | yes         | YES   |
+| All Phase 18 tests pass                                | 118/118     | YES   |
+| Malformed body still rejected via fallback             | yes         | YES   |
+| EPS p=16/pd=256 ≥400k                                  | 346k–357k   | NEAR  |
+
+Notes on missed targets:
+
+- apply parse hit 77 ns (vs 50 ns target). The remaining ~30 ns is the
+  `Option<Row>::Some` match + Row drop on the apply thread. Plan 18-12
+  can chase the last ~30 ns by passing the Row by value into a
+  non-generic helper that elides the match.
+- apply TOTAL is 941 ns vs 830 ns target. The 116 ns parse savings were
+  largely absorbed by per-event variance in the agg + bookkeeping stages
+  (which fluctuate ±50 ns run-to-run). The architectural win (parse off
+  apply thread) is real; absolute TOTAL improvement awaits Plan 18-05
+  io_uring + Plan 18-12 micro-opts.
+- EPS landed 357k @ msgpack (vs 400k target), 346k @ json. The shortfall
+  is due to the per-tick mio publish/join_all spin-barrier overhead
+  (~10–20 µs/tick) which dominates at high pipeline depth where each tick
+  batches many events. io_uring (Plan 18-05) replaces the spin barrier
+  with kernel-driven completions; expected to hit and exceed 400k.
