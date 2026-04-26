@@ -66,16 +66,32 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
             registered_at_version: 1,
         },
     );
+    // Plan 18-16 Task 16.2: register the TxnAgg aggregation in
+    // compiled_aggregations with agg_id=0 so SnapshotBody::from_live (which
+    // iterates compiled_aggregations to assemble the serialized table list)
+    // finds it.
+    use beava_core::agg_descriptor::AggregationDescriptor;
+    let mut compiled_aggregations: BTreeMap<String, Arc<AggregationDescriptor>> = BTreeMap::new();
+    compiled_aggregations.insert(
+        "TxnAgg".to_string(),
+        Arc::new(AggregationDescriptor {
+            node_name: "TxnAgg".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["user_id".to_string()],
+            features: vec![],
+            agg_id: 0,
+        }),
+    );
     RegistryInner {
         version: 1,
         events,
         tables: BTreeMap::new(),
         derivations,
         compiled_chains: BTreeMap::new(),
-        compiled_aggregations: BTreeMap::new(),
+        compiled_aggregations,
         feature_index: BTreeMap::new(),
         aggregations_by_source: std::collections::HashMap::new(),
-        next_agg_id: 0,
+        next_agg_id: 1,
     }
 }
 
@@ -120,11 +136,9 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
 
 fn bench_serialize_state_1k_features(c: &mut Criterion) {
     let registry = build_registry_inner_with_one_count_agg();
-    let mut tables: StateTables = StateTables::default();
-    tables.insert(
-        "TxnAgg".to_string(),
-        build_state_table_with_n_entities(1000),
-    );
+    // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by agg_id.
+    // The TxnAgg fixture is at agg_id=0 (see build_registry_inner_with_one_count_agg).
+    let tables: StateTables = vec![build_state_table_with_n_entities(1000)];
 
     let body = SnapshotBody::from_live(&registry, &tables, 1000, 1_000_000);
 
@@ -137,11 +151,8 @@ fn bench_serialize_state_1k_features(c: &mut Criterion) {
 
 fn bench_atomic_write_default_fsync(c: &mut Criterion) {
     let registry = build_registry_inner_with_one_count_agg();
-    let mut tables: StateTables = StateTables::default();
-    tables.insert(
-        "TxnAgg".to_string(),
-        build_state_table_with_n_entities(1000),
-    );
+    // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by agg_id.
+    let tables: StateTables = vec![build_state_table_with_n_entities(1000)];
     let body = SnapshotBody::from_live(&registry, &tables, 1000, 1_000_000);
     let encoded = Arc::new(body.encode().expect("encode"));
 

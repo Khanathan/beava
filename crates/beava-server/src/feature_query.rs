@@ -141,10 +141,12 @@ async fn get_feature_handler(
     };
 
     // Query state under the lock.
+    // Plan 18-16 Task 16.2: state_tables is now Vec<AggStateTable> indexed
+    // by agg_id; look up via descriptor.agg_id (already loaded above).
     let tables = state.dev_agg_state.state_tables.lock();
     let query_time_ms = compute_query_time_ms(&state.dev_agg_state);
     let value_opt = tables
-        .get(&agg_node)
+        .get(descriptor.agg_id as usize)
         .and_then(|t| t.query_feature(&entity_key, feature_idx, query_time_ms));
 
     match value_opt {
@@ -219,7 +221,7 @@ async fn post_get_batch_handler(
                 None => continue,
             };
             if let Some(val) = tables
-                .get(agg_node)
+                .get(descriptor.agg_id as usize)
                 .and_then(|t| t.query_feature(&entity_key, *feature_idx, query_time_ms))
             {
                 key_result.insert(feat_name.clone(), value_to_json(val));

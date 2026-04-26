@@ -363,9 +363,28 @@ fn snapshot_body_registry_descriptors_preserved() {
 
 #[test]
 fn snapshot_body_state_tables_full_roundtrip() {
-    let mut state_tables: StateTables = StateTables::default();
-    for node in ["agg_a", "agg_b"] {
-        let mut table = AggStateTable::new();
+    use beava_core::agg_descriptor::AggregationDescriptor;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    // Plan 18-16 Task 16.2: state_tables is now Vec<AggStateTable> indexed by
+    // agg_id, and SnapshotBody::from_live walks registry.compiled_aggregations
+    // to assemble (name, entries) pairs. Build a RegistryInner with two
+    // aggregations (agg_a → agg_id 0, agg_b → agg_id 1) so the snapshot
+    // serializer finds them.
+    let mut compiled_aggregations: BTreeMap<String, Arc<AggregationDescriptor>> = BTreeMap::new();
+    let mut state_tables: StateTables = vec![AggStateTable::new(), AggStateTable::new()];
+    for (idx, node) in ["agg_a", "agg_b"].iter().enumerate() {
+        compiled_aggregations.insert(
+            node.to_string(),
+            Arc::new(AggregationDescriptor {
+                node_name: node.to_string(),
+                source_node_name: "src".to_string(),
+                group_keys: vec!["user_id".to_string()],
+                features: vec![],
+                agg_id: idx as u32,
+            }),
+        );
+        let table = &mut state_tables[idx];
         for u in ["alice", "bob", "carol"] {
             use compact_str::CompactString;
             use smallvec::SmallVec;
@@ -381,10 +400,14 @@ fn snapshot_body_state_tables_full_roundtrip() {
             s.update(&row_amount(10.0), 0, Some("amount"), true);
             table.entities.insert(key, vec![cnt, s]);
         }
-        state_tables.insert(node.to_string(), table);
     }
     let _unused = mk_count_op();
-    let body = SnapshotBody::from_live(&RegistryInner::default(), &state_tables, 12, 4567);
+    let inner = RegistryInner {
+        compiled_aggregations,
+        next_agg_id: 2,
+        ..Default::default()
+    };
+    let body = SnapshotBody::from_live(&inner, &state_tables, 12, 4567);
     let bytes = body.encode().expect("encode");
     let decoded = SnapshotBody::decode(&bytes).expect("decode");
 

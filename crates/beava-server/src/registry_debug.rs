@@ -296,7 +296,7 @@ pub struct DevAggState {
 impl DevAggState {
     pub fn new(registry: Arc<Registry>) -> Self {
         DevAggState {
-            state_tables: Arc::new(Mutex::new(StateTables::default())),
+            state_tables: Arc::new(Mutex::new(StateTables::new())),
             registry,
             next_event_id: Arc::new(AtomicU64::new(0)),
             max_event_time_ms: Arc::new(AtomicU64::new(0)),

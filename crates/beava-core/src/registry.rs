@@ -201,6 +201,14 @@ impl Registry {
         self.inner.read().version
     }
 
+    /// Plan 18-16 Task 16.2: read the registry's monotonic agg_id counter.
+    /// Server-side register handlers call this after `apply_registration` to
+    /// resize `DevAggState.state_tables` (a `Vec<AggStateTable>`) so apply hot
+    /// path can index by `desc.agg_id` without bounds-issues.
+    pub fn next_agg_id(&self) -> u32 {
+        self.inner.read().next_agg_id
+    }
+
     pub fn read(&self) -> RwLockReadGuard<'_, RegistryInner> {
         self.inner.read()
     }

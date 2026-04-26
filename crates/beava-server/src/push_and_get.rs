@@ -217,7 +217,7 @@ pub async fn execute_push_and_get(
                         build_entity_key(&req.query.entity_key, &descriptor.group_keys);
 
                     let val = tables
-                        .get(&agg_node)
+                        .get(descriptor.agg_id as usize)
                         .and_then(|t| t.query_feature(&entity_key, feat_idx, query_time_ms));
 
                     features.insert(

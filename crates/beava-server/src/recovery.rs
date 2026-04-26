@@ -16,7 +16,6 @@
 use crate::register::RegistryBumpPayload;
 use crate::registry_debug::DevAggState;
 use beava_core::agg_apply::apply_event_to_aggregations;
-use beava_core::agg_state_table::AggStateTable;
 use beava_core::row::{Row, Value};
 use beava_core::snapshot_body::SnapshotBody;
 use beava_persistence::{list_snapshots, Lsn, PersistError, RecordType, SnapshotReader, WalReader};
@@ -50,14 +49,27 @@ pub fn load_snapshot_if_any(
                         snapshot_body.into_parts();
                     dev_agg.registry.install_from_descriptors(&registry_only);
                     {
+                        // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable>
+                        // indexed by agg_id. Registry.install_from_descriptors
+                        // assigned ids deterministically (in registration order);
+                        // grow Vec to fit, then place each table at its slot via
+                        // the registry's name→agg_id reverse lookup.
+                        let new_next_agg_id = dev_agg.registry.next_agg_id() as usize;
                         let mut tables = dev_agg.state_tables.lock();
                         tables.clear();
+                        beava_core::agg_state_table::ensure_capacity_for(
+                            &mut tables,
+                            new_next_agg_id,
+                        );
                         for (node_name, entries) in state_tables {
-                            let mut tbl = AggStateTable::new();
+                            let agg_id = match dev_agg.registry.compiled_aggregation(&node_name) {
+                                Some(d) => d.agg_id as usize,
+                                None => continue,
+                            };
+                            let tbl = &mut tables[agg_id];
                             for (key, ops) in entries {
                                 tbl.entities.insert(key, ops);
                             }
-                            tables.insert(node_name, tbl);
                         }
                     }
                     dev_agg

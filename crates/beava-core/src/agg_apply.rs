@@ -98,7 +98,18 @@ pub fn apply_event_to_aggregations(
         };
         let t_b = t0.map(|t| t.elapsed());
 
-        let table = state_tables.entry(desc.node_name.clone()).or_default();
+        // Plan 18-16 Task 16.2: O(1) array index by `agg_id` (assigned at
+        // register-time). Replaces the prior `entry(node_name.clone())` hash
+        // lookup + per-push String allocation. Server-side register handler
+        // resizes `state_tables` after each registration, but tests/admin
+        // paths sometimes call apply_event_to_aggregations directly without
+        // going through that handler — so guard with a lazy resize here.
+        // Branch is cheap (len compare; predicted not-taken in steady state).
+        let agg_idx = desc.agg_id as usize;
+        if state_tables.len() <= agg_idx {
+            state_tables.resize_with(agg_idx + 1, crate::agg_state_table::AggStateTable::new);
+        }
+        let table = &mut state_tables[agg_idx];
         let t_c = t0.map(|t| t.elapsed());
 
         let entity_row = table.get_or_init(&entity_key, &desc);
@@ -318,18 +329,18 @@ mod tests {
             ],
         );
 
-        let mut state_tables: StateTables = StateTables::default();
+        let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
         apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
 
         // AggA's table should be populated; AggB's table should NOT.
         assert!(
-            state_tables.contains_key("AggA"),
+            crate::agg_state_table::has_entries_for_name(&state_tables, &registry, "AggA"),
             "AggA must be populated for Transaction events"
         );
         assert!(
-            !state_tables.contains_key("AggB"),
+            !crate::agg_state_table::has_entries_for_name(&state_tables, &registry, "AggB"),
             "AggB must NOT be populated for Transaction events"
         );
     }
@@ -345,7 +356,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: StateTables = StateTables::default();
+        let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
         for i in 0..10 {
@@ -359,9 +370,9 @@ mod tests {
             );
         }
 
-        let table = state_tables
-            .get("UserCount")
-            .expect("UserCount table must exist");
+        let table =
+            crate::agg_state_table::lookup_table_by_name(&state_tables, &registry, "UserCount")
+                .expect("UserCount table must exist");
         let key = crate::agg_state_table::EntityKey({
             let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
                 smallvec::SmallVec::new();
@@ -385,17 +396,17 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: StateTables = StateTables::default();
+        let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         // Row with user_id = Null → should be dropped.
         let row = Row::new().with_field("user_id", Value::Null);
 
         apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
 
         // No state should exist at all.
-        let is_empty = state_tables
-            .get("UserCount")
-            .map(|t| t.entity_count() == 0)
-            .unwrap_or(true);
+        let is_empty =
+            crate::agg_state_table::lookup_table_by_name(&state_tables, &registry, "UserCount")
+                .map(|t| t.entity_count() == 0)
+                .unwrap_or(true);
         assert!(
             is_empty,
             "null group-key event must not create any entity state"
@@ -438,7 +449,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: StateTables = StateTables::default();
+        let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         let row = Row::new()
             .with_field("user_id", Value::Str("alice".into()))
             .with_field("amount", Value::F64(50.0)); // below threshold
@@ -446,15 +457,17 @@ mod tests {
         apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
 
         // Either: no entry for alice, OR alice's count == 0.
-        let count = state_tables.get("UserCount").and_then(|t| {
-            let key = crate::agg_state_table::EntityKey({
-                let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
-                    smallvec::SmallVec::new();
-                sv.push(("user_id".into(), Value::Str("alice".into())));
-                sv
-            });
-            t.query_feature(&key, 0, 10_000)
-        });
+        let count =
+            crate::agg_state_table::lookup_table_by_name(&state_tables, &registry, "UserCount")
+                .and_then(|t| {
+                    let key = crate::agg_state_table::EntityKey({
+                        let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
+                            smallvec::SmallVec::new();
+                        sv.push(("user_id".into(), Value::Str("alice".into())));
+                        sv
+                    });
+                    t.query_feature(&key, 0, 10_000)
+                });
 
         match count {
             None => {}                // Acceptable: no entity row created
@@ -489,14 +502,22 @@ mod tests {
             }
         };
 
-        let mut tables1: StateTables = StateTables::default();
-        let mut tables2: StateTables = StateTables::default();
+        let mut tables1: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
+        let mut tables2: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         apply_all(&mut tables1);
         apply_all(&mut tables2);
 
         assert_eq!(
-            format!("{:?}", tables1.get("UserCount").map(|t| &t.entities)),
-            format!("{:?}", tables2.get("UserCount").map(|t| &t.entities)),
+            format!(
+                "{:?}",
+                crate::agg_state_table::lookup_table_by_name(&tables1, &registry, "UserCount")
+                    .map(|t| &t.entities)
+            ),
+            format!(
+                "{:?}",
+                crate::agg_state_table::lookup_table_by_name(&tables2, &registry, "UserCount")
+                    .map(|t| &t.entities)
+            ),
             "apply_event_to_aggregations must be deterministic (D-06)"
         );
     }
@@ -512,7 +533,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: StateTables = StateTables::default();
+        let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         let amounts = [10.0_f64, 20.0, 30.0, 40.0, 50.0];
         for (i, &amt) in amounts.iter().enumerate() {
             let row = Row::new()
@@ -528,7 +549,9 @@ mod tests {
             );
         }
 
-        let table = state_tables.get("UserStats").expect("UserStats must exist");
+        let table =
+            crate::agg_state_table::lookup_table_by_name(&state_tables, &registry, "UserStats")
+                .expect("UserStats must exist");
         let key = crate::agg_state_table::EntityKey({
             let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
                 smallvec::SmallVec::new();
@@ -569,17 +592,25 @@ mod tests {
         let t = 1000_i64;
 
         // Apply with event_id=0.
-        let mut tables_0: StateTables = StateTables::default();
+        let mut tables_0: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         apply_event_to_aggregations("Transaction", &row, t, 0, &registry, &mut tables_0);
 
         // Apply with event_id=99.
-        let mut tables_99: StateTables = StateTables::default();
+        let mut tables_99: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         apply_event_to_aggregations("Transaction", &row, t, 99, &registry, &mut tables_99);
 
         // State must be identical regardless of event_id.
         assert_eq!(
-            format!("{:?}", tables_0.get("UserCount").map(|t| &t.entities)),
-            format!("{:?}", tables_99.get("UserCount").map(|t| &t.entities)),
+            format!(
+                "{:?}",
+                crate::agg_state_table::lookup_table_by_name(&tables_0, &registry, "UserCount")
+                    .map(|t| &t.entities)
+            ),
+            format!(
+                "{:?}",
+                crate::agg_state_table::lookup_table_by_name(&tables_99, &registry, "UserCount")
+                    .map(|t| &t.entities)
+            ),
             "event_id must have no observable effect in Phase 5"
         );
     }

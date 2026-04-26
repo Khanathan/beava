@@ -127,6 +127,14 @@ impl ApplyShard {
                     reg_payload,
                     &state_clone.wal_sink,
                 ));
+                // Plan 18-16 Task 16.2: grow `state_tables` so apply hot path
+                // can index by `desc.agg_id` without bounds issues. Cold path —
+                // register is rare, so the lock + resize is fine here.
+                let new_next_agg_id = state_clone.dev_agg.registry.next_agg_id() as usize;
+                if new_next_agg_id > 0 {
+                    let mut tables = state_clone.dev_agg.state_tables.lock();
+                    beava_core::agg_state_table::ensure_capacity_for(&mut tables, new_next_agg_id);
+                }
                 match outcome {
                     RegisterOutcome::Success { version, .. } => {
                         GlueResponse::RegisterOk { version }

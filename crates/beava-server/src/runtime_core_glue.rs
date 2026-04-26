@@ -220,9 +220,10 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
                 }
             }
         };
+        // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by agg_id.
         let tables = app.dev_agg.state_tables.lock();
         let value_opt = tables
-            .get(&agg_node)
+            .get(descriptor.agg_id as usize)
             .and_then(|t| t.query_feature(&entity_key, feature_idx, query_time_ms));
         return match value_opt {
             Some(v) => {
@@ -253,8 +254,9 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
                 }
             }
         };
+        // Plan 18-16 Task 16.2: index by agg_id, not by name.
         let tables = app.dev_agg.state_tables.lock();
-        let table = match tables.get(feature) {
+        let table = match tables.get(descriptor.agg_id as usize) {
             Some(t) => t,
             None => {
                 return GlueResponse::QueryNotFound {

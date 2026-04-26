@@ -218,19 +218,69 @@ impl EntityKey {
     }
 }
 
-// ─── StateTables type alias ──────────────────────────────────────────────────
+// ─── StateTables type + helpers ──────────────────────────────────────────────
 
-/// Outer state-tables map: aggregation node name → `AggStateTable`.
+/// Outer state-tables vector, indexed by `AggregationDescriptor.agg_id`.
 ///
-/// Plan 18-16 (lite): swap the prior `BTreeMap<String, AggStateTable>` for
-/// `hashbrown::HashMap<_, _, FxBuildHasher>` to drop the `O(log N)` lookup
-/// cost on the apply hot path. Snapshot determinism is preserved because
-/// `snapshot_body::SnapshotBody::from_live` collects into a sorted output
-/// `BTreeMap` (the input iteration order doesn't matter).
+/// Plan 18-16 Task 16.2 — replaces the previous
+/// `hashbrown::HashMap<String, AggStateTable>` (which itself replaced an
+/// even earlier `BTreeMap<String, AggStateTable>`). The apply hot path now
+/// reads `&mut state_tables[desc.agg_id as usize]`: pure array indexing,
+/// no hash, no string clone.
 ///
-/// FxBuildHasher is safe here for the same reason it is on `AggStateTable.entities`
-/// (single-process, single-writer, no DoS surface).
-pub type StateTables = HashMap<String, AggStateTable, FxBuildHasher>;
+/// **Sizing invariant**: the Vec grows on registration, never shrinks. The
+/// server-side register handler resizes via `ensure_capacity_for` after
+/// `Registry::apply_registration` so the Vec has at least `next_agg_id`
+/// slots; out-of-bounds at apply-time is therefore impossible.
+///
+/// Snapshot determinism: the serialiser walks `registry.compiled_aggregations`
+/// (sorted-by-name BTreeMap), pulls each `desc.agg_id`, and emits the
+/// (name, table) pair in sorted order — bit-identical regardless of
+/// physical Vec layout.
+pub type StateTables = Vec<AggStateTable>;
+
+/// Ensure `state_tables` has at least `min_len` entries, growing with
+/// default-initialised `AggStateTable`s if needed. Cold-path helper — called
+/// from the server-side register handler after the registry has assigned
+/// new `agg_id`s. The apply hot path then reads
+/// `&mut state_tables[desc.agg_id as usize]` without a length check.
+pub fn ensure_capacity_for(state_tables: &mut StateTables, min_len: usize) {
+    if state_tables.len() < min_len {
+        state_tables.resize_with(min_len, AggStateTable::new);
+    }
+}
+
+/// Build a fresh `StateTables` sized to fit the registry's current `agg_id`
+/// counter. Used by tests / benches that drive `apply_event_to_aggregations`
+/// directly after building a registry via `Registry::apply_registration`.
+pub fn new_state_tables_for(registry: &crate::registry::Registry) -> StateTables {
+    let n = registry.next_agg_id() as usize;
+    (0..n).map(|_| AggStateTable::new()).collect()
+}
+
+/// Test / cold-path helper: look up a table by aggregation node name.
+/// Internally translates the name to `agg_id` via the registry and returns
+/// the indexed table.
+pub fn lookup_table_by_name<'a>(
+    state_tables: &'a StateTables,
+    registry: &crate::registry::Registry,
+    name: &str,
+) -> Option<&'a AggStateTable> {
+    let agg_id = registry.compiled_aggregation(name)?.agg_id as usize;
+    state_tables.get(agg_id)
+}
+
+/// Test helper: returns true if a table for `name` exists and is non-empty.
+/// Replaces the previous `state_tables.contains_key(name)` semantics.
+pub fn has_entries_for_name(
+    state_tables: &StateTables,
+    registry: &crate::registry::Registry,
+    name: &str,
+) -> bool {
+    lookup_table_by_name(state_tables, registry, name)
+        .map(|t| !t.entities.is_empty())
+        .unwrap_or(false)
+}
 
 // ─── AggStateTable ────────────────────────────────────────────────────────────
 

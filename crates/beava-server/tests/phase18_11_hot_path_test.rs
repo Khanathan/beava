@@ -399,13 +399,20 @@ fn test_snapshot_byte_identical_for_same_inputs() {
     // Also: round-trip preserves the same sorted order — re-snapshotting the
     // restored tables yields identical bytes a third time.
     let restored = SnapshotBody::decode(&bytes_a).expect("decode");
-    let mut restored_tables: StateTables = StateTables::default();
+    // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by agg_id.
+    // Resolve the node name to its agg_id via the registry then place at
+    // the correct slot.
+    let inner = registry.read();
+    let next_id = inner.next_agg_id as usize;
+    drop(inner);
+    let mut restored_tables: StateTables = (0..next_id).map(|_| AggStateTable::new()).collect();
     for (node, entries) in restored.state_tables {
-        let mut t = AggStateTable::new();
-        for (k, ops) in entries {
-            t.entities.insert(k, ops);
+        if let Some(desc) = registry.compiled_aggregation(&node) {
+            let t = &mut restored_tables[desc.agg_id as usize];
+            for (k, ops) in entries {
+                t.entities.insert(k, ops);
+            }
         }
-        restored_tables.insert(node, t);
     }
     let inner = registry.read();
     let snap_c = SnapshotBody::from_live(&inner, &restored_tables, 0, 0);

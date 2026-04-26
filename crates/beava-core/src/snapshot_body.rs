@@ -93,17 +93,21 @@ impl SnapshotBody {
         next_event_id: u64,
         max_event_time_ms: i64,
     ) -> Self {
-        // Plan 18-11 D-8: iter_sorted on each AggStateTable so the snapshot
-        // entry order is byte-identical for the same input event sequence,
-        // regardless of HashMap insertion order. The outer state_tables map
-        // is still BTreeMap → already deterministic.
+        // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by
+        // agg_id. Walk registry.compiled_aggregations (sorted-by-name BTreeMap)
+        // to emit (name, entries) in deterministic name-sorted order.
+        // Plan 18-11 D-8: iter_sorted on each AggStateTable so entries within
+        // a table are also bit-identical regardless of HashMap insertion order.
         let mut serialized_tables: SerializedStateTables = BTreeMap::new();
-        for (node_name, table) in state_tables {
-            let entries: Vec<(EntityKey, Vec<AggOp>)> = table
-                .iter_sorted()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-            serialized_tables.insert(node_name.clone(), entries);
+        for (node_name, desc) in registry.compiled_aggregations.iter() {
+            let agg_id = desc.agg_id as usize;
+            if let Some(table) = state_tables.get(agg_id) {
+                let entries: Vec<(EntityKey, Vec<AggOp>)> = table
+                    .iter_sorted()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                serialized_tables.insert(node_name.clone(), entries);
+            }
         }
         SnapshotBody {
             body_format_version: SNAPSHOT_BODY_FORMAT_VERSION,
