@@ -543,29 +543,47 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Why this matters:** "Can Beava handle 1M events per second" is the most common ship-readiness question users ask. We need a reproducible, defensible answer for both the curl/Rust path AND the Python path — not just the apply-thread microbench number from `criterion`. Without the Python harness the marketed number is misleading because most users will go through the SDK.
 
-### Phase 20: Operator catalogue + streaming-semantics audit — 📋 PLANNED
+### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
-**Status:** Planned post Phase 19 (added 2026-04-26).
+**Status:** Planned post Phase 19 (added 2026-04-26; push/get API audit scope folded in 2026-04-26).
 
-**Goal:** Systematic review of every shipped aggregation operator (Phases 5/8/9/10/11/11.5: 55+ ops) and every streaming-semantics decision (event-time, watermarks, retraction, MVCC, modifiability tiers, dedupe, idempotency) for correctness, test coverage, and documented behavior. Treat this as the "before-public-launch QA" pass — every operator must have a written contract that matches its implementation, and every streaming edge case must have a test.
+**Goal:** Systematic review of every shipped aggregation operator (Phases 5/8/9/10/11/11.5: 55+ ops), every streaming-semantics decision (event-time, watermarks, retraction, MVCC, modifiability tiers, dedupe, idempotency), AND every push/get API surface (push variants, get variants, set/mset/mget, upsert, delete, retract, push-and-get) — for correctness, test coverage, and documented behavior. Treat this as the "before-public-launch QA" pass — every public surface must have a written contract that matches its implementation, and every edge case must have a test.
 
 **Sub-goals:**
 
 1. **Operator-by-operator audit** — for each of the 55+ ops shipped in Phases 5/8/9/10/11/11.5, write/refresh a one-page contract covering: numeric domain, NaN/null handling, window semantics (if windowed), retraction semantics (subtractive-OK / approx-modifiable / reject-modifiable / Tier-A/B/C), determinism guarantees, snapshot serialization shape, restart behavior. Cross-check the contract against the implementation; raise issues for divergence.
-2. **Streaming-semantics audit** — re-derive the v0 contract for: event-time vs ingest-time, watermark behavior, out-of-order delivery, dedupe windows, idempotency cache, MVCC retention, retraction primitives. Check each against `register_validate.rs` warnings/errors and the existing tests.
-3. **Test-coverage matrix** — for each operator × {happy path, null/missing field, NaN/Inf, retraction, restart from snapshot, restart with WAL replay past snapshot}, confirm a test exists. File `.planning/phases/20-op-audit/20-COVERAGE-MATRIX.md` listing all tests by op, flag missing cells.
-4. **Validity tests** — write the missing tests surfaced by the matrix audit. TDD red-green per task per CLAUDE.md §Conventions.
-5. **Documented edge-cases** — produce `docs/operators.md` and `docs/streaming-semantics.md` (or update if present) with every decision pulled from CONTEXT.md / memory / locked architectural decisions, in user-facing prose.
 
-**Depends on:** Phase 19 (we want to know the throughput ceiling before adding more operator coverage tests, since some tests are slow). Optional dependency on Phase 14.1 (modifiability) and Phase 15 (event-time PIT) if those land first — otherwise the audit baselines against current behavior.
+2. **Streaming-semantics audit** — re-derive the v0 contract for: event-time vs ingest-time, watermark behavior, out-of-order delivery, dedupe windows, idempotency cache, MVCC retention, retraction primitives. Check each against `register_validate.rs` warnings/errors and the existing tests.
+
+3. **Push/get API audit** — every endpoint a user can hit on the data plane gets a one-page contract:
+   - **Push variants**: `/push/{event}` (acks=1 default, `SyncMode::Periodic`), `/push-sync/{event}` (acks=all, `SyncMode::PerEvent`, fsync before ack), `/push-batch/{event}` (multi-event in one frame), `/push-many` (TCP `OP_PUSH_MANY` if landed in Phase 12 follow-up), `/push-table/{table}` (table upsert via push), `/push-and-get/{event}` (combined endpoint, Plan 18-07 / Phase 12.5), `/push-sync-and-get/{event}` (acks=all + query in one round-trip)
+   - **Get variants**: `/get` (batch JSON body `{keys, features}`), `/get/{feature}/{key}` (single feature single key), `/get-multi` (Phase 12 follow-up batch over many features × many keys with cell-cap enforcement)
+   - **Table verbs**: `/upsert/{table}`, `/delete/{table}`, `/retract` (event_id-routed), `/set` and `/mset` and `/mget` (key-value-style table verbs from Phase 12 follow-up)
+   - **For each endpoint**, document: HTTP method + path, TCP opcode (where applicable), request body shape (JSON + msgpack), response codes (200/4xx/5xx + the `code:` enum), invariants (single-writer, atomic borrow scope, ordering guarantees), perf characteristics (sync-mode latency budget, batch caps), and the curl example a user would copy-paste.
+   - Cross-check against `runtime_core_glue.rs` dispatch + `register.rs` + `feature_query.rs` + `temporal_http.rs` + `push_and_get.rs` + apply_shard.rs's TCP variant handling. Flag missing endpoints, undocumented status codes, or response-body shape drift.
+   - Table the routes in `docs/http-api.md` and `docs/tcp-wire.md` (or refresh existing).
+
+4. **Test-coverage matrix** — for each {operator OR push/get endpoint} × {happy path, null/missing field, NaN/Inf, schema-mismatch, dedupe-replay, retraction, restart from snapshot, restart with WAL replay past snapshot, batch-cap exceeded, malformed body, unknown event, unknown feature}, confirm a test exists. File `.planning/phases/20-op-audit/20-COVERAGE-MATRIX.md` listing all tests by surface, flag missing cells.
+
+5. **Validity tests** — write the missing tests surfaced by the matrix audit. TDD red-green per task per CLAUDE.md §Conventions.
+
+6. **Documented edge-cases** — produce or update:
+   - `docs/operators/{op}.md` (one per op) with the per-op contract from sub-goal 1
+   - `docs/streaming-semantics.md` with all event-time / watermark / retraction / dedupe / idempotency decisions
+   - `docs/http-api.md` + `docs/tcp-wire.md` with every endpoint × variant × wire-format combo
+   - All sourced from CONTEXT.md / locked architectural decisions / memory — in user-facing prose, with curl examples for HTTP and `nc` examples for TCP.
+
+**Depends on:** Phase 19 (we want to know the throughput ceiling before adding more operator coverage tests, since some tests are slow). Phase 12 follow-up (for `/push-many`, `/get-multi`, `/set`, `/mset`, `/mget` to actually exist when audited). Phase 12.5 (for `/push-and-get` to be in scope). Optional dependency on Phase 14.1 (modifiability) and Phase 15 (event-time PIT) if those land first — otherwise the audit baselines against current behavior.
 
 **Success criteria:**
 - Every op has a one-page contract committed to `docs/operators/`
+- Every push/get endpoint has a contract in `docs/http-api.md` + `docs/tcp-wire.md`, including curl + `nc` examples
 - Streaming-semantics decisions audited; mismatches between contract and code closed
-- Test-coverage matrix shows no missing cells in the {operator × edge-case} grid
+- Test-coverage matrix shows no missing cells in the {surface × edge-case} grid (operators AND push/get endpoints)
 - All new tests green; cargo clippy + cargo fmt clean
+- `register_validate.rs` warnings/errors all documented in user-facing docs
 
-**Why this matters:** Beava's v0 ship gate is "users can declare a feature, push events, query it — in under 10 minutes, with curl alone." That promise breaks the moment a user hits an undocumented edge case (NaN behavior, retraction semantics, restart determinism). Phase 20 closes that gap before public launch.
+**Why this matters:** Beava's v0 ship gate is "users can declare a feature, push events, query it — in under 10 minutes, with curl alone." That promise breaks the moment a user hits an undocumented edge case — whether on the operator side (NaN behavior, retraction semantics, restart determinism) OR on the API side (which push variant gives which durability guarantee, what happens on dedupe replay, how /retract routes between stream and table writes). Phase 20 closes both gaps before public launch.
 
 ---
 
