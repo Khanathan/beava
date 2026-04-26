@@ -1357,4 +1357,137 @@ mod tests {
             "apply_registration must populate name_arc to the descriptor's name"
         );
     }
+
+    // Plan 18-16 Task 16.1.a (RED): AggregationDescriptor.agg_id assigned monotonically.
+    //
+    // Registers two aggregations sequentially and asserts:
+    // 1. agg_id values are 0 and 1 respectively (monotonic counter starting at 0).
+    // 2. Re-registering the same aggregation name is a no-op (additive idempotence) —
+    //    agg_id stays the same.
+    //
+    // This test FAILS before 16.1.b lands the `agg_id` field and `next_agg_id` counter.
+    #[test]
+    fn test_agg_id_assigned_monotonically() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor};
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+
+        // Helper: build a minimal AggregationDescriptor for a given source.
+        let make_agg = |node_name: &str, source: &str| -> AggregationDescriptor {
+            AggregationDescriptor {
+                node_name: node_name.to_string(),
+                source_node_name: source.to_string(),
+                group_keys: vec!["user_id".to_string()],
+                features: vec![NamedAggOp {
+                    feature_name: "cnt".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Count,
+                        field: None,
+                        window_ms: None,
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                    },
+                }],
+                agg_id: 0, // placeholder; registry overwrites at registration time
+            }
+        };
+
+        let make_event = |name: &str| -> EventDescriptor {
+            EventDescriptor {
+                name: name.to_string(),
+                schema: make_event_schema(),
+                event_time_field: None,
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
+                registered_at_version: 0,
+                name_arc: Arc::from(""),
+            }
+        };
+
+        let make_deriv = |name: &str, source: &str| -> DerivationDescriptor {
+            DerivationDescriptor {
+                name: name.to_string(),
+                output_kind: OutputKind::Table,
+                upstreams: vec![source.to_string()],
+                ops: vec![],
+                schema: crate::schema::DerivedSchema {
+                    fields: {
+                        let mut m = BTreeMap::new();
+                        m.insert("user_id".to_string(), crate::schema::FieldType::Str);
+                        m.insert("cnt".to_string(), crate::schema::FieldType::I64);
+                        m
+                    },
+                    optional_fields: vec![],
+                },
+                table_primary_key: Some(vec!["user_id".to_string()]),
+                registered_at_version: 0,
+            }
+        };
+
+        // Register first aggregation: AggA (source=EvA) → must get agg_id=0.
+        let agg_a = Arc::new(make_agg("AggA", "EvA"));
+        r.apply_registration(
+            vec![
+                PayloadNode::Event(make_event("EvA")),
+                PayloadNode::Derivation(make_deriv("AggA", "EvA")),
+            ],
+            vec![],
+            vec![],
+            vec![("AggA".to_string(), Arc::clone(&agg_a))],
+        );
+
+        let cached_a = r
+            .compiled_aggregation("AggA")
+            .expect("AggA must be in registry after registration");
+        assert_eq!(
+            cached_a.agg_id, 0,
+            "first registered aggregation must get agg_id=0"
+        );
+
+        // Register second aggregation: AggB (source=EvB) → must get agg_id=1.
+        let agg_b = Arc::new(make_agg("AggB", "EvB"));
+        r.apply_registration(
+            vec![
+                PayloadNode::Event(make_event("EvB")),
+                PayloadNode::Derivation(make_deriv("AggB", "EvB")),
+            ],
+            vec![],
+            vec![],
+            vec![("AggB".to_string(), Arc::clone(&agg_b))],
+        );
+
+        let cached_b = r
+            .compiled_aggregation("AggB")
+            .expect("AggB must be in registry after registration");
+        assert_eq!(
+            cached_b.agg_id, 1,
+            "second registered aggregation must get agg_id=1"
+        );
+
+        // Idempotence: re-register AggA (already present) — agg_id must stay 0.
+        let agg_a_again = Arc::new(make_agg("AggA", "EvA"));
+        r.apply_registration(
+            vec![PayloadNode::Derivation(make_deriv("AggA", "EvA"))],
+            vec![],
+            vec![],
+            vec![("AggA".to_string(), Arc::clone(&agg_a_again))],
+        );
+
+        let cached_a_again = r
+            .compiled_aggregation("AggA")
+            .expect("AggA must still be in registry after re-registration");
+        assert_eq!(
+            cached_a_again.agg_id, 0,
+            "re-registration must not change agg_id (additive idempotence)"
+        );
+    }
 }
