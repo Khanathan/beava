@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-04-26T05:28:45.458Z",
+  "phase": "18",
+  "phase_name": "redis-hand-roll",
+  "phase_dir": ".planning/phases/18-redis-hand-roll",
+  "status": "paused",
+  "head_commit": "00affd7",
+  "completed_this_session": [
+    {"plan": "18-09", "status": "merged", "commits": "1bba02e..92cff15", "summary": "msgpack-on-TCP, Row::Deserialize, WAL v=2"},
+    {"plan": "18-10", "status": "merged", "commits": "2249955..fa69cd4", "summary": "hand-rolled envelope parsers (33ns msgpack / 77ns json microbench)"},
+    {"plan": "18-11", "status": "merged", "commits": "f5d4259..9e5dda4", "summary": "hot-path optimization (HashMap+raw_entry_mut, EntityKey SmallVec, Arc<EventDescriptor>, per-source agg index)"},
+    {"plan": "18-04.7", "status": "merged", "commits": "cb1f9f6..bfe3005", "summary": "IoPool wiring into serve_with_dirs"},
+    {"plan": "18-04.8", "status": "merged", "commits": "9a1daec..00affd7", "summary": "body→Row migration to IoPool; apply parse 193→77 ns; new TRACE_APPLY io trace"},
+    {"item": "bench-v18 --pipeline-depth N flag", "status": "merged", "commit": "913eaa3"},
+    {"item": "env::var caching for trace flags (OnceLock)", "status": "merged", "commit": "55d3920"},
+    {"item": "TRACE_AGG_TIMING env var split (separate from TRACE_APPLY_TIMING)", "status": "merged", "commit": "55d3920"},
+    {"item": "STATE.md cleanup snapshot", "status": "merged", "commit": "3a1098d"},
+    {"item": "Memory: project_no_sharded_apply.md", "status": "saved", "location": "~/.claude/projects/-Users-petrpan26-work-tally/memory/"}
+  ],
+  "remaining_in_phase_18": [
+    {"id": 1, "name": "Plan 18-12 — Arc<str> event_name bookkeeping fix", "status": "not_started", "scope": "70 LoC, 3 files (registry.rs, registry_debug.rs, apply_shard.rs)", "expected_lift": "bookkeeping 169→60 ns, apply TOTAL 941→830 ns", "plan_file": ".planning/phases/18-redis-hand-roll/18-12-PLAN.md", "line_hints": "registry.rs:31 (struct), registry.rs:419 (apply_registration), registry_debug.rs:60-63 (EventIdEntry::Stream), apply_shard.rs:438-439,458 (event_name.to_string sites)"},
+    {"id": 2, "name": "Continuous pipelining for bench-v18", "status": "not_started", "scope": "~120 LoC in bench-v18.rs Transport::Tcp branch", "approach": "tokio::io::split + tokio::sync::Semaphore; sender acquires, std::mem::forget(permit); receiver semaphore.add_permits(1)", "flag": "--continuous-pipeline default true; falls back to existing burst when false"},
+    {"id": 3, "name": "ROADMAP.md cleanup", "status": "not_started", "scope": "Mark Phase 13.3 archived; update Phase 18 row to reflect plan progress", "files": ".planning/ROADMAP.md"},
+    {"id": 4, "name": "phase-13.3-lockless-apply worktree archival", "status": "user_decision_pending", "options": ["delete", "rename to archived/phase-13.3-rejected"], "rationale": "Phase 13.3 REJECTED per architectural decision 2026-04-26"}
+  ],
+  "decisions_locked_this_session": [
+    {"decision": "Phase 13.3 (in-process apply sharding via lockless RefCell + LocalSet) REJECTED", "rationale": "Beava commits to single-threaded data plane forever. Higher aggregate throughput via multi-instance Redis-cluster scale-out (per-key sharding across instances). Cross-shard queries within a process explicitly avoided.", "memory": "project_no_sharded_apply.md"},
+    {"decision": "BEAVA_TRACE_AGG_TIMING split from BEAVA_TRACE_APPLY_TIMING", "rationale": "Inner TRACE_AGG eprintln was contaminating outer agg-stage measurement (running INSIDE the timing window). Separate env vars keep measurements clean."},
+    {"decision": "Pipelining is client-side opt-in, not automatic", "rationale": "Documented in user-facing capacity-planning context. TCP wire is already FIFO + no request_id (Redis-style); client SDKs need explicit pipelining support if desired."}
+  ],
+  "blockers": [
+    {"description": "Three sequential Opus executors context-walled at the loading phase before doing any Plan 18-12 work", "type": "tooling", "workaround": "Skip executor pattern for small plans (<200 LoC). Do Plan 18-12 + continuous pipelining INLINE at start of next session — both fit comfortably in fresh context budget."}
+  ],
+  "human_actions_pending": [
+    {"action": "Decide phase-13.3-lockless-apply worktree fate (delete vs rename to archived/)", "context": "Phase 13.3 REJECTED but worktree still exists at .claude/worktrees/phase-13.3-lockless-apply", "blocking": false}
+  ],
+  "key_perf_numbers": {
+    "apply_thread_total_ns_p50_post_18_04_8": 750,
+    "apply_thread_parse_ns_post_18_04_8": 77,
+    "apply_thread_agg_ns_post_18_11": 518,
+    "best_observed_eps_m4_loopback_p16_pd256_json": 346000,
+    "best_observed_eps_m4_loopback_p16_pd256_msgpack": 357000,
+    "single_thread_theoretical_max_at_p50_cycle": 1040000
+  },
+  "next_action": "INLINE (do not spawn executor): Edit registry.rs:31 to add `pub name_arc: Arc<str>` to EventDescriptor; populate at registry.rs:419 in apply_registration. Then registry_debug.rs:60-63 — change EventIdEntry::Stream.event_name from String to Arc<str>. Then apply_shard.rs:438-439,458 — replace event_name.to_string() with descriptor.name_arc.clone(). Test, commit. Then continuous pipelining in bench-v18.rs Transport::Tcp branch.",
+  "context_notes": "Phase 18 is essentially complete except the two small items above. The capacity-planning conversation established that single-thread data plane is locked, scale-out via multi-instance is the answer for >1M EPS aggregate. The session also explored SpeedB backend tradeoffs — verdict: keep in-memory for fraud workloads, SpeedB only when state >150M entities."
+}
