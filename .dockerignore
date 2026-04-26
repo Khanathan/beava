@@ -1,0 +1,14 @@
+target/
+.git/
+deck/
+.planning/
+.claude/
+python/
+benchmark/
+tests/
+*.md
+!Cargo.toml
+!Cargo.lock
+.gitignore
+demo.py
+events/
