@@ -1,0 +1,155 @@
+//! Plan 18-05 Task 5.2 — Per-worker continuous-loop tests.
+//!
+//! RED: Verifies the Valkey 8 per-worker architecture:
+//!  - Worker assignment is `slot_idx % N_workers` (deterministic round-robin)
+//!  - Workers process clients continuously with no apply-side join_all barrier
+//!  - apply thread only acts as dispatcher (drains read_rx, pushes write_tx)
+//!
+//! These tests FAIL TO COMPILE until Task 5.2.b (GREEN) implements
+//! `WorkerHandle` and the continuous-loop worker infrastructure.
+
+use beava_runtime_core::io_backend::{IoBackend, MioBackend};
+use beava_runtime_core::io_thread_worker::{start_worker, WorkerConfig, WorkerHandle};
+use beava_runtime_core::work_ring::RingItem;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+/// Helper: create N worker handles using `start_worker`.
+/// Returns Vec<WorkerHandle> of length N.
+fn spawn_n_workers(n: usize) -> (Vec<WorkerHandle>, crossbeam_channel::Receiver<RingItem>) {
+    let (read_tx, read_rx) = crossbeam_channel::bounded::<RingItem>(16_384);
+    let stop = Arc::new(AtomicBool::new(false));
+
+    let workers = (0..n)
+        .map(|worker_id| {
+            let (write_tx, write_rx) = crossbeam_channel::bounded(4096);
+            let (new_client_tx, new_client_rx) = crossbeam_channel::bounded(256);
+            let cfg = WorkerConfig {
+                worker_id,
+                n_workers: n,
+                read_tx: read_tx.clone(),
+                write_rx,
+                new_client_rx,
+                stop: Arc::clone(&stop),
+            };
+            start_worker::<MioBackend>(cfg, new_client_tx, write_tx)
+        })
+        .collect::<Vec<_>>();
+
+    (workers, read_rx)
+}
+
+/// Assert that client routing is deterministic: the worker that should own a
+/// client is `slot_idx % N`. This test constructs N workers, routes a
+/// series of slot indices, and checks the assignment is consistent.
+#[test]
+fn test_worker_owns_client_round_robin() {
+    const N: usize = 5;
+    let (workers, _read_rx) = spawn_n_workers(N);
+
+    // For each slot_idx, the owning worker must be slot_idx % N.
+    for slot_idx in 0u64..20u64 {
+        let expected_worker = (slot_idx as usize) % N;
+        let actual_worker = workers[expected_worker].worker_id();
+        assert_eq!(
+            actual_worker, expected_worker,
+            "slot {slot_idx} should be owned by worker {expected_worker}, got {actual_worker}"
+        );
+    }
+
+    // Shutdown all workers cleanly.
+    for w in &workers {
+        w.stop();
+    }
+    for w in workers {
+        w.join();
+    }
+}
+
+/// Assert that the worker loop processes events without any apply-side
+/// `join_all` or spin-wait. The apply thread just sends to `write_tx[w]`,
+/// wakes the worker, and moves on immediately.
+///
+/// This test:
+///  1. Creates a real TCP loopback pair.
+///  2. Hands the server-side socket to worker 0 via `new_client_tx`.
+///  3. Sends a ping frame from the client side.
+///  4. Waits for a `RingItem::Request` to appear on `read_rx`.
+///  5. Asserts the whole round-trip completes in < 500ms without
+///     any apply-side synchronization primitive.
+#[test]
+fn test_worker_loop_processes_continuously_no_join_all() {
+    use beava_core::wire::{encode_frame, Frame, CT_JSON, OP_PING};
+    use bytes::BytesMut;
+    use std::io::Write;
+
+    const N: usize = 3;
+    let (mut workers, read_rx) = spawn_n_workers(N);
+
+    // Bind a TCP listener and connect a client.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+
+    // Background thread: connect + send one PING frame then wait for ACK.
+    let client_t = std::thread::spawn(move || {
+        let mut s = std::net::TcpStream::connect(addr).expect("connect");
+        s.set_write_timeout(Some(Duration::from_secs(2))).ok();
+        // Build a OP_PING frame.
+        let frame = Frame::new(OP_PING, CT_JSON, bytes::Bytes::new());
+        let mut buf = BytesMut::new();
+        encode_frame(&frame, &mut buf);
+        s.write_all(&buf).expect("write ping");
+        // Keep the connection alive long enough for the worker to read it.
+        std::thread::sleep(Duration::from_millis(500));
+        drop(s);
+    });
+
+    // Accept the connection.
+    let (stream, _) = listener.accept().expect("accept");
+    stream.set_nonblocking(true).expect("set_nonblocking");
+    let mio_stream = mio::net::TcpStream::from_std(stream);
+
+    // Route to worker 0 (slot_idx = 0 → worker 0 % N = 0).
+    let slot_idx: u64 = 0;
+    let worker_for_slot = (slot_idx as usize) % N;
+    workers[worker_for_slot]
+        .send_new_client(mio_stream, slot_idx)
+        .expect("send_new_client");
+
+    // Wait for the worker to parse and push a RingItem to read_rx.
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    let item = loop {
+        match read_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(item) => break item,
+            Err(_) => {
+                if std::time::Instant::now() >= deadline {
+                    panic!("timed out waiting for RingItem from worker");
+                }
+            }
+        }
+    };
+
+    // The parsed item must be a Request with WireRequest::Ping.
+    match item {
+        RingItem::Request {
+            slot_idx: s,
+            request,
+            ..
+        } => {
+            assert_eq!(s, slot_idx as u32, "slot_idx mismatch");
+            use beava_runtime_core::wire_request::WireRequest;
+            assert_eq!(request, WireRequest::Ping, "expected Ping");
+        }
+        other => panic!("expected RingItem::Request, got {other:?}"),
+    }
+
+    // Stop workers.
+    for w in &workers {
+        w.stop();
+    }
+    client_t.join().expect("client thread join");
+    for w in workers {
+        w.join();
+    }
+}

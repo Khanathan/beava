@@ -148,6 +148,10 @@ required-features = ["testing"]
 name = "phase18_11_hot_path_test"
 path = "tests/phase18_11_hot_path_test.rs"
 
+[[test]]
+name = "phase18_05_continuous_workers_test"
+path = "tests/phase18_05_continuous_workers_test.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
