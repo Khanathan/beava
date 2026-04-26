@@ -169,3 +169,99 @@ fn test_registry_get_event_descriptor_returns_arc() {
         "refcount drops back when arc2 is dropped"
     );
 }
+
+/// Task 11.8 contract: RegistryInner exposes `aggregations_by_source` —
+/// a precomputed per-source index that turns the prior linear-scan over
+/// `compiled_aggregations` into an O(1) HashMap lookup. The compiled
+/// aggregations Vec is built once at register time.
+#[test]
+fn test_per_source_aggregation_index_is_populated() {
+    use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+    use beava_core::agg_op::{AggKind, AggOpDescriptor};
+    use beava_core::registry::{
+        DerivationDescriptor, EventDescriptor, OutputKind, Registry,
+    };
+    use beava_core::registry_diff::PayloadNode;
+    use beava_core::schema::{DerivedSchema, EventSchema, FieldType};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let registry = Registry::new();
+    let mut fields = BTreeMap::new();
+    fields.insert("user_id".to_string(), FieldType::Str);
+    let event = EventDescriptor {
+        name: "Txn".to_string(),
+        schema: EventSchema {
+            fields: fields.clone(),
+            optional_fields: vec![],
+        },
+        event_time_field: None,
+        dedupe_key: None,
+        dedupe_window_ms: None,
+        keep_events_for_ms: None,
+        tolerate_delay_ms: None,
+        registered_at_version: 0,
+    };
+    let agg = AggregationDescriptor {
+        node_name: "AggTxn".to_string(),
+        source_node_name: "Txn".to_string(),
+        group_keys: vec!["user_id".to_string()],
+        features: vec![NamedAggOp {
+            feature_name: "cnt".to_string(),
+            descriptor: AggOpDescriptor {
+                kind: AggKind::Count,
+                field: None,
+                window_ms: None,
+                where_expr: None,
+                n: None,
+                half_life_ms: None,
+                sub_window_ms: None,
+                sigma: None,
+                sketch_params: None,
+                ext: Default::default(),
+            },
+        }],
+    };
+    let mut deriv_schema = BTreeMap::new();
+    deriv_schema.insert("user_id".to_string(), FieldType::Str);
+    deriv_schema.insert("cnt".to_string(), FieldType::I64);
+    let deriv = DerivationDescriptor {
+        name: "AggTxn".to_string(),
+        output_kind: OutputKind::Table,
+        upstreams: vec!["Txn".to_string()],
+        ops: vec![],
+        schema: DerivedSchema {
+            fields: deriv_schema,
+            optional_fields: vec![],
+        },
+        table_primary_key: Some(vec!["user_id".to_string()]),
+        registered_at_version: 0,
+    };
+    registry.apply_registration(
+        vec![PayloadNode::Event(event), PayloadNode::Derivation(deriv)],
+        vec![],
+        vec![],
+        vec![("AggTxn".to_string(), Arc::new(agg))],
+    );
+
+    // The per-source index must contain Txn → [AggTxn].
+    let inner = registry.read();
+    let aggs_for_txn = inner
+        .aggregations_by_source
+        .get("Txn")
+        .expect("Txn must have at least one aggregation");
+    assert_eq!(aggs_for_txn.len(), 1);
+    assert_eq!(aggs_for_txn[0].node_name, "AggTxn");
+    drop(inner);
+
+    // compiled_aggregations_for_source returns the same set without
+    // any linear scan (uses the index internally).
+    let aggs = registry.compiled_aggregations_for_source("Txn");
+    assert_eq!(aggs.len(), 1);
+    assert_eq!(aggs[0].node_name, "AggTxn");
+
+    // Unknown source returns empty.
+    assert!(registry
+        .compiled_aggregations_for_source("Nonexistent")
+        .is_empty());
+}
