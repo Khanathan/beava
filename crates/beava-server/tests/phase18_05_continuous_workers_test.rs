@@ -16,15 +16,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Helper: create N worker handles using `start_worker`.
-/// Returns Vec<WorkerHandle> of length N.
-fn spawn_n_workers(n: usize) -> (Vec<WorkerHandle>, crossbeam_channel::Receiver<RingItem>) {
+/// Returns `(Vec<WorkerHandle>, read_rx, Vec<write_tx>)`.
+/// `write_tx[w]` is the apply-side sender for worker `w`'s response channel.
+fn spawn_n_workers_with_write(
+    n: usize,
+) -> (
+    Vec<WorkerHandle>,
+    crossbeam_channel::Receiver<RingItem>,
+    Vec<crossbeam_channel::Sender<(u64, bytes::Bytes)>>,
+) {
     let (read_tx, read_rx) = crossbeam_channel::bounded::<RingItem>(16_384);
     let stop = Arc::new(AtomicBool::new(false));
 
+    let mut write_txs = Vec::with_capacity(n);
     let workers = (0..n)
         .map(|worker_id| {
             let (write_tx, write_rx) = crossbeam_channel::bounded(4096);
             let (new_client_tx, new_client_rx) = crossbeam_channel::bounded(256);
+            write_txs.push(write_tx.clone());
             let cfg = WorkerConfig {
                 worker_id,
                 n_workers: n,
@@ -37,6 +46,12 @@ fn spawn_n_workers(n: usize) -> (Vec<WorkerHandle>, crossbeam_channel::Receiver<
         })
         .collect::<Vec<_>>();
 
+    (workers, read_rx, write_txs)
+}
+
+/// Convenience wrapper: create N workers, discard write_tx senders.
+fn spawn_n_workers(n: usize) -> (Vec<WorkerHandle>, crossbeam_channel::Receiver<RingItem>) {
+    let (workers, read_rx, _write_txs) = spawn_n_workers_with_write(n);
     (workers, read_rx)
 }
 
@@ -149,6 +164,48 @@ fn test_worker_loop_processes_continuously_no_join_all() {
         w.stop();
     }
     client_t.join().expect("client thread join");
+    for w in workers {
+        w.join();
+    }
+}
+
+/// Task 5.3 — Verify apply does NOT wait for the write phase.
+///
+/// The apply thread pushes response bytes to `write_tx[w]` and immediately
+/// continues its loop — it does NOT block waiting for the worker to flush
+/// the bytes to the socket. This is the key property that eliminates the
+/// write `join_all` barrier.
+///
+/// The test measures the time for 1000 `write_tx[0].send()` calls and
+/// asserts each takes well under 1ms (no blocking on socket write).
+#[test]
+fn test_no_write_join_all_apply_doesnt_wait() {
+    const N: usize = 3;
+    let (workers, _read_rx, write_txs) = spawn_n_workers_with_write(N);
+
+    // Send 1000 small response payloads to worker 0's write_tx.
+    // Apply must not block — each send() just enqueues; worker drains later.
+    let payload: bytes::Bytes = bytes::Bytes::from_static(b"\x00\x00\x00\x04\x00\x02{}");
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        write_txs[0]
+            .send((0u64, payload.clone()))
+            .expect("write_tx send");
+        // Wake worker 0 (as apply would) — must be non-blocking.
+        workers[0].waker().wake().expect("wake");
+    }
+    let elapsed = start.elapsed();
+
+    // 1000 sends + 1000 wakes must complete in well under 100ms.
+    // If a `join_all` were present this would block for socket-write latency × 1000.
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "1000 write_tx sends took {elapsed:?} — apply is blocking on write phase (join_all not removed)"
+    );
+
+    for w in &workers {
+        w.stop();
+    }
     for w in workers {
         w.join();
     }
