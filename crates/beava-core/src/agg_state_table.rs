@@ -404,4 +404,67 @@ mod tests {
             "agg_state_table.rs production code must not use HashMap (D-06 determinism)"
         );
     }
+
+    // ── Plan 18-11 Task 11.3: EntityKey SmallVec + CompactString + Value ─────
+
+    /// Plan 18-11 D-5: EntityKey backing storage is `SmallVec<[(CompactString, Value); 2]>`
+    /// (was `Vec<(String, String)>`). Most aggregations group by 1-2 keys → inline storage
+    /// → zero heap alloc on construction.
+    ///
+    /// This is a compile-fail RED until the storage type is changed.
+    #[test]
+    fn entity_key_smallvec_inline() {
+        use compact_str::CompactString;
+        use smallvec::SmallVec;
+
+        // Construction with 1 group key — uses inline SmallVec storage (no heap).
+        let pair: (CompactString, Value) = ("user_id".into(), Value::Str("alice".into()));
+        let inline_storage: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf_and_len(
+            [pair, ("".into(), Value::Null)],
+            1,
+        );
+        let ek = EntityKey(inline_storage);
+
+        // Spilled-to-heap check: SmallVec exposes spilled() — true when over inline cap.
+        assert!(
+            !ek.0.spilled(),
+            "1-key EntityKey must use inline SmallVec storage (no heap)"
+        );
+        assert_eq!(ek.0.len(), 1);
+
+        // 2 group keys also fit inline.
+        let pair_a: (CompactString, Value) = ("user_id".into(), Value::Str("a".into()));
+        let pair_b: (CompactString, Value) = ("merchant_id".into(), Value::Str("m1".into()));
+        let two: SmallVec<[(CompactString, Value); 2]> =
+            SmallVec::from_buf([pair_a, pair_b]);
+        let ek2 = EntityKey(two);
+        assert!(!ek2.0.spilled(), "2-key EntityKey must use inline storage");
+    }
+
+    /// EntityKey::from_row populates the SmallVec with native Value types
+    /// (no string canonicalization). I64(42) and F64(42.0) remain distinct
+    /// keys via Value's variant discrimination — same as the prior
+    /// stringified canonicalization but without the to_string overhead.
+    #[test]
+    fn entity_key_from_row_yields_native_value_pairs() {
+        let keys = vec!["user_id".to_string()];
+        let row_i64 = Row::new().with_field("user_id", Value::I64(42));
+        let row_f64 = Row::new().with_field("user_id", Value::F64(42.0));
+
+        let ek_i = EntityKey::from_row(&keys, &row_i64).expect("I64 EntityKey");
+        let ek_f = EntityKey::from_row(&keys, &row_f64).expect("F64 EntityKey");
+
+        // Distinct keys (I64 vs F64) — variant discrimination.
+        assert_ne!(ek_i, ek_f);
+
+        // The first pair carries the native Value (not a stringified canonical).
+        match &ek_i.0[0].1 {
+            Value::I64(42) => {}
+            other => panic!("expected I64(42) in EntityKey, got {:?}", other),
+        }
+        match &ek_f.0[0].1 {
+            Value::F64(f) if *f == 42.0 => {}
+            other => panic!("expected F64(42.0) in EntityKey, got {:?}", other),
+        }
+    }
 }
