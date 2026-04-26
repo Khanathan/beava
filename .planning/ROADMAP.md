@@ -537,6 +537,15 @@ Per-instance throughput ceiling at v0 ship time: ~470–520k EPS for simple-frau
 
 **Why this matters:** "Can Beava handle 1M events per second" is the most common ship-readiness question users ask. We need a reproducible, defensible answer for both the curl/Rust path AND the Python path — not just the apply-thread microbench number from `criterion`. Without the Python harness the marketed number is misleading because most users will go through the SDK.
 
+**Plans:** 5 plans
+
+Plans:
+- [ ] 19-01-PLAN.md — blast_shape module: 4-shape Pool=N builder + Zipfian sampler + 10 unit/property tests (Wave 1)
+- [ ] 19-02-PLAN.md — bench-v18 integration: --total-events / --blast-shape / --isolation-mode + receiver-flips-stop in continuous AND burst paths; cherry-pick stash@{0} (Wave 2)
+- [ ] 19-03-PLAN.md — Python multi-process harness at python/benches/blast.py + wheel exclude (Wave 1)
+- [ ] 19-04-PLAN.md — criterion microbench for blast_shape + 6 baseline rows in perf-baselines.md (Wave 2)
+- [ ] 19-05-PLAN.md — throughput run + ledger ## 1M-event blast section + VERIFICATION + SUMMARY (Wave 3)
+
 ### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
 **Status:** Planned post Phase 19 (added 2026-04-26; push/get API audit scope folded in 2026-04-26).
