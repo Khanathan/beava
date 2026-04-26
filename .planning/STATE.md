@@ -19,7 +19,7 @@ progress:
 **Requirements:** `.planning/REQUIREMENTS.md`
 **Milestone:** v0 (first public OSS cut on beava.dev)
 **Created:** 2026-04-22
-**Last revised:** 2026-04-26 (Plan 18-12 landed — Arc<str> event_name eliminates per-push String alloc; EPS at p=16/pd=256 +33-44% across json/msgpack; only continuous pipelining + cleanup remain in Phase 18)
+**Last revised:** 2026-04-26 (Plan 18-12 + continuous pipelining both landed — bench-v18 now defaults to split sender/receiver Semaphore-gated continuous load; 3-7× tighter EPS variance vs burst mode; Phase 18 wrap items remaining: SUMMARY + verification + worktree archival decision)
 
 ## Core Value
 
@@ -27,9 +27,9 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. ALL 6 in-scope plans landed; only continuous pipelining + cleanup remain.**
+**Phase 18 — Redis-shaped hand-rolled hot path. ALL plans landed + continuous pipelining landed; only Phase 18 wrap (SUMMARY + verification + worktree archival decision) remains.**
 
-### Landed and merged on `v2/greenfield` (HEAD `adaa66e`):
+### Landed and merged on `v2/greenfield` (HEAD `a809d04`):
 
 - **Plan 18-09** — msgpack-on-TCP (CT_MSGPACK), Row::Deserialize impl, WAL v=2 binary records
 - **Plan 18-10** — hand-rolled envelope parsers: `parse_msgpack_envelope` (33 ns / 57× faster), `parse_json_envelope` (77 ns / 7.6× faster), `BeavaValueVisitor` direct Row deserialize
@@ -41,22 +41,24 @@ Feature authoring as composable Python code that ships to production unchanged. 
 - **`TRACE_AGG_TIMING` env var split** so outer trace doesn't include inner eprintln cost
 - **bench-v18 `--pipeline-depth N` flag** — burst pipelining baseline; 6-8× EPS lift on M4 loopback at p=16/pd=256
 
-### Queued (last item before Phase 18 wrap):
+### Phase 18 wrap (still TBD):
 
-- **Continuous pipelining for bench-v18** — replace burst send-N/read-N with split sender/receiver + tokio Semaphore; constant load on apply thread (no sawtooth gaps). ~120 LoC in `crates/beava-bench/src/bin/beava-bench-v18.rs` Transport::Tcp branch around lines 540-610. Expected: collapse cross-batch idle bubbles; lift sustained EPS above current 462k/487k ceiling.
+- **Phase 18 SUMMARY.md** — overall phase wrap covering 18-09, 18-10, 18-11, 18-04.7, 18-04.8, 18-12, plus continuous pipelining
+- **Phase 18 verification** — `/gsd-verify-work 18` against the phase goal
+- **`phase-13.3-lockless-apply` worktree archival decision** — delete vs rename to `archived/phase-13.3-rejected` (Phase 13.3 REJECTED 2026-04-26 per architectural decision)
 
 ### Architectural decision LOCKED 2026-04-26:
 
 **Phase 13.3 (in-process apply sharding via lockless RefCell + LocalSet) is REJECTED.** Beava commits to single-threaded data plane forever. Per-instance throughput ceiling = single apply thread (~1M EPS for simple counters, ~400k for medium aggregations on Linux Xeon post-current optimizations). For higher aggregate throughput, users run **multiple Beava instances** sharded at the entity-key level (Redis-cluster pattern). Cross-shard queries within a process are explicitly avoided.
 
-### Headline numbers (M4 loopback, post-merge of 18-12, commit `adaa66e`):
+### Headline numbers (M4 loopback, post-merge of 18-12 + continuous pipelining, commit `a809d04`):
 
 - `parse_msgpack_envelope` microbench: **33.4 ns**
 - `parse_json_envelope` microbench: **77.1 ns**
 - agg stage (clean trace): **500 ns** (was 3,191 ns at start of phase)
 - TOTAL push (clean trace, p=4/pd=64): **888 ns** (was 5,154 ns at start of phase) — **5.8× faster**
 - Apply-thread theoretical max at p50 cycle: ~1.13M EPS single-thread
-- Best observed EPS: **462k (json) / 487k (msgpack)** at p=16/pd=256 — bench-side bursty load is the next wall (continuous pipelining is the queued unlock)
+- Best-of-3 EPS at p=16/pd=256 (continuous pipelining mode): **mean 375k json / 400k msgpack** with 3-7× tighter variance than burst mode. Burst-mode upper-tail EPS (462k/487k) still observed but with much wider variance band; continuous is the new default
 
 ## Shipped & Merged to `v2/greenfield`
 
@@ -91,13 +93,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Remaining Work (priority order)
 
-### Phase 18 (one item left):
+### Phase 18 (all data-plane items landed):
 
 | # | Task | Where | Status |
 |---|------|-------|--------|
 | 1 | **Plan 18-04.8** — body→Row migration from apply thread to IoPool worker + IoPool runtime timing trace | DONE 2026-04-26 (commits 9a1daec/6ed8b97/677d3ea on v2/greenfield). Apply parse 193 → 77 ns (-60%); apply TOTAL 974 → 941 ns; IoPool parse_body=4,265 ns mean; EPS p=16/pd=256 json 346k / msgpack 357k; new TRACE_APPLY io trace lives under same BEAVA_TRACE_APPLY_TIMING var | ✅ done |
 | 2 | **Plan 18-12** — `Arc<str>` event_name to kill bookkeeping String alloc | DONE 2026-04-26 (commits e96c59b → adaa66e on v2/greenfield). EPS at p=16/pd=256 json 346k → 462k (+33.5%), msgpack 357k → 487k (+36.4%); EPS at p=4/pd=64 json 165k → 239k (+44.5%); apply TOTAL 941 → 888 ns. Trace per-stage mean held flat (mutex+insert dominates bookkeeping stage; ~50-100 ns alloc savings absorbed by ±25 ns variance band); EPS lift came from removed allocator pressure / cache pollution that in-window trace doesn't capture | ✅ done |
-| 3 | **Continuous pipelining for bench-v18** — split sender/receiver + Semaphore; replaces burst pattern | Queued (bundled with 18-12 dispatch); ~120 LoC | ⏳ queued |
+| 3 | **Continuous pipelining for bench-v18** — split sender/receiver + Semaphore; replaces burst pattern | DONE 2026-04-26 (commit a809d04 on v2/greenfield). `--continuous-pipeline` flag (default true); tokio::io::split + Semaphore + mpsc<Instant> for FIFO ack-pairing + latency batching to mirror burst's lock amortization. Best-of-3: json 322k → 375k mean (+16%, **7× tighter variance**), msgpack 374k → 400k mean (+7%, **3× tighter variance**). Continuous reports REAL per-event wall-clock latency vs burst's amortized batch_total/N | ✅ done |
 
 ### Phase 18 cleanup (after the above land):
 
