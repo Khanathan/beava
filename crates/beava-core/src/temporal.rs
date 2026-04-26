@@ -38,6 +38,13 @@ pub type EntityKey = Vec<u8>;
 /// retention-sweep (D-05) can compare against `now_wall_ms` without walking
 /// the WAL. 8 bytes of overhead per version is acceptable for v0 — beats
 /// maintaining a separate side-index.
+// Plan 18-11 D-1: Row.0 is now SmallVec<[(CompactString, Value); 8]> with
+// inline storage for ≤8 fields — about 32 bytes per inline entry → ~256
+// bytes of inline payload + Vec header. The MvccVersion::Live variant holds
+// a Row inline because boxing would defeat the SmallVec inline-no-alloc
+// design (one heap alloc per version vs zero). Accept the large-variant
+// warning here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum MvccVersion {
     /// A live upsert at this LSN.

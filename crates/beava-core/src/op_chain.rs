@@ -189,7 +189,8 @@ impl OpChain {
                     // field, take its value, build a new Row.
                     let mut new_row = Row::new();
                     for f in fields {
-                        if let Some(idx) = row.0.iter().position(|(k, _)| k.as_str() == f.as_str()) {
+                        if let Some(idx) = row.0.iter().position(|(k, _)| k.as_str() == f.as_str())
+                        {
                             let (_, v) = row.0.remove(idx);
                             new_row = new_row.with_field(f, v);
                         }

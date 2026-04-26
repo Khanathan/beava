@@ -167,7 +167,11 @@ impl ApplyShard {
             WireRequest::HttpGetSingle { feature, key } => {
                 let trace_apply =
                     std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
-                let t0 = if trace_apply { Some(std::time::Instant::now()) } else { None };
+                let t0 = if trace_apply {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let resp =
                     crate::runtime_core_glue::dispatch_get_single_sync(&self.state, &feature, &key);
                 if let Some(t0_inst) = t0 {
@@ -222,9 +226,21 @@ impl ApplyShard {
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
         // SPIKE: per-stage apply-path timing (env-gated, success-path-only).
-        let trace_apply =
-            std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
-        let t0 = if trace_apply { Some(Instant::now()) } else { None };
+        let trace_apply = std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+        let t0 = if trace_apply {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        // SPIKE: inter-event gap (time since previous push completed on this thread).
+        thread_local! {
+            static LAST_PUSH_END: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+        }
+        let gap = if trace_apply {
+            LAST_PUSH_END.with(|cell| cell.take()).map(|t| t.elapsed())
+        } else {
+            None
+        };
 
         let registry_version = self.state.dev_agg.registry.version() as u32;
 
@@ -274,7 +290,7 @@ impl ApplyShard {
         let t_lookup = t0.map(|t| t.elapsed());
 
         // 3. Schema validate against Row.fields directly.
-        if !validate_row_against_descriptor(&*descriptor, &row) {
+        if !validate_row_against_descriptor(&descriptor, &row) {
             return GlueResponse::PushError {
                 code: "invalid_event",
                 registry_version,
@@ -406,11 +422,24 @@ impl ApplyShard {
             Some(wal_b),
             Some(wal_a),
             Some(agg),
-        ) = (t0, t_parse, t_lookup, t_validate, t_wal_build, t_wal_append, t_agg)
-        {
+        ) = (
+            t0,
+            t_parse,
+            t_lookup,
+            t_validate,
+            t_wal_build,
+            t_wal_append,
+            t_agg,
+        ) {
             let total = t0_inst.elapsed();
+            // gap_ns = nanoseconds since previous push completed; "first" for the very first push on this thread.
+            let gap_str = match gap {
+                Some(g) => format!("{}", g.as_nanos()),
+                None => "first".to_string(),
+            };
             eprintln!(
-                "TRACE_APPLY ns push: parse={} lookup={} validate={} wal_build={} wal_append={} agg={} bookkeeping={} TOTAL={}",
+                "TRACE_APPLY ns push: gap={} parse={} lookup={} validate={} wal_build={} wal_append={} agg={} bookkeeping={} TOTAL={}",
+                gap_str,
                 parse.as_nanos(),
                 (lookup - parse).as_nanos(),
                 (validate - lookup).as_nanos(),
@@ -420,6 +449,9 @@ impl ApplyShard {
                 (total - agg).as_nanos(),
                 total.as_nanos()
             );
+        }
+        if trace_apply {
+            LAST_PUSH_END.with(|cell| cell.set(Some(Instant::now())));
         }
 
         GlueResponse::PushAck {

@@ -38,8 +38,8 @@ use crate::agg_op::AggOp;
 use crate::row::{Row, Value};
 use compact_str::CompactString;
 use fxhash::FxBuildHasher;
-use hashbrown::HashMap;
 use hashbrown::hash_map::RawEntryMut;
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -63,9 +63,10 @@ impl PartialEq for EntityKey {
         if self.0.len() != other.0.len() {
             return false;
         }
-        self.0.iter().zip(other.0.iter()).all(|((ak, av), (bk, bv))| {
-            ak == bk && entity_value_eq(av, bv)
-        })
+        self.0
+            .iter()
+            .zip(other.0.iter())
+            .all(|((ak, av), (bk, bv))| ak == bk && entity_value_eq(av, bv))
     }
 }
 
@@ -211,10 +212,7 @@ impl EntityKey {
                 Some(Value::Bool(b)) => b.to_string().into(),
                 Some(Value::Datetime(ms)) => ms.to_string().into(),
             };
-            pairs.push((
-                CompactString::from(key.as_str()),
-                Value::Str(canonical),
-            ));
+            pairs.push((CompactString::from(key.as_str()), Value::Str(canonical)));
         }
         Some(EntityKey(pairs))
     }
@@ -329,13 +327,19 @@ mod tests {
     /// Build a single-key EntityKey from a user_id string (test helper).
     fn make_user_key(user_id: &str) -> EntityKey {
         let pair: (CompactString, Value) = ("user_id".into(), Value::Str(user_id.into()));
-        EntityKey(SmallVec::from_buf_and_len([pair, ("".into(), Value::Null)], 1))
+        EntityKey(SmallVec::from_buf_and_len(
+            [pair, ("".into(), Value::Null)],
+            1,
+        ))
     }
 
     /// Same but for I64 user_id.
     fn make_user_key_from_i64(n: i64) -> EntityKey {
         let pair: (CompactString, Value) = ("user_id".into(), Value::Str(n.to_string().into()));
-        EntityKey(SmallVec::from_buf_and_len([pair, ("".into(), Value::Null)], 1))
+        EntityKey(SmallVec::from_buf_and_len(
+            [pair, ("".into(), Value::Null)],
+            1,
+        ))
     }
 
     fn count_op_desc() -> AggOpDescriptor {
@@ -617,10 +621,8 @@ mod tests {
 
         // Construction with 1 group key — uses inline SmallVec storage (no heap).
         let pair: (CompactString, Value) = ("user_id".into(), Value::Str("alice".into()));
-        let inline_storage: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf_and_len(
-            [pair, ("".into(), Value::Null)],
-            1,
-        );
+        let inline_storage: SmallVec<[(CompactString, Value); 2]> =
+            SmallVec::from_buf_and_len([pair, ("".into(), Value::Null)], 1);
         let ek = EntityKey(inline_storage);
 
         // Spilled-to-heap check: SmallVec exposes spilled() — true when over inline cap.
@@ -633,8 +635,7 @@ mod tests {
         // 2 group keys also fit inline.
         let pair_a: (CompactString, Value) = ("user_id".into(), Value::Str("a".into()));
         let pair_b: (CompactString, Value) = ("merchant_id".into(), Value::Str("m1".into()));
-        let two: SmallVec<[(CompactString, Value); 2]> =
-            SmallVec::from_buf([pair_a, pair_b]);
+        let two: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf([pair_a, pair_b]);
         let ek2 = EntityKey(two);
         assert!(!ek2.0.spilled(), "2-key EntityKey must use inline storage");
     }
@@ -708,7 +709,10 @@ mod tests {
         }
         match &ek_f.0[0].1 {
             Value::Str(s) if s.as_str() == "42.0" => {}
-            other => panic!("expected Value::Str(\"42.0\") in EntityKey, got {:?}", other),
+            other => panic!(
+                "expected Value::Str(\"42.0\") in EntityKey, got {:?}",
+                other
+            ),
         }
     }
 }

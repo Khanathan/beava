@@ -32,7 +32,7 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
     event_fields.insert("amount".to_string(), FieldType::F64);
     events.insert(
         "Txn".to_string(),
-        EventDescriptor {
+        Arc::new(EventDescriptor {
             name: "Txn".to_string(),
             schema: EventSchema {
                 fields: event_fields,
@@ -44,7 +44,7 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 1,
-        },
+        }),
     );
     let mut derivations = BTreeMap::new();
     let mut derived_fields = BTreeMap::new();
@@ -73,6 +73,7 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
         compiled_chains: BTreeMap::new(),
         compiled_aggregations: BTreeMap::new(),
         feature_index: BTreeMap::new(),
+        aggregations_by_source: std::collections::HashMap::new(),
     }
 }
 
@@ -99,7 +100,17 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
         if let AggOp::Count(state) = &mut op {
             state.n = 100;
         }
-        let key = EntityKey(vec![("user_id".to_string(), format!("user-{i:09}"))]);
+        use beava_core::row::Value;
+        use compact_str::CompactString;
+        use smallvec::SmallVec;
+        let pair: (CompactString, Value) = (
+            "user_id".into(),
+            Value::Str(CompactString::from(format!("user-{i:09}"))),
+        );
+        let key = EntityKey(SmallVec::from_buf_and_len(
+            [pair, ("".into(), Value::Null)],
+            1,
+        ));
         tbl.entities.insert(key, vec![op]);
     }
     tbl

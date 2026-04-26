@@ -270,7 +270,7 @@ impl Row {
     /// used by the Row Deserialize hot path to skip the &str→CompactString
     /// conversion when the key comes typed from `next_key::<CompactString>`.
     pub fn with_field_owned(mut self, field: CompactString, value: Value) -> Self {
-        if let Some(slot) = self.0.iter_mut().find(|(k, _)| k == &field) {
+        if let Some(slot) = self.0.iter_mut().find(|(k, _)| *k == field) {
             slot.1 = value;
         } else {
             self.0.push((field, value));

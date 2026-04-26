@@ -221,7 +221,7 @@ pub async fn execute_push(
     };
 
     // 3. Schema validate.
-    if !validate_body(&*descriptor, &obj) {
+    if !validate_body(&descriptor, &obj) {
         return PushOutcome::Error {
             http_status: StatusCode::BAD_REQUEST,
             code: "invalid_event",

@@ -156,9 +156,9 @@ fn four_op_nodes() -> Vec<OpNode> {
 
 fn four_op_row() -> Row {
     Row::new()
-        .with_field("user_id", Value::Str("u1".to_string()))
+        .with_field("user_id", Value::Str("u1".into()))
         .with_field("amount", Value::I64(1000))
-        .with_field("status", Value::Str("ok".to_string()))
+        .with_field("status", Value::Str("ok".into()))
 }
 
 fn bench_op_chain(c: &mut Criterion) {

@@ -225,10 +225,12 @@ name = "beava-persistence"
 version = "0.1.0"
 dependencies = [
  "beava-core",
+ "compact_str",
  "crc32c",
  "criterion",
  "serde",
  "serde_json",
+ "smallvec",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

@@ -31,7 +31,10 @@ fn test_row_deserialize_no_jsonvalue_no_with_field_clone() {
     // Values are correctly typed (no canonicalisation, no JsonValue).
     assert_eq!(row_json.get("amount"), Some(&Value::F64(99.95)));
     assert_eq!(row_json.get("ts"), Some(&Value::I64(1_714_234_567_000)));
-    assert_eq!(row_json.get("account_id"), Some(&Value::Str("acc_123".into())));
+    assert_eq!(
+        row_json.get("account_id"),
+        Some(&Value::Str("acc_123".into()))
+    );
     assert_eq!(row_json.get("merchant"), Some(&Value::Str("M_ACME".into())));
     assert_eq!(row_json.get("country"), Some(&Value::Str("US".into())));
     assert_eq!(row_json.get("method"), Some(&Value::Str("card".into())));
@@ -70,7 +73,14 @@ fn test_row_deserialize_no_jsonvalue_no_with_field_clone() {
     // Note: Row's PartialEq relies on element-wise equality across the SmallVec.
     // Insertion order may differ between sonic-rs and rmp_serde; compare via
     // get() on each known field instead.
-    for f in &["amount", "ts", "account_id", "merchant", "country", "method"] {
+    for f in &[
+        "amount",
+        "ts",
+        "account_id",
+        "merchant",
+        "country",
+        "method",
+    ] {
         assert_eq!(
             row_json.get(f),
             row_msgpack.get(f),
@@ -108,8 +118,14 @@ fn test_row_serialize_yields_flat_object_keys() {
     // Key names must appear at top level (we don't assert the value tagging
     // because Value's auto-derived enum serialise is externally-tagged —
     // this is pre-existing and orthogonal to Plan 18-11).
-    assert!(json.contains("\"a\""), "serialised JSON must contain key 'a'");
-    assert!(json.contains("\"b\""), "serialised JSON must contain key 'b'");
+    assert!(
+        json.contains("\"a\""),
+        "serialised JSON must contain key 'a'"
+    );
+    assert!(
+        json.contains("\"b\""),
+        "serialised JSON must contain key 'b'"
+    );
 }
 
 /// Task 11.7 contract: Registry exposes Arc<EventDescriptor> lookup so
@@ -141,12 +157,7 @@ fn test_registry_get_event_descriptor_returns_arc() {
         tolerate_delay_ms: None,
         registered_at_version: 0,
     };
-    registry.apply_registration(
-        vec![PayloadNode::Event(event)],
-        vec![],
-        vec![],
-        vec![],
-    );
+    registry.apply_registration(vec![PayloadNode::Event(event)], vec![], vec![], vec![]);
 
     let _ = OutputKind::Event; // keep import alive
 
@@ -178,9 +189,7 @@ fn test_registry_get_event_descriptor_returns_arc() {
 fn test_per_source_aggregation_index_is_populated() {
     use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
     use beava_core::agg_op::{AggKind, AggOpDescriptor};
-    use beava_core::registry::{
-        DerivationDescriptor, EventDescriptor, OutputKind, Registry,
-    };
+    use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
     use beava_core::registry_diff::PayloadNode;
     use beava_core::schema::{DerivedSchema, EventSchema, FieldType};
     use std::collections::BTreeMap;
@@ -277,9 +286,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
     use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
     use beava_core::agg_op::{AggKind, AggOpDescriptor};
     use beava_core::agg_state_table::AggStateTable;
-    use beava_core::registry::{
-        DerivationDescriptor, EventDescriptor, OutputKind, Registry,
-    };
+    use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
     use beava_core::registry_diff::PayloadNode;
     use beava_core::schema::{DerivedSchema, EventSchema, FieldType};
     use beava_core::snapshot_body::SnapshotBody;

@@ -249,7 +249,7 @@ fn build_events() -> Vec<(String, Row, i64, u64)> {
             let amount = ((i * 37) % 1000) as f64;
             let t = (i * 10) as i64;
             let row = Row::new()
-                .with_field("user_id", Value::Str(uid))
+                .with_field("user_id", Value::Str(uid.into()))
                 .with_field("amount", Value::F64(amount))
                 .with_field("status", Value::Str("ok".into()));
             ("Transaction".to_string(), row, t, i)

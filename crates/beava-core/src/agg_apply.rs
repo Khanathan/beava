@@ -65,7 +65,11 @@ pub fn apply_event_to_aggregations(
 ) {
     // SPIKE: per-substage timing of the agg hot path.
     let trace = std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
-    let t0 = if trace { Some(std::time::Instant::now()) } else { None };
+    let t0 = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     let descs = registry.compiled_aggregations_for_source(source_name);
     let t_registry = t0.map(|t| t.elapsed());
@@ -350,9 +354,8 @@ mod tests {
             .get("UserCount")
             .expect("UserCount table must exist");
         let key = crate::agg_state_table::EntityKey({
-            let mut sv: smallvec::SmallVec<
-                [(compact_str::CompactString, Value); 2],
-            > = smallvec::SmallVec::new();
+            let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
+                smallvec::SmallVec::new();
             sv.push(("user_id".into(), Value::Str("alice".into())));
             sv
         });
@@ -436,9 +439,8 @@ mod tests {
         // Either: no entry for alice, OR alice's count == 0.
         let count = state_tables.get("UserCount").and_then(|t| {
             let key = crate::agg_state_table::EntityKey({
-                let mut sv: smallvec::SmallVec<
-                    [(compact_str::CompactString, Value); 2],
-                > = smallvec::SmallVec::new();
+                let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
+                    smallvec::SmallVec::new();
                 sv.push(("user_id".into(), Value::Str("alice".into())));
                 sv
             });
@@ -466,8 +468,8 @@ mod tests {
 
         let events: Vec<(Row, i64)> = (0..5)
             .map(|i| {
-                let row = Row::new()
-                    .with_field("user_id", Value::Str(format!("user_{}", i % 2).into()));
+                let row =
+                    Row::new().with_field("user_id", Value::Str(format!("user_{}", i % 2).into()));
                 (row, 1000 + i)
             })
             .collect();
@@ -519,9 +521,8 @@ mod tests {
 
         let table = state_tables.get("UserStats").expect("UserStats must exist");
         let key = crate::agg_state_table::EntityKey({
-            let mut sv: smallvec::SmallVec<
-                [(compact_str::CompactString, Value); 2],
-            > = smallvec::SmallVec::new();
+            let mut sv: smallvec::SmallVec<[(compact_str::CompactString, Value); 2]> =
+                smallvec::SmallVec::new();
             sv.push(("user_id".into(), Value::Str("alice".into())));
             sv
         });

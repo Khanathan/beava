@@ -28,7 +28,7 @@ fn row_geo(lat: f64, lon: f64) -> Row {
 }
 
 fn row_str(field: &str, v: &str) -> Row {
-    Row::new().with_field(field, Value::Str(v.to_string()))
+    Row::new().with_field(field, Value::Str(v.into()))
 }
 
 // ─── buffer/histogram/update ─────────────────────────────────────────────────

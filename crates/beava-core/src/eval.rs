@@ -403,10 +403,7 @@ mod tests {
 
     #[test]
     fn eval_literal_str() {
-        assert_eq!(
-            eval(&lit_str("hi"), &Row::new()),
-            Value::Str("hi".into())
-        );
+        assert_eq!(eval(&lit_str("hi"), &Row::new()), Value::Str("hi".into()));
     }
 
     /// `BareIdent` is the type argument to `cast(x, float)`. The evaluator

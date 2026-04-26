@@ -22,6 +22,9 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "time", "io-util
 criterion = { workspace = true }
 beava-core = { path = "../beava-core" }
 serde_json = { workspace = true }
+# Plan 18-11: bench needs CompactString + SmallVec to construct EntityKey.
+compact_str = { workspace = true }
+smallvec = { workspace = true }
 
 [[bench]]
 name = "phase6_wal"
