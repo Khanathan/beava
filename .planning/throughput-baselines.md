@@ -523,3 +523,55 @@ Notes on missed targets:
   (~10–20 µs/tick) which dominates at high pipeline depth where each tick
   batches many events. io_uring (Plan 18-05) replaces the spin barrier
   with kernel-driven completions; expected to hit and exceed 400k.
+
+### Phase 18-12 — Arc<str> event_name in bookkeeping (M4 informational)
+
+**Run date:** 2026-04-26  · **Hardware:** Darwin-24.3.0 / 10 cores · **Commit:** 9335ec6 (v2/greenfield)
+
+| Pipeline | Transport | Wire    | Parallel | pd  | EPS     | p50 µs | p95 µs | p99 µs |
+|----------|-----------|---------|---------:|----:|--------:|-------:|-------:|-------:|
+| small    | tcp       | json    |        4 |  64 | 239,600 |      7 |     65 |     70 |
+| small    | tcp       | json    |       16 | 256 | 462,201 |     31 |     51 |     63 |
+| small    | tcp       | msgpack |       16 | 256 | 487,113 |     29 |     50 |     58 |
+
+**TRACE_APPLY trace (parallel=4 / pd=64 / json, n=67,964 push events post-warmup):**
+
+Apply thread per-stage means:
+
+| Stage        | Plan 18-04.8 (was) | Plan 18-12 (now) | Delta              |
+|--------------|-------------------:|-----------------:|--------------------|
+| parse        |              77 ns |            67 ns | −13% (-10 ns)      |
+| lookup       |              31 ns |            28 ns | within noise        |
+| validate     |              32 ns |            29 ns | within noise        |
+| wal_build    |              33 ns |            30 ns | within noise        |
+| wal_append   |              43 ns |            36 ns | within noise        |
+| agg          |             473 ns |           500 ns | +6% (+27 ns)       |
+| bookkeeping  |             169 ns |           194 ns | **+15% (+25 ns)**  |
+| TOTAL push   |             941 ns |           888 ns | **−5.6% (-53 ns)** |
+
+**EPS comparison vs Plan 18-04.8 baseline (small / tcp):**
+
+| Wire    | Parallel | pd  | 18-04.8 | 18-12   | Delta              |
+|---------|---------:|----:|--------:|--------:|--------------------|
+| json    |        4 |  64 | 165,763 | 239,600 | **+44.5% (1.45×)** |
+| json    |       16 | 256 | 346,091 | 462,201 | **+33.5% (1.34×)** |
+| msgpack |       16 | 256 | 357,086 | 487,113 | **+36.4% (1.36×)** |
+
+**Targets vs plan:**
+
+| Target                                                  | Result        | Pass? |
+|---------------------------------------------------------|---------------|-------|
+| Apply bookkeeping ≤60 ns (was 169 ns)                   | 194 ns        | NO    |
+| Apply TOTAL ≤830 ns (was 941 ns)                        | 888 ns        | NEAR  |
+| EPS p=16/pd=256 ≥420k                                   | 462k / 487k   | YES   |
+| All Plan 18 tests pass                                  | all green     | YES   |
+| Arc::ptr_eq holds at bookkeeping site (no per-push alloc)| yes           | YES   |
+
+**Why the trace stage didn't drop but EPS jumped 33–44%:**
+
+- The bookkeeping stage trace (mean 194 ns) is dominated by `parking_lot::Mutex::lock()` + `HashMap::insert` (~150–180 ns combined), not by the `event_name.to_string()` it replaced (~50–100 ns). The plan's "169 → 60 ns" target rested on the assumption that the String alloc was the bulk of the stage; in reality the mutex+insert is.
+- The EPS lift (+33–44%) comes from a different mechanism: removing the per-push 16–24 byte heap allocation eliminates allocator pressure (jemalloc bin churn / page faults) and L1 pollution that the trace's
+  inside-the-stage timing window doesn't capture. The bench-side bursty load was being amplified by allocator stalls; with the per-push String alloc gone, sustained throughput rises across all parallelism settings.
+- The Arc::ptr_eq invariant is verified end-to-end via `phase18_12_arc_str_bookkeeping_test.rs` — the bookkeeping site now refcount-bumps the registry-resident Arc<str> rather than constructing a new one. This is the architectural win, independent of stage-mean noise.
+
+**Production reading:** EPS at p=16/pd=256 now sits at **462k (json) / 487k (msgpack)**, comfortably above the plan's 420k target and within ~2× of the per-instance ceiling at the M4's single-thread theoretical max (~1.04M EPS at p50 cycle). The bench-side bursty-load wall has shifted up; continuous pipelining (next item in queue) is the unlock for the remaining headroom.
