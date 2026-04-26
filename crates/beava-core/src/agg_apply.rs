@@ -21,9 +21,7 @@
 //! In Phase 5 it is ignored (prefixed `_event_id`).  Dev-endpoint callers pass a
 //! monotonic counter (0, 1, 2, …).
 
-use std::collections::BTreeMap;
-
-use crate::agg_state_table::{AggStateTable, EntityKey, StateTables};
+use crate::agg_state_table::{EntityKey, StateTables};
 use crate::registry::Registry;
 use crate::row::Row;
 

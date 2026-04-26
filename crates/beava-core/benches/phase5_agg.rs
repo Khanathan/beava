@@ -9,7 +9,7 @@
 use beava_core::agg_apply::apply_event_to_aggregations;
 use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
 use beava_core::agg_op::{AggKind, AggOp, AggOpDescriptor};
-use beava_core::agg_state_table::{AggStateTable, StateTables};
+use beava_core::agg_state_table::StateTables;
 use beava_core::agg_windowed::WindowedOp;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
 use beava_core::registry_diff::PayloadNode;

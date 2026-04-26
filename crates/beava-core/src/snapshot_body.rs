@@ -17,7 +17,7 @@
 //! (which can hold `Arc<Expr>`) live on the registry; state is plain POD.
 
 use crate::agg_op::AggOp;
-use crate::agg_state_table::{AggStateTable, EntityKey, StateTables};
+use crate::agg_state_table::{EntityKey, StateTables};
 use crate::registry::{DerivationDescriptor, EventDescriptor, RegistryInner, TableDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
