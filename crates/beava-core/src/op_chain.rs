@@ -185,13 +185,16 @@ impl OpChain {
                 }
 
                 CompiledOp::Select(fields) => {
-                    let mut new_map = BTreeMap::new();
+                    // Plan 18-11: Row.0 is SmallVec — find each requested
+                    // field, take its value, build a new Row.
+                    let mut new_row = Row::new();
                     for f in fields {
-                        if let Some(v) = row.0.remove(f) {
-                            new_map.insert(f.clone(), v);
+                        if let Some(idx) = row.0.iter().position(|(k, _)| k.as_str() == f.as_str()) {
+                            let (_, v) = row.0.remove(idx);
+                            new_row = new_row.with_field(f, v);
                         }
                     }
-                    row = Row(new_map);
+                    row = new_row;
                 }
 
                 CompiledOp::Drop(fields) => {
@@ -204,12 +207,15 @@ impl OpChain {
                     // Apply all renames atomically: collect values, then insert under new names.
                     let mut renames: Vec<(String, String, Value)> = Vec::new();
                     for (old, new) in mapping {
-                        if let Some(v) = row.0.remove(old) {
+                        if let Some(idx) =
+                            row.0.iter().position(|(k, _)| k.as_str() == old.as_str())
+                        {
+                            let (_, v) = row.0.remove(idx);
                             renames.push((old.clone(), new.clone(), v));
                         }
                     }
                     for (_old, new, v) in renames {
-                        row.0.insert(new, v);
+                        row = row.with_field(&new, v);
                     }
                 }
 
@@ -222,21 +228,21 @@ impl OpChain {
 
                 CompiledOp::Cast(entries) => {
                     for (field, target) in entries {
-                        if let Some(field_val) = row.0.get(field).cloned() {
+                        if let Some(field_val) = row.get(field).cloned() {
                             let args = [field_val, target.as_value_str()];
                             let cast_result = lookup_builtin("cast")
                                 .map(|b| (b.eval)(&args))
                                 .unwrap_or(Value::Null);
-                            row.0.insert(field.clone(), cast_result);
+                            row = row.with_field(field, cast_result);
                         }
                     }
                 }
 
                 CompiledOp::Fillna(defaults) => {
                     for (field, default_val) in defaults {
-                        if let Some(v) = row.0.get(field) {
+                        if let Some(v) = row.get(field) {
                             if matches!(v, Value::Null) {
-                                row.0.insert(field.clone(), default_val.clone());
+                                row = row.with_field(field, default_val.clone());
                             }
                         }
                     }

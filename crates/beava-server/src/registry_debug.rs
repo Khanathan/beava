@@ -174,7 +174,7 @@ async fn post_dev_apply_ops(
         Some(updated_row) => {
             let mut obj = serde_json::Map::new();
             for (field, v) in updated_row.0 {
-                obj.insert(field, value_to_json(v));
+                obj.insert(field.into_string(), value_to_json(v));
             }
             (
                 StatusCode::OK,

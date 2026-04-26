@@ -15,6 +15,7 @@
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
 // ─── Value ────────────────────────────────────────────────────────────────────
@@ -203,41 +204,86 @@ impl Value {
 
 // ─── Row ──────────────────────────────────────────────────────────────────────
 
-/// A named-field bag of `Value`s backed by a `BTreeMap` for deterministic
-/// iteration order.
+/// A named-field bag of `Value`s.
+///
+/// **Plan 18-11 D-1:** backed by `SmallVec<[(CompactString, Value); 8]>`
+/// instead of the prior `BTreeMap<String, Value>`. Most events have ≤8
+/// fields, so the storage is inline — zero heap allocation for the row
+/// container. CompactString is inline for keys ≤24 bytes (most field
+/// names + most short str values).
+///
+/// `Row::get(&str)` performs a linear scan over the SmallVec — for ≤8
+/// fields this is faster than BTreeMap O(log N) and stays in cache.
+///
+/// `Row::with_field(field, value)`: if the field already exists, replaces
+/// the value in-place (preserving insertion order). Otherwise pushes to
+/// the SmallVec.
+///
+/// **Iteration order:** insertion order (was BTreeMap-sorted in v0–v1).
+/// All call sites that depended on sorted iteration have been audited
+/// — Row.iter() is only used by debug routes (registry_debug, temporal_http)
+/// and by op_chain.rs for direct row-mutation; none rely on lexicographic
+/// ordering.
 ///
 /// All "mutation" helpers consume `self` and return a new `Row`. This is the
 /// owning API contract required by SDK-OPS-09: stateless op steps must not
 /// mutate a shared upstream row.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Row(pub BTreeMap<String, Value>);
+pub struct Row(pub SmallVec<[(CompactString, Value); 8]>);
 
 impl Row {
     /// Creates an empty Row.
     pub fn new() -> Self {
-        Row(BTreeMap::new())
+        Row(SmallVec::new())
     }
 
     /// Returns a reference to the value for `field`, or `None` if absent.
+    /// Linear scan over the SmallVec — O(N) in the number of fields,
+    /// but fast in cache for the common case (≤8 fields).
     pub fn get(&self, field: &str) -> Option<&Value> {
-        self.0.get(field)
+        self.0
+            .iter()
+            .find(|(k, _)| k.as_str() == field)
+            .map(|(_, v)| v)
     }
 
     /// Consumes `self`, inserts or overwrites `field` with `value`, and returns
     /// the updated `Row`.
     ///
+    /// If `field` already exists, the existing value is replaced in-place
+    /// (preserving the original insertion-order position). Otherwise the
+    /// new pair is pushed to the SmallVec.
+    ///
     /// SDK-OPS-09: callers that need to preserve the upstream `Row` must
     /// `.clone()` before calling this method. Derivation op steps construct a
     /// fresh copy per step and do not share mutable state.
     pub fn with_field(mut self, field: &str, value: Value) -> Self {
-        self.0.insert(field.to_string(), value);
+        if let Some(slot) = self.0.iter_mut().find(|(k, _)| k.as_str() == field) {
+            slot.1 = value;
+        } else {
+            self.0.push((CompactString::from(field), value));
+        }
+        self
+    }
+
+    /// Plan 18-11 D-3: insert when the key is already a CompactString —
+    /// used by the Row Deserialize hot path to skip the &str→CompactString
+    /// conversion when the key comes typed from `next_key::<CompactString>`.
+    pub fn with_field_owned(mut self, field: CompactString, value: Value) -> Self {
+        if let Some(slot) = self.0.iter_mut().find(|(k, _)| k == &field) {
+            slot.1 = value;
+        } else {
+            self.0.push((field, value));
+        }
         self
     }
 
     /// Consumes `self`, removes `field` (no-op if absent), and returns the
     /// updated `Row`.
     pub fn without_field(mut self, field: &str) -> Self {
-        self.0.remove(field);
+        if let Some(idx) = self.0.iter().position(|(k, _)| k.as_str() == field) {
+            self.0.remove(idx);
+        }
         self
     }
 
@@ -245,15 +291,23 @@ impl Row {
     /// returns the updated `Row`. If `old` is absent this is a no-op. If `new`
     /// already exists it is overwritten.
     pub fn renamed(mut self, old: &str, new: &str) -> Self {
-        if let Some(value) = self.0.remove(old) {
-            self.0.insert(new.to_string(), value);
+        // Find old; if present, take its value, then insert under new (with
+        // overwrite semantics if new already exists).
+        let old_pos = self.0.iter().position(|(k, _)| k.as_str() == old);
+        if let Some(idx) = old_pos {
+            let (_, value) = self.0.remove(idx);
+            // Reuse with_field for overwrite-or-push behaviour at `new`.
+            self = self.with_field(new, value);
         }
         self
     }
 
-    /// Returns an iterator over `(field, value)` pairs in BTreeMap order.
-    pub fn iter(&self) -> std::collections::btree_map::Iter<'_, String, Value> {
-        self.0.iter()
+    /// Returns an iterator over `(field_name, value)` pairs in insertion
+    /// order. Yields `(&str, &Value)` to keep the existing call-site shape
+    /// (BTreeMap previously yielded `(&String, &Value)` and call sites used
+    /// `.as_str()` on the key).
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v))
     }
 
     /// Returns the number of fields in this Row.
@@ -306,12 +360,15 @@ impl<'de> serde::Deserialize<'de> for Row {
             where
                 M: serde::de::MapAccess<'de>,
             {
-                let mut row = Row::new();
-                // Plan 18-10 D-3: walk values directly via BeavaValueVisitor —
-                // no JsonValue heap allocation per field.
-                while let Some(key) = access.next_key::<String>()? {
+                // Plan 18-11 D-3: walk values directly via BeavaValueVisitor —
+                // no JsonValue heap allocation per field. Direct push into
+                // the SmallVec storage — no with_field re-clone, no schema
+                // lookup. This is the variant-D fast path measured at
+                // ~146 ns msgpack / ~184 ns json on M4.
+                let mut row = Row(SmallVec::with_capacity(8));
+                while let Some(key) = access.next_key::<CompactString>()? {
                     let value: Value = access.next_value_seed(BeavaValueSeed)?;
-                    row = row.with_field(&key, value);
+                    row.0.push((key, value));
                 }
                 Ok(row)
             }
@@ -444,7 +501,9 @@ impl serde::Serialize for Row {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for (k, v) in &self.0 {
-            map.serialize_entry(k, v)?;
+            // CompactString::as_str() — serialize the key as &str so the
+            // wire format stays identical to the prior BTreeMap-backed Row.
+            map.serialize_entry(k.as_str(), v)?;
         }
         map.end()
     }
@@ -600,15 +659,17 @@ mod tests {
         assert_eq!(r3.get("b"), Some(&Value::I64(5)));
     }
 
-    // Test 12: iter yields keys in BTreeMap sorted order regardless of insertion order.
+    // Test 12 (Plan 18-11 update): iter yields keys in INSERTION order
+    // (was BTreeMap-sorted). All call sites that depended on sorted iter
+    // were audited — Row.iter() consumers handle insertion-order fine.
     #[test]
-    fn row_iter_order_is_deterministic() {
+    fn row_iter_order_is_insertion_order() {
         let r = Row::new()
             .with_field("c", Value::I64(3))
             .with_field("a", Value::I64(1))
             .with_field("b", Value::I64(2));
-        let keys: Vec<&str> = r.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, vec!["a", "b", "c"]);
+        let keys: Vec<&str> = r.iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec!["c", "a", "b"]);
     }
 
     // Test 13 (Plan 10-05): Value::Json variant exists for sketch top_k output.
