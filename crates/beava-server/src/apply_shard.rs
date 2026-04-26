@@ -20,6 +20,7 @@
 use crate::register::{RegisterOutcome, RegisterPayload};
 use crate::runtime_core_glue::GlueResponse;
 use crate::AppState;
+use beava_core::row::Row;
 use beava_runtime_core::wal_buffer::WalBufferRing;
 use beava_runtime_core::wal_lsn::WalLsn;
 use beava_runtime_core::wire_request::WireRequest;
@@ -60,10 +61,32 @@ impl ApplyShard {
     /// No `.await`, no tokio, no mpsc. The WAL append uses
     /// `WalBufferRing::append` (lock-free memcpy + atomic position bump).
     pub fn dispatch_wire_request_sync(&self, req: WireRequest) -> Vec<GlueResponse> {
-        vec![self.dispatch_one(req)]
+        vec![self.dispatch_one(req, None)]
     }
 
-    fn dispatch_one(&self, req: WireRequest) -> GlueResponse {
+    /// Plan 18-04.8: dispatch with an optional pre-parsed Row.
+    ///
+    /// The IoPool worker thread (`read_and_parse_client` in server.rs) eagerly
+    /// deserialises push-frame bodies into `Row` while it has the bytes hot in
+    /// L1, then hands the result to the apply thread via the
+    /// `MioClient.parsed_rows` side-channel. This method consumes that
+    /// pre-parsed Row when present; the apply thread skips the redundant
+    /// `from_slice::<Row>` call (saves ~190 ns per push at parallel=4/pd=64).
+    ///
+    /// `pre_parsed_row = None` is the fallback path — used when:
+    /// - the request is not a push variant (Ping, Register, GetSingle …)
+    /// - IoPool pre-parse failed (malformed body); apply path retries the
+    ///   parse and emits `invalid_event` per the existing error path
+    /// - test/legacy callers that don't run through the IoPool
+    pub fn dispatch_wire_request_with_row(
+        &self,
+        req: WireRequest,
+        pre_parsed_row: Option<Row>,
+    ) -> Vec<GlueResponse> {
+        vec![self.dispatch_one(req, pre_parsed_row)]
+    }
+
+    fn dispatch_one(&self, req: WireRequest, pre_parsed_row: Option<Row>) -> GlueResponse {
         match req {
             // ─── Ping ─────────────────────────────────────────────────────────
             WireRequest::Ping => GlueResponse::Pong {
@@ -141,7 +164,7 @@ impl ApplyShard {
                 event_name,
                 body,
                 body_format,
-            } => self.dispatch_push_sync(&event_name, body, body_format),
+            } => self.dispatch_push_sync(&event_name, body, body_format, pre_parsed_row),
 
             // ─── HTTP push-sync (per-event / acks=all mode) ───────────────────
             // For the mio path we still do sync WAL append; the
@@ -152,7 +175,7 @@ impl ApplyShard {
                 event_name,
                 body,
                 body_format,
-            } => self.dispatch_push_sync(&event_name, body, body_format),
+            } => self.dispatch_push_sync(&event_name, body, body_format, pre_parsed_row),
 
             WireRequest::HttpPushBatch {
                 event_name,
@@ -160,7 +183,7 @@ impl ApplyShard {
                 body_format,
             } => {
                 // Batch push: treat as single push for scaffold correctness.
-                self.dispatch_push_sync(&event_name, body, body_format)
+                self.dispatch_push_sync(&event_name, body, body_format, pre_parsed_row)
             }
 
             // ─── GET single ───────────────────────────────────────────────────
@@ -223,10 +246,15 @@ impl ApplyShard {
     /// 6. WalBufferRing::append.
     /// 7. apply_event_to_aggregations.
     /// 8. Build and return GlueResponse.
-    fn dispatch_push_sync(&self, event_name: &str, body: Bytes, body_format: u8) -> GlueResponse {
+    fn dispatch_push_sync(
+        &self,
+        event_name: &str,
+        body: Bytes,
+        body_format: u8,
+        pre_parsed_row: Option<Row>,
+    ) -> GlueResponse {
         use beava_core::agg_apply::apply_event_to_aggregations;
         use beava_core::defaults::DEFAULT_DEDUPE_WINDOW_MS;
-        use beava_core::row::Row;
         use beava_core::wire::CT_MSGPACK;
         use std::sync::atomic::Ordering;
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -265,28 +293,37 @@ impl ApplyShard {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // 1. Plan 18-10 D-3: parse body DIRECTLY into Row — no JsonValue.
-        //    Row::Deserialize walks MapAccess + visit_* primitives without
-        //    allocating an intermediate JsonValue tree. Both serde_json and
-        //    rmp_serde drive the same visitor.
-        let row: Row = if body_format == CT_MSGPACK {
-            match rmp_serde::from_slice::<Row>(&body) {
-                Ok(r) => r,
-                Err(_) => {
-                    return GlueResponse::PushError {
-                        code: "invalid_event",
-                        registry_version,
-                    };
-                }
-            }
-        } else {
-            match sonic_rs::from_slice::<Row>(&body) {
-                Ok(r) => r,
-                Err(_) => {
-                    return GlueResponse::PushError {
-                        code: "invalid_event",
-                        registry_version,
-                    };
+        // 1. Plan 18-04.8: prefer the pre-parsed Row from the IoPool worker
+        //    when present. Falls back to body→Row inline (parse on apply
+        //    thread) when the IoPool failed to pre-parse OR when the caller
+        //    didn't use the IoPool path (tests, legacy admin).
+        //
+        //    Plan 18-10 D-3: Row::Deserialize walks MapAccess + visit_*
+        //    primitives without allocating an intermediate JsonValue tree.
+        //    Both serde_json and rmp_serde drive the same visitor.
+        let row: Row = match pre_parsed_row {
+            Some(r) => r,
+            None => {
+                if body_format == CT_MSGPACK {
+                    match rmp_serde::from_slice::<Row>(&body) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return GlueResponse::PushError {
+                                code: "invalid_event",
+                                registry_version,
+                            };
+                        }
+                    }
+                } else {
+                    match sonic_rs::from_slice::<Row>(&body) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return GlueResponse::PushError {
+                                code: "invalid_event",
+                                registry_version,
+                            };
+                        }
+                    }
                 }
             }
         };

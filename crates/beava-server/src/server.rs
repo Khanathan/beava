@@ -704,6 +704,12 @@ struct MioClient {
     /// Plan 18-04.7: requests parsed by the read-phase IoPool worker; drained
     /// by the apply phase. `(WireRequest, keep_alive_for_http)`.
     parsed_requests: Vec<(beava_runtime_core::wire_request::WireRequest, bool)>,
+    /// Plan 18-04.8: pre-parsed Row from the IoPool worker, parallel to
+    /// `parsed_requests`. `parsed_rows[i]` is `Some(row)` iff
+    /// `parsed_requests[i].0` is a push variant whose body deserialised
+    /// cleanly on the worker thread; `None` otherwise (non-push variant or
+    /// pre-parse failure → apply thread will retry / emit invalid_event).
+    parsed_rows: Vec<Option<beava_core::row::Row>>,
     /// Plan 18-04.7: parse error from read-phase IoPool worker; the apply
     /// phase reads this, emits an error response, and marks the client closed.
     parse_error: Option<MioParseError>,
@@ -1068,10 +1074,21 @@ fn run_mio_event_loop(
                 }
                 client.closed = true;
             }
-            // Drain parsed requests; dispatch each through the apply shard.
+            // Plan 18-04.8: drain parsed requests AND the parallel
+            // parsed_rows side-channel; dispatch each through the apply shard
+            // with the pre-parsed Row when one is available. The two vecs are
+            // populated in lockstep by `read_and_parse_client`, so .zip() is
+            // safe — if their lengths drift, that's a contract bug worth a
+            // hard panic on debug.
             let parsed = std::mem::take(&mut client.parsed_requests);
-            for (req, _keep_alive) in parsed {
-                let responses = apply_shard.dispatch_wire_request_sync(req);
+            let parsed_rows = std::mem::take(&mut client.parsed_rows);
+            debug_assert_eq!(
+                parsed.len(),
+                parsed_rows.len(),
+                "parsed_requests and parsed_rows must be the same length"
+            );
+            for ((req, _keep_alive), pre_parsed_row) in parsed.into_iter().zip(parsed_rows) {
+                let responses = apply_shard.dispatch_wire_request_with_row(req, pre_parsed_row);
                 for resp in responses {
                     client.output_queue.push_back(resp);
                 }
@@ -1233,6 +1250,7 @@ fn accept_clients<L>(
                     proto,
                     read_buf: bytes::BytesMut::with_capacity(8 * 1024),
                     parsed_requests: Vec::new(),
+                    parsed_rows: Vec::new(),
                     parse_error: None,
                     output_queue: std::collections::VecDeque::new(),
                     write_buf: bytes::BytesMut::new(),
@@ -1279,9 +1297,27 @@ impl AcceptStream for beava_runtime_core::tcp_listener::TcpListener {
 /// 2. Parse all complete frames out of `read_buf` into `parsed_requests`.
 /// 3. On parse error, set `parse_error`; the apply phase emits the response.
 fn read_and_parse_client(client: &mut MioClient) {
+    use beava_core::row::Row;
+    use beava_core::wire::CT_MSGPACK;
     use beava_runtime_core::http_listener::parse_http_request;
     use beava_runtime_core::tcp_listener::parse_wire_request;
+    use beava_runtime_core::wire_request::WireRequest;
     use std::io::Read;
+
+    // Plan 18-04.8 D-4: BEAVA_TRACE_APPLY_TIMING=1 emits a per-call line:
+    //   `TRACE_APPLY ns io: socket_read=X parse_envelope=Y parse_body=Z TOTAL=W frames=N`
+    // OnceLock-cached env-var lookup → ~0 ns when off.
+    fn trace_apply_enabled() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1"))
+    }
+    let trace = trace_apply_enabled();
+    let t0 = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     if client.closed {
         return;
@@ -1305,6 +1341,7 @@ fn read_and_parse_client(client: &mut MioClient) {
             }
         }
     }
+    let t_read = t0.map(|t| t.elapsed());
 
     if client.read_buf.is_empty() {
         return;
@@ -1312,6 +1349,7 @@ fn read_and_parse_client(client: &mut MioClient) {
 
     // Phase B: parse all complete frames.
     iopool_observer::record_parse();
+    let envelope_start_len = client.parsed_requests.len();
     match client.proto {
         MioProto::Tcp => loop {
             match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
@@ -1337,6 +1375,51 @@ fn read_and_parse_client(client: &mut MioClient) {
                 }
             }
         },
+    }
+    let t_envelope = t0.map(|t| t.elapsed());
+
+    // Phase C: Plan 18-04.8 — for each newly-parsed push request, attempt
+    // body→Row deserialise here on the IoPool worker thread. Failure (e.g.
+    // malformed body) yields None; the apply thread will retry the parse and
+    // emit the existing invalid_event error path.
+    let new_count = client.parsed_requests.len() - envelope_start_len;
+    client.parsed_rows.reserve(new_count);
+    for (req, _keep_alive) in &client.parsed_requests[envelope_start_len..] {
+        let row_opt = match req {
+            WireRequest::TcpPush {
+                body, body_format, ..
+            }
+            | WireRequest::HttpPush {
+                body, body_format, ..
+            }
+            | WireRequest::HttpPushSync {
+                body, body_format, ..
+            }
+            | WireRequest::HttpPushBatch {
+                body, body_format, ..
+            } => {
+                if *body_format == CT_MSGPACK {
+                    rmp_serde::from_slice::<Row>(body).ok()
+                } else {
+                    sonic_rs::from_slice::<Row>(body).ok()
+                }
+            }
+            _ => None,
+        };
+        client.parsed_rows.push(row_opt);
+    }
+    let t_body = t0.map(|t| t.elapsed());
+
+    if let (Some(t0_inst), Some(read), Some(env), Some(body)) = (t0, t_read, t_envelope, t_body) {
+        let total = t0_inst.elapsed();
+        eprintln!(
+            "TRACE_APPLY ns io: socket_read={} parse_envelope={} parse_body={} TOTAL={} frames={}",
+            read.as_nanos(),
+            env.as_nanos().saturating_sub(read.as_nanos()),
+            body.as_nanos().saturating_sub(env.as_nanos()),
+            total.as_nanos(),
+            new_count
+        );
     }
 }
 

@@ -23,8 +23,22 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 /// Build a minimal ApplyShard with one registered event "tx" containing
-/// `amount: f64` and `account_id: str`.
-async fn make_shard() -> ApplyShard {
+/// `amount: f64` and `account_id: str`. Sync — the WAL/register helpers
+/// inside the apply path drive their own tokio runtime, so this fixture must
+/// not be inside an outer async runtime (otherwise `Cannot start a runtime
+/// from within a runtime` panics in the register path).
+fn make_shard() -> ApplyShard {
+    // WalSink::spawn requires *some* tokio runtime to spawn its background
+    // worker into. We give it a dedicated multi-thread runtime that
+    // `enter()`-s only for the spawn call, then drop the guard. The apply
+    // path can then spin up its own current-thread runtime for register.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("test rt");
+    let _guard = rt.enter();
+
     let wal_dir = tempfile::tempdir().expect("wal tempdir");
     let (wal_sink, _wal_worker) = WalSink::spawn(WalSinkConfig {
         dir: wal_dir.path().to_path_buf(),
@@ -49,16 +63,16 @@ async fn make_shard() -> ApplyShard {
 
     // Register a minimal "tx" event so push paths don't bail with event_not_found.
     let payload = serde_json::json!({
-        "events": {
-            "tx": {
+        "nodes": [
+            {
+                "kind": "event",
+                "name": "tx",
                 "schema": {
-                    "fields": {
-                        "amount": "f64",
-                        "account_id": "str"
-                    }
+                    "fields": { "amount": "f64", "account_id": "str" },
+                    "optional_fields": []
                 }
             }
-        }
+        ]
     });
     let payload_bytes = serde_json::to_vec(&payload).unwrap();
     let req = WireRequest::Register {
@@ -71,9 +85,9 @@ async fn make_shard() -> ApplyShard {
 /// Task 8.3.b — `dispatch_wire_request_with_row(req, Some(row))` accepts a
 /// pre-parsed Row and uses it. Body bytes can be malformed (we don't parse
 /// them inside the apply path when Some is provided).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_pre_parsed_row_skips_body_parse() {
-    let shard = make_shard().await;
+#[test]
+fn test_pre_parsed_row_skips_body_parse() {
+    let shard = make_shard();
 
     // Build a Row matching the registered schema.
     let row = Row::new()
@@ -93,17 +107,15 @@ async fn test_pre_parsed_row_skips_body_parse() {
     assert_eq!(resps.len(), 1);
     match &resps[0] {
         GlueResponse::PushAck { .. } => {} // success
-        other => panic!(
-            "expected PushAck (pre-parsed Row should bypass body→Row), got {other:?}"
-        ),
+        other => panic!("expected PushAck (pre-parsed Row should bypass body→Row), got {other:?}"),
     }
 }
 
 /// Task 8.3.b fallback — `dispatch_wire_request_with_row(req, None)` falls back
 /// to body→Row parsing inside `dispatch_push_sync`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_no_pre_parsed_row_falls_back_to_body_parse() {
-    let shard = make_shard().await;
+#[test]
+fn test_no_pre_parsed_row_falls_back_to_body_parse() {
+    let shard = make_shard();
 
     // Valid msgpack body matching the registered schema.
     use serde::Serialize;
@@ -133,9 +145,9 @@ async fn test_no_pre_parsed_row_falls_back_to_body_parse() {
 }
 
 /// Malformed body with no pre-parsed Row → invalid_event (existing error path).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_malformed_body_no_pre_parsed_yields_invalid_event() {
-    let shard = make_shard().await;
+#[test]
+fn test_malformed_body_no_pre_parsed_yields_invalid_event() {
+    let shard = make_shard();
 
     let req = WireRequest::TcpPush {
         event_name: "tx".into(),
@@ -155,9 +167,9 @@ async fn test_malformed_body_no_pre_parsed_yields_invalid_event() {
 
 /// Backward compat: existing `dispatch_wire_request_sync(req)` still works,
 /// equivalent to `dispatch_wire_request_with_row(req, None)`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_legacy_dispatch_wire_request_sync_still_works() {
-    let shard = make_shard().await;
+#[test]
+fn test_legacy_dispatch_wire_request_sync_still_works() {
+    let shard = make_shard();
 
     use serde::Serialize;
     #[derive(Serialize)]
