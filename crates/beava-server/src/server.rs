@@ -678,14 +678,17 @@ impl ServerV18 {
 const TOKEN_HTTP_LISTENER: mio::Token = mio::Token(0);
 const TOKEN_TCP_LISTENER: mio::Token = mio::Token(1);
 /// Client connections start at token 2; new ones increment this counter.
+///
+/// **Dead post-Plan 18-05/18-06**: clients are owned by per-worker IoBackends
+/// now. Kept for the legacy IoPool helpers below (still compiled but never
+/// invoked at runtime).
+#[allow(dead_code)]
 const TOKEN_CLIENT_BASE: usize = 2;
 
-/// Maximum concurrent clients supported by the per-tick IoPool lifecycle.
+/// Maximum concurrent clients supported by the legacy per-tick IoPool lifecycle.
 ///
-/// Pre-allocating `Vec<Option<MioClient>>` to this capacity ensures the Vec
-/// is never re-allocated, so IoPool worker threads can hold raw pointers
-/// (`Vec::as_mut_ptr().add(idx)`) into the Vec for the duration of a
-/// publish + join_all cycle without UB risk (Plan 18-04.7 D-1).
+/// **Dead post-Plan 18-05/18-06**: see TOKEN_CLIENT_BASE.
+#[allow(dead_code)]
 const MAX_CONCURRENT_CLIENTS: usize = 8192;
 
 /// Per-client connection state for the mio event loop.
@@ -694,6 +697,7 @@ const MAX_CONCURRENT_CLIENTS: usize = 8192;
 /// inside the slot so IoPool workers can populate them while the apply
 /// thread waits on `IoPool::join_all()`. The apply thread reads them
 /// after the join Acquire barrier.
+#[allow(dead_code)]
 struct MioClient {
     stream: mio::net::TcpStream,
     token: mio::Token,
@@ -721,6 +725,7 @@ struct MioClient {
     closed: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 enum MioProto {
     Http,
@@ -771,6 +776,12 @@ pub mod iopool_observer {
 
     /// Bump the appropriate parse counter based on whether we're on the
     /// apply thread. Called from inside the parse helper.
+    ///
+    /// Plan 18-05/18-06: parse now runs inside per-worker IoBackend threads
+    /// in `beava-runtime-core`, which can't reach back into this module.
+    /// Kept for potential re-instrumentation; tests query the counter via
+    /// `parse_calls()` and may currently see 0.
+    #[allow(dead_code)]
     pub(crate) fn record_parse() {
         if is_apply_thread() {
             APPLY_PARSE_COUNT.fetch_add(1, Ordering::AcqRel);
@@ -864,16 +875,77 @@ fn run_mio_event_loop(
     apply_shard: crate::apply_shard::ApplyShard,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    // Plan 18-05/18-06 wiring: replaces the prior IoPool + per-tick join_all
+    // architecture with the per-worker continuous-loop (Valkey 8) model.
+    // Each worker owns its own MioBackend (its own mio::Poll + Waker + a
+    // disjoint subset of clients keyed by `slot_idx % n_workers`). Apply
+    // thread now owns ONLY the two listeners and the dispatch path:
+    //   - polls the listeners (HTTP + TCP) on its own EventLoop
+    //   - drains a shared MPSC `read_rx` (workers parse + send RingItems)
+    //   - dispatches via apply_shard, encodes responses, sends bytes back
+    //     to the owning worker via `write_tx[w]` and wakes the worker
+    //   - on accept, hands the new client to a worker via `new_client_tx[w]`
+    // No `IoPool::join_all` anywhere; reads and writes flow continuously.
     use beava_runtime_core::event_loop::EventLoop;
     use beava_runtime_core::http_listener::HttpListener;
-    use beava_runtime_core::io_pool::{IoPool, WorkItem};
+    use beava_runtime_core::io_backend::MioBackend;
+    use beava_runtime_core::io_thread_worker::{
+        start_worker, NewClient, WorkerConfig, WorkerHandle, WorkerProto,
+    };
     use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
+    use beava_runtime_core::work_ring::{ParseErrorKind, RingItem};
     use std::sync::atomic::Ordering as AOrdering;
 
     // Plan 18-04.7: record this thread as the apply thread. Test instrumentation
     // (iopool_observer) compares parse/encode call sites against this id.
     iopool_observer::set_apply_tid();
 
+    // ── Spin up N per-worker continuous loops (Plan 18-05) ───────────────────
+    let n_workers = default_io_threads();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Single MPSC for parsed RingItems: every worker clones the sender; apply
+    // owns the receiver. Capacity 16384 = old IoPool budget × 4× headroom.
+    let (read_tx, read_rx) = crossbeam_channel::bounded::<RingItem>(16_384);
+
+    // Per-worker write_tx (apply → worker, encoded response bytes), and the
+    // corresponding worker handles. Wakers cached in a parallel Vec so the hot
+    // dispatch loop doesn't re-Arc-clone per send.
+    let mut write_txs: Vec<crossbeam_channel::Sender<(u64, bytes::Bytes)>> =
+        Vec::with_capacity(n_workers);
+    let mut workers: Vec<WorkerHandle> = Vec::with_capacity(n_workers);
+    let mut worker_wakers: Vec<Arc<dyn beava_runtime_core::io_backend::WakerHandle>> =
+        Vec::with_capacity(n_workers);
+
+    for w in 0..n_workers {
+        let (write_tx, write_rx) = crossbeam_channel::bounded::<(u64, bytes::Bytes)>(4_096);
+        let (new_client_tx, new_client_rx) = crossbeam_channel::bounded::<NewClient>(256);
+
+        let cfg = WorkerConfig {
+            worker_id: w,
+            n_workers,
+            read_tx: read_tx.clone(),
+            write_rx,
+            new_client_rx,
+            stop: Arc::clone(&stop),
+        };
+        let handle = start_worker::<MioBackend>(cfg, new_client_tx, write_tx.clone());
+        worker_wakers.push(handle.waker());
+        workers.push(handle);
+        write_txs.push(write_tx);
+    }
+    // Apply only reads from read_rx; drop our spare sender clone so the
+    // channel can disconnect cleanly when all workers exit.
+    drop(read_tx);
+
+    tracing::info!(
+        target: "beava.server",
+        kind = "workers.started",
+        threads = n_workers,
+        "Plan 18-05 per-worker continuous-loop pool started"
+    );
+
+    // ── Apply-thread EventLoop: just the two listeners ───────────────────────
     let mut event_loop = match EventLoop::new() {
         Ok(el) => el,
         Err(e) => {
@@ -881,8 +953,6 @@ fn run_mio_event_loop(
             return;
         }
     };
-
-    // Convert std::net listeners → mio listeners.
     let mut http_listener = match HttpListener::from_std(http_listener_std) {
         Ok(l) => l,
         Err(e) => {
@@ -897,8 +967,6 @@ fn run_mio_event_loop(
             return;
         }
     };
-
-    // Register listeners with the event loop.
     if let Err(e) = event_loop.register(
         http_listener.inner_mut(),
         TOKEN_HTTP_LISTENER,
@@ -916,220 +984,202 @@ fn run_mio_event_loop(
         return;
     }
 
-    // ── Pre-allocated client slots (Plan 18-04.7 D-1) ─────────────────────────
-    // Pre-allocate MAX_CONCURRENT_CLIENTS slots so the Vec is never resized.
-    // IoPool workers hold raw pointers into this Vec; resizing would be UB.
-    let mut clients: Vec<Option<MioClient>> = Vec::with_capacity(MAX_CONCURRENT_CLIENTS);
-    clients.resize_with(MAX_CONCURRENT_CLIENTS, || None);
-    // Free-slot freelist. When a client closes, its slot index is pushed here
-    // for re-use by the next accept. Avoids linear-scan to find a free slot.
-    let mut free_slots: Vec<usize> = (0..MAX_CONCURRENT_CLIENTS).rev().collect();
+    // Per-slot proto, used at response-encode time. Workers track their own
+    // WorkerClient.proto independently; this map is the apply-side mirror so
+    // we know whether to encode TCP framed or HTTP responses for each slot.
+    // TODO Plan 18-06+: workers don't currently signal close back to apply,
+    // so entries leak slowly until process exit.
+    let mut slot_proto: std::collections::HashMap<u64, WorkerProto> =
+        std::collections::HashMap::new();
+    let mut accept_seq: u64 = 0;
 
-    // ── IoPool spinup (Plan 18-04.7 D-2) ──────────────────────────────────────
-    let io_pool_size = default_io_threads();
-    let io_pool = IoPool::new(io_pool_size);
-    tracing::info!(
-        target: "beava.server",
-        kind = "iopool.started",
-        threads = io_pool_size,
-        "IoPool started"
-    );
-
-    // ── Plan 18-13: SPSC-style work-ring between IoPool workers and apply ─────
-    // crossbeam-channel bounded MPSC. Capacity 16384 absorbs typical per-tick
-    // bursts (16 workers × 256 inflight = 4096 events) with 4× headroom; if it
-    // somehow fills, workers block on send until apply drains. In practice
-    // apply (~0.9 µs/event) is faster than parse (~4 µs/event), so the channel
-    // sits well below capacity at steady state.
-    let (work_sender, work_receiver) =
-        crossbeam_channel::bounded::<beava_runtime_core::work_ring::RingItem>(16_384);
-
-    tracing::info!(target: "beava.server", "apply thread: mio EventLoop started");
+    tracing::info!(target: "beava.server", "apply thread: dispatcher loop started");
 
     loop {
-        // ── Phase 1: poll mio ────────────────────────────────────────────────
-        // Plan 18-04.7: use a 1ms timeout — short enough to keep tail latency
-        // low when there's no load (shutdown flag is checked once per ms),
-        // but long enough that we don't burn CPU spinning on poll() when the
-        // server is idle. Active load: poll() returns immediately when any
-        // event fires, so the timeout only matters when truly idle.
-        let events = match event_loop.tick(Some(Duration::from_millis(1))) {
-            Ok(events) => {
-                let tokens: Vec<(mio::Token, bool, bool)> = events
-                    .map(|e| (e.token(), e.is_readable(), e.is_writable()))
-                    .collect();
-                tokens
+        // ── 1. Drain read_rx — dispatch + encode + push to write_tx[w] ───────
+        // Bounded drain: at most 1024 items per pass, then go check listeners
+        // so a steady client stream doesn't starve accept.
+        const DRAIN_CAP: usize = 1024;
+        let mut drained = 0usize;
+        // Track which workers got new write work this pass; one wake per
+        // worker per pass is enough (waker is edge-triggered + idempotent).
+        let mut wake_workers: u32 = 0;
+        while drained < DRAIN_CAP {
+            let item = match read_rx.try_recv() {
+                Ok(it) => it,
+                Err(_) => break,
+            };
+            drained += 1;
+            match item {
+                RingItem::Request {
+                    slot_idx,
+                    keep_alive: _,
+                    request,
+                    parsed_row,
+                } => {
+                    let responses = apply_shard.dispatch_wire_request_with_row(request, parsed_row);
+                    let slot_u64 = slot_idx as u64;
+                    let proto = slot_proto
+                        .get(&slot_u64)
+                        .copied()
+                        .unwrap_or(WorkerProto::Tcp);
+                    let w = (slot_u64 as usize) % n_workers;
+                    for resp in responses {
+                        let mut buf = bytes::BytesMut::new();
+                        match proto {
+                            WorkerProto::Tcp => encode_glue_response_tcp(&resp, &mut buf),
+                            WorkerProto::Http => encode_glue_response_http(&resp, &mut buf),
+                        }
+                        if write_txs[w].send((slot_u64, buf.freeze())).is_ok() {
+                            wake_workers |= 1u32 << (w & 31);
+                        }
+                    }
+                    iopool_observer::record_encode();
+                }
+                RingItem::ParseError { slot_idx, kind } => {
+                    use crate::runtime_core_glue::GlueResponse;
+                    let slot_u64 = slot_idx as u64;
+                    let proto = slot_proto
+                        .get(&slot_u64)
+                        .copied()
+                        .unwrap_or(WorkerProto::Tcp);
+                    let w = (slot_u64 as usize) % n_workers;
+                    let resp = match kind {
+                        ParseErrorKind::TcpFrame => GlueResponse::PushError {
+                            code: "frame_error",
+                            registry_version: 0,
+                        },
+                        ParseErrorKind::HttpProtocol => GlueResponse::PushError {
+                            code: "http_protocol_error",
+                            registry_version: 0,
+                        },
+                    };
+                    let mut buf = bytes::BytesMut::new();
+                    match proto {
+                        WorkerProto::Tcp => encode_glue_response_tcp(&resp, &mut buf),
+                        WorkerProto::Http => encode_glue_response_http(&resp, &mut buf),
+                    }
+                    if write_txs[w].send((slot_u64, buf.freeze())).is_ok() {
+                        wake_workers |= 1u32 << (w & 31);
+                    }
+                }
             }
+        }
+        // Wake workers that received new write work in this pass. n_workers
+        // is small (≤ ~32 by default_io_threads()); the bitmask + shift loop
+        // avoids a HashSet per pass.
+        if wake_workers != 0 {
+            for (w, waker) in worker_wakers.iter().enumerate() {
+                if (wake_workers >> (w & 31)) & 1 == 1 {
+                    let _ = waker.wake();
+                }
+            }
+        }
+
+        // ── 2. Poll listeners (1ms timeout — short to react to shutdown) ─────
+        let timeout = if drained == DRAIN_CAP {
+            // We hit the drain cap; there's likely more work. Don't block.
+            Some(Duration::from_millis(0))
+        } else {
+            Some(Duration::from_millis(1))
+        };
+        let tokens: Vec<mio::Token> = match event_loop.tick(timeout) {
+            Ok(events) => events.map(|e| e.token()).collect(),
             Err(e) => {
                 tracing::warn!("apply thread: poll error: {e}");
                 continue;
             }
         };
 
-        // ── Phase 2: classify events; accept new connections ──────────────────
-        // Sets of slot indices that are ready for read / write this tick.
-        let mut read_set: Vec<usize> = Vec::new();
-        let mut write_set: Vec<usize> = Vec::new();
-
-        for (token, readable, writable) in &events {
-            let tok = *token;
-            if tok == TOKEN_HTTP_LISTENER {
-                if *readable {
-                    accept_clients(
-                        &mut http_listener,
-                        MioProto::Http,
-                        &mut clients,
-                        &mut free_slots,
-                        &mut event_loop,
-                    );
-                }
-                continue;
+        // ── 3. Accept new connections; route to workers round-robin ──────────
+        for token in tokens {
+            if token == TOKEN_HTTP_LISTENER {
+                accept_clients_to_workers(
+                    &mut http_listener,
+                    WorkerProto::Http,
+                    &workers,
+                    &mut slot_proto,
+                    &mut accept_seq,
+                );
+            } else if token == TOKEN_TCP_LISTENER {
+                accept_clients_to_workers(
+                    &mut tcp_listener,
+                    WorkerProto::Tcp,
+                    &workers,
+                    &mut slot_proto,
+                    &mut accept_seq,
+                );
             }
-            if tok == TOKEN_TCP_LISTENER {
-                if *readable {
-                    accept_clients(
-                        &mut tcp_listener,
-                        MioProto::Tcp,
-                        &mut clients,
-                        &mut free_slots,
-                        &mut event_loop,
-                    );
-                }
-                continue;
-            }
-            let slot_idx = tok.0.wrapping_sub(TOKEN_CLIENT_BASE);
-            if slot_idx >= MAX_CONCURRENT_CLIENTS {
-                continue;
-            }
-            if clients[slot_idx].is_none() {
-                continue;
-            }
-            if *readable {
-                read_set.push(slot_idx);
-            }
-            if *writable {
-                // Only schedule write work if the client actually has bytes to send.
-                if clients[slot_idx]
-                    .as_ref()
-                    .map(|c| c.has_write_work())
-                    .unwrap_or(false)
-                {
-                    write_set.push(slot_idx);
-                }
-            }
+            // Client-token events stay on the workers' EventLoops; apply
+            // thread should never see them. Defensive: ignore unknown tokens.
         }
 
-        // ── Phase 3+4 MERGED (Plan 18-13): READ + APPLY concurrent ────────────
-        // IoPool workers parse frames and push RingItems into the work_sender
-        // channel. The apply thread drains the receiver in lockstep — the
-        // first parsed event is dispatched while later events are still being
-        // parsed. No `IoPool::join_all` spin barrier between read and apply.
-        // The drain function returns when (a) all workers report `pending = 0`
-        // AND (b) the channel is empty.
-        if !read_set.is_empty() {
-            let clients_ptr = ClientsPtr(clients.as_mut_ptr());
-            let mut work_items: Vec<WorkItem> = Vec::with_capacity(read_set.len());
-            for &idx in &read_set {
-                let ptr = clients_ptr;
-                let sender = work_sender.clone();
-                work_items.push(Box::new(move || {
-                    // SAFETY: see ClientsPtr docs. The `slot_mut` method takes
-                    // `self` so the closure captures the whole `ClientsPtr`
-                    // (Send) rather than disjointly capturing the inner `*mut`
-                    // field (Rust 2021 RFC 2229).
-                    let slot = unsafe { &mut *ptr.slot_mut(idx) };
-                    if let Some(client) = slot.as_mut() {
-                        read_and_parse_client_to_channel(client, idx as u32, &sender);
-                    }
-                }) as WorkItem);
-            }
-            io_pool.publish(work_items);
-            // Drain channel concurrently with workers. Returns when all
-            // workers signal pending=0 AND the channel is empty.
-            drain_channel_until_workers_done(&io_pool, &work_receiver, &apply_shard, &mut clients);
-        }
-
-        // Build write_set union: any client with pending output work that wasn't
-        // already in write_set. After apply, many clients in read_set will now
-        // have output_queue populated.
-        for &idx in &read_set {
-            if !write_set.contains(&idx)
-                && clients[idx]
-                    .as_ref()
-                    .map(|c| c.has_write_work())
-                    .unwrap_or(false)
-            {
-                write_set.push(idx);
-            }
-        }
-
-        // ── Phase 5: WRITE — IoPool workers do serialize + socket.write ───────
-        if !write_set.is_empty() {
-            let clients_ptr = ClientsPtr(clients.as_mut_ptr());
-            let mut work_items: Vec<WorkItem> = Vec::with_capacity(write_set.len());
-            for &idx in &write_set {
-                let ptr = clients_ptr;
-                work_items.push(Box::new(move || {
-                    // SAFETY: see the read-phase work item above; same invariants.
-                    let slot = unsafe { &mut *ptr.slot_mut(idx) };
-                    if let Some(client) = slot.as_mut() {
-                        serialize_and_write_client(client);
-                    }
-                }) as WorkItem);
-            }
-            io_pool.publish(work_items);
-            io_pool.join_all();
-        }
-
-        // ── Phase 6: post-write registration adjustments ──────────────────────
-        // Reregister ONLY when the desired interest actually differs from the
-        // client's currently-registered interest (`interest_writable` flag).
-        // Saves the per-tick syscall in the common case where the IoPool
-        // write worker drains write_buf completely and we stay READABLE-only.
-        for &idx in &write_set {
-            let client = match clients[idx].as_mut() {
-                Some(c) => c,
-                None => continue,
-            };
-            if client.closed {
-                continue;
-            }
-            let want_writable = client.has_write_work();
-            if want_writable != client.interest_writable {
-                let interest = if want_writable {
-                    mio::Interest::READABLE | mio::Interest::WRITABLE
-                } else {
-                    mio::Interest::READABLE
-                };
-                let _ = event_loop.reregister(&mut client.stream, client.token, interest);
-                client.interest_writable = want_writable;
-            }
-        }
-
-        // ── Phase 7: cleanup closed clients ──────────────────────────────────
-        // Only scan the slots touched this tick (read_set ∪ write_set) plus
-        // any explicitly-tracked-closed slots. Scanning all MAX_CONCURRENT_CLIENTS
-        // every tick is O(MAX) overhead even when no clients closed.
-        let touched_slots: Vec<usize> = read_set.iter().chain(write_set.iter()).copied().collect();
-        for idx in touched_slots {
-            let should_close = clients[idx].as_ref().map(|c| c.closed).unwrap_or(false);
-            if should_close {
-                if let Some(mut client) = clients[idx].take() {
-                    let _ = event_loop.deregister(&mut client.stream);
-                    free_slots.push(idx);
-                }
-            }
-        }
-
-        // ── Phase 8: check shutdown ──────────────────────────────────────────
+        // ── 4. Shutdown check ────────────────────────────────────────────────
         if shutdown.load(AOrdering::Acquire) {
-            tracing::info!(target: "beava.server", "apply thread: shutdown signal received, draining");
+            tracing::info!(
+                target: "beava.server",
+                "apply thread: shutdown signal received, stopping workers"
+            );
             break;
         }
     }
 
-    drop(io_pool);
+    // ── Shutdown sequence: tell workers to stop, then join ───────────────────
+    stop.store(true, AOrdering::Release);
+    for w in &workers {
+        w.stop();
+    }
+    for w in workers {
+        w.join();
+    }
     tracing::info!(target: "beava.server", "apply thread: exiting");
+}
+
+/// Plan 18-05/18-06: route accepted clients to per-worker IoBackends.
+/// Each accepted stream is assigned a monotonic `slot_idx` and dispatched to
+/// `worker[slot_idx % n_workers]` via `send_new_client_with_proto`. Apply
+/// records the slot's protocol in `slot_proto` so it can encode responses
+/// correctly (the worker tracks the same proto independently for parse).
+fn accept_clients_to_workers<L>(
+    listener: &mut L,
+    proto: beava_runtime_core::io_thread_worker::WorkerProto,
+    workers: &[beava_runtime_core::io_thread_worker::WorkerHandle],
+    slot_proto: &mut std::collections::HashMap<
+        u64,
+        beava_runtime_core::io_thread_worker::WorkerProto,
+    >,
+    accept_seq: &mut u64,
+) where
+    L: AcceptStream,
+{
+    let n_workers = workers.len();
+    if n_workers == 0 {
+        return;
+    }
+    loop {
+        match listener.accept_stream() {
+            Ok(stream) => {
+                let slot_idx = *accept_seq;
+                *accept_seq = accept_seq.wrapping_add(1);
+                let w = (slot_idx as usize) % n_workers;
+                slot_proto.insert(slot_idx, proto);
+                if let Err(e) = workers[w].send_new_client_with_proto(stream, slot_idx, proto) {
+                    tracing::warn!(
+                        target: "beava.server",
+                        "apply thread: send_new_client to worker {} failed: {}",
+                        w,
+                        e
+                    );
+                    slot_proto.remove(&slot_idx);
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => {
+                tracing::warn!(target: "beava.server", "apply thread: accept failed: {e}");
+                break;
+            }
+        }
+    }
 }
 
 // ─── Plan 18-04.7 IoPool wiring helpers ──────────────────────────────────────
@@ -1142,6 +1192,7 @@ fn run_mio_event_loop(
 /// is provided externally by the IoPool's Release/Acquire barrier — only one
 /// worker accesses any given slot index per tick, and the apply thread waits
 /// at `join_all()` before touching the slot.
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct ClientsPtr(*mut Option<MioClient>);
 
@@ -1149,6 +1200,7 @@ struct ClientsPtr(*mut Option<MioClient>);
 unsafe impl Send for ClientsPtr {}
 unsafe impl Sync for ClientsPtr {}
 
+#[allow(dead_code)]
 impl ClientsPtr {
     /// Access the slot at `idx`. Method-based access forces the closure to
     /// capture the whole `ClientsPtr` instead of disjointly capturing the
@@ -1161,6 +1213,7 @@ impl ClientsPtr {
     }
 }
 
+#[allow(dead_code)]
 impl MioClient {
     /// True if the client has bytes to write — either un-serialised
     /// `GlueResponse`s in `output_queue` or partially-flushed bytes in
@@ -1172,6 +1225,7 @@ impl MioClient {
 
 /// Accept all pending connections from `listener` until WouldBlock, allocate
 /// a free slot for each, and register with the event loop.
+#[allow(dead_code)]
 fn accept_clients<L>(
     listener: &mut L,
     proto: MioProto,
@@ -1257,6 +1311,7 @@ impl AcceptStream for beava_runtime_core::tcp_listener::TcpListener {
 /// Backward compat: callers that need the legacy batched behavior continue
 /// to call `read_and_parse_client` (used by Phase 18-04.6/18-04.8 tests
 /// that exercise `dispatch_wire_request_with_row` directly).
+#[allow(dead_code)]
 fn read_and_parse_client_to_channel(
     client: &mut MioClient,
     slot_idx: u32,
@@ -1397,6 +1452,7 @@ fn read_and_parse_client_to_channel(
 /// - `try_recv` → `dispatch_wire_request_with_row` → push response to
 ///   `clients[slot_idx].output_queue`
 /// - `ParseError` → push error response, mark client closed
+#[allow(dead_code)]
 fn drain_channel_until_workers_done(
     io_pool: &beava_runtime_core::io_pool::IoPool,
     receiver: &crossbeam_channel::Receiver<beava_runtime_core::work_ring::RingItem>,
@@ -1482,6 +1538,7 @@ fn drain_channel_until_workers_done(
 /// 2. Loop on `socket.write` from the head of `write_buf` until `WouldBlock`
 ///    or `write_buf` is empty.
 /// 3. On EOF / error, mark closed.
+#[allow(dead_code)]
 fn serialize_and_write_client(client: &mut MioClient) {
     use std::io::Write;
 
