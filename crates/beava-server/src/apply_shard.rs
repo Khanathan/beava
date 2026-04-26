@@ -436,7 +436,10 @@ impl ApplyShard {
             idx.insert(
                 ack_lsn,
                 EventIdEntry::Stream {
-                    event_name: event_name.to_string(),
+                    // Plan 18-12 step 1: type-fit allocation (still allocates;
+                    // Task 12.3 replaces with descriptor.name_arc.clone()
+                    // refcount bump for the actual hot-path win).
+                    event_name: Arc::from(event_name),
                 },
             );
         }

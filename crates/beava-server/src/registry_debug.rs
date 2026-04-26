@@ -56,11 +56,17 @@ use std::sync::Arc;
 /// the kind of WAL record at that LSN. The retract handler uses this to
 /// route stream events to 501, table writes to MVCC retraction, and unknown
 /// IDs to 404 — without re-walking the WAL on the hot path.
+///
+/// Plan 18-12: `Stream.event_name` is `Arc<str>` (was `String`) so the
+/// dispatch_push_sync bookkeeping site can clone the Arc — refcount bump,
+/// no heap alloc per push — instead of calling `event_name.to_string()`.
+/// `Arc<str>` derefs to `&str` and serializes/displays the same way; consumers
+/// reading the event_name as a string slice work unchanged.
 #[derive(Debug, Clone)]
 pub enum EventIdEntry {
     /// A pushed stream event. Retraction is unimplemented in v0; the
     /// handler returns 501 with `stream_retraction_unimplemented`.
-    Stream { event_name: String },
+    Stream { event_name: Arc<str> },
     /// A table write — temporal or non-temporal. The retract handler
     /// inspects the descriptor at retract-time to decide between 400
     /// (table_not_temporal) and the actual MVCC retraction path.
