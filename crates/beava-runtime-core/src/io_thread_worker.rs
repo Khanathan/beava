@@ -1,0 +1,438 @@
+//! Per-worker continuous-loop worker (Plan 18-05 Task 5.2).
+//!
+//! Each worker thread owns:
+//!  - One `IoBackend` instance (own mio::Poll + Waker + client map)
+//!  - `new_client_rx`: receives new clients from the apply thread
+//!  - `write_rx`: receives encoded responses to flush to client sockets
+//!  - `read_tx`: sends parsed `RingItem`s to the apply thread
+//!  - `stop`: shared shutdown flag
+//!
+//! # Architecture (Valkey 8 model)
+//!
+//! Workers run continuously, never blocking the apply thread with a join_all
+//! or spin barrier. The apply thread hands off clients via `new_client_tx[w]`
+//! and responses via `write_tx[w]`, then wakes the worker with `Waker::wake()`.
+//! Workers parse frames, push to `read_tx`, encode+write responses, and drain
+//! `new_client_rx` and `write_rx` at the top of each loop iteration.
+//!
+//! # Client-to-worker routing
+//!
+//! The apply thread assigns clients deterministically: `slot_idx % N_workers`.
+//! This is enforced by the apply thread; the worker trusts the assignment.
+
+use crate::io_backend::{IoBackend, IoEvent, MioTcpStream, WakerHandle};
+use crate::wire_request::WireRequest;
+use crate::work_ring::{ParseErrorKind, RingItem};
+use bytes::BytesMut;
+use crossbeam_channel::{Receiver, Sender};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+/// Protocol tag for a client connection.
+///
+/// Determines which parser and encoder to use in the worker loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerProto {
+    /// HTTP/1.1 text-based protocol (via httparse).
+    Http,
+    /// Phase 2.5 framed TCP wire protocol (`[u32 length][u16 op][u8 ct][payload]`).
+    Tcp,
+}
+
+/// A new client handed from the apply thread to a worker.
+pub struct NewClient {
+    /// The TCP stream to register with the worker's backend.
+    pub stream: MioTcpStream,
+    /// Deterministic slot index (`accept_sequence % MAX_SLOTS`).
+    pub slot_idx: u64,
+    /// Protocol for this connection.
+    pub proto: WorkerProto,
+}
+
+/// Per-client state owned by the worker (not the apply thread).
+struct WorkerClient {
+    read_buf: BytesMut,
+    write_buf: BytesMut,
+    proto: WorkerProto,
+    closed: bool,
+}
+
+impl WorkerClient {
+    fn new(proto: WorkerProto) -> Self {
+        Self {
+            read_buf: BytesMut::with_capacity(8 * 1024),
+            write_buf: BytesMut::new(),
+            proto,
+            closed: false,
+        }
+    }
+}
+
+/// Configuration passed to `start_worker`.
+pub struct WorkerConfig {
+    /// Numeric ID of this worker (0..N_workers).
+    pub worker_id: usize,
+    /// Total number of workers in the pool.
+    pub n_workers: usize,
+    /// Channel to push parsed `RingItem`s toward the apply thread.
+    pub read_tx: Sender<RingItem>,
+    /// Channel from apply thread carrying `(slot_idx, encoded_bytes)` to write.
+    pub write_rx: Receiver<(u64, bytes::Bytes)>,
+    /// Channel from apply thread carrying new clients to register.
+    pub new_client_rx: Receiver<NewClient>,
+    /// Shared stop flag. When `true`, the worker exits after the current iteration.
+    pub stop: Arc<AtomicBool>,
+}
+
+/// Handle to a running worker thread. Returned by `start_worker`.
+pub struct WorkerHandle {
+    id: usize,
+    stop: Arc<AtomicBool>,
+    new_client_tx: Sender<NewClient>,
+    /// Waker to interrupt the worker's `backend.poll()` when new work arrives.
+    waker: Arc<dyn WakerHandle>,
+    /// JoinHandle for the worker OS thread.
+    join: Option<JoinHandle<()>>,
+}
+
+impl WorkerHandle {
+    /// Return the numeric ID of this worker (0..N_workers).
+    pub fn worker_id(&self) -> usize {
+        self.id
+    }
+
+    /// Signal this worker to stop after the current iteration.
+    /// Also wakes the worker so it doesn't block in poll() for the full timeout.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.waker.wake();
+    }
+
+    /// Join the worker OS thread. Consumes the handle.
+    pub fn join(mut self) {
+        if let Some(h) = self.join.take() {
+            let _ = h.join();
+        }
+    }
+
+    /// Send a new client to this worker (default: TCP protocol).
+    ///
+    /// The apply thread selects the worker with `slot_idx % N_workers`.
+    /// After sending, wakes the worker out of `backend.poll()`.
+    pub fn send_new_client(
+        &self,
+        stream: MioTcpStream,
+        slot_idx: u64,
+    ) -> Result<(), crossbeam_channel::SendError<NewClient>> {
+        self.new_client_tx.send(NewClient {
+            stream,
+            slot_idx,
+            proto: WorkerProto::Tcp,
+        })?;
+        let _ = self.waker.wake();
+        Ok(())
+    }
+
+    /// Send a new client with explicit protocol tag.
+    pub fn send_new_client_with_proto(
+        &self,
+        stream: MioTcpStream,
+        slot_idx: u64,
+        proto: WorkerProto,
+    ) -> Result<(), crossbeam_channel::SendError<NewClient>> {
+        self.new_client_tx.send(NewClient {
+            stream,
+            slot_idx,
+            proto,
+        })?;
+        let _ = self.waker.wake();
+        Ok(())
+    }
+
+    /// Return a clone of the waker handle. Apply thread uses this to wake the
+    /// worker after pushing to `write_tx[w]`.
+    pub fn waker(&self) -> Arc<dyn WakerHandle> {
+        Arc::clone(&self.waker)
+    }
+}
+
+/// Spawn a worker OS thread and return its `WorkerHandle`.
+///
+/// `new_client_tx` and `write_tx` are the apply-side sender ends stored in
+/// the returned `WorkerHandle`. Their receiver counterparts (`cfg.new_client_rx`,
+/// `cfg.write_rx`) are moved into the worker thread.
+pub fn start_worker<B: IoBackend>(
+    cfg: WorkerConfig,
+    new_client_tx: Sender<NewClient>,
+    _write_tx: Sender<(u64, bytes::Bytes)>,
+) -> WorkerHandle {
+    let worker_id = cfg.worker_id;
+    let stop_clone = Arc::clone(&cfg.stop);
+
+    // Create the backend *before* spawning — this lets us extract the waker
+    // handle (which the apply thread needs to interrupt poll()) before the
+    // backend moves into the worker thread.
+    let backend = B::new().expect("IoBackend::new() failed in worker spawn");
+    let waker = backend.waker_handle();
+    let waker_for_handle = Arc::clone(&waker);
+
+    let join = std::thread::Builder::new()
+        .name(format!("beava-io-worker-{worker_id}"))
+        .spawn(move || {
+            worker_main_loop(backend, cfg);
+        })
+        .expect("failed to spawn worker thread");
+
+    // Drop the local clone — we only need `waker_for_handle` in the handle.
+    drop(waker);
+
+    WorkerHandle {
+        id: worker_id,
+        stop: stop_clone,
+        new_client_tx,
+        waker: waker_for_handle,
+        join: Some(join),
+    }
+}
+
+/// The main loop executed on each worker OS thread.
+///
+/// Per iteration:
+///  1. Drain `new_client_rx` — register new clients with the backend.
+///  2. Drain `write_rx` — append encoded bytes to per-client write buffers.
+///  3. `backend.poll(Some(IDLE_TIMEOUT), &mut events)` — block until I/O ready.
+///  4. For each event:
+///     - `Readable(s)` → read + parse → push `RingItem` to `read_tx`.
+///     - `Writable(s)` → flush write buffer to socket.
+///     - `Closed(s)` → remove client.
+///     - `WakerSentinel` → re-loop (channels may have new work).
+///  5. Check stop flag; break if set.
+fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
+    let WorkerConfig {
+        worker_id: _worker_id,
+        n_workers: _n_workers,
+        read_tx,
+        write_rx,
+        new_client_rx,
+        stop,
+    } = cfg;
+
+    // Idle poll timeout: 1 second. Waker interrupts this for hot paths.
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(1);
+
+    let mut events: Vec<IoEvent> = Vec::with_capacity(64);
+    let mut clients: HashMap<u64, WorkerClient> = HashMap::new();
+
+    loop {
+        // 1. Drain new_client_rx — register all queued new clients.
+        while let Ok(nc) = new_client_rx.try_recv() {
+            if let Ok(()) = backend.add_client(nc.stream, nc.slot_idx) {
+                clients.insert(nc.slot_idx, WorkerClient::new(nc.proto));
+            }
+        }
+
+        // 2. Drain write_rx — enqueue encoded response bytes for writing.
+        while let Ok((slot, data)) = write_rx.try_recv() {
+            if let Some(c) = clients.get_mut(&slot) {
+                c.write_buf.extend_from_slice(&data);
+                // Arm WRITABLE interest so the backend fires Writable events.
+                backend.set_interest_writable(slot, true);
+            }
+        }
+
+        // 3. Poll for I/O events.
+        events.clear();
+        if let Err(e) = backend.poll(Some(IDLE_TIMEOUT), &mut events) {
+            tracing::warn!(target: "beava.worker", "poll error: {e}");
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+            continue;
+        }
+
+        // 4. Process events.
+        let mut to_close: Vec<u64> = Vec::new();
+        for ev in events.drain(..) {
+            match ev {
+                IoEvent::Readable(slot) => {
+                    let client = match clients.get_mut(&slot) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    if client.closed {
+                        continue;
+                    }
+                    let n = match backend.read(slot, &mut client.read_buf) {
+                        Ok(n) => n,
+                        Err(_) => {
+                            client.closed = true;
+                            continue;
+                        }
+                    };
+                    if n == 0 {
+                        // EOF
+                        client.closed = true;
+                        continue;
+                    }
+                    // Parse frames and push to read_tx.
+                    parse_and_push(slot, client, &read_tx);
+                }
+                IoEvent::Writable(slot) => {
+                    let client = match clients.get_mut(&slot) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+                    flush_write_buf(slot, client, &mut backend);
+                }
+                IoEvent::Closed(slot) => {
+                    to_close.push(slot);
+                }
+                IoEvent::WakerSentinel => {
+                    // Re-loop: new work may have arrived on the channels.
+                }
+            }
+        }
+
+        // Process closed events (can't borrow clients and backend mutably at same time).
+        for slot in to_close {
+            clients.remove(&slot);
+            backend.close(slot);
+        }
+
+        // Clean up clients that were marked closed during read/write.
+        let closed: Vec<u64> = clients
+            .iter()
+            .filter(|(_, c)| c.closed)
+            .map(|(&s, _)| s)
+            .collect();
+        for slot in closed {
+            clients.remove(&slot);
+            backend.close(slot);
+        }
+
+        // 5. Check stop flag.
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+    }
+}
+
+/// Parse frames from a client's `read_buf` and push `RingItem`s to `read_tx`.
+fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingItem>) {
+    use crate::http_listener::parse_http_request;
+    use crate::tcp_listener::parse_wire_request;
+    use beava_core::row::Row;
+    use beava_core::wire::CT_MSGPACK;
+
+    if client.read_buf.is_empty() {
+        return;
+    }
+
+    // Pre-deserialise body→Row for push variants (same as old IoPool worker).
+    let body_to_row = |req: &WireRequest| -> Option<Row> {
+        match req {
+            WireRequest::TcpPush {
+                body, body_format, ..
+            }
+            | WireRequest::HttpPush {
+                body, body_format, ..
+            }
+            | WireRequest::HttpPushSync {
+                body, body_format, ..
+            }
+            | WireRequest::HttpPushBatch {
+                body, body_format, ..
+            } => {
+                if *body_format == CT_MSGPACK {
+                    rmp_serde::from_slice::<Row>(body).ok()
+                } else {
+                    sonic_rs::from_slice::<Row>(body).ok()
+                }
+            }
+            _ => None,
+        }
+    };
+
+    let slot_u32 = slot as u32;
+
+    match client.proto {
+        WorkerProto::Tcp => loop {
+            match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
+                Ok(Some(req)) => {
+                    let parsed_row = body_to_row(&req);
+                    if read_tx
+                        .send(RingItem::Request {
+                            slot_idx: slot_u32,
+                            keep_alive: false,
+                            request: req,
+                            parsed_row,
+                        })
+                        .is_err()
+                    {
+                        return; // receiver dropped = shutting down
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = read_tx.send(RingItem::ParseError {
+                        slot_idx: slot_u32,
+                        kind: ParseErrorKind::TcpFrame,
+                    });
+                    client.closed = true;
+                    break;
+                }
+            }
+        },
+        WorkerProto::Http => loop {
+            match parse_http_request(&mut client.read_buf) {
+                Ok(Some((req, keep_alive))) => {
+                    let parsed_row = body_to_row(&req);
+                    if read_tx
+                        .send(RingItem::Request {
+                            slot_idx: slot_u32,
+                            keep_alive,
+                            request: req,
+                            parsed_row,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = read_tx.send(RingItem::ParseError {
+                        slot_idx: slot_u32,
+                        kind: ParseErrorKind::HttpProtocol,
+                    });
+                    client.closed = true;
+                    break;
+                }
+            }
+        },
+    }
+}
+
+/// Flush `client.write_buf` to the socket via `backend.write()`.
+/// Removes fully-written bytes; disarms WRITABLE interest if buffer is empty.
+fn flush_write_buf<B: IoBackend>(slot: u64, client: &mut WorkerClient, backend: &mut B) {
+    while !client.write_buf.is_empty() {
+        match backend.write(slot, &client.write_buf) {
+            Ok(0) => break, // WouldBlock or closed
+            Ok(n) => {
+                let _ = client.write_buf.split_to(n);
+            }
+            Err(_) => {
+                client.closed = true;
+                return;
+            }
+        }
+    }
+    if client.write_buf.is_empty() {
+        // Revert to READABLE-only to avoid busy-looping on writable.
+        backend.set_interest_writable(slot, false);
+    }
+}

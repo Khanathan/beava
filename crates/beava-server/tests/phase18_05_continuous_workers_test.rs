@@ -8,10 +8,10 @@
 //! These tests FAIL TO COMPILE until Task 5.2.b (GREEN) implements
 //! `WorkerHandle` and the continuous-loop worker infrastructure.
 
-use beava_runtime_core::io_backend::{IoBackend, MioBackend};
+use beava_runtime_core::io_backend::MioBackend;
 use beava_runtime_core::io_thread_worker::{start_worker, WorkerConfig, WorkerHandle};
 use beava_runtime_core::work_ring::RingItem;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -85,7 +85,7 @@ fn test_worker_loop_processes_continuously_no_join_all() {
     use std::io::Write;
 
     const N: usize = 3;
-    let (mut workers, read_rx) = spawn_n_workers(N);
+    let (workers, read_rx) = spawn_n_workers(N);
 
     // Bind a TCP listener and connect a client.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");

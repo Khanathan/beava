@@ -19,6 +19,7 @@ pub mod http_listener;
 pub mod io_backend;
 pub mod io_pool;
 pub mod io_thread;
+pub mod io_thread_worker;
 pub mod response;
 pub mod router;
 pub mod tcp_listener;
