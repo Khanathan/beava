@@ -336,6 +336,7 @@ fn classify_derivation_diff(
 
 use crate::schema::{DerivedSchema, EventSchema, FieldType, TableSchema};
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::sync::Arc;
 
 fn describe_schema_diff(
