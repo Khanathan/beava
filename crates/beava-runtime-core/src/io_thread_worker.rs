@@ -85,6 +85,12 @@ pub struct WorkerConfig {
     pub new_client_rx: Receiver<NewClient>,
     /// Shared stop flag. When `true`, the worker exits after the current iteration.
     pub stop: Arc<AtomicBool>,
+    /// Plan 18-06 follow-up: optional `mio::Waker` registered with the apply
+    /// thread's listener `EventLoop`. The worker fires this after each
+    /// successful `read_tx.send(...)` so apply doesn't sit in `tick(timeout)`
+    /// while the worker has fresh items in `read_rx`. `None` keeps the
+    /// pre-Plan-18-06 behavior (apply polls on its own cadence).
+    pub apply_waker: Option<Arc<mio::Waker>>,
 }
 
 /// Handle to a running worker thread. Returned by `start_worker`.
@@ -218,6 +224,7 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
         write_rx,
         new_client_rx,
         stop,
+        apply_waker,
     } = cfg;
 
     // Idle poll timeout: 1 second. Waker interrupts this for hot paths.
@@ -255,6 +262,10 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
 
         // 4. Process events.
         let mut to_close: Vec<u64> = Vec::new();
+        // Plan 18-06 follow-up: track whether we sent anything to apply this
+        // pass. If yes, fire `apply_waker` once at the end so apply doesn't
+        // sit in `event_loop.tick(timeout)` while there's work in `read_rx`.
+        let mut sent_to_apply = false;
         for ev in events.drain(..) {
             match ev {
                 IoEvent::Readable(slot) => {
@@ -278,7 +289,9 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
                         continue;
                     }
                     // Parse frames and push to read_tx.
-                    parse_and_push(slot, client, &read_tx);
+                    if parse_and_push(slot, client, &read_tx) > 0 {
+                        sent_to_apply = true;
+                    }
                 }
                 IoEvent::Writable(slot) => {
                     let client = match clients.get_mut(&slot) {
@@ -293,6 +306,16 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
                 IoEvent::WakerSentinel => {
                     // Re-loop: new work may have arrived on the channels.
                 }
+            }
+        }
+
+        // Plan 18-06: wake apply iff we actually pushed RingItems this pass.
+        // The waker is edge-triggered + idempotent; one wake per pass is
+        // enough to interrupt apply's `event_loop.tick()` and force it to
+        // re-drain `read_rx`.
+        if sent_to_apply {
+            if let Some(w) = &apply_waker {
+                let _ = w.wake();
             }
         }
 
@@ -321,14 +344,16 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
 }
 
 /// Parse frames from a client's `read_buf` and push `RingItem`s to `read_tx`.
-fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingItem>) {
+/// Returns the number of `RingItem`s sent so callers can wake apply if any
+/// were pushed.
+fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingItem>) -> usize {
     use crate::http_listener::parse_http_request;
     use crate::tcp_listener::parse_wire_request;
     use beava_core::row::Row;
     use beava_core::wire::CT_MSGPACK;
 
     if client.read_buf.is_empty() {
-        return;
+        return 0;
     }
 
     // Pre-deserialise body→Row for push variants (same as old IoPool worker).
@@ -357,6 +382,7 @@ fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingIte
     };
 
     let slot_u32 = slot as u32;
+    let mut sent: usize = 0;
 
     match client.proto {
         WorkerProto::Tcp => loop {
@@ -372,15 +398,21 @@ fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingIte
                         })
                         .is_err()
                     {
-                        return; // receiver dropped = shutting down
+                        return sent; // receiver dropped = shutting down
                     }
+                    sent += 1;
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    let _ = read_tx.send(RingItem::ParseError {
-                        slot_idx: slot_u32,
-                        kind: ParseErrorKind::TcpFrame,
-                    });
+                    if read_tx
+                        .send(RingItem::ParseError {
+                            slot_idx: slot_u32,
+                            kind: ParseErrorKind::TcpFrame,
+                        })
+                        .is_ok()
+                    {
+                        sent += 1;
+                    }
                     client.closed = true;
                     break;
                 }
@@ -399,21 +431,29 @@ fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingIte
                         })
                         .is_err()
                     {
-                        return;
+                        return sent;
                     }
+                    sent += 1;
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    let _ = read_tx.send(RingItem::ParseError {
-                        slot_idx: slot_u32,
-                        kind: ParseErrorKind::HttpProtocol,
-                    });
+                    if read_tx
+                        .send(RingItem::ParseError {
+                            slot_idx: slot_u32,
+                            kind: ParseErrorKind::HttpProtocol,
+                        })
+                        .is_ok()
+                    {
+                        sent += 1;
+                    }
                     client.closed = true;
                     break;
                 }
             }
         },
     }
+
+    sent
 }
 
 /// Flush `client.write_buf` to the socket via `backend.write()`.

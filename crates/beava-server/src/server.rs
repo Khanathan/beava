@@ -677,6 +677,11 @@ impl ServerV18 {
 /// Token assignments for the mio event loop.
 const TOKEN_HTTP_LISTENER: mio::Token = mio::Token(0);
 const TOKEN_TCP_LISTENER: mio::Token = mio::Token(1);
+/// Plan 18-06 follow-up: token used by `mio::Waker` registered with the
+/// apply thread's listener `EventLoop`. Workers fire this waker after they
+/// push `RingItem`s to `read_rx` so apply doesn't sleep in `tick(timeout)`
+/// while there's already work waiting in the channel.
+const TOKEN_APPLY_WAKER: mio::Token = mio::Token(usize::MAX);
 /// Client connections start at token 2; new ones increment this counter.
 ///
 /// **Dead post-Plan 18-05/18-06**: clients are owned by per-worker IoBackends
@@ -900,6 +905,28 @@ fn run_mio_event_loop(
     // (iopool_observer) compares parse/encode call sites against this id.
     iopool_observer::set_apply_tid();
 
+    // ── Apply-thread EventLoop: just the two listeners + the worker waker ────
+    // (Created BEFORE workers so we can register the apply-side waker with this
+    // event_loop's mio::Registry and clone it into each worker's config.)
+    let mut event_loop = match EventLoop::new() {
+        Ok(el) => el,
+        Err(e) => {
+            tracing::error!("apply thread: EventLoop::new failed: {e}");
+            return;
+        }
+    };
+
+    // Plan 18-06 follow-up: mio::Waker bound to apply's listener event_loop.
+    // Workers fire this after pushing RingItems to read_rx so apply doesn't
+    // sit in event_loop.tick(timeout) while the channel has work waiting.
+    let apply_waker = match mio::Waker::new(event_loop.registry(), TOKEN_APPLY_WAKER) {
+        Ok(w) => Arc::new(w),
+        Err(e) => {
+            tracing::error!("apply thread: mio::Waker::new failed: {e}");
+            return;
+        }
+    };
+
     // ── Spin up N per-worker continuous loops (Plan 18-05) ───────────────────
     let n_workers = default_io_threads();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -928,6 +955,7 @@ fn run_mio_event_loop(
             write_rx,
             new_client_rx,
             stop: Arc::clone(&stop),
+            apply_waker: Some(Arc::clone(&apply_waker)),
         };
         let handle = start_worker::<MioBackend>(cfg, new_client_tx, write_tx.clone());
         worker_wakers.push(handle.waker());
@@ -944,15 +972,6 @@ fn run_mio_event_loop(
         threads = n_workers,
         "Plan 18-05 per-worker continuous-loop pool started"
     );
-
-    // ── Apply-thread EventLoop: just the two listeners ───────────────────────
-    let mut event_loop = match EventLoop::new() {
-        Ok(el) => el,
-        Err(e) => {
-            tracing::error!("apply thread: EventLoop::new failed: {e}");
-            return;
-        }
-    };
     let mut http_listener = match HttpListener::from_std(http_listener_std) {
         Ok(l) => l,
         Err(e) => {
@@ -994,6 +1013,18 @@ fn run_mio_event_loop(
     let mut accept_seq: u64 = 0;
 
     tracing::info!(target: "beava.server", "apply thread: dispatcher loop started");
+
+    // Plan 18-06 follow-up: busy-spin on `read_rx.try_recv()` to minimize the
+    // pickup gap from worker → apply (target: ~50–200 ns vs ~2 µs for the
+    // kqueue waker round-trip). Listener events get a non-blocking poll every
+    // `LISTENER_POLL_EVERY` iterations. After `IDLE_BACKOFF_THRESHOLD`
+    // consecutive empty drains we drop into a blocking `tick()` to save CPU
+    // when the server is genuinely idle — `apply_waker` pulls us back out the
+    // moment a worker pushes a new RingItem.
+    const LISTENER_POLL_EVERY: u32 = 1024;
+    const IDLE_BACKOFF_THRESHOLD: u32 = 1024;
+    let mut iter_counter: u32 = 0;
+    let mut idle_iters: u32 = 0;
 
     loop {
         // ── 1. Drain read_rx — dispatch + encode + push to write_tx[w] ───────
@@ -1076,42 +1107,62 @@ fn run_mio_event_loop(
             }
         }
 
-        // ── 2. Poll listeners (1ms timeout — short to react to shutdown) ─────
-        let timeout = if drained == DRAIN_CAP {
-            // We hit the drain cap; there's likely more work. Don't block.
-            Some(Duration::from_millis(0))
+        // ── 2. Update idle/iter bookkeeping ──────────────────────────────────
+        iter_counter = iter_counter.wrapping_add(1);
+        if drained > 0 {
+            idle_iters = 0;
         } else {
-            Some(Duration::from_millis(1))
-        };
-        let tokens: Vec<mio::Token> = match event_loop.tick(timeout) {
-            Ok(events) => events.map(|e| e.token()).collect(),
-            Err(e) => {
-                tracing::warn!("apply thread: poll error: {e}");
-                continue;
-            }
-        };
+            idle_iters = idle_iters.saturating_add(1);
+        }
 
-        // ── 3. Accept new connections; route to workers round-robin ──────────
-        for token in tokens {
-            if token == TOKEN_HTTP_LISTENER {
-                accept_clients_to_workers(
-                    &mut http_listener,
-                    WorkerProto::Http,
-                    &workers,
-                    &mut slot_proto,
-                    &mut accept_seq,
-                );
-            } else if token == TOKEN_TCP_LISTENER {
-                accept_clients_to_workers(
-                    &mut tcp_listener,
-                    WorkerProto::Tcp,
-                    &workers,
-                    &mut slot_proto,
-                    &mut accept_seq,
-                );
+        // ── 3. Listener poll cadence ─────────────────────────────────────────
+        // Active path: every LISTENER_POLL_EVERY iters do a non-blocking
+        // `tick(0ms)` to handle accept without sleeping — apply stays in the
+        // tight try_recv loop the rest of the time.
+        // Idle path: after IDLE_BACKOFF_THRESHOLD consecutive empty drains
+        // we sleep in `tick(short timeout)` and rely on apply_waker
+        // (worker-fired) to interrupt as soon as work arrives.
+        let should_poll =
+            iter_counter % LISTENER_POLL_EVERY == 0 || idle_iters >= IDLE_BACKOFF_THRESHOLD;
+        if should_poll {
+            let timeout = if idle_iters >= IDLE_BACKOFF_THRESHOLD {
+                Some(Duration::from_millis(50))
+            } else {
+                Some(Duration::from_millis(0))
+            };
+            let tokens: Vec<mio::Token> = match event_loop.tick(timeout) {
+                Ok(events) => events.map(|e| e.token()).collect(),
+                Err(e) => {
+                    tracing::warn!("apply thread: poll error: {e}");
+                    continue;
+                }
+            };
+
+            for token in tokens {
+                if token == TOKEN_HTTP_LISTENER {
+                    accept_clients_to_workers(
+                        &mut http_listener,
+                        WorkerProto::Http,
+                        &workers,
+                        &mut slot_proto,
+                        &mut accept_seq,
+                    );
+                } else if token == TOKEN_TCP_LISTENER {
+                    accept_clients_to_workers(
+                        &mut tcp_listener,
+                        WorkerProto::Tcp,
+                        &workers,
+                        &mut slot_proto,
+                        &mut accept_seq,
+                    );
+                } else if token == TOKEN_APPLY_WAKER {
+                    // Worker pushed RingItems to read_rx; loop back to drain.
+                    // No work needed here — the next iteration's drain pass
+                    // will process the items.
+                }
+                // Client-token events stay on the workers' EventLoops; apply
+                // thread should never see them. Defensive: ignore unknown tokens.
             }
-            // Client-token events stay on the workers' EventLoops; apply
-            // thread should never see them. Defensive: ignore unknown tokens.
         }
 
         // ── 4. Shutdown check ────────────────────────────────────────────────

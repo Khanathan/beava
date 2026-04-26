@@ -42,6 +42,7 @@ fn spawn_n_workers_with_write(
                 write_rx,
                 new_client_rx,
                 stop: Arc::clone(&stop),
+                apply_waker: None,
             };
             start_worker::<MioBackend>(cfg, new_client_tx, write_tx)
         })
