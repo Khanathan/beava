@@ -669,4 +669,39 @@ mod tests {
         assert_eq!(Value::List(vec![]).type_of(), None);
         assert_eq!(Value::Map(BTreeMap::new()).type_of(), None);
     }
+
+    // ── Plan 18-11 Task 11.2: Value::Str(CompactString) ─────────────────────────
+
+    /// Plan 18-11 D-2: `Value::Str` payload is a `CompactString` (was `String`).
+    /// CompactString does inline-storage for strings ≤24 bytes — no heap alloc.
+    ///
+    /// This is a compile-fail RED until the variant payload is changed.
+    /// We don't measure the heap directly here (dhat is too heavy for unit
+    /// scope); the structural guarantee is encoded by the type-name check
+    /// + a CompactString-specific method call.
+    #[test]
+    fn value_str_uses_compact_string() {
+        use compact_str::CompactString;
+
+        // Construction from a literal must accept CompactString (zero-alloc
+        // for short strings) — this fails to compile if Value::Str still
+        // takes String.
+        let cs: CompactString = CompactString::from("US");
+        let v = Value::Str(cs.clone());
+
+        match &v {
+            Value::Str(s) => {
+                // Type assertion: the inner is CompactString, not String.
+                let _: &CompactString = s;
+                // Inline-storage check: short strings (≤24 bytes) live inline.
+                // CompactString::is_heap_allocated() is the canonical check.
+                assert!(
+                    !s.is_heap_allocated(),
+                    "short literal 'US' must be inline (no heap alloc)"
+                );
+                assert_eq!(s.as_str(), "US");
+            }
+            _ => panic!("expected Value::Str"),
+        }
+    }
 }
