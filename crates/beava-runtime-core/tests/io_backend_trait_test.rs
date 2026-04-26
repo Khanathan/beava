@@ -44,7 +44,9 @@ fn test_iobackend_trait_uniform() {
 
     // add_client must succeed.
     let slot_idx: u64 = 42;
-    backend.add_client(mio_stream, slot_idx).expect("add_client");
+    backend
+        .add_client(mio_stream, slot_idx)
+        .expect("add_client");
 
     // poll() until we get a Readable or Closed event (or timeout).
     let mut events: Vec<IoEvent> = Vec::new();
@@ -54,7 +56,9 @@ fn test_iobackend_trait_uniform() {
         backend
             .poll(Some(Duration::from_millis(50)), &mut events)
             .expect("poll");
-        let done = events.iter().any(|e| matches!(e, IoEvent::Readable(s) | IoEvent::Closed(s) if *s == slot_idx));
+        let done = events
+            .iter()
+            .any(|e| matches!(e, IoEvent::Readable(s) | IoEvent::Closed(s) if *s == slot_idx));
         if done || std::time::Instant::now() >= deadline {
             break;
         }
@@ -65,7 +69,10 @@ fn test_iobackend_trait_uniform() {
     let got_event = events
         .iter()
         .any(|e| matches!(e, IoEvent::Readable(s) | IoEvent::Closed(s) if *s == slot_idx));
-    assert!(got_event, "expected Readable or Closed for slot 42, got: {events:?}");
+    assert!(
+        got_event,
+        "expected Readable or Closed for slot 42, got: {events:?}"
+    );
 
     // read() should drain whatever data the client sent (or return 0 on EOF).
     let mut buf = BytesMut::new();

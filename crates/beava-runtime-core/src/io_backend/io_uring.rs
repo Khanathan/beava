@@ -126,8 +126,7 @@ impl IoUringBackend {
 
 impl IoBackend for IoUringBackend {
     fn new() -> std::io::Result<Self> {
-        let ring = IoUring::builder()
-            .build(SQ_DEPTH)?;
+        let ring = IoUring::builder().build(SQ_DEPTH)?;
 
         // Create an eventfd for cross-thread waking.
         let eventfd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -159,9 +158,10 @@ impl IoBackend for IoUringBackend {
             .user_data(user_data);
 
         unsafe {
-            self.ring.submission().push(&recv_entry).map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "io_uring SQ full")
-            })?;
+            self.ring
+                .submission()
+                .push(&recv_entry)
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "io_uring SQ full"))?;
         }
         self.ring.submit()?;
 
@@ -210,11 +210,7 @@ impl IoBackend for IoUringBackend {
                     // Drain the eventfd and signal sentinel.
                     let mut buf = [0u8; 8];
                     unsafe {
-                        libc::read(
-                            self.eventfd,
-                            buf.as_mut_ptr() as *mut libc::c_void,
-                            8,
-                        );
+                        libc::read(self.eventfd, buf.as_mut_ptr() as *mut libc::c_void, 8);
                     }
                     events_out.push(IoEvent::WakerSentinel);
                     // Re-arm the waker POLL_ADD.
@@ -232,13 +228,9 @@ impl IoBackend for IoUringBackend {
                         // Re-arm RECV for next data.
                         if let Some(c) = self.clients.get(&slot) {
                             let fd = c.stream.as_raw_fd();
-                            let re_recv = opcode::Recv::new(
-                                types::Fd(fd),
-                                std::ptr::null_mut(),
-                                0,
-                            )
-                            .build()
-                            .user_data(encode_user_data(TAG_RECV, slot));
+                            let re_recv = opcode::Recv::new(types::Fd(fd), std::ptr::null_mut(), 0)
+                                .build()
+                                .user_data(encode_user_data(TAG_RECV, slot));
                             unsafe {
                                 let _ = self.ring.submission().push(&re_recv);
                             }
@@ -322,12 +314,9 @@ impl IoUringBackend {
     /// Submit a POLL_ADD for the eventfd waker so the apply thread can
     /// interrupt the ring's `submit_and_wait`.
     fn submit_waker_poll(&mut self) -> std::io::Result<()> {
-        let poll_entry = opcode::PollAdd::new(
-            types::Fd(self.eventfd),
-            libc::POLLIN as u32,
-        )
-        .build()
-        .user_data(TAG_WAKER);
+        let poll_entry = opcode::PollAdd::new(types::Fd(self.eventfd), libc::POLLIN as u32)
+            .build()
+            .user_data(TAG_WAKER);
 
         unsafe {
             self.ring

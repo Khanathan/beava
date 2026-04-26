@@ -181,6 +181,9 @@ impl IoBackend for MioBackend {
         } else {
             Interest::READABLE
         };
-        let _ = self.poll.registry().reregister(&mut entry.stream, token, interest);
+        let _ = self
+            .poll
+            .registry()
+            .reregister(&mut entry.stream, token, interest);
     }
 }
