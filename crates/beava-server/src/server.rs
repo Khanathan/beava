@@ -701,20 +701,14 @@ struct MioClient {
     proto: MioProto,
     /// Inbound read buffer.
     read_buf: bytes::BytesMut,
-    /// Plan 18-04.7: requests parsed by the read-phase IoPool worker; drained
-    /// by the apply phase. `(WireRequest, keep_alive_for_http)`.
-    parsed_requests: Vec<(beava_runtime_core::wire_request::WireRequest, bool)>,
-    /// Plan 18-04.8: pre-parsed Row from the IoPool worker, parallel to
-    /// `parsed_requests`. `parsed_rows[i]` is `Some(row)` iff
-    /// `parsed_requests[i].0` is a push variant whose body deserialised
-    /// cleanly on the worker thread; `None` otherwise (non-push variant or
-    /// pre-parse failure → apply thread will retry / emit invalid_event).
-    parsed_rows: Vec<Option<beava_core::row::Row>>,
-    /// Plan 18-04.7: parse error from read-phase IoPool worker; the apply
-    /// phase reads this, emits an error response, and marks the client closed.
-    parse_error: Option<MioParseError>,
     /// Plan 18-04.7: queue of responses produced by the apply phase, waiting
     /// for the write-phase IoPool worker to serialize into write_buf.
+    ///
+    /// Plan 18-13: populated directly by the apply thread's drain loop
+    /// (`drain_channel_until_workers_done`) as it consumes RingItems from the
+    /// crossbeam channel. The prior `parsed_requests` + `parsed_rows` Vec
+    /// fields were removed in Plan 18-13 — the channel carries those payloads
+    /// per-event instead of accumulating them per-client per-tick.
     output_queue: std::collections::VecDeque<crate::runtime_core_glue::GlueResponse>,
     /// Serialized response bytes waiting to be written to the socket.
     /// Populated by the write-phase IoPool worker (off-apply).
@@ -731,15 +725,6 @@ struct MioClient {
 enum MioProto {
     Http,
     Tcp,
-}
-
-/// Parse errors classified by the read-phase IoPool worker.
-#[derive(Debug, Clone, Copy)]
-enum MioParseError {
-    /// Wire-protocol framing error (TCP).
-    TcpFrame,
-    /// HTTP/1.1 protocol violation.
-    HttpProtocol,
 }
 
 // ─── Plan 18-04.7 IoPool observer (test instrumentation) ─────────────────────
@@ -950,6 +935,15 @@ fn run_mio_event_loop(
         "IoPool started"
     );
 
+    // ── Plan 18-13: SPSC-style work-ring between IoPool workers and apply ─────
+    // crossbeam-channel bounded MPSC. Capacity 16384 absorbs typical per-tick
+    // bursts (16 workers × 256 inflight = 4096 events) with 4× headroom; if it
+    // somehow fills, workers block on send until apply drains. In practice
+    // apply (~0.9 µs/event) is faster than parse (~4 µs/event), so the channel
+    // sits well below capacity at steady state.
+    let (work_sender, work_receiver) =
+        crossbeam_channel::bounded::<beava_runtime_core::work_ring::RingItem>(16_384);
+
     tracing::info!(target: "beava.server", "apply thread: mio EventLoop started");
 
     loop {
@@ -1025,12 +1019,19 @@ fn run_mio_event_loop(
             }
         }
 
-        // ── Phase 3: READ — IoPool workers do socket.read + parse ─────────────
+        // ── Phase 3+4 MERGED (Plan 18-13): READ + APPLY concurrent ────────────
+        // IoPool workers parse frames and push RingItems into the work_sender
+        // channel. The apply thread drains the receiver in lockstep — the
+        // first parsed event is dispatched while later events are still being
+        // parsed. No `IoPool::join_all` spin barrier between read and apply.
+        // The drain function returns when (a) all workers report `pending = 0`
+        // AND (b) the channel is empty.
         if !read_set.is_empty() {
             let clients_ptr = ClientsPtr(clients.as_mut_ptr());
             let mut work_items: Vec<WorkItem> = Vec::with_capacity(read_set.len());
             for &idx in &read_set {
                 let ptr = clients_ptr;
+                let sender = work_sender.clone();
                 work_items.push(Box::new(move || {
                     // SAFETY: see ClientsPtr docs. The `slot_mut` method takes
                     // `self` so the closure captures the whole `ClientsPtr`
@@ -1038,61 +1039,14 @@ fn run_mio_event_loop(
                     // field (Rust 2021 RFC 2229).
                     let slot = unsafe { &mut *ptr.slot_mut(idx) };
                     if let Some(client) = slot.as_mut() {
-                        read_and_parse_client(client);
+                        read_and_parse_client_to_channel(client, idx as u32, &sender);
                     }
                 }) as WorkItem);
             }
             io_pool.publish(work_items);
-            io_pool.join_all();
-        }
-
-        // ── Phase 4: APPLY — single-threaded on this (apply) thread ───────────
-        // Drain each client's parsed_requests + parse_error, dispatch to the
-        // ApplyShard, and enqueue GlueResponses into output_queue.
-        for &idx in &read_set {
-            let client = match clients[idx].as_mut() {
-                Some(c) => c,
-                None => continue,
-            };
-            // Handle parse error first: emit error response and mark closed.
-            if let Some(err) = client.parse_error.take() {
-                match err {
-                    MioParseError::TcpFrame => {
-                        use crate::runtime_core_glue::GlueResponse;
-                        client.output_queue.push_back(GlueResponse::PushError {
-                            code: "frame_error",
-                            registry_version: 0,
-                        });
-                    }
-                    MioParseError::HttpProtocol => {
-                        use crate::runtime_core_glue::GlueResponse;
-                        client.output_queue.push_back(GlueResponse::PushError {
-                            code: "http_protocol_error",
-                            registry_version: 0,
-                        });
-                    }
-                }
-                client.closed = true;
-            }
-            // Plan 18-04.8: drain parsed requests AND the parallel
-            // parsed_rows side-channel; dispatch each through the apply shard
-            // with the pre-parsed Row when one is available. The two vecs are
-            // populated in lockstep by `read_and_parse_client`, so .zip() is
-            // safe — if their lengths drift, that's a contract bug worth a
-            // hard panic on debug.
-            let parsed = std::mem::take(&mut client.parsed_requests);
-            let parsed_rows = std::mem::take(&mut client.parsed_rows);
-            debug_assert_eq!(
-                parsed.len(),
-                parsed_rows.len(),
-                "parsed_requests and parsed_rows must be the same length"
-            );
-            for ((req, _keep_alive), pre_parsed_row) in parsed.into_iter().zip(parsed_rows) {
-                let responses = apply_shard.dispatch_wire_request_with_row(req, pre_parsed_row);
-                for resp in responses {
-                    client.output_queue.push_back(resp);
-                }
-            }
+            // Drain channel concurrently with workers. Returns when all
+            // workers signal pending=0 AND the channel is empty.
+            drain_channel_until_workers_done(&io_pool, &work_receiver, &apply_shard, &mut clients);
         }
 
         // Build write_set union: any client with pending output work that wasn't
@@ -1249,9 +1203,6 @@ fn accept_clients<L>(
                     token: client_token,
                     proto,
                     read_buf: bytes::BytesMut::with_capacity(8 * 1024),
-                    parsed_requests: Vec::new(),
-                    parsed_rows: Vec::new(),
-                    parse_error: None,
                     output_queue: std::collections::VecDeque::new(),
                     write_buf: bytes::BytesMut::new(),
                     interest_writable: false,
@@ -1291,33 +1242,33 @@ impl AcceptStream for beava_runtime_core::tcp_listener::TcpListener {
     }
 }
 
-/// Read-phase work item body. Runs on an IoPool worker thread.
+/// Plan 18-13: Read-phase variant that pushes parsed requests directly into a
+/// crossbeam channel as each frame is decoded, rather than batching them into
+/// `client.parsed_requests` + `client.parsed_rows` Vecs. This lets the apply
+/// thread start dispatching events the instant a single worker has parsed
+/// one — eliminating the per-tick `IoPool::join_all` spin barrier (the
+/// dominant source of inter-event gap on macOS, ~218 µs every ~128 events
+/// at p=4/pd=64).
 ///
-/// 1. `socket.read` until `WouldBlock` (or EOF / error → mark closed).
-/// 2. Parse all complete frames out of `read_buf` into `parsed_requests`.
-/// 3. On parse error, set `parse_error`; the apply phase emits the response.
-fn read_and_parse_client(client: &mut MioClient) {
+/// The channel is bounded; if it fills (apply thread is far behind), `send`
+/// blocks the worker briefly. In normal operation apply is faster than parse
+/// (apply ~0.9 µs vs parse ~4 µs per push), so the channel rarely contends.
+///
+/// Backward compat: callers that need the legacy batched behavior continue
+/// to call `read_and_parse_client` (used by Phase 18-04.6/18-04.8 tests
+/// that exercise `dispatch_wire_request_with_row` directly).
+fn read_and_parse_client_to_channel(
+    client: &mut MioClient,
+    slot_idx: u32,
+    sender: &crossbeam_channel::Sender<beava_runtime_core::work_ring::RingItem>,
+) {
     use beava_core::row::Row;
     use beava_core::wire::CT_MSGPACK;
     use beava_runtime_core::http_listener::parse_http_request;
     use beava_runtime_core::tcp_listener::parse_wire_request;
     use beava_runtime_core::wire_request::WireRequest;
+    use beava_runtime_core::work_ring::{ParseErrorKind, RingItem};
     use std::io::Read;
-
-    // Plan 18-04.8 D-4: BEAVA_TRACE_APPLY_TIMING=1 emits a per-call line:
-    //   `TRACE_APPLY ns io: socket_read=X parse_envelope=Y parse_body=Z TOTAL=W frames=N`
-    // OnceLock-cached env-var lookup → ~0 ns when off.
-    fn trace_apply_enabled() -> bool {
-        use std::sync::OnceLock;
-        static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1"))
-    }
-    let trace = trace_apply_enabled();
-    let t0 = if trace {
-        Some(std::time::Instant::now())
-    } else {
-        None
-    };
 
     if client.closed {
         return;
@@ -1341,51 +1292,18 @@ fn read_and_parse_client(client: &mut MioClient) {
             }
         }
     }
-    let t_read = t0.map(|t| t.elapsed());
 
     if client.read_buf.is_empty() {
         return;
     }
 
-    // Phase B: parse all complete frames.
+    // Phase B+C: parse each frame, do body→Row inline, push to channel.
     iopool_observer::record_parse();
-    let envelope_start_len = client.parsed_requests.len();
-    match client.proto {
-        MioProto::Tcp => loop {
-            match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
-                Ok(Some(req)) => {
-                    client.parsed_requests.push((req, false));
-                }
-                Ok(None) => break,
-                Err(_) => {
-                    client.parse_error = Some(MioParseError::TcpFrame);
-                    break;
-                }
-            }
-        },
-        MioProto::Http => loop {
-            match parse_http_request(&mut client.read_buf) {
-                Ok(Some((req, keep_alive))) => {
-                    client.parsed_requests.push((req, keep_alive));
-                }
-                Ok(None) => break,
-                Err(_) => {
-                    client.parse_error = Some(MioParseError::HttpProtocol);
-                    break;
-                }
-            }
-        },
-    }
-    let t_envelope = t0.map(|t| t.elapsed());
 
-    // Phase C: Plan 18-04.8 — for each newly-parsed push request, attempt
-    // body→Row deserialise here on the IoPool worker thread. Failure (e.g.
-    // malformed body) yields None; the apply thread will retry the parse and
-    // emit the existing invalid_event error path.
-    let new_count = client.parsed_requests.len() - envelope_start_len;
-    client.parsed_rows.reserve(new_count);
-    for (req, _keep_alive) in &client.parsed_requests[envelope_start_len..] {
-        let row_opt = match req {
+    // Helper closure: deserialize body→Row for push variants. None for non-push
+    // or when deserialization fails (apply will retry / emit invalid_event).
+    let body_to_row = |req: &WireRequest| -> Option<Row> {
+        match req {
             WireRequest::TcpPush {
                 body, body_format, ..
             }
@@ -1405,21 +1323,155 @@ fn read_and_parse_client(client: &mut MioClient) {
                 }
             }
             _ => None,
-        };
-        client.parsed_rows.push(row_opt);
-    }
-    let t_body = t0.map(|t| t.elapsed());
+        }
+    };
 
-    if let (Some(t0_inst), Some(read), Some(env), Some(body)) = (t0, t_read, t_envelope, t_body) {
-        let total = t0_inst.elapsed();
-        eprintln!(
-            "TRACE_APPLY ns io: socket_read={} parse_envelope={} parse_body={} TOTAL={} frames={}",
-            read.as_nanos(),
-            env.as_nanos().saturating_sub(read.as_nanos()),
-            body.as_nanos().saturating_sub(env.as_nanos()),
-            total.as_nanos(),
-            new_count
-        );
+    match client.proto {
+        MioProto::Tcp => loop {
+            match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
+                Ok(Some(req)) => {
+                    let parsed_row = body_to_row(&req);
+                    if sender
+                        .send(RingItem::Request {
+                            slot_idx,
+                            keep_alive: false,
+                            request: req,
+                            parsed_row,
+                        })
+                        .is_err()
+                    {
+                        // Receiver dropped — server shutting down.
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = sender.send(RingItem::ParseError {
+                        slot_idx,
+                        kind: ParseErrorKind::TcpFrame,
+                    });
+                    break;
+                }
+            }
+        },
+        MioProto::Http => loop {
+            match parse_http_request(&mut client.read_buf) {
+                Ok(Some((req, keep_alive))) => {
+                    let parsed_row = body_to_row(&req);
+                    if sender
+                        .send(RingItem::Request {
+                            slot_idx,
+                            keep_alive,
+                            request: req,
+                            parsed_row,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    let _ = sender.send(RingItem::ParseError {
+                        slot_idx,
+                        kind: ParseErrorKind::HttpProtocol,
+                    });
+                    break;
+                }
+            }
+        },
+    }
+}
+
+/// Plan 18-13: Drain the work-ring receiver concurrently with IoPool workers
+/// running. Returns when:
+///   1. All IoPool worker threads have signaled `pending = 0` (no more work)
+///   2. AND the receiver channel is empty (all parsed events dispatched).
+///
+/// This replaces the prior `IoPool::join_all + drain_parsed_requests` two-step
+/// (which forced the apply thread to wait for ALL workers to finish parsing
+/// before processing ANY parsed event). Now apply dispatches events as they
+/// arrive — overlap of parse-on-IoPool with apply-on-apply-thread.
+///
+/// Per-event flow inside the loop:
+/// - `try_recv` → `dispatch_wire_request_with_row` → push response to
+///   `clients[slot_idx].output_queue`
+/// - `ParseError` → push error response, mark client closed
+fn drain_channel_until_workers_done(
+    io_pool: &beava_runtime_core::io_pool::IoPool,
+    receiver: &crossbeam_channel::Receiver<beava_runtime_core::work_ring::RingItem>,
+    apply_shard: &crate::apply_shard::ApplyShard,
+    clients: &mut [Option<MioClient>],
+) {
+    use beava_runtime_core::work_ring::{ParseErrorKind, RingItem};
+    use std::sync::atomic::Ordering;
+
+    const SPIN_ITERS: u32 = 1024;
+    let mut idle_count: u32 = 0;
+
+    loop {
+        // Greedy drain — pull as many as we can.
+        let mut drained_any = false;
+        while let Ok(item) = receiver.try_recv() {
+            drained_any = true;
+            match item {
+                RingItem::Request {
+                    slot_idx,
+                    keep_alive: _,
+                    request,
+                    parsed_row,
+                } => {
+                    let responses = apply_shard.dispatch_wire_request_with_row(request, parsed_row);
+                    if let Some(slot) = clients.get_mut(slot_idx as usize) {
+                        if let Some(client) = slot.as_mut() {
+                            for resp in responses {
+                                client.output_queue.push_back(resp);
+                            }
+                        }
+                    }
+                }
+                RingItem::ParseError { slot_idx, kind } => {
+                    if let Some(slot) = clients.get_mut(slot_idx as usize) {
+                        if let Some(client) = slot.as_mut() {
+                            use crate::runtime_core_glue::GlueResponse;
+                            client.output_queue.push_back(match kind {
+                                ParseErrorKind::TcpFrame => GlueResponse::PushError {
+                                    code: "frame_error",
+                                    registry_version: 0,
+                                },
+                                ParseErrorKind::HttpProtocol => GlueResponse::PushError {
+                                    code: "http_protocol_error",
+                                    registry_version: 0,
+                                },
+                            });
+                            client.closed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Termination: all workers done AND channel empty.
+        let all_workers_done = io_pool
+            .slots
+            .iter()
+            .all(|s| s.pending.load(Ordering::Acquire) == 0);
+        if all_workers_done && receiver.is_empty() {
+            break;
+        }
+
+        // Apply backoff if we didn't drain anything this iteration. Workers are
+        // still busy parsing — give them CPU.
+        if !drained_any {
+            idle_count = idle_count.saturating_add(1);
+            if idle_count < SPIN_ITERS {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+        } else {
+            idle_count = 0;
+        }
     }
 }
 

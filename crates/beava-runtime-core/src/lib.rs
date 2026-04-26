@@ -25,6 +25,7 @@ pub mod wal_buffer;
 pub mod wal_lsn;
 pub mod wal_writer;
 pub mod wire_request;
+pub mod work_ring;
 
 pub use client::{Client, ParseError};
 pub use config::IoConfig;

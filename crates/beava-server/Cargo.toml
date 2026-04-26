@@ -181,6 +181,10 @@ bincode = { workspace = true }
 # Plan 18-11: hot-path optimization deps (CompactString in match arms / row construction).
 compact_str = { workspace = true }
 smallvec = { workspace = true }
+# Plan 18-13: bounded MPSC channel between IoPool worker threads (Senders) and
+# the apply thread (Receiver). Replaces the per-tick `MioClient.parsed_requests`
+# Vec batch publish + `IoPool::join_all` spin barrier with continuous event flow.
+crossbeam-channel = "0.5"
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]

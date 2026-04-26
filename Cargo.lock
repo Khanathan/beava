@@ -275,6 +275,7 @@ dependencies = [
  "clap",
  "compact_str",
  "criterion",
+ "crossbeam-channel",
  "http-body-util",
  "libc",
  "mio",
