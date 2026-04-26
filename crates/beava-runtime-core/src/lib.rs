@@ -16,6 +16,7 @@ pub mod client;
 pub mod config;
 pub mod event_loop;
 pub mod http_listener;
+pub mod io_backend;
 pub mod io_pool;
 pub mod io_thread;
 pub mod response;

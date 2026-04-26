@@ -50,10 +50,6 @@ smallvec = { workspace = true }
 name = "io_backend_trait_test"
 path = "tests/io_backend_trait_test.rs"
 
-[[test]]
-name = "io_backend_worker_test"
-path = "tests/io_backend_worker_test.rs"
-
 [[bench]]
 name = "parse_envelope_bench"
 harness = false

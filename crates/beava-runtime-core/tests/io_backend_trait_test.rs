@@ -9,13 +9,11 @@
 
 use beava_runtime_core::io_backend::{IoBackend, IoEvent, MioBackend, WakerHandle};
 use bytes::BytesMut;
-use std::io::Write;
-use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Smoke test: `MioBackend` can be constructed, client added, waker obtained,
-/// and poll returns without error.
+/// Smoke test: `MioBackend` can be constructed and basic operations succeed.
+/// Validates waker, add_client, poll, read, set_interest_writable, close.
 #[test]
 fn test_iobackend_trait_uniform() {
     // MioBackend::new() must work on any OS.
@@ -30,31 +28,46 @@ fn test_iobackend_trait_uniform() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
     let addr = listener.local_addr().unwrap();
 
-    // Connect a client from a background thread.
+    // Spawn a client that connects, writes data, then drops.
     let t = std::thread::spawn(move || {
-        let mut s = TcpStream::connect(addr).expect("connect");
-        // Write some data so the socket is readable.
+        use std::io::Write;
+        let mut s = std::net::TcpStream::connect(addr).expect("connect");
         s.write_all(b"hello").expect("write");
-        s
+        // Drop immediately so the server sees EOF (readable event).
+        drop(s);
     });
-    let (stream, _) = listener.accept().expect("accept");
-    // Discard the background TcpStream (keep it alive until thread finishes).
 
-    // Convert std::net::TcpStream → mio::net::TcpStream.
+    // Accept + set non-blocking before handing to mio.
+    let (stream, _) = listener.accept().expect("accept");
+    stream.set_nonblocking(true).expect("set_nonblocking");
     let mio_stream = mio::net::TcpStream::from_std(stream);
 
     // add_client must succeed.
     let slot_idx: u64 = 42;
     backend.add_client(mio_stream, slot_idx).expect("add_client");
 
-    // poll() with a short timeout. May get 0 or more events.
+    // poll() until we get a Readable or Closed event (or timeout).
     let mut events: Vec<IoEvent> = Vec::new();
-    backend
-        .poll(Some(Duration::from_millis(50)), &mut events)
-        .expect("poll");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        events.clear();
+        backend
+            .poll(Some(Duration::from_millis(50)), &mut events)
+            .expect("poll");
+        let done = events.iter().any(|e| matches!(e, IoEvent::Readable(s) | IoEvent::Closed(s) if *s == slot_idx));
+        if done || std::time::Instant::now() >= deadline {
+            break;
+        }
+    }
 
-    // read() should return data if the socket was readable.
-    // (Not always readable in first poll — that's fine; we just assert no panic.)
+    // We should have gotten at least a readable or closed event.
+    // (On some OSes EOF may show as readable; on others as closed.)
+    let got_event = events
+        .iter()
+        .any(|e| matches!(e, IoEvent::Readable(s) | IoEvent::Closed(s) if *s == slot_idx));
+    assert!(got_event, "expected Readable or Closed for slot 42, got: {events:?}");
+
+    // read() should drain whatever data the client sent (or return 0 on EOF).
     let mut buf = BytesMut::new();
     let _n = backend.read(slot_idx, &mut buf).unwrap_or(0);
 
@@ -65,11 +78,10 @@ fn test_iobackend_trait_uniform() {
     // close() must succeed.
     backend.close(slot_idx);
 
-    // Join the background thread (it holds the other side).
-    let _ = t.join();
+    t.join().expect("thread join");
 }
 
-/// Test that WakerHandle::wake() from a different thread causes poll() to return.
+/// Test that WakerHandle::wake() from a different thread causes poll() to return early.
 #[test]
 fn test_iobackend_waker_cross_thread_wake() {
     let mut backend = MioBackend::new().expect("MioBackend::new()");
