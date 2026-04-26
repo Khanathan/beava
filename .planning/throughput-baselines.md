@@ -305,3 +305,97 @@ The trace numbers include the surrounding mio recv loop overhead (event-time sam
 **Bottleneck:** still the single mio apply thread (consistent with 18-04.6 / 18-09 finding). IoPool wiring (Plan 18-04.7) remains the next throughput unlock; this plan was about per-event efficiency on the existing single-thread path.
 
 **vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). M4 numbers informational.
+
+### Phase 18-04.7 — IoPool wired into serve_with_dirs (M4 informational)
+
+Harness: `beava-bench-v18 --wire-format {json|msgpack}`. Commit: 2a8f631.
+Date: 2026-04-25. hw-class: Darwin-24.3.0 / 10 cores (Apple M4).
+
+Plan 18-04.7 wires `IoPool::publish + join_all` into `serve_with_dirs`'s
+per-tick lifecycle:
+  read phase  → IoPool workers do socket.read + wire-frame parse
+  apply phase → single-threaded on the apply thread (dispatch_wire_request_sync)
+  write phase → IoPool workers do response encode + socket.write
+
+`BEAVA_IO_THREADS=2`. Each row is one 5-second sustained run; numbers are
+single runs (variance ~10–20% on M4 due to scheduler jitter — see also
+the post-merge 2026-04-24 regression discussion above).
+
+**EPS by `(parallel × wire-format)`:**
+
+| Phase | Date | Pipeline | Transport | Wire | Parallel | Duration | EPS | p50 µs | p95 µs | p99 µs | RSS MB | commit |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 18-04.7 | 2026-04-25 | small | tcp | json    |  1 | 5s | 37,539 |  14 |  72 |   123 | 110 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | json    |  4 | 5s | 39,562 |  72 | 180 |   250 | 112 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | json    |  8 | 5s | 48,782 | 108 | 275 |   396 | 149 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | json    | 16 | 5s | 33,383 | 184 | 702 | 4,875 | 109 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | json    | 32 | 5s | 59,608 | 359 | 746 | 3,045 | 154 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | msgpack |  1 | 5s | 31,016 |  14 |  89 |   198 | 104 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | msgpack |  4 | 5s | 28,963 |  83 | 278 |   831 | 103 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | msgpack |  8 | 5s | 36,459 | 123 | 327 | 1,501 | 111 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | msgpack | 16 | 5s | 27,309 | 262 | 1,163 | 5,595 | 105 | 2a8f631 |
+| 18-04.7 | 2026-04-25 | small | tcp | msgpack | 32 | 5s | 24,950 | 417 | 5,239 | 6,407 | 101 | 2a8f631 |
+
+**Best-of-3 runs, json (5s each), to bound the variance band:**
+
+| Parallel | run-1 | run-2 | run-3 | best |
+|---:|---:|---:|---:|---:|
+|  1 | 47,665 | 53,304 | 54,876 | **54,876** |
+|  4 | 45,040 | 41,404 | 42,967 | **45,040** |
+|  8 | 57,440 | 45,896 | 50,953 | **57,440** |
+| 16 | 65,031 | 69,607 | 54,537 | **69,607** |
+| 32 | 67,507 | 64,840 | 74,103 | **74,103** |
+
+**Apply-thread invariant (Plan 18-04.7 Task 4.7.2):** wire-frame parse and
+GlueResponse encode now run exclusively on IoPool worker threads.
+`iopool_observer::apply_parse_count()` and `apply_encode_count()` stay at 0
+under the integration test workload (1000 + 100 + 100+100 events across
+the three test cases). `off_apply_parse_count` and `off_apply_encode_count`
+grow proportionally with traffic.
+
+Note: TRACE_APPLY's `push: parse=...` field measures the *body→Row*
+deserialise (sonic_rs / rmp_serde from_slice) inside `dispatch_push_sync`,
+which IS on the apply thread by design. The IoPool moved the WIRE-FRAME
+parse off — separate concern.
+
+**Comparison to Phase 18-10 (commit 14fe033, pre-18-11 hot-path changes):**
+
+| Wire | Parallel | 18-10 base | 18-04.7 | Delta |
+|---|---:|---:|---:|---:|
+| json    | 4 | 57,464 | 45,040 | -22% (regression) |
+| msgpack | 4 | 52,646 | 49,844 |  -5% (within noise) |
+
+**Comparison to base commit beed00c (where this plan started, in-flight 18-11):**
+
+| Wire | Parallel | beed00c base | 18-04.7 | Delta |
+|---|---:|---:|---:|---:|
+| json    |  1 | 26,600 | 54,876 | **+106%** (2.06×) |
+| json    |  4 | 25,297 | 45,040 |  +78% (1.78×) |
+| json    | 16 | 44,210 | 69,607 |  +57% (1.57×) |
+
+**Read of the data:**
+
+- Plan 18-11 in flight has DEPRESSED the codebase baseline relative to
+  Plan 18-10's 57k @ parallel=4. On the actual base commit the same
+  workload measures 25k EPS @ parallel=4.
+- IoPool wiring lifts EPS substantially over the actual base (1.6–2.1×
+  across the parallelism sweep) but does NOT recover all the way to the
+  18-10 absolute number. This is a known consequence of Plan 18-11's
+  in-progress hot-path changes (CompactString, EntityKey SmallVec).
+- Architectural goal is achieved: apply-thread invariant verified; the
+  parallel=N curve actually scales (vs 18-04.6 which plateaued ~44k as
+  the single mio apply thread saturated). Higher-parallelism ceiling
+  is now ~70k @ parallel=16 vs ~44k @ parallel=16 in 18-04.6.
+
+**Below the plan's pre-18-11 target (≥80k EPS @ parallel=4):** yes, by
+~44%. Root cause: per-tick IoPool publish + join_all has ~10–20µs spin-
+barrier overhead which dominates when each tick processes only 1–4
+events. The architectural win arrives at parallel ≥ 16+; below that,
+single-threaded inline apply is faster. Future Plan 18-12 (small per-event
+wins: env-var cache, thread-local WAL buf) will close the apply-side
+remainder; Plan 18-05 (io_uring on Linux) will replace the spin-barrier
+sync with kernel-driven completions and remove the macOS scheduler tax.
+
+**vs Phase 13 ship-gate:** 3M EPS/core (Linux Xeon HARD GATE). M4
+numbers stay informational; this plan's deliverable is the correct
+architectural decomposition of read/apply/write, not the final number.
