@@ -597,10 +597,13 @@ async fn run_push_worker(
             };
             let mut seq = 0_u64;
             let pdepth = pipeline_depth.max(1);
+            // Reused across batches; capacity matches pdepth so first-batch
+            // alloc is the only one. Holds per-event send timestamps for
+            // FIFO-paired real-latency measurement.
+            let mut send_times: Vec<Instant> = Vec::with_capacity(pdepth);
             while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
                 // ─── Build N frames + send all of them, then read N acks ─────
-                let batch_start = Instant::now();
-                let mut sent: usize = 0;
+                send_times.clear();
                 let mut send_err = false;
                 for _ in 0..pdepth {
                     if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
@@ -634,13 +637,21 @@ async fn run_push_worker(
                         content_type: ct,
                         payload: Bytes::from(payload_bytes),
                     };
+                    // Capture per-event send timestamp BEFORE write_frame so
+                    // p50/p95/p99 reflect real per-event wall-clock latency
+                    // (matches continuous-mode measurement). Previously this
+                    // path recorded `batch_total / N` (amortized CPU-time-per-
+                    // event), which under-reported real latency by ~190× at
+                    // pdepth=256 saturation.
+                    let send_ts = Instant::now();
                     if client.write_frame(&frame).await.is_err() {
                         send_err = true;
                         break;
                     }
-                    sent += 1;
+                    send_times.push(send_ts);
                     seq = seq.wrapping_add(1);
                 }
+                let sent = send_times.len();
                 if sent == 0 {
                     if send_err {
                         if let Ok(c) = TcpClient::connect(tcp_addr).await {
@@ -652,14 +663,15 @@ async fn run_push_worker(
                 // ─── Read N acks (strict FIFO order) ─────────────────────────
                 match client.read_n_frames(sent).await {
                     Ok(frames) => {
-                        let elapsed_us = batch_start.elapsed().as_micros() as u64;
-                        // Per-event amortised latency: total batch time / N events.
-                        let per_event_us = (elapsed_us / sent as u64).max(1);
+                        // Frames arrive in send order (TCP wire is strict
+                        // FIFO, no request_id). Pair each ack with its
+                        // matching send-timestamp for real per-event latency.
                         let mut h = push_hist.lock().await;
-                        for f in &frames {
+                        for (f, send_ts) in frames.iter().zip(send_times.iter()) {
                             if f.op == OP_PUSH {
                                 pushes.fetch_add(1, Ordering::Relaxed);
-                                let _ = h.record(per_event_us);
+                                let elapsed_us = send_ts.elapsed().as_micros() as u64;
+                                let _ = h.record(elapsed_us.max(1));
                             } else {
                                 errors.fetch_add(1, Ordering::Relaxed);
                             }
