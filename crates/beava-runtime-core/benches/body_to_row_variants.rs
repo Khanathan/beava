@@ -114,13 +114,13 @@ impl<'de> Visitor<'de> for LocalValueVisitor {
         Ok(Value::F64(v))
     }
     fn visit_str<E>(self, v: &str) -> Result<Value, E> {
-        Ok(Value::Str(v.to_string()))
+        Ok(Value::Str(CompactString::from(v)))
     }
     fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Value, E> {
-        Ok(Value::Str(v.to_string()))
+        Ok(Value::Str(CompactString::from(v)))
     }
     fn visit_string<E>(self, v: String) -> Result<Value, E> {
-        Ok(Value::Str(v))
+        Ok(Value::Str(CompactString::from(v)))
     }
     fn visit_bytes<E>(self, v: &[u8]) -> Result<Value, E> {
         Ok(Value::Bytes(v.to_vec()))
