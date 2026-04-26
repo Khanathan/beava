@@ -265,3 +265,142 @@ fn test_per_source_aggregation_index_is_populated() {
         .compiled_aggregations_for_source("Nonexistent")
         .is_empty());
 }
+
+/// Task 11.9 contract: snapshot byte-encoding is deterministic across
+/// independent runs over the same input event sequence — even though the
+/// underlying AggStateTable is now backed by a (non-deterministic-iter)
+/// HashMap. The fix: snapshot writer sorts entries via iter_sorted before
+/// serialising. This locks in the D-06 invariant under Plan 18-11 D-8.
+#[test]
+fn test_snapshot_byte_identical_for_same_inputs() {
+    use beava_core::agg_apply::apply_event_to_aggregations;
+    use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+    use beava_core::agg_op::{AggKind, AggOpDescriptor};
+    use beava_core::agg_state_table::AggStateTable;
+    use beava_core::registry::{
+        DerivationDescriptor, EventDescriptor, OutputKind, Registry,
+    };
+    use beava_core::registry_diff::PayloadNode;
+    use beava_core::schema::{DerivedSchema, EventSchema, FieldType};
+    use beava_core::snapshot_body::SnapshotBody;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn build_test_registry() -> Arc<Registry> {
+        let registry = Arc::new(Registry::new());
+        let mut fields = BTreeMap::new();
+        fields.insert("user_id".to_string(), FieldType::Str);
+        let event = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: EventSchema {
+                fields: fields.clone(),
+                optional_fields: vec![],
+            },
+            event_time_field: None,
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+        };
+        let agg = AggregationDescriptor {
+            node_name: "AggTxn".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["user_id".to_string()],
+            features: vec![NamedAggOp {
+                feature_name: "cnt".to_string(),
+                descriptor: AggOpDescriptor {
+                    kind: AggKind::Count,
+                    field: None,
+                    window_ms: None,
+                    where_expr: None,
+                    n: None,
+                    half_life_ms: None,
+                    sub_window_ms: None,
+                    sigma: None,
+                    sketch_params: None,
+                    ext: Default::default(),
+                },
+            }],
+        };
+        let mut deriv_schema = BTreeMap::new();
+        deriv_schema.insert("user_id".to_string(), FieldType::Str);
+        deriv_schema.insert("cnt".to_string(), FieldType::I64);
+        let deriv = DerivationDescriptor {
+            name: "AggTxn".to_string(),
+            output_kind: OutputKind::Table,
+            upstreams: vec!["Txn".to_string()],
+            ops: vec![],
+            schema: DerivedSchema {
+                fields: deriv_schema,
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["user_id".to_string()]),
+            registered_at_version: 0,
+        };
+        registry.apply_registration(
+            vec![PayloadNode::Event(event), PayloadNode::Derivation(deriv)],
+            vec![],
+            vec![],
+            vec![("AggTxn".to_string(), Arc::new(agg))],
+        );
+        registry
+    }
+
+    fn run_apply(registry: &Registry, users: &[&str]) -> BTreeMap<String, AggStateTable> {
+        let mut tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        for (i, u) in users.iter().enumerate() {
+            let row = Row::new().with_field("user_id", Value::Str((*u).into()));
+            apply_event_to_aggregations(
+                "Txn",
+                &row,
+                1000 + i as i64,
+                i as u64,
+                registry,
+                &mut tables,
+            );
+        }
+        tables
+    }
+
+    let registry = build_test_registry();
+
+    // Apply the same events twice in different runs. Snapshots must be
+    // byte-identical because iter_sorted yields a deterministic sequence
+    // regardless of HashMap insertion bucket layout.
+    let users = ["zebra", "alice", "monkey", "bob", "carol", "dan"];
+    let tables_a = run_apply(&registry, &users);
+    let tables_b = run_apply(&registry, &users);
+
+    let inner = registry.read();
+    let snap_a = SnapshotBody::from_live(&inner, &tables_a, 0, 0);
+    let snap_b = SnapshotBody::from_live(&inner, &tables_b, 0, 0);
+    drop(inner);
+
+    let bytes_a = snap_a.encode().expect("encode A");
+    let bytes_b = snap_b.encode().expect("encode B");
+    assert_eq!(
+        bytes_a, bytes_b,
+        "Snapshot bytes must be identical for the same input sequence"
+    );
+
+    // Also: round-trip preserves the same sorted order — re-snapshotting the
+    // restored tables yields identical bytes a third time.
+    let restored = SnapshotBody::decode(&bytes_a).expect("decode");
+    let mut restored_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+    for (node, entries) in restored.state_tables {
+        let mut t = AggStateTable::new();
+        for (k, ops) in entries {
+            t.entities.insert(k, ops);
+        }
+        restored_tables.insert(node, t);
+    }
+    let inner = registry.read();
+    let snap_c = SnapshotBody::from_live(&inner, &restored_tables, 0, 0);
+    drop(inner);
+    let bytes_c = snap_c.encode().expect("encode C");
+    assert_eq!(
+        bytes_a, bytes_c,
+        "Snapshot bytes must remain identical after restore-and-resnapshot"
+    );
+}
