@@ -165,8 +165,14 @@ impl ApplyShard {
 
             // ─── GET single ───────────────────────────────────────────────────
             WireRequest::HttpGetSingle { feature, key } => {
-                let trace_apply =
-                    std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+                fn trace_apply_enabled() -> bool {
+                    use std::sync::OnceLock;
+                    static FLAG: OnceLock<bool> = OnceLock::new();
+                    *FLAG.get_or_init(|| {
+                        std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1")
+                    })
+                }
+                let trace_apply = trace_apply_enabled();
                 let t0 = if trace_apply {
                     Some(std::time::Instant::now())
                 } else {
@@ -226,7 +232,17 @@ impl ApplyShard {
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
         // SPIKE: per-stage apply-path timing (env-gated, success-path-only).
-        let trace_apply = std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+        // OnceLock cache: HashMap-on-env-vars lookup happens once per process,
+        // not once per push. Saves ~200-500 ns per event when trace is OFF
+        // (the common production case).
+        fn trace_apply_enabled() -> bool {
+            use std::sync::OnceLock;
+            static FLAG: OnceLock<bool> = OnceLock::new();
+            *FLAG.get_or_init(|| {
+                std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1")
+            })
+        }
+        let trace_apply = trace_apply_enabled();
         let t0 = if trace_apply {
             Some(Instant::now())
         } else {

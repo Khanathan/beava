@@ -64,7 +64,18 @@ pub fn apply_event_to_aggregations(
     state_tables: &mut BTreeMap<String, AggStateTable>,
 ) {
     // SPIKE: per-substage timing of the agg hot path.
-    let trace = std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+    // Gated on its OWN env var (not BEAVA_TRACE_APPLY_TIMING) so that the
+    // outer dispatch_push_sync trace can run without the inner eprintln
+    // contaminating its agg-stage measurement.
+    // OnceLock cache: env::var lookup happens once per process, not per push.
+    fn trace_agg_enabled() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| {
+            std::env::var("BEAVA_TRACE_AGG_TIMING").ok().as_deref() == Some("1")
+        })
+    }
+    let trace = trace_agg_enabled();
     let t0 = if trace {
         Some(std::time::Instant::now())
     } else {
