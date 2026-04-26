@@ -155,6 +155,12 @@ pub struct RegistryInner {
     /// Built at register time alongside compiled_aggregations.
     /// Enables O(1) feature-name → aggregation lookup at query time.
     pub feature_index: BTreeMap<String, (String, usize)>,
+    /// Plan 18-11 D-7: precomputed per-source index. Maps a source event/table
+    /// name to the list of compiled aggregations that watch it. Lookup is
+    /// O(1) at apply time — replaces the prior linear scan over the
+    /// compiled_aggregations BTreeMap. Built register-time alongside
+    /// compiled_aggregations; tracked here so it survives Registry::clone.
+    pub aggregations_by_source: std::collections::HashMap<String, Vec<Arc<AggregationDescriptor>>>,
 }
 
 #[derive(Debug, Default)]
@@ -218,22 +224,28 @@ impl Registry {
         self.inner.read().feature_index.get(feature_name).cloned()
     }
 
-    /// Phase 5 Plan 05: Return all compiled AggregationDescriptors whose
-    /// `source_node_name` matches `source_name`.
+    /// Phase 5 Plan 05 + Plan 18-11 D-7: Return all compiled
+    /// AggregationDescriptors whose `source_node_name` matches `source_name`.
     ///
     /// Used by `apply_event_to_aggregations` to route an incoming event to every
     /// aggregation that watches the event's source.
+    ///
+    /// **Plan 18-11 D-7:** O(1) HashMap lookup via the precomputed
+    /// `aggregations_by_source` index. The returned Vec is cloned from the
+    /// index — cheap because (a) it's a Vec of Arc, and (b) typical apps
+    /// have 1-3 aggregations per source. Eliminates the prior
+    /// `compiled_aggregations.values().filter(...).collect()` scan that
+    /// allocated a fresh Vec on every push.
     pub fn compiled_aggregations_for_source(
         &self,
         source_name: &str,
     ) -> Vec<Arc<AggregationDescriptor>> {
         self.inner
             .read()
-            .compiled_aggregations
-            .values()
-            .filter(|d| d.source_node_name == source_name)
+            .aggregations_by_source
+            .get(source_name)
             .cloned()
-            .collect()
+            .unwrap_or_default()
     }
 
     /// Install descriptors into the registry under a write lock. Monotonically
@@ -339,9 +351,16 @@ impl Registry {
                         if let Some(chain) = chains_map.remove(&d.name) {
                             w.compiled_chains.insert(d.name.clone(), chain);
                         }
-                        // Phase 5 Plan 04: install compiled aggregation descriptor.
+                        // Phase 5 Plan 04 + Plan 18-11 D-7: install compiled
+                        // aggregation descriptor and update the per-source
+                        // index.
                         if let Some(agg) = agg_map.remove(&d.name) {
                             newly_inserted_agg_names.push(d.name.clone());
+                            // Update aggregations_by_source for O(1) lookup at apply time.
+                            w.aggregations_by_source
+                                .entry(agg.source_node_name.clone())
+                                .or_default()
+                                .push(Arc::clone(&agg));
                             w.compiled_aggregations.insert(d.name.clone(), agg);
                         }
                         w.derivations.insert(d.name.clone(), d);
