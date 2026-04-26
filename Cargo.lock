@@ -277,6 +277,8 @@ dependencies = [
  "compact_str",
  "criterion",
  "crossbeam-channel",
+ "fxhash",
+ "hashbrown 0.15.5",
  "http-body-util",
  "libc",
  "mio",

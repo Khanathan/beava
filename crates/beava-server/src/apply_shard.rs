@@ -428,6 +428,7 @@ impl ApplyShard {
                 .max_event_time_ms
                 .fetch_max(event_time_ms as u64, Ordering::Relaxed);
         }
+        let t_bk_counters = t0.map(|t| t.elapsed());
 
         // 10. Record event ID entry for retract routing.
         {
@@ -444,6 +445,7 @@ impl ApplyShard {
                 },
             );
         }
+        let t_bk_evid = t0.map(|t| t.elapsed());
 
         // 11. Cache on dedupe path.
         if let Some(key_str) = dedupe_str {
@@ -479,6 +481,8 @@ impl ApplyShard {
             Some(wal_b),
             Some(wal_a),
             Some(agg),
+            Some(bk_counters),
+            Some(bk_evid),
         ) = (
             t0,
             t_parse,
@@ -487,6 +491,8 @@ impl ApplyShard {
             t_wal_build,
             t_wal_append,
             t_agg,
+            t_bk_counters,
+            t_bk_evid,
         ) {
             let total = t0_inst.elapsed();
             // gap_ns = nanoseconds since previous push completed; "first" for the very first push on this thread.
@@ -495,7 +501,7 @@ impl ApplyShard {
                 None => "first".to_string(),
             };
             eprintln!(
-                "TRACE_APPLY ns push: gap={} parse={} lookup={} validate={} wal_build={} wal_append={} agg={} bookkeeping={} TOTAL={}",
+                "TRACE_APPLY ns push: gap={} parse={} lookup={} validate={} wal_build={} wal_append={} agg={} bk_counters={} bk_evid={} bk_dedupe={} bookkeeping={} TOTAL={}",
                 gap_str,
                 parse.as_nanos(),
                 (lookup - parse).as_nanos(),
@@ -503,6 +509,9 @@ impl ApplyShard {
                 (wal_b - validate).as_nanos(),
                 (wal_a - wal_b).as_nanos(),
                 (agg - wal_a).as_nanos(),
+                (bk_counters - agg).as_nanos(),
+                (bk_evid - bk_counters).as_nanos(),
+                (total - bk_evid).as_nanos(),
                 (total - agg).as_nanos(),
                 total.as_nanos()
             );

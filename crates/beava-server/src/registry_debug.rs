@@ -285,7 +285,12 @@ pub struct DevAggState {
     /// Phase 11.5 D-10 — event_id → entry index (see EventIdEntry).
     /// Populated at apply-time by /push/{event_name} and
     /// /push-table/{table_name}; consumed at retract-time.
-    pub event_id_index: Arc<Mutex<HashMap<u64, EventIdEntry>>>,
+    ///
+    /// Plan 18-06 follow-up: swapped from `std::collections::HashMap` (which
+    /// hashes `u64` keys with SipHash, ~150–250 ns/insert) to
+    /// `hashbrown::HashMap` with `FxBuildHasher` (~50–80 ns/insert). On the
+    /// per-push hot path the bookkeeping `bk_evid` substage drops by ~150 ns.
+    pub event_id_index: Arc<Mutex<hashbrown::HashMap<u64, EventIdEntry, fxhash::FxBuildHasher>>>,
 }
 
 impl DevAggState {
@@ -296,7 +301,9 @@ impl DevAggState {
             next_event_id: Arc::new(AtomicU64::new(0)),
             max_event_time_ms: Arc::new(AtomicU64::new(0)),
             temporal_stores: Arc::new(Mutex::new(HashMap::new())),
-            event_id_index: Arc::new(Mutex::new(HashMap::new())),
+            event_id_index: Arc::new(Mutex::new(hashbrown::HashMap::with_hasher(
+                fxhash::FxBuildHasher::default(),
+            ))),
         }
     }
 }
