@@ -144,6 +144,10 @@ name = "phase18_10_parse_optimization_test"
 path = "tests/phase18_10_parse_optimization_test.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase18_11_hot_path_test"
+path = "tests/phase18_11_hot_path_test.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
