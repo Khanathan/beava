@@ -232,6 +232,7 @@ fn test_per_source_aggregation_index_is_populated() {
                 ext: Default::default(),
             },
         }],
+        agg_id: 0,
     };
     let mut deriv_schema = BTreeMap::new();
     deriv_schema.insert("user_id".to_string(), FieldType::Str);
@@ -332,6 +333,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
                     ext: Default::default(),
                 },
             }],
+            agg_id: 0,
         };
         let mut deriv_schema = BTreeMap::new();
         deriv_schema.insert("user_id".to_string(), FieldType::Str);

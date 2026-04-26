@@ -75,6 +75,7 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
         compiled_aggregations: BTreeMap::new(),
         feature_index: BTreeMap::new(),
         aggregations_by_source: std::collections::HashMap::new(),
+        next_agg_id: 0,
     }
 }
 

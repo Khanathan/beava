@@ -879,6 +879,7 @@ pub fn compile_aggregations_from_nodes(
                     source_node_name: upstream_name.to_string(),
                     group_keys: keys.clone(),
                     features,
+                    agg_id: 0, // placeholder; registry overwrites at apply_registration
                 };
                 compiled.push((deriv.name.clone(), Arc::new(desc)));
             }

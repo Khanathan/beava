@@ -445,6 +445,7 @@ mod tests {
                     },
                 },
             ],
+            agg_id: 0, // placeholder; registry overwrites at apply_registration
         });
 
         // Derivation descriptor

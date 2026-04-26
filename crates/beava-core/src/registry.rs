@@ -179,6 +179,12 @@ pub struct RegistryInner {
     /// compiled_aggregations BTreeMap. Built register-time alongside
     /// compiled_aggregations; tracked here so it survives Registry::clone.
     pub aggregations_by_source: std::collections::HashMap<String, Vec<Arc<AggregationDescriptor>>>,
+    /// Plan 18-16: monotonic counter for stable u32 IDs assigned to each new
+    /// aggregation at `apply_registration` time. Used as O(1) Vec index into
+    /// `DevAggState.state_tables`. Increments by 1 per new aggregation; IDs
+    /// are stable for process lifetime (additive-only registration).
+    /// Default = 0; first aggregation gets ID 0.
+    pub next_agg_id: u32,
 }
 
 #[derive(Debug, Default)]
@@ -381,8 +387,17 @@ impl Registry {
                         // Phase 5 Plan 04 + Plan 18-11 D-7: install compiled
                         // aggregation descriptor and update the per-source
                         // index.
+                        // Plan 18-16: assign a stable u32 agg_id from the
+                        // monotonic counter and write it into the descriptor
+                        // before inserting. We must Arc::make_mut (or
+                        // clone+mutate) since the caller passed Arc<Desc>.
                         if let Some(agg) = agg_map.remove(&d.name) {
                             newly_inserted_agg_names.push(d.name.clone());
+                            // Assign the next available agg_id.
+                            let mut agg_owned = (*agg).clone();
+                            agg_owned.agg_id = w.next_agg_id;
+                            w.next_agg_id += 1;
+                            let agg = Arc::new(agg_owned);
                             // Update aggregations_by_source for O(1) lookup at apply time.
                             w.aggregations_by_source
                                 .entry(agg.source_node_name.clone())
@@ -995,6 +1010,7 @@ mod tests {
                     },
                 },
             ],
+            agg_id: 0, // placeholder; registry overwrites at apply_registration
         };
         let deriv = DerivationDescriptor {
             name: "AggTable".to_string(),
@@ -1084,6 +1100,7 @@ mod tests {
                     ext: Default::default(),
                 },
             }],
+            agg_id: 0,
         });
         let deriv_a = DerivationDescriptor {
             name: "AggA".to_string(),
@@ -1147,6 +1164,7 @@ mod tests {
                     ext: Default::default(),
                 },
             }],
+            agg_id: 0,
         });
         let deriv_b = DerivationDescriptor {
             name: "AggB".to_string(),
@@ -1229,6 +1247,7 @@ mod tests {
                     ext: Default::default(),
                 },
             }],
+            agg_id: 0, // placeholder; registry overwrites at apply_registration
         };
         let agg_arc = Arc::new(agg_desc);
 

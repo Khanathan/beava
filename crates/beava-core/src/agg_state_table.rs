@@ -389,6 +389,7 @@ mod tests {
                     descriptor: d.clone(),
                 })
                 .collect(),
+            agg_id: 0,
         }
     }
 

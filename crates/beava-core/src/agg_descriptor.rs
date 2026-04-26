@@ -41,6 +41,11 @@ pub struct NamedAggOp {
 /// The schema produced by this aggregation is computed by
 /// `agg_schema::propagate_aggregation_schema`. Plan 05-04 caches
 /// `Arc<AggregationDescriptor>` in `RegistryInner.compiled_aggregations`.
+///
+/// Plan 18-16: `agg_id` is a stable u32 assigned at registration time by the
+/// registry's monotonic `next_agg_id` counter. Used as an O(1) index into the
+/// `Vec<AggStateTable>` that replaces the BTreeMap in `DevAggState.state_tables`.
+/// Snapshot serializer skips it (re-derived from registry order on replay).
 #[derive(Debug, Clone)]
 pub struct AggregationDescriptor {
     /// Derivation node name — the Table this aggregation produces.
@@ -52,6 +57,12 @@ pub struct AggregationDescriptor {
     /// Ordered named features; `feature_name` must be unique within the list
     /// and must not collide with any `group_key`.
     pub features: Vec<NamedAggOp>,
+    /// Plan 18-16: stable u32 ID assigned at registration by `RegistryInner.next_agg_id`.
+    /// Used as O(1) array index into `Vec<AggStateTable>`. Skipped in snapshot
+    /// serialization; re-derived by registry monotonic counter on WAL replay.
+    /// Default is 0 (placeholder); the registry always overwrites this at
+    /// `apply_registration` time for newly-inserted aggregations.
+    pub agg_id: u32,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -106,6 +117,7 @@ mod tests {
                 feature_name: "cnt".to_string(),
                 descriptor: count_desc(),
             }],
+            agg_id: 0,
         };
         assert_eq!(desc.node_name, "user_stats");
         assert_eq!(desc.source_node_name, "transactions");

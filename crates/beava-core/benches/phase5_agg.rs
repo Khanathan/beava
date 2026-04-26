@@ -182,6 +182,7 @@ fn make_agg_descriptor(
                 descriptor: desc,
             })
             .collect(),
+        agg_id: 0,
     }
 }
 

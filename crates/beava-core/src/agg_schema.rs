@@ -223,6 +223,7 @@ mod tests {
             source_node_name: source.to_string(),
             group_keys: group_keys.iter().map(|s| s.to_string()).collect(),
             features,
+            agg_id: 0,
         }
     }
 
@@ -485,6 +486,7 @@ mod tests {
             source_node_name: "txn".to_string(),
             group_keys: vec!["missing_key1".to_string(), "missing_key2".to_string()],
             features: vec![named("total", AggKind::Sum, Some("no_such_field"))],
+            agg_id: 0,
         };
         let errs = assert_err(propagate_aggregation_schema(&upstream, &desc));
         assert!(

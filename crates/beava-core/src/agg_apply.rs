@@ -199,6 +199,7 @@ mod tests {
                     descriptor: d.clone(),
                 })
                 .collect(),
+            agg_id: 0,
         }
     }
 
@@ -653,6 +654,7 @@ mod registry_source_tests {
                     ext: Default::default(),
                 },
             }],
+            agg_id: 0,
         }
     }
 
