@@ -126,11 +126,11 @@ fn cast_to_str(v: &Value) -> Value {
     match v {
         Value::Null => Value::Null,
         Value::Str(s) => Value::Str(s.clone()),
-        Value::I64(n) => Value::Str(n.to_string()),
-        Value::F64(f) => Value::Str(f.to_string()),
-        Value::Bool(b) => Value::Str(if *b { "true" } else { "false" }.to_string()),
+        Value::I64(n) => Value::Str(n.to_string().into()),
+        Value::F64(f) => Value::Str(f.to_string().into()),
+        Value::Bool(b) => Value::Str((if *b { "true" } else { "false" }).into()),
         Value::Bytes(_) => Value::Null, // no implicit bytes→str without encoding spec
-        Value::Datetime(ms) => Value::Str(ms.to_string()),
+        Value::Datetime(ms) => Value::Str(ms.to_string().into()),
         Value::Json(_) => Value::Null,
         Value::List(_) | Value::Map(_) => Value::Null,
     }
@@ -242,11 +242,11 @@ mod tests {
     #[test]
     fn isnull_of_str_is_bool_false() {
         assert_eq!(
-            isnull_eval(&[Value::Str("hello".to_string())]),
+            isnull_eval(&[Value::Str("hello".into())]),
             Value::Bool(false)
         );
         assert_eq!(
-            isnull_eval(&[Value::Str(String::new())]),
+            isnull_eval(&[Value::Str(compact_str::CompactString::new(""))]),
             Value::Bool(false)
         );
     }
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn cast_int_to_float_ok() {
         assert_eq!(
-            cast_eval(&[Value::I64(7), Value::Str("float".to_string())]),
+            cast_eval(&[Value::I64(7), Value::Str("float".into())]),
             Value::F64(7.0)
         );
     }
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn cast_str_to_int_parses_numeric() {
         assert_eq!(
-            cast_eval(&[Value::Str("42".to_string()), Value::Str("int".to_string())]),
+            cast_eval(&[Value::Str("42".into()), Value::Str("int".into())]),
             Value::I64(42)
         );
     }
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn cast_str_to_int_nonnumeric_is_null() {
         assert_eq!(
-            cast_eval(&[Value::Str("abc".to_string()), Value::Str("int".to_string())]),
+            cast_eval(&[Value::Str("abc".into()), Value::Str("int".into())]),
             Value::Null
         );
     }
@@ -284,19 +284,19 @@ mod tests {
     #[test]
     fn cast_null_any_is_null() {
         assert_eq!(
-            cast_eval(&[Value::Null, Value::Str("int".to_string())]),
+            cast_eval(&[Value::Null, Value::Str("int".into())]),
             Value::Null
         );
         assert_eq!(
-            cast_eval(&[Value::Null, Value::Str("str".to_string())]),
+            cast_eval(&[Value::Null, Value::Str("str".into())]),
             Value::Null
         );
         assert_eq!(
-            cast_eval(&[Value::Null, Value::Str("float".to_string())]),
+            cast_eval(&[Value::Null, Value::Str("float".into())]),
             Value::Null
         );
         assert_eq!(
-            cast_eval(&[Value::Null, Value::Str("bool".to_string())]),
+            cast_eval(&[Value::Null, Value::Str("bool".into())]),
             Value::Null
         );
     }
@@ -305,11 +305,11 @@ mod tests {
     #[test]
     fn cast_unknown_type_is_null() {
         assert_eq!(
-            cast_eval(&[Value::I64(1), Value::Str("blob".to_string())]),
+            cast_eval(&[Value::I64(1), Value::Str("blob".into())]),
             Value::Null
         );
         assert_eq!(
-            cast_eval(&[Value::I64(1), Value::Str("bytes".to_string())]),
+            cast_eval(&[Value::I64(1), Value::Str("bytes".into())]),
             Value::Null
         );
     }
@@ -319,11 +319,11 @@ mod tests {
     fn cast_float_to_int_truncates() {
         // Truncation toward zero: 3.9 → 3, -3.9 → -3
         assert_eq!(
-            cast_eval(&[Value::F64(3.9), Value::Str("int".to_string())]),
+            cast_eval(&[Value::F64(3.9), Value::Str("int".into())]),
             Value::I64(3)
         );
         assert_eq!(
-            cast_eval(&[Value::F64(-3.9), Value::Str("int".to_string())]),
+            cast_eval(&[Value::F64(-3.9), Value::Str("int".into())]),
             Value::I64(-3)
         );
     }
@@ -332,11 +332,11 @@ mod tests {
     #[test]
     fn cast_bool_to_int() {
         assert_eq!(
-            cast_eval(&[Value::Bool(true), Value::Str("int".to_string())]),
+            cast_eval(&[Value::Bool(true), Value::Str("int".into())]),
             Value::I64(1)
         );
         assert_eq!(
-            cast_eval(&[Value::Bool(false), Value::Str("int".to_string())]),
+            cast_eval(&[Value::Bool(false), Value::Str("int".into())]),
             Value::I64(0)
         );
     }
@@ -345,8 +345,8 @@ mod tests {
     #[test]
     fn cast_int_to_str() {
         assert_eq!(
-            cast_eval(&[Value::I64(42), Value::Str("str".to_string())]),
-            Value::Str("42".to_string())
+            cast_eval(&[Value::I64(42), Value::Str("str".into())]),
+            Value::Str("42".into())
         );
     }
 
@@ -358,8 +358,8 @@ mod tests {
         assert_eq!(
             cast_eval(&[
                 Value::I64(1),
-                Value::Str("int".to_string()),
-                Value::Str("extra".to_string())
+                Value::Str("int".into()),
+                Value::Str("extra".into())
             ]),
             Value::Null
         );

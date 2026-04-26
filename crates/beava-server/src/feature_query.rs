@@ -288,7 +288,7 @@ pub(crate) fn value_to_json(v: Value) -> serde_json::Value {
         Value::F64(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s),
+        Value::Str(s) => serde_json::Value::String(s.into_string()),
         Value::Bytes(_) => serde_json::Value::Null,
         Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
         Value::Json(j) => j,
@@ -486,7 +486,7 @@ mod tests {
             let event_id = dev_state.next_event_id.fetch_add(1, Ordering::SeqCst);
             let event_time_ms = 1_000_000_i64 + i as i64;
             let row = Row::new()
-                .with_field("user_id", Value::Str(user_id.to_string()))
+                .with_field("user_id", Value::Str(user_id.into()))
                 .with_field("amount", Value::F64(amount))
                 .with_field("event_time", Value::I64(event_time_ms));
             apply_event_to_aggregations(

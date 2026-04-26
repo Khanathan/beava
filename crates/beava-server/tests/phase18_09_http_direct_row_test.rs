@@ -17,7 +17,7 @@ fn test_parse_json_directly_into_row() {
     let row: Row =
         serde_json::from_slice(json_bytes).expect("serde_json::from_slice::<Row> should succeed");
 
-    assert_eq!(row.get("user_id"), Some(&Value::Str("u1".to_string())));
+    assert_eq!(row.get("user_id"), Some(&Value::Str("u1".into())));
     assert_eq!(row.get("count"), Some(&Value::I64(7)));
     // amount 42.5 → F64
     match row.get("amount") {
@@ -52,7 +52,7 @@ fn test_parse_msgpack_directly_into_row() {
     let row: Row =
         rmp_serde::from_slice(&msgpack_bytes).expect("rmp_serde::from_slice::<Row> should succeed");
 
-    assert_eq!(row.get("user_id"), Some(&Value::Str("u1".to_string())));
+    assert_eq!(row.get("user_id"), Some(&Value::Str("u1".into())));
     assert_eq!(row.get("count"), Some(&Value::I64(7)));
     assert_eq!(row.get("active"), Some(&Value::Bool(true)));
     match row.get("amount") {
@@ -78,7 +78,7 @@ fn test_row_deserialize_null_value() {
     let json_bytes = br#"{"a": null, "b": "hello"}"#;
     let row: Row = serde_json::from_slice(json_bytes).expect("deserialize");
     assert_eq!(row.get("a"), Some(&Value::Null));
-    assert_eq!(row.get("b"), Some(&Value::Str("hello".to_string())));
+    assert_eq!(row.get("b"), Some(&Value::Str("hello".into())));
 }
 
 /// Task 9.3: empty object deserializes to empty Row.

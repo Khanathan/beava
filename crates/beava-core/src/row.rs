@@ -13,6 +13,7 @@
 //!   `self` and return the updated `Row`. This satisfies SDK-OPS-09: derivation
 //!   op steps construct a new `Row` per step rather than mutating shared state.
 
+use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -22,10 +23,19 @@ use std::collections::BTreeMap;
 ///
 /// Mirrors `FieldType` one-to-one (see `type_of()`). `Null` has no `FieldType`
 /// equivalent and signals absence/unknown per SQL three-valued logic (§D-04).
+///
+/// # Plan 18-11 D-2: Value::Str payload is CompactString
+///
+/// Strings ≤24 bytes live inline (no heap allocation). For typical fraud event
+/// values (account_id "acc_123", country "US", merchant "M_ACME") this
+/// eliminates the per-field String heap traffic that dominated the body→Row
+/// path (measured ~50% of total deserialise time before this change).
+/// CompactString implements `Deref<Target=str>` so most read sites work
+/// unchanged via auto-deref.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Value {
     Null,
-    Str(String),
+    Str(CompactString),
     I64(i64),
     /// NaN-safe: two `F64(NaN)` values are never equal (see `PartialEq` impl).
     F64(f64),
@@ -63,7 +73,7 @@ pub fn json_value_to_beava_value(jv: serde_json::Value) -> Value {
                 Value::Null
             }
         }
-        serde_json::Value::String(s) => Value::Str(s),
+        serde_json::Value::String(s) => Value::Str(CompactString::from(s)),
         serde_json::Value::Array(arr) => {
             Value::List(arr.into_iter().map(json_value_to_beava_value).collect())
         }
@@ -374,13 +384,13 @@ impl<'de> serde::de::Visitor<'de> for BeavaValueVisitor {
         Ok(Value::F64(v))
     }
     fn visit_str<E>(self, v: &str) -> Result<Value, E> {
-        Ok(Value::Str(v.to_string()))
+        Ok(Value::Str(CompactString::from(v)))
     }
     fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Value, E> {
-        Ok(Value::Str(v.to_string()))
+        Ok(Value::Str(CompactString::from(v)))
     }
     fn visit_string<E>(self, v: String) -> Result<Value, E> {
-        Ok(Value::Str(v))
+        Ok(Value::Str(CompactString::from(v)))
     }
     fn visit_bytes<E>(self, v: &[u8]) -> Result<Value, E> {
         // Bytes wire-type is rare in events; preserve as Bytes for any caller

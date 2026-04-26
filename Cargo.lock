@@ -25,6 +25,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "anes"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -197,7 +203,10 @@ dependencies = [
  "ahash",
  "bincode",
  "bytes",
+ "compact_str",
  "criterion",
+ "fxhash",
+ "hashbrown 0.15.5",
  "haversine",
  "ordered-float",
  "parking_lot",
@@ -205,6 +214,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "smallvec",
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
@@ -260,6 +270,7 @@ dependencies = [
  "bincode",
  "bytes",
  "clap",
+ "compact_str",
  "criterion",
  "http-body-util",
  "libc",
@@ -270,6 +281,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "smallvec",
  "sonic-rs",
  "tempfile",
  "thiserror 1.0.69",
@@ -684,6 +696,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -740,7 +761,10 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash",
+ "serde",
 ]
 
 [[package]]

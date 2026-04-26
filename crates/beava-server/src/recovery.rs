@@ -442,7 +442,7 @@ fn json_object_to_row(jv: &serde_json::Value) -> Row {
                         Value::Null
                     }
                 }
-                serde_json::Value::String(s) => Value::Str(s.clone()),
+                serde_json::Value::String(s) => Value::Str(s.clone().into()),
                 _ => Value::Null,
             };
             row = row.with_field(field.as_str(), v);

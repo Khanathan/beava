@@ -71,10 +71,10 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
             Literal::Bool(b) => Value::Bool(*b),
             Literal::Int(n) => Value::I64(*n),
             Literal::Float(f) => Value::F64(*f),
-            Literal::Str(s) => Value::Str(s.clone()),
+            Literal::Str(s) => Value::Str(s.into()),
             // BareIdent is the type-arg to cast(x, float): evaluator converts to
             // Str so cast_eval receives Value::Str("float") matching its contract.
-            Literal::BareIdent(s) => Value::Str(s.clone()),
+            Literal::BareIdent(s) => Value::Str(s.into()),
         },
 
         // ── Unary NOT ─────────────────────────────────────────────────────────
@@ -405,7 +405,7 @@ mod tests {
     fn eval_literal_str() {
         assert_eq!(
             eval(&lit_str("hi"), &Row::new()),
-            Value::Str("hi".to_string())
+            Value::Str("hi".into())
         );
     }
 
@@ -415,7 +415,7 @@ mod tests {
     fn eval_literal_bare_ident_becomes_str() {
         assert_eq!(
             eval(&lit_bare("float"), &Row::new()),
-            Value::Str("float".to_string())
+            Value::Str("float".into())
         );
     }
 
@@ -794,13 +794,13 @@ mod tests {
         let expr = parse("((amount > 100) and (merchant_id == 'M123'))").expect("should parse");
         let row_match = row_with(&[
             ("amount", Value::I64(150)),
-            ("merchant_id", Value::Str("M123".to_string())),
+            ("merchant_id", Value::Str("M123".into())),
         ]);
         assert_eq!(eval(&expr, &row_match), Value::Bool(true));
 
         let row_no_match = row_with(&[
             ("amount", Value::I64(150)),
-            ("merchant_id", Value::Str("OTHER".to_string())),
+            ("merchant_id", Value::Str("OTHER".into())),
         ]);
         assert_eq!(eval(&expr, &row_no_match), Value::Bool(false));
     }
@@ -860,7 +860,7 @@ mod tests {
             any::<bool>().prop_map(Value::Bool),
             any::<i32>().prop_map(|n| Value::I64(n as i64)),
             (-1000.0f64..1000.0f64).prop_map(Value::F64),
-            "[a-zA-Z0-9_]*".prop_map(Value::Str),
+            "[a-zA-Z0-9_]*".prop_map(|s: String| Value::Str(s.into())),
         ]
     }
 

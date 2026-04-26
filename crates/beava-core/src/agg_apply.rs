@@ -306,7 +306,7 @@ mod tests {
         );
 
         let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
-        let row = Row::new().with_field("user_id", Value::Str("alice".to_string()));
+        let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
         apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
 
@@ -333,7 +333,7 @@ mod tests {
         let registry = make_registry_with_agg("Transaction", agg);
 
         let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
-        let row = Row::new().with_field("user_id", Value::Str("alice".to_string()));
+        let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
         for i in 0..10 {
             apply_event_to_aggregations(
@@ -423,7 +423,7 @@ mod tests {
 
         let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
         let row = Row::new()
-            .with_field("user_id", Value::Str("alice".to_string()))
+            .with_field("user_id", Value::Str("alice".into()))
             .with_field("amount", Value::F64(50.0)); // below threshold
 
         apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
@@ -458,7 +458,8 @@ mod tests {
 
         let events: Vec<(Row, i64)> = (0..5)
             .map(|i| {
-                let row = Row::new().with_field("user_id", Value::Str(format!("user_{}", i % 2)));
+                let row = Row::new()
+                    .with_field("user_id", Value::Str(format!("user_{}", i % 2).into()));
                 (row, 1000 + i)
             })
             .collect();
@@ -496,7 +497,7 @@ mod tests {
         let amounts = [10.0_f64, 20.0, 30.0, 40.0, 50.0];
         for (i, &amt) in amounts.iter().enumerate() {
             let row = Row::new()
-                .with_field("user_id", Value::Str("alice".to_string()))
+                .with_field("user_id", Value::Str("alice".into()))
                 .with_field("amount", Value::F64(amt));
             apply_event_to_aggregations(
                 "Transaction",
@@ -541,7 +542,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let row = Row::new().with_field("user_id", Value::Str("alice".to_string()));
+        let row = Row::new().with_field("user_id", Value::Str("alice".into()));
         let t = 1000_i64;
 
         // Apply with event_id=0.

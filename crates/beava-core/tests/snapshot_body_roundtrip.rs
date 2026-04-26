@@ -205,7 +205,7 @@ fn value_serde_roundtrip_each_variant() {
         Value::I64(42),
         Value::F64(2.5),
         Value::Bool(true),
-        Value::Str("hello".to_string()),
+        Value::Str("hello".into()),
         Value::Bytes(vec![0x01, 0x02, 0x03]),
         Value::Datetime(1_700_000_000_000),
     ];

@@ -1157,7 +1157,7 @@ mod tests {
     }
 
     fn row_status(s: &str) -> Row {
-        Row::new().with_field("status", Value::Str(s.to_string()))
+        Row::new().with_field("status", Value::Str(s.into()))
     }
 
     /// 5 rows, 3 match predicate "(amount > 100)" → Count == I64(3).

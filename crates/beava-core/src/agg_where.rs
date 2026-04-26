@@ -47,7 +47,7 @@ mod tests {
     }
 
     fn row_with_str(field: &str, s: &str) -> Row {
-        Row::new().with_field(field, Value::Str(s.to_string()))
+        Row::new().with_field(field, Value::Str(s.into()))
     }
 
     // ── T-05-02-02 guard: Null → false (three-valued null drop) ──────────────

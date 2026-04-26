@@ -44,10 +44,10 @@ enum CastTarget {
 impl CastTarget {
     fn as_value_str(self) -> Value {
         match self {
-            CastTarget::Str => Value::Str("str".to_string()),
-            CastTarget::Int => Value::Str("int".to_string()),
-            CastTarget::Float => Value::Str("float".to_string()),
-            CastTarget::Bool => Value::Str("bool".to_string()),
+            CastTarget::Str => Value::Str("str".into()),
+            CastTarget::Int => Value::Str("int".into()),
+            CastTarget::Float => Value::Str("float".into()),
+            CastTarget::Bool => Value::Str("bool".into()),
         }
     }
 }
@@ -263,7 +263,7 @@ fn json_to_value(v: &serde_json::Value) -> Value {
                 Value::Null
             }
         }
-        serde_json::Value::String(s) => Value::Str(s.clone()),
+        serde_json::Value::String(s) => Value::Str(s.clone().into()),
         _ => Value::Null, // Array / Object → Null (not a scalar)
     }
 }
@@ -479,7 +479,7 @@ mod tests {
         type_map.insert("amount".to_string(), "int".to_string());
         let ops = vec![OpNode::Cast { type_map }];
         let (chain, _) = fixtures::compile_ok(&input, ops);
-        let row = fixtures::row(&[("amount", Value::Str("42".to_string()))]);
+        let row = fixtures::row(&[("amount", Value::Str("42".into()))]);
         let result = chain.apply(row).unwrap();
         assert_eq!(
             result.get("amount"),
@@ -497,7 +497,7 @@ mod tests {
         type_map.insert("amount".to_string(), "int".to_string());
         let ops = vec![OpNode::Cast { type_map }];
         let (chain, _) = fixtures::compile_ok(&input, ops);
-        let row = fixtures::row(&[("amount", Value::Str("abc".to_string()))]);
+        let row = fixtures::row(&[("amount", Value::Str("abc".into()))]);
         let result = chain.apply(row).unwrap();
         assert_eq!(
             result.get("amount"),

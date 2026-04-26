@@ -477,7 +477,7 @@ fn value_type_compatible(val: &beava_core::row::Value, ft: &beava_core::schema::
 fn extract_dedupe_str_from_row(row: &beava_core::row::Row, key: &str) -> Option<String> {
     use beava_core::row::Value;
     row.get(key).map(|v| match v {
-        Value::Str(s) => s.clone(),
+        Value::Str(s) => s.to_string(),
         Value::I64(i) => i.to_string(),
         Value::F64(f) => f.to_string(),
         Value::Bool(b) => b.to_string(),

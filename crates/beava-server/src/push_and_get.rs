@@ -95,7 +95,7 @@ fn value_to_json(v: Value) -> serde_json::Value {
         Value::F64(f) => serde_json::Number::from_f64(f)
             .map(JsonValue::Number)
             .unwrap_or(JsonValue::Null),
-        Value::Str(s) => JsonValue::String(s),
+        Value::Str(s) => JsonValue::String(s.into_string()),
         Value::Bytes(_) | Value::List(_) | Value::Map(_) => JsonValue::Null,
         Value::Datetime(ms) => JsonValue::Number(ms.into()),
         Value::Json(j) => j,

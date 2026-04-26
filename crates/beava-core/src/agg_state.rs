@@ -441,7 +441,7 @@ impl FirstNState {
     }
 
     pub fn query(&self) -> Value {
-        Value::Str(values_to_json_array(&self.values))
+        Value::Str(values_to_json_array(&self.values).into())
     }
 }
 
@@ -487,7 +487,7 @@ impl LastNState {
         for x in v {
             owned.push(x.clone());
         }
-        Value::Str(values_to_json_array(&owned))
+        Value::Str(values_to_json_array(&owned).into())
     }
 }
 
@@ -776,7 +776,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::F64(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s.clone()),
+        Value::Str(s) => serde_json::Value::String(s.to_string()),
         Value::Bytes(b) => serde_json::Value::String(format!("0x{}", hex::encode_lower(b))),
         Value::Datetime(t) => serde_json::Value::Number((*t).into()),
         Value::Json(j) => j.clone(),
@@ -829,7 +829,7 @@ fn hash_value(v: &Value) -> u64 {
 /// String view of a `Value` for use as Entropy / Bloom key.
 fn value_to_key_string(v: &Value) -> Option<String> {
     match v {
-        Value::Str(s) => Some(s.clone()),
+        Value::Str(s) => Some(s.to_string()),
         Value::I64(n) => Some(n.to_string()),
         Value::F64(f) => Some(format!("{f:?}")),
         Value::Bool(b) => Some(b.to_string()),
@@ -951,7 +951,7 @@ impl TopKStateWrap {
             Some(other) => other,
         };
         let tkv = match v {
-            Value::Str(s) => TopKValue::Str(s.clone()),
+            Value::Str(s) => TopKValue::Str(s.to_string()),
             Value::I64(n) => TopKValue::Int(*n),
             Value::F64(f) => TopKValue::Float(ordered_float::OrderedFloat(*f)),
             Value::Bool(b) => TopKValue::Bool(*b),
@@ -1359,7 +1359,7 @@ mod tests {
     #[test]
     fn first_n_empty_returns_empty_array() {
         let s = FirstNState::new(3);
-        assert_eq!(s.query(), Value::Str("[]".to_string()));
+        assert_eq!(s.query(), Value::Str("[]".into()));
     }
 
     #[test]
@@ -1388,7 +1388,7 @@ mod tests {
 
     #[test]
     fn last_n_empty_returns_empty_array() {
-        assert_eq!(LastNState::new(3).query(), Value::Str("[]".to_string()));
+        assert_eq!(LastNState::new(3).query(), Value::Str("[]".into()));
     }
 
     // ── Lag (Phase 8) ────────────────────────────────────────────────────────

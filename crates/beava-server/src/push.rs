@@ -136,7 +136,7 @@ fn json_object_to_row(body: &serde_json::Map<String, JsonValue>) -> Row {
                     Value::Null
                 }
             }
-            JsonValue::String(s) => Value::Str(s.clone()),
+            JsonValue::String(s) => Value::Str(s.clone().into()),
             _ => Value::Null,
         };
         row = row.with_field(field.as_str(), v);

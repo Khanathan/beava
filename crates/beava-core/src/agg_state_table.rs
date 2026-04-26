@@ -59,7 +59,7 @@ impl EntityKey {
                 None => return None,                  // missing field → drop
                 Some(Value::Null) => return None,     // null field → drop
                 Some(Value::Bytes(_)) => return None, // bytes not sane as key → drop
-                Some(Value::Str(s)) => s.clone(),
+                Some(Value::Str(s)) => s.to_string(),
                 Some(Value::I64(n)) => n.to_string(),
                 Some(Value::F64(f)) => format!("{:?}", f),
                 Some(Value::Bool(b)) => b.to_string(),
@@ -208,8 +208,8 @@ mod tests {
     fn entity_key_from_row_extracts_group_keys_in_order() {
         let keys = vec!["user_id".to_string(), "merchant_id".to_string()];
         let row = Row::new()
-            .with_field("user_id", Value::Str("a".to_string()))
-            .with_field("merchant_id", Value::Str("m1".to_string()))
+            .with_field("user_id", Value::Str("a".into()))
+            .with_field("merchant_id", Value::Str("m1".into()))
             .with_field("amount", Value::F64(10.0));
 
         let ek = EntityKey::from_row(&keys, &row).expect("should succeed");

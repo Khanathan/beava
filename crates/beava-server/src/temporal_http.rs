@@ -143,7 +143,7 @@ fn json_object_to_row(body: &serde_json::Map<String, JsonValue>) -> Row {
                     Value::Null
                 }
             }
-            JsonValue::String(s) => Value::Str(s.clone()),
+            JsonValue::String(s) => Value::Str(s.clone().into()),
             _ => Value::Null,
         };
         row = row.with_field(field.as_str(), v);
@@ -161,7 +161,7 @@ fn row_to_json(row: &Row) -> serde_json::Value {
             Value::F64(f) => serde_json::Number::from_f64(*f)
                 .map(JsonValue::Number)
                 .unwrap_or(JsonValue::Null),
-            Value::Str(s) => JsonValue::String(s.clone()),
+            Value::Str(s) => JsonValue::String(s.to_string()),
             Value::Bytes(_) => JsonValue::Null,
             Value::Datetime(ms) => JsonValue::Number((*ms).into()),
             Value::Json(j) => j.clone(),

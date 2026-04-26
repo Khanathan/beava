@@ -201,7 +201,7 @@ fn json_to_value(jv: &serde_json::Value) -> Value {
                 Value::Null
             }
         }
-        serde_json::Value::String(s) => Value::Str(s.clone()),
+        serde_json::Value::String(s) => Value::Str(s.clone().into()),
         // Array / Object → Null (no nested support in v0)
         _ => Value::Null,
     }
@@ -219,7 +219,7 @@ fn value_to_json(v: Value) -> serde_json::Value {
         Value::F64(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        Value::Str(s) => serde_json::Value::String(s),
+        Value::Str(s) => serde_json::Value::String(s.into_string()),
         // Bytes not JSON-representable in v0 → Null
         Value::Bytes(_) => serde_json::Value::Null,
         // Datetime: emit as i64 ms since epoch

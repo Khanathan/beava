@@ -29,7 +29,7 @@ fn numeric_from_row(row: &Row, field: &str) -> Option<f64> {
 
 fn str_from_row(row: &Row, field: &str) -> Option<String> {
     match row.get(field)? {
-        Value::Str(s) => Some(s.clone()),
+        Value::Str(s) => Some(s.to_string()),
         Value::I64(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
@@ -467,7 +467,7 @@ mod tests {
         Row::new().with_field("amount", Value::F64(v))
     }
     fn row_with_str(field: &str, val: &str) -> Row {
-        Row::new().with_field(field, Value::Str(val.to_string()))
+        Row::new().with_field(field, Value::Str(val.into()))
     }
 
     // ── HistogramState ───────────────────────────────────────────────────────
