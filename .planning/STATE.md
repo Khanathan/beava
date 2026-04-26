@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 18
-last_updated: "2026-04-26T05:24:33.842Z"
+last_updated: "2026-04-26T06:35:00.000Z"
 progress:
   total_phases: 23
   completed_phases: 9
   total_plans: 95
-  completed_plans: 64
-  percent: 67
+  completed_plans: 65
+  percent: 68
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -19,7 +19,7 @@ progress:
 **Requirements:** `.planning/REQUIREMENTS.md`
 **Milestone:** v0 (first public OSS cut on beava.dev)
 **Created:** 2026-04-22
-**Last revised:** 2026-04-26 (Phase 18 cleanup — 18-04.7 IoPool wiring + 18-11 hot-path optimization both landed and merged; bench burst pipelining landed; Phase 13.3 REJECTED per architectural decision: Beava commits to single-threaded data plane forever, scale-out via multi-instance Redis-cluster pattern)
+**Last revised:** 2026-04-26 (Plan 18-12 landed — Arc<str> event_name eliminates per-push String alloc; EPS at p=16/pd=256 +33-44% across json/msgpack; only continuous pipelining + cleanup remain in Phase 18)
 
 ## Core Value
 
@@ -27,39 +27,36 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. Two plans remaining; one in flight, one queued.**
+**Phase 18 — Redis-shaped hand-rolled hot path. ALL 6 in-scope plans landed; only continuous pipelining + cleanup remain.**
 
-### Landed and merged on `v2/greenfield` (HEAD `913eaa3`):
+### Landed and merged on `v2/greenfield` (HEAD `adaa66e`):
 
 - **Plan 18-09** — msgpack-on-TCP (CT_MSGPACK), Row::Deserialize impl, WAL v=2 binary records
 - **Plan 18-10** — hand-rolled envelope parsers: `parse_msgpack_envelope` (33 ns / 57× faster), `parse_json_envelope` (77 ns / 7.6× faster), `BeavaValueVisitor` direct Row deserialize
 - **Plan 18-04.7** — IoPool wiring into `serve_with_dirs`: parse + encode moved off apply thread, per-tick lifecycle [poll → distribute_reads → join → apply → distribute_writes → join]
+- **Plan 18-04.8** — body→Row deserialize moved off apply onto IoPool worker; apply parse stage 193 → 77 ns; IoPool runtime timing trace under same `BEAVA_TRACE_APPLY_TIMING` env var
 - **Plan 18-11** — hot-path optimization: Row.0 → SmallVec<[(CompactString, Value); 8]>; Value::Str(CompactString); AggStateTable → hashbrown::HashMap+FxBuildHasher with raw_entry_mut; EntityKey SmallVec; Arc<EventDescriptor>; per-source aggregation index. agg stage 5× faster (3,191 → 529 ns), parse 6× faster (911 → 150 ns)
+- **Plan 18-12** — `Arc<str>` event_name in EventIdEntry::Stream + EventDescriptor.name_arc pre-allocated at registration; bookkeeping site refcount-bumps registry-resident Arc<str> (no per-push String alloc). EPS at p=16/pd=256 json **346k → 462k (+33.5%)**, msgpack **357k → 487k (+36.4%)**. Trace per-stage mean held flat (mutex+insert dominates the bookkeeping stage); the EPS lift came from removed allocator pressure / cache pollution that the in-window trace doesn't capture
 - **env::var caching** for trace flags (OnceLock per process — saves ~200 ns/event when trace OFF)
 - **`TRACE_AGG_TIMING` env var split** so outer trace doesn't include inner eprintln cost
 - **bench-v18 `--pipeline-depth N` flag** — burst pipelining baseline; 6-8× EPS lift on M4 loopback at p=16/pd=256
 
-### In flight (background Opus executor):
+### Queued (last item before Phase 18 wrap):
 
-- **Plan 18-04.8** — body→Row deserialization moves from apply thread to IoPool worker; expected: apply-thread `parse` stage 193 ns → ≤50 ns; IoPool runtime timing trace under same `BEAVA_TRACE_APPLY_TIMING` env var
-
-### Queued (next session, after 18-04.8 lands):
-
-- **Plan 18-12** — `Arc<str>` event_name in EventIdEntry::Stream (refcount bump vs String alloc); expected: bookkeeping stage 169 ns → ≤60 ns
-- **Continuous pipelining for bench-v18** — replace burst send-N/read-N with split sender/receiver + tokio Semaphore; constant load on apply thread (no sawtooth gaps)
+- **Continuous pipelining for bench-v18** — replace burst send-N/read-N with split sender/receiver + tokio Semaphore; constant load on apply thread (no sawtooth gaps). ~120 LoC in `crates/beava-bench/src/bin/beava-bench-v18.rs` Transport::Tcp branch around lines 540-610. Expected: collapse cross-batch idle bubbles; lift sustained EPS above current 462k/487k ceiling.
 
 ### Architectural decision LOCKED 2026-04-26:
 
 **Phase 13.3 (in-process apply sharding via lockless RefCell + LocalSet) is REJECTED.** Beava commits to single-threaded data plane forever. Per-instance throughput ceiling = single apply thread (~1M EPS for simple counters, ~400k for medium aggregations on Linux Xeon post-current optimizations). For higher aggregate throughput, users run **multiple Beava instances** sharded at the entity-key level (Redis-cluster pattern). Cross-shard queries within a process are explicitly avoided.
 
-### Headline numbers (M4 loopback, post-merge of 18-11 + 18-04.7 + env-cache):
+### Headline numbers (M4 loopback, post-merge of 18-12, commit `adaa66e`):
 
 - `parse_msgpack_envelope` microbench: **33.4 ns**
 - `parse_json_envelope` microbench: **77.1 ns**
-- agg stage (clean trace): **518 ns** (was 3,191 ns)
-- TOTAL push (clean trace, p=4/pd=64): **964 ns** (was 5,154 ns) — **5.3× faster**
-- Apply-thread theoretical max at p50 cycle: ~1.04M EPS single-thread
-- Best observed EPS: **361k - 378k** at p=16/pd=256 (json/msgpack), bench-side bursty load is the wall
+- agg stage (clean trace): **500 ns** (was 3,191 ns at start of phase)
+- TOTAL push (clean trace, p=4/pd=64): **888 ns** (was 5,154 ns at start of phase) — **5.8× faster**
+- Apply-thread theoretical max at p50 cycle: ~1.13M EPS single-thread
+- Best observed EPS: **462k (json) / 487k (msgpack)** at p=16/pd=256 — bench-side bursty load is the next wall (continuous pipelining is the queued unlock)
 
 ## Shipped & Merged to `v2/greenfield`
 
@@ -94,13 +91,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Remaining Work (priority order)
 
-### Phase 18 (only two items left):
+### Phase 18 (one item left):
 
 | # | Task | Where | Status |
 |---|------|-------|--------|
 | 1 | **Plan 18-04.8** — body→Row migration from apply thread to IoPool worker + IoPool runtime timing trace | DONE 2026-04-26 (commits 9a1daec/6ed8b97/677d3ea on v2/greenfield). Apply parse 193 → 77 ns (-60%); apply TOTAL 974 → 941 ns; IoPool parse_body=4,265 ns mean; EPS p=16/pd=256 json 346k / msgpack 357k; new TRACE_APPLY io trace lives under same BEAVA_TRACE_APPLY_TIMING var | ✅ done |
-| 2 | **Plan 18-12** — `Arc<str>` event_name to kill bookkeeping String alloc | Queued; awaits 18-04.8 (file conflict on apply_shard.rs) | ⏳ queued |
-| 3 | **Continuous pipelining for bench-v18** — split sender/receiver + Semaphore; replaces burst pattern | Queued (bundled with 18-12 dispatch) | ⏳ queued |
+| 2 | **Plan 18-12** — `Arc<str>` event_name to kill bookkeeping String alloc | DONE 2026-04-26 (commits e96c59b → adaa66e on v2/greenfield). EPS at p=16/pd=256 json 346k → 462k (+33.5%), msgpack 357k → 487k (+36.4%); EPS at p=4/pd=64 json 165k → 239k (+44.5%); apply TOTAL 941 → 888 ns. Trace per-stage mean held flat (mutex+insert dominates bookkeeping stage; ~50-100 ns alloc savings absorbed by ±25 ns variance band); EPS lift came from removed allocator pressure / cache pollution that in-window trace doesn't capture | ✅ done |
+| 3 | **Continuous pipelining for bench-v18** — split sender/receiver + Semaphore; replaces burst pattern | Queued (bundled with 18-12 dispatch); ~120 LoC | ⏳ queued |
 
 ### Phase 18 cleanup (after the above land):
 
@@ -131,11 +128,11 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Performance Snapshot
 
-- **Post-merge ceiling** (macOS Apple-M4, `v2/greenfield` HEAD `913eaa3` — post-18-11 + post-18-04.7 + bench burst pipelining): **~378k EPS** at p=16/pd=256 (msgpack), bench-side bursty load is the wall.
-- **Apply-thread per-event work (clean trace):** 964 ns mean / 750 ns p50 → theoretical ~1.04M EPS single-thread at p50 cycle.
-- **Per-stage breakdown (mean ns post-merge):** parse 193 (body→Row, will move to IoPool in 18-04.8), lookup 31, validate 32, wal_build 33, wal_append 43, agg 473, bookkeeping 169 (will drop to ~50 in 18-12).
+- **Post-merge ceiling** (macOS Apple-M4, `v2/greenfield` HEAD `adaa66e` — post-18-12): **462k EPS (json) / 487k EPS (msgpack)** at p=16/pd=256, bench-side bursty load is the next wall (continuous pipelining is the queued unlock).
+- **Apply-thread per-event work (clean trace):** 888 ns mean (was 941 ns post-18-04.8); theoretical ~1.13M EPS single-thread at p50 cycle.
+- **Per-stage breakdown (mean ns post-18-12, n=67k):** parse 67, lookup 28, validate 29, wal_build 30, wal_append 36, agg 500, bookkeeping 194 (mutex + HashMap::insert; the 50-100 ns String alloc removal is absorbed in stage variance — see 18-12-SUMMARY.md for analysis).
 - **Phase 13 ship-gate target:** ≥3M EPS/core single-instance on simple-fraud (medium pipeline) shape — REFRAMED (post-13.3-rejection) as **per-instance peak achievable on Linux Xeon with all 18-04.7 + 18-04.8 + 18-12 + future 18-05 io_uring + OP_PUSH_MANY**. For aggregate >1 instance ceiling: scale out (multiple Beava instances).
-- **Baselines:** `.planning/perf-baselines.md` (criterion rows, phases 2.5..18-11); `.planning/throughput-baselines.md` (end-to-end EPS + latency ledger across 18-09, 18-10, 18-11, 18-04.7).
+- **Baselines:** `.planning/perf-baselines.md` (criterion rows, phases 2.5..18-11); `.planning/throughput-baselines.md` (end-to-end EPS + latency ledger across 18-09, 18-10, 18-11, 18-04.7, 18-04.8, 18-12).
 
 ## Accumulated Context
 
