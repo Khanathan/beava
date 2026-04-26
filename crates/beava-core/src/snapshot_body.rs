@@ -17,7 +17,7 @@
 //! (which can hold `Arc<Expr>`) live on the registry; state is plain POD.
 
 use crate::agg_op::AggOp;
-use crate::agg_state_table::{AggStateTable, EntityKey};
+use crate::agg_state_table::{AggStateTable, EntityKey, StateTables};
 use crate::registry::{DerivationDescriptor, EventDescriptor, RegistryInner, TableDescriptor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -89,7 +89,7 @@ impl SnapshotBody {
     /// the iteration is consistent.
     pub fn from_live(
         registry: &RegistryInner,
-        state_tables: &BTreeMap<String, AggStateTable>,
+        state_tables: &StateTables,
         next_event_id: u64,
         max_event_time_ms: i64,
     ) -> Self {

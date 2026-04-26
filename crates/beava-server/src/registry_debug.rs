@@ -42,7 +42,7 @@ use axum::{
     Json, Router,
 };
 use beava_core::agg_apply::apply_event_to_aggregations;
-use beava_core::agg_state_table::AggStateTable;
+use beava_core::agg_state_table::StateTables;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, Registry, TableDescriptor};
 use beava_core::row::{Row, Value};
 use beava_core::temporal::TemporalStore;
@@ -263,7 +263,7 @@ pub struct DevAggState {
     /// Per-aggregation, per-entity state.  `Mutex` wraps the outer map only;
     /// per-entity `AggOp` state is updated under this single lock (single-writer
     /// invariant per D-06 + project_stateful_architecture.md).
-    pub state_tables: Arc<Mutex<BTreeMap<String, AggStateTable>>>,
+    pub state_tables: Arc<Mutex<StateTables>>,
     /// Registry shared with the main router (read-only from this endpoint).
     pub registry: Arc<Registry>,
     /// Monotonic event-id counter. Feeds `apply_event_to_aggregations`'s
@@ -291,7 +291,7 @@ pub struct DevAggState {
 impl DevAggState {
     pub fn new(registry: Arc<Registry>) -> Self {
         DevAggState {
-            state_tables: Arc::new(Mutex::new(BTreeMap::new())),
+            state_tables: Arc::new(Mutex::new(StateTables::default())),
             registry,
             next_event_id: Arc::new(AtomicU64::new(0)),
             max_event_time_ms: Arc::new(AtomicU64::new(0)),

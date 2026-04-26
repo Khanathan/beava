@@ -23,7 +23,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::agg_state_table::{AggStateTable, EntityKey};
+use crate::agg_state_table::{AggStateTable, EntityKey, StateTables};
 use crate::registry::Registry;
 use crate::row::Row;
 
@@ -61,7 +61,7 @@ pub fn apply_event_to_aggregations(
     event_time_ms: i64,
     _event_id: u64, // Phase 5: unused. Phase 6 WAL populates via D-08.
     registry: &Registry,
-    state_tables: &mut BTreeMap<String, AggStateTable>,
+    state_tables: &mut StateTables,
 ) {
     // SPIKE: per-substage timing of the agg hot path.
     // Gated on its OWN env var (not BEAVA_TRACE_APPLY_TIMING) so that the
@@ -320,7 +320,7 @@ mod tests {
             ],
         );
 
-        let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut state_tables: StateTables = StateTables::default();
         let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
         apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
@@ -347,7 +347,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut state_tables: StateTables = StateTables::default();
         let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
         for i in 0..10 {
@@ -387,7 +387,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut state_tables: StateTables = StateTables::default();
         // Row with user_id = Null → should be dropped.
         let row = Row::new().with_field("user_id", Value::Null);
 
@@ -440,7 +440,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut state_tables: StateTables = StateTables::default();
         let row = Row::new()
             .with_field("user_id", Value::Str("alice".into()))
             .with_field("amount", Value::F64(50.0)); // below threshold
@@ -485,14 +485,14 @@ mod tests {
             })
             .collect();
 
-        let apply_all = |tables: &mut BTreeMap<String, AggStateTable>| {
+        let apply_all = |tables: &mut StateTables| {
             for (i, (row, t)) in events.iter().enumerate() {
                 apply_event_to_aggregations("Transaction", row, *t, i as u64, &registry, tables);
             }
         };
 
-        let mut tables1: BTreeMap<String, AggStateTable> = BTreeMap::new();
-        let mut tables2: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut tables1: StateTables = StateTables::default();
+        let mut tables2: StateTables = StateTables::default();
         apply_all(&mut tables1);
         apply_all(&mut tables2);
 
@@ -514,7 +514,7 @@ mod tests {
         );
         let registry = make_registry_with_agg("Transaction", agg);
 
-        let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut state_tables: StateTables = StateTables::default();
         let amounts = [10.0_f64, 20.0, 30.0, 40.0, 50.0];
         for (i, &amt) in amounts.iter().enumerate() {
             let row = Row::new()
@@ -571,11 +571,11 @@ mod tests {
         let t = 1000_i64;
 
         // Apply with event_id=0.
-        let mut tables_0: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut tables_0: StateTables = StateTables::default();
         apply_event_to_aggregations("Transaction", &row, t, 0, &registry, &mut tables_0);
 
         // Apply with event_id=99.
-        let mut tables_99: BTreeMap<String, AggStateTable> = BTreeMap::new();
+        let mut tables_99: StateTables = StateTables::default();
         apply_event_to_aggregations("Transaction", &row, t, 99, &registry, &mut tables_99);
 
         // State must be identical regardless of event_id.

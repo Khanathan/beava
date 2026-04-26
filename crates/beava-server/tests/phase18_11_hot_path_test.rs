@@ -288,7 +288,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
     use beava_core::agg_apply::apply_event_to_aggregations;
     use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
     use beava_core::agg_op::{AggKind, AggOpDescriptor};
-    use beava_core::agg_state_table::AggStateTable;
+    use beava_core::agg_state_table::{AggStateTable, StateTables};
     use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
     use beava_core::registry_diff::PayloadNode;
     use beava_core::schema::{DerivedSchema, EventSchema, FieldType};
@@ -359,8 +359,8 @@ fn test_snapshot_byte_identical_for_same_inputs() {
         registry
     }
 
-    fn run_apply(registry: &Registry, users: &[&str]) -> BTreeMap<String, AggStateTable> {
-        let mut tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+    fn run_apply(registry: &Registry, users: &[&str]) -> StateTables {
+        let mut tables: StateTables = StateTables::default();
         for (i, u) in users.iter().enumerate() {
             let row = Row::new().with_field("user_id", Value::Str((*u).into()));
             apply_event_to_aggregations(
@@ -399,7 +399,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
     // Also: round-trip preserves the same sorted order — re-snapshotting the
     // restored tables yields identical bytes a third time.
     let restored = SnapshotBody::decode(&bytes_a).expect("decode");
-    let mut restored_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+    let mut restored_tables: StateTables = StateTables::default();
     for (node, entries) in restored.state_tables {
         let mut t = AggStateTable::new();
         for (k, ops) in entries {

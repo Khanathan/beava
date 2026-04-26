@@ -9,7 +9,7 @@
 use beava_core::agg_apply::apply_event_to_aggregations;
 use beava_core::agg_descriptor::{AggregationDescriptor, NamedAggOp};
 use beava_core::agg_op::{AggKind, AggOp, AggOpDescriptor};
-use beava_core::agg_state_table::AggStateTable;
+use beava_core::agg_state_table::{AggStateTable, StateTables};
 use beava_core::agg_windowed::WindowedOp;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
 use beava_core::registry_diff::PayloadNode;
@@ -270,7 +270,7 @@ fn bench_apply(c: &mut Criterion) {
 
     g.bench_function("3agg_100ent_1Kevt", |b| {
         b.iter_batched(
-            BTreeMap::<String, AggStateTable>::new,
+            StateTables::default,
             |mut state_tables| {
                 for (src, row, t, id) in &events {
                     apply_event_to_aggregations(

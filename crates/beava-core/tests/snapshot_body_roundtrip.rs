@@ -11,7 +11,7 @@ use beava_core::agg_op::{AggKind, AggOp, AggOpDescriptor};
 use beava_core::agg_state::{
     AvgState, CountState, MaxState, MinState, RatioState, SumState, VarianceState,
 };
-use beava_core::agg_state_table::{AggStateTable, EntityKey};
+use beava_core::agg_state_table::{AggStateTable, EntityKey, StateTables};
 use beava_core::agg_windowed::WindowedOp;
 use beava_core::registry::{
     DerivationDescriptor, EventDescriptor, OutputKind, RegistryInner, TableDescriptor, TableMode,
@@ -344,7 +344,7 @@ fn snapshot_body_registry_descriptors_preserved() {
         },
     );
 
-    let state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+    let state_tables: StateTables = StateTables::default();
     let body = SnapshotBody::from_live(&inner, &state_tables, 0, 0);
     let bytes = body.encode().expect("encode");
     let decoded = SnapshotBody::decode(&bytes).expect("decode");
@@ -363,7 +363,7 @@ fn snapshot_body_registry_descriptors_preserved() {
 
 #[test]
 fn snapshot_body_state_tables_full_roundtrip() {
-    let mut state_tables: BTreeMap<String, AggStateTable> = BTreeMap::new();
+    let mut state_tables: StateTables = StateTables::default();
     for node in ["agg_a", "agg_b"] {
         let mut table = AggStateTable::new();
         for u in ["alice", "bob", "carol"] {

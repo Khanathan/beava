@@ -218,6 +218,20 @@ impl EntityKey {
     }
 }
 
+// ─── StateTables type alias ──────────────────────────────────────────────────
+
+/// Outer state-tables map: aggregation node name → `AggStateTable`.
+///
+/// Plan 18-16 (lite): swap the prior `BTreeMap<String, AggStateTable>` for
+/// `hashbrown::HashMap<_, _, FxBuildHasher>` to drop the `O(log N)` lookup
+/// cost on the apply hot path. Snapshot determinism is preserved because
+/// `snapshot_body::SnapshotBody::from_live` collects into a sorted output
+/// `BTreeMap` (the input iteration order doesn't matter).
+///
+/// FxBuildHasher is safe here for the same reason it is on `AggStateTable.entities`
+/// (single-process, single-writer, no DoS surface).
+pub type StateTables = HashMap<String, AggStateTable, FxBuildHasher>;
+
 // ─── AggStateTable ────────────────────────────────────────────────────────────
 
 /// Per-aggregation state store: maps `EntityKey → Vec<AggOp>` (one slot per

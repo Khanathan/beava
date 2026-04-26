@@ -15,7 +15,7 @@
 //!   replay throughput (events/sec) past a snapshot LSN.
 
 use beava_core::agg_op::{AggKind, AggOp, AggOpDescriptor};
-use beava_core::agg_state_table::{AggStateTable, EntityKey};
+use beava_core::agg_state_table::{AggStateTable, EntityKey, StateTables};
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, RegistryInner};
 use beava_core::schema::{EventSchema, FieldType};
 use beava_core::snapshot_body::SnapshotBody;
@@ -120,7 +120,7 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
 
 fn bench_serialize_state_1k_features(c: &mut Criterion) {
     let registry = build_registry_inner_with_one_count_agg();
-    let mut tables = BTreeMap::new();
+    let mut tables: StateTables = StateTables::default();
     tables.insert(
         "TxnAgg".to_string(),
         build_state_table_with_n_entities(1000),
@@ -137,7 +137,7 @@ fn bench_serialize_state_1k_features(c: &mut Criterion) {
 
 fn bench_atomic_write_default_fsync(c: &mut Criterion) {
     let registry = build_registry_inner_with_one_count_agg();
-    let mut tables = BTreeMap::new();
+    let mut tables: StateTables = StateTables::default();
     tables.insert(
         "TxnAgg".to_string(),
         build_state_table_with_n_entities(1000),
