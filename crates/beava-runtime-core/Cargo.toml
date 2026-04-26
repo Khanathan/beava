@@ -9,6 +9,9 @@ description = "Hand-rolled mio-based event loop for Beava's TCP + HTTP data-plan
 
 [features]
 default = []
+# Plan 18-05 Task 5.4: io_uring backend (Linux only). Enable with
+# `--features io-uring` or `BEAVA_IO_BACKEND=io-uring`.
+io-uring = ["dep:io-uring-crate"]
 
 [dependencies]
 beava-core = { path = "../beava-core" }
@@ -35,6 +38,11 @@ tracing = { workspace = true }
 libc = { workspace = true }
 num_cpus = "1"
 
+# Plan 18-05 Task 5.4: io_uring support (Linux only, optional).
+# Pinned to exact version to avoid API drift.
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring-crate = { package = "io-uring", version = "=0.6.4", optional = true }
+
 [dev-dependencies]
 criterion = { workspace = true }
 serde = { workspace = true }
@@ -49,6 +57,11 @@ smallvec = { workspace = true }
 [[test]]
 name = "io_backend_trait_test"
 path = "tests/io_backend_trait_test.rs"
+
+[[test]]
+name = "io_uring_smoke_test"
+path = "tests/io_uring_smoke_test.rs"
+required-features = ["io-uring"]
 
 [[bench]]
 name = "parse_envelope_bench"
