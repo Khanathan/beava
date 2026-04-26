@@ -680,7 +680,20 @@ const TOKEN_TCP_LISTENER: mio::Token = mio::Token(1);
 /// Client connections start at token 2; new ones increment this counter.
 const TOKEN_CLIENT_BASE: usize = 2;
 
+/// Maximum concurrent clients supported by the per-tick IoPool lifecycle.
+///
+/// Pre-allocating `Vec<Option<MioClient>>` to this capacity ensures the Vec
+/// is never re-allocated, so IoPool worker threads can hold raw pointers
+/// (`Vec::as_mut_ptr().add(idx)`) into the Vec for the duration of a
+/// publish + join_all cycle without UB risk (Plan 18-04.7 D-1).
+const MAX_CONCURRENT_CLIENTS: usize = 8192;
+
 /// Per-client connection state for the mio event loop.
+///
+/// Plan 18-04.7 D-1: parsed_requests and partially-decoded responses live
+/// inside the slot so IoPool workers can populate them while the apply
+/// thread waits on `IoPool::join_all()`. The apply thread reads them
+/// after the join Acquire barrier.
 struct MioClient {
     stream: mio::net::TcpStream,
     token: mio::Token,
@@ -688,7 +701,17 @@ struct MioClient {
     proto: MioProto,
     /// Inbound read buffer.
     read_buf: bytes::BytesMut,
+    /// Plan 18-04.7: requests parsed by the read-phase IoPool worker; drained
+    /// by the apply phase. `(WireRequest, keep_alive_for_http)`.
+    parsed_requests: Vec<(beava_runtime_core::wire_request::WireRequest, bool)>,
+    /// Plan 18-04.7: parse error from read-phase IoPool worker; the apply
+    /// phase reads this, emits an error response, and marks the client closed.
+    parse_error: Option<MioParseError>,
+    /// Plan 18-04.7: queue of responses produced by the apply phase, waiting
+    /// for the write-phase IoPool worker to serialize into write_buf.
+    output_queue: std::collections::VecDeque<crate::runtime_core_glue::GlueResponse>,
     /// Serialized response bytes waiting to be written to the socket.
+    /// Populated by the write-phase IoPool worker (off-apply).
     write_buf: bytes::BytesMut,
     /// True when the client has been closed / should be removed.
     closed: bool,
@@ -700,18 +723,146 @@ enum MioProto {
     Tcp,
 }
 
-/// Run the mio event loop on a dedicated std::thread (Plan 18-04.6 D-4).
+/// Parse errors classified by the read-phase IoPool worker.
+#[derive(Debug, Clone, Copy)]
+enum MioParseError {
+    /// Wire-protocol framing error (TCP).
+    TcpFrame,
+    /// HTTP/1.1 protocol violation.
+    HttpProtocol,
+}
+
+// ─── Plan 18-04.7 IoPool observer (test instrumentation) ─────────────────────
+
+/// Observability hooks used by `tests/phase18_04_7_iopool_test.rs` to verify
+/// the apply-thread invariant: parse and encode MUST run on IoPool worker
+/// threads, never on the apply thread.
 ///
-/// This is the heart of Plan 18-04.6: a Redis-shaped per-tick orchestration:
+/// In production the counters are essentially free (single AtomicUsize bump
+/// per parse / encode call). Tests reset them before each run and assert
+/// that `apply_*_count()` stays at 0 while `off_apply_*_count()` grows.
+pub mod iopool_observer {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// Apply-thread id, set by `serve_with_dirs` before the IoPool spins up.
+    /// Workers compare `std::thread::current().id() == APPLY_TID` to decide
+    /// which counter pair to bump.
+    ///
+    /// Stored as a `Mutex<Option<ThreadId>>` because ThreadId is Copy but
+    /// not representable as a plain AtomicUsize across the kernel ABI.
+    pub(crate) static APPLY_TID: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
+    static APPLY_PARSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static APPLY_ENCODE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static OFF_APPLY_PARSE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static OFF_APPLY_ENCODE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    /// Reset all counters to 0 and clear the apply thread id.
+    /// Called by tests before each scenario.
+    pub fn reset() {
+        APPLY_PARSE_COUNT.store(0, Ordering::Release);
+        APPLY_ENCODE_COUNT.store(0, Ordering::Release);
+        OFF_APPLY_PARSE_COUNT.store(0, Ordering::Release);
+        OFF_APPLY_ENCODE_COUNT.store(0, Ordering::Release);
+        *APPLY_TID.lock().unwrap() = None;
+    }
+
+    /// Record the apply thread's id. Called once by `run_mio_event_loop`
+    /// at startup. Subsequent observers compare against this id.
+    pub(crate) fn set_apply_tid() {
+        *APPLY_TID.lock().unwrap() = Some(std::thread::current().id());
+    }
+
+    /// Bump the appropriate parse counter based on whether we're on the
+    /// apply thread. Called from inside the parse helper.
+    pub(crate) fn record_parse() {
+        if is_apply_thread() {
+            APPLY_PARSE_COUNT.fetch_add(1, Ordering::AcqRel);
+        } else {
+            OFF_APPLY_PARSE_COUNT.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Bump the appropriate encode counter based on whether we're on the
+    /// apply thread.
+    pub(crate) fn record_encode() {
+        if is_apply_thread() {
+            APPLY_ENCODE_COUNT.fetch_add(1, Ordering::AcqRel);
+        } else {
+            OFF_APPLY_ENCODE_COUNT.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    fn is_apply_thread() -> bool {
+        let me = std::thread::current().id();
+        match *APPLY_TID.lock().unwrap() {
+            Some(tid) => tid == me,
+            None => false,
+        }
+    }
+
+    /// Number of parse calls made by the apply thread. MUST be 0 in healthy
+    /// IoPool wiring (Plan 18-04.7 invariant 4.7.2).
+    pub fn apply_parse_count() -> usize {
+        APPLY_PARSE_COUNT.load(Ordering::Acquire)
+    }
+
+    /// Number of encode calls made by the apply thread. MUST be 0 in
+    /// healthy IoPool wiring.
+    pub fn apply_encode_count() -> usize {
+        APPLY_ENCODE_COUNT.load(Ordering::Acquire)
+    }
+
+    /// Number of parse calls made by IoPool worker threads.
+    pub fn off_apply_parse_count() -> usize {
+        OFF_APPLY_PARSE_COUNT.load(Ordering::Acquire)
+    }
+
+    /// Number of encode calls made by IoPool worker threads.
+    pub fn off_apply_encode_count() -> usize {
+        OFF_APPLY_ENCODE_COUNT.load(Ordering::Acquire)
+    }
+}
+
+/// Resolve the IoPool thread count from the BEAVA_IO_THREADS env var.
+///
+/// Default = `max(2, available_parallelism / 4)` — Redis-style ratio that
+/// keeps IoPool threads conservative (they spin briefly between ticks and
+/// don't burn full cores).
+fn default_io_threads() -> usize {
+    if let Ok(s) = std::env::var("BEAVA_IO_THREADS") {
+        if let Ok(n) = s.parse::<usize>() {
+            return n.max(1);
+        }
+    }
+    let p = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    std::cmp::max(2, p / 4)
+}
+
+/// Run the mio event loop on a dedicated std::thread (Plan 18-04.6 D-4 +
+/// Plan 18-04.7 IoPool integration).
+///
+/// Per-tick lifecycle (Plan 18-04.7 D-1):
 ///   1. `EventLoop::tick` — poll mio for ready events (up to 5ms timeout)
-///   2. For each readable client: read bytes into `read_buf`
-///   3. For each client with data: parse + apply (ApplyShard::dispatch_wire_request_sync)
-///   4. For each client with responses: write bytes from `write_buf`
-///   5. Check shutdown flag; break if set
+///   2. Accept new connections; classify ready clients into read/write sets.
+///   3. **Read phase** — `IoPool::publish` parse work items → `join_all`.
+///      IoPool workers do `socket.read` + `parse_*_request` on their threads.
+///   4. **Apply phase** — single-threaded on this thread. Drain each client's
+///      `parsed_requests` → `apply_shard.dispatch_wire_request_sync` → push
+///      `GlueResponse`s into the client's `output_queue`.
+///   5. **Write phase** — `IoPool::publish` write work items → `join_all`.
+///      IoPool workers do `serialize` + `socket.write` on their threads.
+///   6. Cleanup closed clients; check shutdown flag.
 ///
-/// Note: IoPool parallelism (Plans 18-03/18-04) can be layered on top later.
-/// For Plan 18-04.6, the apply is done inline on the apply thread (single-threaded
-/// per-tick), which is correct and sufficient for M4 informational measurement.
+/// `clients: Vec<Option<MioClient>>` is pre-allocated to MAX_CONCURRENT_CLIENTS
+/// at startup and never resized — IoPool worker threads hold raw pointers
+/// (`as_mut_ptr().add(idx)`) into the Vec for the duration of each
+/// publish + join_all cycle. The two phases are strictly serialized by
+/// `IoPool::join_all()` Acquire barriers, so the apply thread never touches
+/// the same client a worker is touching.
 fn run_mio_event_loop(
     http_listener_std: std::net::TcpListener,
     tcp_listener_std: std::net::TcpListener,
@@ -719,13 +870,14 @@ fn run_mio_event_loop(
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 ) {
     use beava_runtime_core::event_loop::EventLoop;
-    use beava_runtime_core::http_listener::parse_http_request;
     use beava_runtime_core::http_listener::HttpListener;
-    use beava_runtime_core::tcp_listener::parse_wire_request;
+    use beava_runtime_core::io_pool::{IoPool, WorkItem};
     use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
-    use std::collections::HashMap;
-    use std::io::{Read, Write};
     use std::sync::atomic::Ordering as AOrdering;
+
+    // Plan 18-04.7: record this thread as the apply thread. Test instrumentation
+    // (iopool_observer) compares parse/encode call sites against this id.
+    iopool_observer::set_apply_tid();
 
     let mut event_loop = match EventLoop::new() {
         Ok(el) => el,
@@ -769,20 +921,31 @@ fn run_mio_event_loop(
         return;
     }
 
-    // Client state map: token → MioClient.
-    let mut clients: HashMap<usize, MioClient> = HashMap::new();
-    let mut next_token: usize = TOKEN_CLIENT_BASE;
+    // ── Pre-allocated client slots (Plan 18-04.7 D-1) ─────────────────────────
+    // Pre-allocate MAX_CONCURRENT_CLIENTS slots so the Vec is never resized.
+    // IoPool workers hold raw pointers into this Vec; resizing would be UB.
+    let mut clients: Vec<Option<MioClient>> = Vec::with_capacity(MAX_CONCURRENT_CLIENTS);
+    clients.resize_with(MAX_CONCURRENT_CLIENTS, || None);
+    // Free-slot freelist. When a client closes, its slot index is pushed here
+    // for re-use by the next accept. Avoids linear-scan to find a free slot.
+    let mut free_slots: Vec<usize> = (0..MAX_CONCURRENT_CLIENTS).rev().collect();
 
-    // Read buffer scratch space.
-    let mut tmp_buf = [0u8; 16 * 1024];
+    // ── IoPool spinup (Plan 18-04.7 D-2) ──────────────────────────────────────
+    let io_pool_size = default_io_threads();
+    let io_pool = IoPool::new(io_pool_size);
+    tracing::info!(
+        target: "beava.server",
+        kind = "iopool.started",
+        threads = io_pool_size,
+        "IoPool started"
+    );
 
     tracing::info!(target: "beava.server", "apply thread: mio EventLoop started");
 
     loop {
-        // ── Phase 1: poll ────────────────────────────────────────────────────
+        // ── Phase 1: poll mio ────────────────────────────────────────────────
         let events = match event_loop.tick(Some(Duration::from_millis(5))) {
             Ok(events) => {
-                // Collect tokens from the iterator before dropping the borrow.
                 let tokens: Vec<(mio::Token, bool, bool)> = events
                     .map(|e| (e.token(), e.is_readable(), e.is_writable()))
                     .collect();
@@ -794,286 +957,415 @@ fn run_mio_event_loop(
             }
         };
 
-        // ── Phase 2: accept new connections ──────────────────────────────────
-        for (token, readable, _writable) in &events {
-            if !readable {
+        // ── Phase 2: classify events; accept new connections ──────────────────
+        // Sets of slot indices that are ready for read / write this tick.
+        let mut read_set: Vec<usize> = Vec::new();
+        let mut write_set: Vec<usize> = Vec::new();
+
+        for (token, readable, writable) in &events {
+            let tok = *token;
+            if tok == TOKEN_HTTP_LISTENER {
+                if *readable {
+                    accept_clients(
+                        &mut http_listener,
+                        MioProto::Http,
+                        &mut clients,
+                        &mut free_slots,
+                        &mut event_loop,
+                    );
+                }
                 continue;
             }
-            if *token == TOKEN_HTTP_LISTENER {
-                loop {
-                    match http_listener.accept() {
-                        Ok((stream, _peer)) => {
-                            let client_token = mio::Token(next_token);
-                            next_token += 1;
-                            let mut client = MioClient {
-                                stream,
-                                token: client_token,
-                                proto: MioProto::Http,
-                                read_buf: bytes::BytesMut::with_capacity(8 * 1024),
-                                write_buf: bytes::BytesMut::new(),
-                                closed: false,
-                            };
-                            if let Err(e) = event_loop.register(
-                                &mut client.stream,
-                                client_token,
-                                mio::Interest::READABLE,
-                            ) {
-                                tracing::warn!("apply thread: register client failed: {e}");
-                            } else {
-                                clients.insert(client_token.0, client);
-                            }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => break,
-                    }
+            if tok == TOKEN_TCP_LISTENER {
+                if *readable {
+                    accept_clients(
+                        &mut tcp_listener,
+                        MioProto::Tcp,
+                        &mut clients,
+                        &mut free_slots,
+                        &mut event_loop,
+                    );
                 }
-            } else if *token == TOKEN_TCP_LISTENER {
-                loop {
-                    match tcp_listener.accept() {
-                        Ok((stream, _peer)) => {
-                            let client_token = mio::Token(next_token);
-                            next_token += 1;
-                            let mut client = MioClient {
-                                stream,
-                                token: client_token,
-                                proto: MioProto::Tcp,
-                                read_buf: bytes::BytesMut::with_capacity(8 * 1024),
-                                write_buf: bytes::BytesMut::new(),
-                                closed: false,
-                            };
-                            if let Err(e) = event_loop.register(
-                                &mut client.stream,
-                                client_token,
-                                mio::Interest::READABLE,
-                            ) {
-                                tracing::warn!("apply thread: register tcp client failed: {e}");
-                            } else {
-                                clients.insert(client_token.0, client);
-                            }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => break,
-                    }
+                continue;
+            }
+            let slot_idx = tok.0.wrapping_sub(TOKEN_CLIENT_BASE);
+            if slot_idx >= MAX_CONCURRENT_CLIENTS {
+                continue;
+            }
+            if clients[slot_idx].is_none() {
+                continue;
+            }
+            if *readable {
+                read_set.push(slot_idx);
+            }
+            if *writable {
+                // Only schedule write work if the client actually has bytes to send.
+                if clients[slot_idx]
+                    .as_ref()
+                    .map(|c| c.has_write_work())
+                    .unwrap_or(false)
+                {
+                    write_set.push(slot_idx);
                 }
             }
         }
 
-        // ── Phase 3: read data from readable clients ──────────────────────────
-        for (token, readable, _writable) in &events {
-            let tok_idx = token.0;
-            if tok_idx < TOKEN_CLIENT_BASE || !readable {
-                continue;
-            }
-            if let Some(client) = clients.get_mut(&tok_idx) {
-                loop {
-                    match client.stream.read(&mut tmp_buf) {
-                        Ok(0) => {
-                            client.closed = true;
-                            break;
-                        }
-                        Ok(n) => {
-                            client.read_buf.extend_from_slice(&tmp_buf[..n]);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => {
-                            client.closed = true;
-                            break;
-                        }
+        // ── Phase 3: READ — IoPool workers do socket.read + parse ─────────────
+        if !read_set.is_empty() {
+            let clients_ptr = ClientsPtr(clients.as_mut_ptr());
+            let mut work_items: Vec<WorkItem> = Vec::with_capacity(read_set.len());
+            for &idx in &read_set {
+                let ptr = clients_ptr;
+                work_items.push(Box::new(move || {
+                    // SAFETY: see ClientsPtr docs. The `slot_mut` method takes
+                    // `self` so the closure captures the whole `ClientsPtr`
+                    // (Send) rather than disjointly capturing the inner `*mut`
+                    // field (Rust 2021 RFC 2229).
+                    let slot = unsafe { &mut *ptr.slot_mut(idx) };
+                    if let Some(client) = slot.as_mut() {
+                        read_and_parse_client(client);
                     }
-                }
+                }) as WorkItem);
             }
+            io_pool.publish(work_items);
+            io_pool.join_all();
         }
 
-        // ── Phase 4: apply — parse + dispatch for all clients with data ───────
-        let client_keys: Vec<usize> = clients.keys().cloned().collect();
-        for tok_idx in client_keys {
-            let client = match clients.get_mut(&tok_idx) {
+        // ── Phase 4: APPLY — single-threaded on this (apply) thread ───────────
+        // Drain each client's parsed_requests + parse_error, dispatch to the
+        // ApplyShard, and enqueue GlueResponses into output_queue.
+        for &idx in &read_set {
+            let client = match clients[idx].as_mut() {
                 Some(c) => c,
                 None => continue,
             };
-            if client.closed || client.read_buf.is_empty() {
+            // Handle parse error first: emit error response and mark closed.
+            if let Some(err) = client.parse_error.take() {
+                match err {
+                    MioParseError::TcpFrame => {
+                        use crate::runtime_core_glue::GlueResponse;
+                        client
+                            .output_queue
+                            .push_back(GlueResponse::PushError {
+                                code: "frame_error",
+                                registry_version: 0,
+                            });
+                    }
+                    MioParseError::HttpProtocol => {
+                        use crate::runtime_core_glue::GlueResponse;
+                        client
+                            .output_queue
+                            .push_back(GlueResponse::PushError {
+                                code: "http_protocol_error",
+                                registry_version: 0,
+                            });
+                    }
+                }
+                client.closed = true;
+            }
+            // Drain parsed requests; dispatch each through the apply shard.
+            let parsed = std::mem::take(&mut client.parsed_requests);
+            for (req, _keep_alive) in parsed {
+                let responses = apply_shard.dispatch_wire_request_sync(req);
+                for resp in responses {
+                    client.output_queue.push_back(resp);
+                }
+            }
+        }
+
+        // Build write_set union: any client with pending output work that wasn't
+        // already in write_set. After apply, many clients in read_set will now
+        // have output_queue populated.
+        for &idx in &read_set {
+            if !write_set.contains(&idx) {
+                if clients[idx]
+                    .as_ref()
+                    .map(|c| c.has_write_work())
+                    .unwrap_or(false)
+                {
+                    write_set.push(idx);
+                }
+            }
+        }
+
+        // ── Phase 5: WRITE — IoPool workers do serialize + socket.write ───────
+        if !write_set.is_empty() {
+            let clients_ptr = ClientsPtr(clients.as_mut_ptr());
+            let mut work_items: Vec<WorkItem> = Vec::with_capacity(write_set.len());
+            for &idx in &write_set {
+                let ptr = clients_ptr;
+                work_items.push(Box::new(move || {
+                    // SAFETY: see the read-phase work item above; same invariants.
+                    let slot = unsafe { &mut *ptr.slot_mut(idx) };
+                    if let Some(client) = slot.as_mut() {
+                        serialize_and_write_client(client);
+                    }
+                }) as WorkItem);
+            }
+            io_pool.publish(work_items);
+            io_pool.join_all();
+        }
+
+        // ── Phase 6: post-write registration adjustments ──────────────────────
+        // After write_phase, re-register interest based on remaining write work.
+        for &idx in &write_set {
+            let client = match clients[idx].as_mut() {
+                Some(c) => c,
+                None => continue,
+            };
+            if client.closed {
                 continue;
             }
-
-            match client.proto {
-                MioProto::Tcp => {
-                    // Parse all complete framed TCP requests.
-                    loop {
-                        let trace =
-                            std::env::var("BEAVA_TRACE_SRV_TIMING").ok().as_deref() == Some("1");
-                        let t_start = if trace {
-                            Some(std::time::Instant::now())
-                        } else {
-                            None
-                        };
-                        match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
-                            Ok(Some(req)) => {
-                                let t_parsed = t_start.map(|t| t.elapsed());
-                                let responses = apply_shard.dispatch_wire_request_sync(req);
-                                let t_dispatched = t_start.map(|t| t.elapsed());
-                                for resp in responses {
-                                    encode_glue_response_tcp(&resp, &mut client.write_buf);
-                                }
-                                if let (Some(t0), Some(parsed), Some(dispatched)) =
-                                    (t_start, t_parsed, t_dispatched)
-                                {
-                                    let total = t0.elapsed();
-                                    eprintln!(
-                                        "TRACE_SRV ns: parse={} dispatch={} encode={} TOTAL={}",
-                                        parsed.as_nanos(),
-                                        (dispatched - parsed).as_nanos(),
-                                        (total - dispatched).as_nanos(),
-                                        total.as_nanos()
-                                    );
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(_) => {
-                                // Protocol error — close.
-                                use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE};
-                                encode_tcp_frame_bytes(
-                                    OP_ERROR_RESPONSE,
-                                    CT_JSON,
-                                    b"{\"code\":\"frame_error\"}",
-                                    &mut client.write_buf,
-                                );
-                                client.closed = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                MioProto::Http => {
-                    // Parse all complete HTTP/1.1 requests.
-                    loop {
-                        match parse_http_request(&mut client.read_buf) {
-                            Ok(Some((req, _keep_alive))) => {
-                                let responses = apply_shard.dispatch_wire_request_sync(req);
-                                for resp in responses {
-                                    encode_glue_response_http(&resp, &mut client.write_buf);
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(_) => {
-                                let err = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
-                                client.write_buf.extend_from_slice(err);
-                                client.closed = true;
-                                break;
-                            }
-                        }
-                    }
-                    // Re-register for both read and write if we have data to send.
-                    if !client.write_buf.is_empty() {
-                        let _ = event_loop.reregister(
-                            &mut client.stream,
-                            client.token,
-                            mio::Interest::READABLE | mio::Interest::WRITABLE,
-                        );
-                    }
-                }
-            }
-
-            // For TCP: also re-register for write if there are pending responses.
-            if client.proto == MioProto::Tcp && !client.write_buf.is_empty() {
-                let _ = event_loop.reregister(
-                    &mut client.stream,
-                    client.token,
-                    mio::Interest::READABLE | mio::Interest::WRITABLE,
-                );
-            }
+            let interest = if client.has_write_work() {
+                mio::Interest::READABLE | mio::Interest::WRITABLE
+            } else {
+                mio::Interest::READABLE
+            };
+            let _ = event_loop.reregister(&mut client.stream, client.token, interest);
         }
 
-        // ── Phase 5: write — flush write buffers ─────────────────────────────
-        for (token, _readable, _writable) in &events {
-            let tok_idx = token.0;
-            if tok_idx < TOKEN_CLIENT_BASE {
-                continue;
-            }
-            if let Some(client) = clients.get_mut(&tok_idx) {
-                if client.write_buf.is_empty() {
-                    continue;
-                }
-                loop {
-                    if client.write_buf.is_empty() {
-                        break;
-                    }
-                    match client.stream.write(&client.write_buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let _ = client.write_buf.split_to(n);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => {
-                            client.closed = true;
-                            break;
-                        }
-                    }
-                }
-                // If write buf drained, go back to read-only.
-                if client.write_buf.is_empty() && !client.closed {
-                    let _ = event_loop.reregister(
-                        &mut client.stream,
-                        client.token,
-                        mio::Interest::READABLE,
-                    );
+        // ── Phase 7: cleanup closed clients ──────────────────────────────────
+        for idx in 0..MAX_CONCURRENT_CLIENTS {
+            let should_close = clients[idx].as_ref().map(|c| c.closed).unwrap_or(false);
+            if should_close {
+                if let Some(mut client) = clients[idx].take() {
+                    let _ = event_loop.deregister(&mut client.stream);
+                    free_slots.push(idx);
                 }
             }
         }
 
-        // Also try to flush write buffers for ALL clients that have pending data
-        // (not just those with writable events this tick — catches first-tick writes).
-        let client_keys2: Vec<usize> = clients.keys().cloned().collect();
-        for tok_idx in client_keys2 {
-            if let Some(client) = clients.get_mut(&tok_idx) {
-                if client.closed || client.write_buf.is_empty() {
-                    continue;
-                }
-                loop {
-                    if client.write_buf.is_empty() {
-                        break;
-                    }
-                    match client.stream.write(&client.write_buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let _ = client.write_buf.split_to(n);
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(_) => {
-                            client.closed = true;
-                            break;
-                        }
-                    }
-                }
-                if client.write_buf.is_empty() && !client.closed {
-                    let _ = event_loop.reregister(
-                        &mut client.stream,
-                        client.token,
-                        mio::Interest::READABLE,
-                    );
-                }
-            }
-        }
-
-        // ── Phase 6: cleanup closed clients ──────────────────────────────────
-        let closed: Vec<usize> = clients
-            .iter()
-            .filter(|(_, c)| c.closed)
-            .map(|(k, _)| *k)
-            .collect();
-        for tok_idx in closed {
-            if let Some(mut client) = clients.remove(&tok_idx) {
-                let _ = event_loop.deregister(&mut client.stream);
-            }
-        }
-
-        // ── Phase 7: check shutdown ───────────────────────────────────────────
+        // ── Phase 8: check shutdown ──────────────────────────────────────────
         if shutdown.load(AOrdering::Acquire) {
             tracing::info!(target: "beava.server", "apply thread: shutdown signal received, draining");
             break;
         }
     }
 
+    drop(io_pool);
     tracing::info!(target: "beava.server", "apply thread: exiting");
+}
+
+// ─── Plan 18-04.7 IoPool wiring helpers ──────────────────────────────────────
+
+/// Newtype wrapper that lets us send a raw mut pointer into a Send WorkItem
+/// closure without the per-call `unsafe impl Send` boilerplate.
+///
+/// SAFETY of the Send impl: the pointer always points into a Vec that is
+/// pre-allocated and never resized (`MAX_CONCURRENT_CLIENTS`). Synchronization
+/// is provided externally by the IoPool's Release/Acquire barrier — only one
+/// worker accesses any given slot index per tick, and the apply thread waits
+/// at `join_all()` before touching the slot.
+#[derive(Clone, Copy)]
+struct ClientsPtr(*mut Option<MioClient>);
+
+// SAFETY: see ClientsPtr docs — pointer aliases are bounded by IoPool barriers.
+unsafe impl Send for ClientsPtr {}
+unsafe impl Sync for ClientsPtr {}
+
+impl ClientsPtr {
+    /// Access the slot at `idx`. Method-based access forces the closure to
+    /// capture the whole `ClientsPtr` instead of disjointly capturing the
+    /// inner `*mut` field (Rust 2021 RFC 2229 closure-capture rules).
+    ///
+    /// SAFETY: see the struct-level docs.
+    #[inline]
+    unsafe fn slot_mut(self, idx: usize) -> *mut Option<MioClient> {
+        self.0.add(idx)
+    }
+}
+
+impl MioClient {
+    /// True if the client has bytes to write — either un-serialised
+    /// `GlueResponse`s in `output_queue` or partially-flushed bytes in
+    /// `write_buf`.
+    fn has_write_work(&self) -> bool {
+        !self.output_queue.is_empty() || !self.write_buf.is_empty()
+    }
+}
+
+/// Accept all pending connections from `listener` until WouldBlock, allocate
+/// a free slot for each, and register with the event loop.
+fn accept_clients<L>(
+    listener: &mut L,
+    proto: MioProto,
+    clients: &mut [Option<MioClient>],
+    free_slots: &mut Vec<usize>,
+    event_loop: &mut beava_runtime_core::event_loop::EventLoop,
+) where
+    L: AcceptStream,
+{
+    loop {
+        match listener.accept_stream() {
+            Ok(stream) => {
+                let slot_idx = match free_slots.pop() {
+                    Some(i) => i,
+                    None => {
+                        tracing::warn!(
+                            target: "beava.server",
+                            "apply thread: no free client slot — dropping connection (>= {} concurrent clients)",
+                            MAX_CONCURRENT_CLIENTS
+                        );
+                        // Drop the stream by letting it leave scope.
+                        drop(stream);
+                        break;
+                    }
+                };
+                let client_token = mio::Token(slot_idx + TOKEN_CLIENT_BASE);
+                let mut client = MioClient {
+                    stream,
+                    token: client_token,
+                    proto,
+                    read_buf: bytes::BytesMut::with_capacity(8 * 1024),
+                    parsed_requests: Vec::new(),
+                    parse_error: None,
+                    output_queue: std::collections::VecDeque::new(),
+                    write_buf: bytes::BytesMut::new(),
+                    closed: false,
+                };
+                if let Err(e) = event_loop.register(
+                    &mut client.stream,
+                    client_token,
+                    mio::Interest::READABLE,
+                ) {
+                    tracing::warn!("apply thread: register client failed: {e}");
+                    free_slots.push(slot_idx);
+                } else {
+                    clients[slot_idx] = Some(client);
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+}
+
+/// Trait abstraction over `HttpListener` / `TcpListener` so `accept_clients`
+/// can drive both. Each impl just calls its `accept(...)` method and returns
+/// the underlying `mio::net::TcpStream`.
+trait AcceptStream {
+    fn accept_stream(&mut self) -> std::io::Result<mio::net::TcpStream>;
+}
+
+impl AcceptStream for beava_runtime_core::http_listener::HttpListener {
+    fn accept_stream(&mut self) -> std::io::Result<mio::net::TcpStream> {
+        self.accept().map(|(s, _)| s)
+    }
+}
+
+impl AcceptStream for beava_runtime_core::tcp_listener::TcpListener {
+    fn accept_stream(&mut self) -> std::io::Result<mio::net::TcpStream> {
+        self.accept().map(|(s, _)| s)
+    }
+}
+
+/// Read-phase work item body. Runs on an IoPool worker thread.
+///
+/// 1. `socket.read` until `WouldBlock` (or EOF / error → mark closed).
+/// 2. Parse all complete frames out of `read_buf` into `parsed_requests`.
+/// 3. On parse error, set `parse_error`; the apply phase emits the response.
+fn read_and_parse_client(client: &mut MioClient) {
+    use beava_runtime_core::http_listener::parse_http_request;
+    use beava_runtime_core::tcp_listener::parse_wire_request;
+    use std::io::Read;
+
+    if client.closed {
+        return;
+    }
+
+    // Phase A: drain socket → read_buf.
+    let mut tmp_buf = [0u8; 16 * 1024];
+    loop {
+        match client.stream.read(&mut tmp_buf) {
+            Ok(0) => {
+                client.closed = true;
+                return;
+            }
+            Ok(n) => {
+                client.read_buf.extend_from_slice(&tmp_buf[..n]);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => {
+                client.closed = true;
+                return;
+            }
+        }
+    }
+
+    if client.read_buf.is_empty() {
+        return;
+    }
+
+    // Phase B: parse all complete frames.
+    iopool_observer::record_parse();
+    match client.proto {
+        MioProto::Tcp => loop {
+            match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
+                Ok(Some(req)) => {
+                    client.parsed_requests.push((req, false));
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    client.parse_error = Some(MioParseError::TcpFrame);
+                    break;
+                }
+            }
+        },
+        MioProto::Http => loop {
+            match parse_http_request(&mut client.read_buf) {
+                Ok(Some((req, keep_alive))) => {
+                    client.parsed_requests.push((req, keep_alive));
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    client.parse_error = Some(MioParseError::HttpProtocol);
+                    break;
+                }
+            }
+        },
+    }
+}
+
+/// Write-phase work item body. Runs on an IoPool worker thread.
+///
+/// 1. Drain `output_queue`, serialize each `GlueResponse` into `write_buf`
+///    using the proto-appropriate encoder.
+/// 2. Loop on `socket.write` from the head of `write_buf` until `WouldBlock`
+///    or `write_buf` is empty.
+/// 3. On EOF / error, mark closed.
+fn serialize_and_write_client(client: &mut MioClient) {
+    use std::io::Write;
+
+    if client.closed {
+        return;
+    }
+
+    // Phase A: serialize any queued responses.
+    if !client.output_queue.is_empty() {
+        iopool_observer::record_encode();
+        let queue = std::mem::take(&mut client.output_queue);
+        for resp in queue {
+            match client.proto {
+                MioProto::Tcp => encode_glue_response_tcp(&resp, &mut client.write_buf),
+                MioProto::Http => encode_glue_response_http(&resp, &mut client.write_buf),
+            }
+        }
+    }
+
+    // Phase B: drain write_buf to the socket.
+    while !client.write_buf.is_empty() {
+        match client.stream.write(&client.write_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let _ = client.write_buf.split_to(n);
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => {
+                client.closed = true;
+                return;
+            }
+        }
+    }
 }
 
 /// Encode a GlueResponse as a TCP framed response into `buf`.

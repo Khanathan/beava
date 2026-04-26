@@ -453,8 +453,9 @@ async fn test_mixed_http_tcp_through_iopool() {
     assert!(resp.status().is_success(), "get failed: {}", resp.status());
     let body: serde_json::Value = resp.json().await.expect("get body");
     let cnt = body
-        .pointer("/value/cnt")
+        .get("value")
         .and_then(|v| v.as_i64())
+        .or_else(|| body.pointer("/value/cnt").and_then(|v| v.as_i64()))
         .or_else(|| body.get("cnt").and_then(|v| v.as_i64()))
         .unwrap_or(-1);
     assert_eq!(
