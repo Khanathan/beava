@@ -24,7 +24,7 @@ fn spawn_n_workers_with_write(
 ) -> (
     Vec<WorkerHandle>,
     crossbeam_channel::Receiver<RingItem>,
-    Vec<crossbeam_channel::Sender<(u64, bytes::Bytes)>>,
+    Vec<crossbeam_channel::Sender<(u64, beava_runtime_core::io_thread_worker::WriteEncoder)>>,
 ) {
     let (read_tx, read_rx) = crossbeam_channel::bounded::<RingItem>(16_384);
     let stop = Arc::new(AtomicBool::new(false));
@@ -187,12 +187,17 @@ fn test_no_write_join_all_apply_doesnt_wait() {
 
     // Send 1000 small response payloads to worker 0's write_tx.
     // Apply must not block — each send() just enqueues; worker drains later.
+    // Plan 18-06: write_tx now ships an encoder closure; this fixture wraps a
+    // pre-built Bytes and just appends it to write_buf when invoked.
     let payload: bytes::Bytes = bytes::Bytes::from_static(b"\x00\x00\x00\x04\x00\x02{}");
     let start = std::time::Instant::now();
     for _ in 0..1000 {
-        write_txs[0]
-            .send((0u64, payload.clone()))
-            .expect("write_tx send");
+        let p = payload.clone();
+        let encoder: beava_runtime_core::io_thread_worker::WriteEncoder =
+            Box::new(move |_proto, buf| {
+                buf.extend_from_slice(&p);
+            });
+        write_txs[0].send((0u64, encoder)).expect("write_tx send");
         // Wake worker 0 (as apply would) — must be non-blocking.
         workers[0].waker().wake().expect("wake");
     }

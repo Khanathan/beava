@@ -935,17 +935,18 @@ fn run_mio_event_loop(
     // owns the receiver. Capacity 16384 = old IoPool budget × 4× headroom.
     let (read_tx, read_rx) = crossbeam_channel::bounded::<RingItem>(16_384);
 
-    // Per-worker write_tx (apply → worker, encoded response bytes), and the
+    // Per-worker write_tx (apply → worker, encoder closures), and the
     // corresponding worker handles. Wakers cached in a parallel Vec so the hot
     // dispatch loop doesn't re-Arc-clone per send.
-    let mut write_txs: Vec<crossbeam_channel::Sender<(u64, bytes::Bytes)>> =
+    use beava_runtime_core::io_thread_worker::WriteEncoder;
+    let mut write_txs: Vec<crossbeam_channel::Sender<(u64, WriteEncoder)>> =
         Vec::with_capacity(n_workers);
     let mut workers: Vec<WorkerHandle> = Vec::with_capacity(n_workers);
     let mut worker_wakers: Vec<Arc<dyn beava_runtime_core::io_backend::WakerHandle>> =
         Vec::with_capacity(n_workers);
 
     for w in 0..n_workers {
-        let (write_tx, write_rx) = crossbeam_channel::bounded::<(u64, bytes::Bytes)>(4_096);
+        let (write_tx, write_rx) = crossbeam_channel::bounded::<(u64, WriteEncoder)>(4_096);
         let (new_client_tx, new_client_rx) = crossbeam_channel::bounded::<NewClient>(256);
 
         let cfg = WorkerConfig {
@@ -1050,30 +1051,25 @@ fn run_mio_event_loop(
                 } => {
                     let responses = apply_shard.dispatch_wire_request_with_row(request, parsed_row);
                     let slot_u64 = slot_idx as u64;
-                    let proto = slot_proto
-                        .get(&slot_u64)
-                        .copied()
-                        .unwrap_or(WorkerProto::Tcp);
                     let w = (slot_u64 as usize) % n_workers;
                     for resp in responses {
-                        let mut buf = bytes::BytesMut::new();
-                        match proto {
-                            WorkerProto::Tcp => encode_glue_response_tcp(&resp, &mut buf),
-                            WorkerProto::Http => encode_glue_response_http(&resp, &mut buf),
-                        }
-                        if write_txs[w].send((slot_u64, buf.freeze())).is_ok() {
+                        // Plan 18-06 follow-up: ship a closure that the worker
+                        // invokes to encode the response. The serde_json /
+                        // header-format / extend_from_slice work runs on the
+                        // worker thread, off the apply hot path. Apply only
+                        // pays the Box<FnOnce> alloc + channel send.
+                        let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
+                            WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
+                            WorkerProto::Http => encode_glue_response_http(&resp, buf),
+                        });
+                        if write_txs[w].send((slot_u64, encoder)).is_ok() {
                             wake_workers |= 1u32 << (w & 31);
                         }
                     }
-                    iopool_observer::record_encode();
                 }
                 RingItem::ParseError { slot_idx, kind } => {
                     use crate::runtime_core_glue::GlueResponse;
                     let slot_u64 = slot_idx as u64;
-                    let proto = slot_proto
-                        .get(&slot_u64)
-                        .copied()
-                        .unwrap_or(WorkerProto::Tcp);
                     let w = (slot_u64 as usize) % n_workers;
                     let resp = match kind {
                         ParseErrorKind::TcpFrame => GlueResponse::PushError {
@@ -1085,12 +1081,11 @@ fn run_mio_event_loop(
                             registry_version: 0,
                         },
                     };
-                    let mut buf = bytes::BytesMut::new();
-                    match proto {
-                        WorkerProto::Tcp => encode_glue_response_tcp(&resp, &mut buf),
-                        WorkerProto::Http => encode_glue_response_http(&resp, &mut buf),
-                    }
-                    if write_txs[w].send((slot_u64, buf.freeze())).is_ok() {
+                    let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
+                        WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
+                        WorkerProto::Http => encode_glue_response_http(&resp, buf),
+                    });
+                    if write_txs[w].send((slot_u64, encoder)).is_ok() {
                         wake_workers |= 1u32 << (w & 31);
                     }
                 }

@@ -42,6 +42,17 @@ pub enum WorkerProto {
     Tcp,
 }
 
+/// Plan 18-06 follow-up: encoder closure that runs on the worker thread.
+///
+/// Apply thread builds the closure with the typed response captured by move
+/// and ships it through `write_rx`. The worker invokes the closure with the
+/// client's protocol and a mutable reference to the client's `write_buf` —
+/// JSON serialization + HTTP/TCP framing happen on the worker, not apply.
+///
+/// `FnOnce` is appropriate because each closure encodes exactly one response.
+/// `Send + 'static` is required for crossbeam channels.
+pub type WriteEncoder = Box<dyn FnOnce(WorkerProto, &mut bytes::BytesMut) + Send + 'static>;
+
 /// A new client handed from the apply thread to a worker.
 pub struct NewClient {
     /// The TCP stream to register with the worker's backend.
@@ -79,8 +90,14 @@ pub struct WorkerConfig {
     pub n_workers: usize,
     /// Channel to push parsed `RingItem`s toward the apply thread.
     pub read_tx: Sender<RingItem>,
-    /// Channel from apply thread carrying `(slot_idx, encoded_bytes)` to write.
-    pub write_rx: Receiver<(u64, bytes::Bytes)>,
+    /// Channel from apply thread carrying `(slot_idx, encoder)` write jobs.
+    ///
+    /// Plan 18-06 follow-up: encode is now a closure that runs on the worker
+    /// thread (the worker calls `encoder(proto, &mut client.write_buf)`).
+    /// This moves response encoding off the apply hot path — apply just
+    /// boxes the encoder closure with the response captured by move and
+    /// the worker pays the JSON serialization + frame-header cost.
+    pub write_rx: Receiver<(u64, WriteEncoder)>,
     /// Channel from apply thread carrying new clients to register.
     pub new_client_rx: Receiver<NewClient>,
     /// Shared stop flag. When `true`, the worker exits after the current iteration.
@@ -173,7 +190,7 @@ impl WorkerHandle {
 pub fn start_worker<B: IoBackend>(
     cfg: WorkerConfig,
     new_client_tx: Sender<NewClient>,
-    _write_tx: Sender<(u64, bytes::Bytes)>,
+    _write_tx: Sender<(u64, WriteEncoder)>,
 ) -> WorkerHandle {
     let worker_id = cfg.worker_id;
     let stop_clone = Arc::clone(&cfg.stop);
@@ -241,10 +258,15 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
             }
         }
 
-        // 2. Drain write_rx — enqueue encoded response bytes for writing.
-        while let Ok((slot, data)) = write_rx.try_recv() {
+        // 2. Drain write_rx — invoke each encoder closure to fill write_buf.
+        // Plan 18-06 follow-up: encoder runs HERE (worker thread), not on
+        // apply. JSON serialization + frame headers happen off the apply
+        // hot path. The closure was built on apply with the response
+        // captured by move; we just hand it the proto + buffer.
+        while let Ok((slot, encoder)) = write_rx.try_recv() {
             if let Some(c) = clients.get_mut(&slot) {
-                c.write_buf.extend_from_slice(&data);
+                let proto = c.proto;
+                encoder(proto, &mut c.write_buf);
                 // Arm WRITABLE interest so the backend fires Writable events.
                 backend.set_interest_writable(slot, true);
             }
