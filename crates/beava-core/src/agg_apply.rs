@@ -63,21 +63,36 @@ pub fn apply_event_to_aggregations(
     registry: &Registry,
     state_tables: &mut BTreeMap<String, AggStateTable>,
 ) {
-    for desc in registry.compiled_aggregations_for_source(source_name) {
-        // Derive entity key; drop event for this aggregation if any group-key
-        // is null, missing, or Bytes (D-06 null-group-key drop semantics).
+    // SPIKE: per-substage timing of the agg hot path.
+    let trace = std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+    let t0 = if trace { Some(std::time::Instant::now()) } else { None };
+
+    let descs = registry.compiled_aggregations_for_source(source_name);
+    let t_registry = t0.map(|t| t.elapsed());
+
+    let mut t_entity_key_total = std::time::Duration::ZERO;
+    let mut t_table_lookup_total = std::time::Duration::ZERO;
+    let mut t_entity_row_total = std::time::Duration::ZERO;
+    let mut t_features_total = std::time::Duration::ZERO;
+    let mut feat_updates: u32 = 0;
+    let mut desc_count: u32 = 0;
+
+    for desc in descs {
+        desc_count += 1;
+        let t_a = t0.map(|t| t.elapsed());
+
         let entity_key = match EntityKey::from_row(&desc.group_keys, row) {
             Some(k) => k,
             None => continue,
         };
+        let t_b = t0.map(|t| t.elapsed());
 
-        // Get or initialise the per-aggregation state table.
         let table = state_tables.entry(desc.node_name.clone()).or_default();
+        let t_c = t0.map(|t| t.elapsed());
 
-        // Get or initialise the per-entity feature row.
         let entity_row = table.get_or_init(&entity_key, &desc);
+        let t_d = t0.map(|t| t.elapsed());
 
-        // Update every feature slot.
         for (i, feat) in desc.features.iter().enumerate() {
             entity_row[i].update_with_row(
                 row,
@@ -85,7 +100,31 @@ pub fn apply_event_to_aggregations(
                 feat.descriptor.field.as_deref(),
                 feat.descriptor.where_expr.as_ref(),
             );
+            feat_updates += 1;
         }
+        let t_e = t0.map(|t| t.elapsed());
+
+        if let (Some(a), Some(b), Some(c), Some(d), Some(e)) = (t_a, t_b, t_c, t_d, t_e) {
+            t_entity_key_total += b - a;
+            t_table_lookup_total += c - b;
+            t_entity_row_total += d - c;
+            t_features_total += e - d;
+        }
+    }
+
+    if let (Some(t0_inst), Some(reg)) = (t0, t_registry) {
+        let total = t0_inst.elapsed();
+        eprintln!(
+            "TRACE_AGG ns: descs={} feat_updates={} registry_call={} entity_key={} table_lookup={} entity_row_init={} features={} TOTAL={}",
+            desc_count,
+            feat_updates,
+            reg.as_nanos(),
+            t_entity_key_total.as_nanos(),
+            t_table_lookup_total.as_nanos(),
+            t_entity_row_total.as_nanos(),
+            t_features_total.as_nanos(),
+            total.as_nanos()
+        );
     }
 }
 

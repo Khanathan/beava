@@ -165,7 +165,21 @@ impl ApplyShard {
 
             // ─── GET single ───────────────────────────────────────────────────
             WireRequest::HttpGetSingle { feature, key } => {
-                crate::runtime_core_glue::dispatch_get_single_sync(&self.state, &feature, &key)
+                let trace_apply =
+                    std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+                let t0 = if trace_apply { Some(std::time::Instant::now()) } else { None };
+                let resp =
+                    crate::runtime_core_glue::dispatch_get_single_sync(&self.state, &feature, &key);
+                if let Some(t0_inst) = t0 {
+                    let total = t0_inst.elapsed();
+                    eprintln!(
+                        "TRACE_APPLY ns get: feature_len={} key_len={} TOTAL={}",
+                        feature.len(),
+                        key.len(),
+                        total.as_nanos()
+                    );
+                }
+                resp
             }
 
             // ─── GET batch ────────────────────────────────────────────────────
@@ -205,7 +219,12 @@ impl ApplyShard {
         use beava_core::row::Row;
         use beava_core::wire::CT_MSGPACK;
         use std::sync::atomic::Ordering;
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+        // SPIKE: per-stage apply-path timing (env-gated, success-path-only).
+        let trace_apply =
+            std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1");
+        let t0 = if trace_apply { Some(Instant::now()) } else { None };
 
         let registry_version = self.state.dev_agg.registry.version() as u32;
 
@@ -239,6 +258,7 @@ impl ApplyShard {
                 }
             }
         };
+        let t_parse = t0.map(|t| t.elapsed());
 
         // 2. Lookup event descriptor.
         let descriptor = {
@@ -253,6 +273,7 @@ impl ApplyShard {
                 }
             }
         };
+        let t_lookup = t0.map(|t| t.elapsed());
 
         // 3. Schema validate against Row.fields directly.
         if !validate_row_against_descriptor(&descriptor, &row) {
@@ -285,6 +306,7 @@ impl ApplyShard {
                 _ => None,
             })
             .unwrap_or(now_ms as i64);
+        let t_validate = t0.map(|t| t.elapsed());
 
         // 6. Serialize WAL payload — v=2 binary format.
         //
@@ -308,9 +330,11 @@ impl ApplyShard {
         payload_bytes.extend_from_slice(name_bytes); // name bytes
         payload_bytes.extend_from_slice(&body_len.to_be_bytes()); // u32 body_len
         payload_bytes.extend_from_slice(&body); // body bytes — zero-copy passthrough
+        let t_wal_build = t0.map(|t| t.elapsed());
 
         // 7. WAL append — lock-free on the hot path (no Mutex, no channel).
         let ack_lsn = self.wal_ring.append(&payload_bytes);
+        let t_wal_append = t0.map(|t| t.elapsed());
 
         // 8. Apply to aggregations under the table lock (uncontended on apply thread).
         {
@@ -324,6 +348,7 @@ impl ApplyShard {
                 &mut tables,
             );
         }
+        let t_agg = t0.map(|t| t.elapsed());
 
         // 9. Bump monotonic event counters.
         self.state
@@ -371,6 +396,31 @@ impl ApplyShard {
                     inserted_at_ms: now_ms,
                     expires_at_ms: now_ms.saturating_add(window_ms),
                 },
+            );
+        }
+
+        // SPIKE: per-stage timing eprintln (success path only).
+        if let (
+            Some(t0_inst),
+            Some(parse),
+            Some(lookup),
+            Some(validate),
+            Some(wal_b),
+            Some(wal_a),
+            Some(agg),
+        ) = (t0, t_parse, t_lookup, t_validate, t_wal_build, t_wal_append, t_agg)
+        {
+            let total = t0_inst.elapsed();
+            eprintln!(
+                "TRACE_APPLY ns push: parse={} lookup={} validate={} wal_build={} wal_append={} agg={} bookkeeping={} TOTAL={}",
+                parse.as_nanos(),
+                (lookup - parse).as_nanos(),
+                (validate - lookup).as_nanos(),
+                (wal_b - validate).as_nanos(),
+                (wal_a - wal_b).as_nanos(),
+                (agg - wal_a).as_nanos(),
+                (total - agg).as_nanos(),
+                total.as_nanos()
             );
         }
 
