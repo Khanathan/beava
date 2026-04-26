@@ -24,6 +24,11 @@ ahash = "0.8"
 ordered-float = { version = "4", features = ["serde"] }
 # Phase 11 geo operators: great-circle distance.
 haversine = { workspace = true }
+# Plan 18-11: hot-path optimization (Row variant D + AggStateTable HashMap).
+compact_str = { workspace = true }
+smallvec = { workspace = true }
+fxhash = { workspace = true }
+hashbrown = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -53,6 +53,17 @@ rmp-serde = "1"
 # Promoted from transitive dep of rmp-serde. Used in beava-runtime-core/tcp_listener.rs
 # to bypass serde overhead on the hot path.
 rmp = "0.8"
+# Plan 18-11: hot-path optimization deps (Row variant D + AggStateTable HashMap).
+# - compact_str: SSO string (≤24 bytes inline) for Value::Str + Row keys.
+# - smallvec: inline-storage Vec for Row.0 (8 elems) + EntityKey (2 elems).
+# - fxhash: non-cryptographic hasher for AggStateTable HashMap (single-process,
+#   no DoS resistance needed; ~3× faster than SipHasher on short keys).
+# - hashbrown: provides raw_entry_mut on stable Rust (std::HashMap's
+#   raw_entry_mut is unstable). Used for clone-free key-lookup on the agg hot path.
+compact_str = { version = "0.8", features = ["serde"] }
+smallvec = { version = "1", features = ["serde"] }
+fxhash = "0.2"
+hashbrown = { version = "0.15", features = ["serde", "raw-entry"] }
 
 [profile.release]
 opt-level = 3

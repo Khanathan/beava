@@ -37,9 +37,9 @@ rmp-serde = { workspace = true }
 serde_json = { workspace = true }
 sonic-rs = "0.5"
 beava-core = { path = "../beava-core" }
-# body→Row spike: SSO string + inline-storage bench deps (dev-only, not in binary)
-compact_str = { version = "0.8", features = ["serde"] }
-smallvec = { version = "1", features = ["serde"] }
+# Plan 18-11: SSO string + inline-storage deps (used by Row variant D in beava-core; bench-only here)
+compact_str = { workspace = true }
+smallvec = { workspace = true }
 
 [[bench]]
 name = "parse_envelope_bench"
