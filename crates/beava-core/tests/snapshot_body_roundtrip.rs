@@ -301,6 +301,7 @@ fn snapshot_body_registry_descriptors_preserved() {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 1,
+            name_arc: Arc::from(""),
         }),
     );
     inner.events.insert(
@@ -314,6 +315,7 @@ fn snapshot_body_registry_descriptors_preserved() {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 2,
+            name_arc: Arc::from(""),
         }),
     );
     inner.tables.insert(

@@ -866,6 +866,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         })
     }
 
@@ -996,6 +997,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(vec![node], ErrorCode::NameEmpty, "nodes[0].name");
     }
@@ -1017,6 +1019,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(vec![node], ErrorCode::NameBadPattern, "nodes[0].name");
     }
@@ -1038,6 +1041,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(vec![node], ErrorCode::NameReservedPrefix, "nodes[0].name");
     }
@@ -1060,6 +1064,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(vec![node], ErrorCode::NameTooLong, "nodes[0].name");
     }
@@ -1088,6 +1093,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(
             vec![node],
@@ -1113,6 +1119,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         let errs = validate_payload(&empty_current(), vec![node]).expect_err("expected Err");
         let e = errs
@@ -1140,6 +1147,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(
             vec![node],
@@ -1168,6 +1176,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         })];
         let result = validate_payload(&current, payload);
         assert!(
@@ -1351,6 +1360,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_ok(vec![node]);
     }
@@ -1372,6 +1382,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(
             vec![node],
@@ -1397,6 +1408,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         assert_err_contains(
             vec![node],
@@ -1428,6 +1440,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         let mut fields2 = BTreeMap::new();
         fields2.insert("x".to_string(), FieldType::F64);
@@ -1443,6 +1456,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         });
         let node2 = PayloadNode::Derivation(DerivationDescriptor {
             name: "EmptyDeriv".to_string(),
@@ -1495,6 +1509,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         current.version = 1;
@@ -1534,6 +1549,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         current.events.insert(
@@ -1550,6 +1566,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         // D has 3 upstreams: KnownA (ok), KnownB (ok), Missing (bad)
@@ -1696,6 +1713,7 @@ mod tests_structural {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         })
     }
 
@@ -1997,6 +2015,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         current.events.insert(
@@ -2013,6 +2032,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         assert_err_contains_with_current(

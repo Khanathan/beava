@@ -405,6 +405,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
 
         // Aggregation descriptor

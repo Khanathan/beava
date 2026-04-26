@@ -156,6 +156,7 @@ fn test_registry_get_event_descriptor_returns_arc() {
         keep_events_for_ms: None,
         tolerate_delay_ms: None,
         registered_at_version: 0,
+        name_arc: Arc::from(""),
     };
     registry.apply_registration(vec![PayloadNode::Event(event)], vec![], vec![], vec![]);
 
@@ -210,6 +211,7 @@ fn test_per_source_aggregation_index_is_populated() {
         keep_events_for_ms: None,
         tolerate_delay_ms: None,
         registered_at_version: 0,
+        name_arc: Arc::from(""),
     };
     let agg = AggregationDescriptor {
         node_name: "AggTxn".to_string(),
@@ -309,6 +311,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let agg = AggregationDescriptor {
             node_name: "AggTxn".to_string(),

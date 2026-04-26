@@ -27,6 +27,14 @@ pub enum TableMode {
 
 // ─── Descriptor structs ───────────────────────────────────────────────────────
 
+/// Default for the `name_arc` field — populated server-side at registration,
+/// so the deserialize default is just an empty Arc<str> placeholder. The
+/// install_descriptors / apply_registration / install_from_descriptors paths
+/// always overwrite this with `Arc::from(name.as_str())`.
+fn default_event_name_arc() -> Arc<str> {
+    Arc::from("")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventDescriptor {
     pub name: String,
@@ -44,6 +52,16 @@ pub struct EventDescriptor {
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
+    /// Plan 18-12: pre-allocated `Arc<str>` of `name`. The bookkeeping site in
+    /// dispatch_push_sync clones this (refcount bump, ~5 ns) instead of
+    /// calling `event_name.to_string()` (heap alloc, ~50-100 ns) on every push.
+    /// Populated server-side at registration; client-supplied JSON omits it
+    /// (skipped on serde, defaulted to `Arc::from("")` on deserialize, then
+    /// overwritten to `Arc::from(name.as_str())` by the install/registration
+    /// paths). Equality on Arc<str> is by `str` content, so derived PartialEq
+    /// behaves intuitively even across different allocations.
+    #[serde(skip, default = "default_event_name_arc")]
+    pub name_arc: Arc<str>,
 }
 
 impl EventDescriptor {
@@ -269,6 +287,10 @@ impl Registry {
         );
         for mut e in events {
             e.registered_at_version = new_version;
+            // Plan 18-12: pre-allocate the Arc<str> for the bookkeeping
+            // hot path. Client-supplied descriptors deserialize with an
+            // empty placeholder; we always overwrite it here.
+            e.name_arc = Arc::from(e.name.as_str());
             w.events.insert(e.name.clone(), Arc::new(e));
         }
         for mut t in tables {
@@ -329,6 +351,11 @@ impl Registry {
                 crate::registry_diff::PayloadNode::Event(mut e) => {
                     if !w.events.contains_key(&e.name) {
                         e.registered_at_version = new_version;
+                        // Plan 18-12: pre-allocate the Arc<str> for the
+                        // bookkeeping hot path (refcount bump per push, no
+                        // String alloc). See install_descriptors for the
+                        // companion site.
+                        e.name_arc = Arc::from(e.name.as_str());
                         w.events.insert(e.name.clone(), Arc::new(e));
                     }
                 }
@@ -419,10 +446,18 @@ impl Registry {
         // Plan 18-11 D-6: snapshot body holds plain EventDescriptor; wrap in
         // Arc on install. snapshot writer (snapshot_body.rs::from_live)
         // unwraps the Arc into a plain map for serialization.
+        // Plan 18-12: when reinstalling from a snapshot, populate name_arc
+        // alongside the Arc<EventDescriptor> wrap. Snapshot bodies serialize
+        // without name_arc (skipped on serde) so this re-derives it from the
+        // descriptor's `name`.
         w.events = body
             .events
             .iter()
-            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .map(|(k, v)| {
+                let mut ev = v.clone();
+                ev.name_arc = Arc::from(ev.name.as_str());
+                (k.clone(), Arc::new(ev))
+            })
             .collect();
         w.tables = body.tables.clone();
         w.derivations = body.derivations.clone();
@@ -624,6 +659,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 1,
+            name_arc: Arc::from(""),
         };
         let mut b = a.clone();
         b.registered_at_version = 99;
@@ -653,6 +689,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
 
         r.install_descriptors(1, vec![event_a], vec![], vec![]);
@@ -802,6 +839,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let new_version =
             r.apply_registration(vec![PayloadNode::Event(event_a)], vec![], vec![], vec![]);
@@ -826,6 +864,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let v1 = r.apply_registration(vec![PayloadNode::Event(e1)], vec![], vec![], vec![]);
         assert_eq!(v1, 1);
@@ -839,6 +878,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let v2 = r.apply_registration(vec![PayloadNode::Event(e2)], vec![], vec![], vec![]);
         assert_eq!(v2, 2);
@@ -863,6 +903,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         r.apply_registration(
             vec![PayloadNode::Event(event_a.clone())],
@@ -882,6 +923,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let v2 = r.apply_registration(
             vec![PayloadNode::Event(event_a), PayloadNode::Event(event_b)],
@@ -915,6 +957,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let agg_desc = AggregationDescriptor {
             node_name: "AggTable".to_string(),
@@ -1020,6 +1063,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let agg_a = Arc::new(AggregationDescriptor {
             node_name: "AggA".to_string(),
@@ -1082,6 +1126,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
         let agg_b = Arc::new(AggregationDescriptor {
             node_name: "AggB".to_string(),
@@ -1162,6 +1207,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
 
         let agg_desc = AggregationDescriptor {

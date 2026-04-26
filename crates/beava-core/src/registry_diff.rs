@@ -419,6 +419,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         r.version = 1;
@@ -445,6 +446,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         })
     }
 
@@ -622,6 +624,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.changed[0].reason, DiffReason::EventTimeFieldMismatch);
@@ -659,6 +662,7 @@ mod tests {
             keep_events_for_ms: Some(1001),
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.changed[0].reason, DiffReason::TtlMismatch);
@@ -855,6 +859,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         current.events.insert(
@@ -868,6 +873,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
 
@@ -905,6 +911,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
         current.events.insert(
@@ -918,6 +925,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
+                name_arc: Arc::from(""),
             }),
         );
 
@@ -952,7 +960,8 @@ mod tests {
             dedupe_window_ms: None,
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
-            registered_at_version: 99, // server-assigned, should be ignored
+            registered_at_version: 99,
+            name_arc: Arc::from(""), // server-assigned, should be ignored
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.already_present, vec!["A"]);
@@ -1010,6 +1019,7 @@ mod proptests {
                     keep_events_for_ms: None,
                     tolerate_delay_ms: None,
                     registered_at_version: 0,
+                    name_arc: Arc::from(""),
                 }
             })
     }

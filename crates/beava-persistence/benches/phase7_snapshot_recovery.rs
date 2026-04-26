@@ -44,6 +44,7 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 1,
+            name_arc: Arc::from(""),
         }),
     );
     let mut derivations = BTreeMap::new();

@@ -459,6 +459,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         }
     }
 
@@ -566,6 +567,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
 
         // 2. Build and compile the derivation.
@@ -670,6 +672,7 @@ mod tests {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 0,
+            name_arc: Arc::from(""),
         };
 
         let mut wc_exprs = BTreeMap::new();
