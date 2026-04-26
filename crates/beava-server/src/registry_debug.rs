@@ -98,9 +98,16 @@ pub fn registry_debug_router(state: RegistryDebugState) -> Router {
 
 async fn get_registry(State(state): State<RegistryDebugState>) -> Json<serde_json::Value> {
     let inner = state.registry.snapshot();
+    // Plan 18-11 D-6: events live as Arc<EventDescriptor>; unwrap into plain
+    // EventDescriptor for the JSON dump (cold path — admin endpoint).
+    let events = inner
+        .events
+        .into_iter()
+        .map(|(k, v)| (k, (*v).clone()))
+        .collect();
     let dump = RegistryDump {
         version: inner.version,
-        events: inner.events,
+        events,
         tables: inner.tables,
         derivations: inner.derivations,
         _dev_only: true,

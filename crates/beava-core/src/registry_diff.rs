@@ -336,6 +336,7 @@ fn classify_derivation_diff(
 
 use crate::schema::{DerivedSchema, EventSchema, FieldType, TableSchema};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 fn describe_schema_diff(
     a_fields: &BTreeMap<String, FieldType>,
@@ -408,7 +409,7 @@ mod tests {
         let mut r = RegistryInner::default();
         r.events.insert(
             name.to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: name.to_string(),
                 schema,
                 event_time_field: Some("event_time".to_string()),
@@ -417,7 +418,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         r.version = 1;
         r
@@ -630,7 +631,9 @@ mod tests {
     fn dedupe_key_mismatch() {
         let schema = simple_event_schema();
         let mut current = registry_with_event("A", schema.clone());
-        current.events.get_mut("A").unwrap().dedupe_key = Some("request_id".to_string());
+        // Plan 18-11 D-6: events are Arc — Arc::make_mut to update.
+        Arc::make_mut(current.events.get_mut("A").unwrap()).dedupe_key =
+            Some("request_id".to_string());
 
         // Payload has no dedupe_key
         let payload = vec![event_node("A", schema)];
@@ -643,7 +646,7 @@ mod tests {
     fn ttl_mismatch() {
         let schema = simple_event_schema();
         let mut current = registry_with_event("A", schema.clone());
-        current.events.get_mut("A").unwrap().keep_events_for_ms = Some(1000);
+        Arc::make_mut(current.events.get_mut("A").unwrap()).keep_events_for_ms = Some(1000);
 
         // Payload has keep_events_for_ms = 1001 (differs by 1ms)
         let payload = vec![PayloadNode::Event(EventDescriptor {
@@ -842,7 +845,7 @@ mod tests {
         let mut current = RegistryInner::default();
         current.events.insert(
             "existingB".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "existingB".to_string(),
                 schema: schema.clone(),
                 event_time_field: Some("event_time".to_string()),
@@ -851,11 +854,11 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         current.events.insert(
             "existingD".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "existingD".to_string(),
                 schema: schema.clone(),
                 event_time_field: Some("event_time".to_string()),
@@ -864,7 +867,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
 
         let payload = vec![
@@ -892,7 +895,7 @@ mod tests {
         let mut current = RegistryInner::default();
         current.events.insert(
             "X".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "X".to_string(),
                 schema: schema.clone(),
                 event_time_field: Some("event_time".to_string()),
@@ -901,11 +904,11 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         current.events.insert(
             "Z".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "Z".to_string(),
                 schema: schema.clone(),
                 event_time_field: Some("event_time".to_string()),
@@ -914,7 +917,7 @@ mod tests {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
 
         let payload = vec![
@@ -1046,7 +1049,7 @@ mod proptests {
                     let name = e.name.clone();
                     // Skip if name already used by table
                     if !inner.tables.contains_key(&name) {
-                        inner.events.insert(name, e);
+                        inner.events.insert(name, Arc::new(e));
                     }
                 }
                 for (i, mut t) in tables.into_iter().enumerate() {
@@ -1066,7 +1069,8 @@ mod proptests {
     fn registry_inner_to_payload_nodes(reg: &RegistryInner) -> Vec<PayloadNode> {
         let mut nodes: Vec<PayloadNode> = Vec::new();
         for e in reg.events.values() {
-            nodes.push(PayloadNode::Event(e.clone()));
+            // Plan 18-11 D-6: events are Arc-wrapped — clone the inner.
+            nodes.push(PayloadNode::Event((**e).clone()));
         }
         for t in reg.tables.values() {
             nodes.push(PayloadNode::Table(t.clone()));

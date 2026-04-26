@@ -261,22 +261,20 @@ impl ApplyShard {
         let t_parse = t0.map(|t| t.elapsed());
 
         // 2. Lookup event descriptor.
-        let descriptor = {
-            let inner = self.state.dev_agg.registry.read();
-            match inner.events.get(event_name).cloned() {
-                Some(d) => d,
-                None => {
-                    return GlueResponse::PushError {
-                        code: "event_not_found",
-                        registry_version,
-                    };
-                }
+        // Plan 18-11 D-6: Arc-backed lookup — refcount bump only, no clone.
+        let descriptor = match self.state.dev_agg.registry.get_event_descriptor(event_name) {
+            Some(d) => d,
+            None => {
+                return GlueResponse::PushError {
+                    code: "event_not_found",
+                    registry_version,
+                };
             }
         };
         let t_lookup = t0.map(|t| t.elapsed());
 
         // 3. Schema validate against Row.fields directly.
-        if !validate_row_against_descriptor(&descriptor, &row) {
+        if !validate_row_against_descriptor(&*descriptor, &row) {
             return GlueResponse::PushError {
                 code: "invalid_event",
                 registry_version,

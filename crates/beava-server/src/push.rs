@@ -208,22 +208,20 @@ pub async fn execute_push(
     };
 
     // 2. Lookup event descriptor.
-    let descriptor = {
-        let inner = app.dev_agg.registry.read();
-        match inner.events.get(event_name).cloned() {
-            Some(d) => d,
-            None => {
-                return PushOutcome::Error {
-                    http_status: StatusCode::NOT_FOUND,
-                    code: "event_not_found",
-                    registry_version,
-                }
+    // Plan 18-11 D-6: Arc-backed lookup — refcount bump only.
+    let descriptor = match app.dev_agg.registry.get_event_descriptor(event_name) {
+        Some(d) => d,
+        None => {
+            return PushOutcome::Error {
+                http_status: StatusCode::NOT_FOUND,
+                code: "event_not_found",
+                registry_version,
             }
         }
     };
 
     // 3. Schema validate.
-    if !validate_body(&descriptor, &obj) {
+    if !validate_body(&*descriptor, &obj) {
         return PushOutcome::Error {
             http_status: StatusCode::BAD_REQUEST,
             code: "invalid_event",

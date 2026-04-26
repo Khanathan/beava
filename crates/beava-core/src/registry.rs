@@ -138,7 +138,11 @@ impl DerivationDescriptor {
 #[derive(Debug, Default, Clone)]
 pub struct RegistryInner {
     pub version: u64,
-    pub events: BTreeMap<String, EventDescriptor>,
+    /// Plan 18-11 D-6: events stored as Arc so dispatch_push_sync can grab a
+    /// cheap refcount-bump pointer instead of cloning the EventDescriptor on
+    /// every push. snapshot/install paths convert via Arc::new and
+    /// (*arc).clone() at the boundaries (cold paths).
+    pub events: BTreeMap<String, Arc<EventDescriptor>>,
     pub tables: BTreeMap<String, TableDescriptor>,
     pub derivations: BTreeMap<String, DerivationDescriptor>,
     /// Phase 4: compiled op-chains keyed by derivation name.
@@ -198,6 +202,15 @@ impl Registry {
             .cloned()
     }
 
+    /// Plan 18-11 D-6: O(1) Arc-backed event-descriptor lookup.
+    ///
+    /// Returns `None` if the event isn't registered. The returned `Arc` is a
+    /// refcount bump on the registry-owned Arc — dispatch_push_sync can hold
+    /// it for the duration of one push without cloning the EventDescriptor.
+    pub fn get_event_descriptor(&self, name: &str) -> Option<Arc<EventDescriptor>> {
+        self.inner.read().events.get(name).cloned()
+    }
+
     /// Phase 5 Plan 06: Return the (aggregation node_name, feature_index) for a
     /// feature name, or `None` if the feature name is not registered.
     /// O(1) reverse lookup into `feature_index`.
@@ -244,7 +257,7 @@ impl Registry {
         );
         for mut e in events {
             e.registered_at_version = new_version;
-            w.events.insert(e.name.clone(), e);
+            w.events.insert(e.name.clone(), Arc::new(e));
         }
         for mut t in tables {
             t.registered_at_version = new_version;
@@ -304,7 +317,7 @@ impl Registry {
                 crate::registry_diff::PayloadNode::Event(mut e) => {
                     if !w.events.contains_key(&e.name) {
                         e.registered_at_version = new_version;
-                        w.events.insert(e.name.clone(), e);
+                        w.events.insert(e.name.clone(), Arc::new(e));
                     }
                 }
                 crate::registry_diff::PayloadNode::Table(mut t) => {
@@ -384,7 +397,14 @@ impl Registry {
     pub fn install_from_descriptors(&self, body: &crate::snapshot_body::RegistryDescriptorsOnly) {
         let mut w = self.inner.write();
         w.version = body.version;
-        w.events = body.events.clone();
+        // Plan 18-11 D-6: snapshot body holds plain EventDescriptor; wrap in
+        // Arc on install. snapshot writer (snapshot_body.rs::from_live)
+        // unwraps the Arc into a plain map for serialization.
+        w.events = body
+            .events
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
         w.tables = body.tables.clone();
         w.derivations = body.derivations.clone();
         // Caches stay as they are; recovery's WAL replay re-applies any

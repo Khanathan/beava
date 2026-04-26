@@ -289,9 +289,10 @@ fn snapshot_body_registry_descriptors_preserved() {
         version: 3,
         ..RegistryInner::default()
     };
+    use std::sync::Arc;
     inner.events.insert(
         "Txn".to_string(),
-        EventDescriptor {
+        Arc::new(EventDescriptor {
             name: "Txn".to_string(),
             schema: small_event_schema(),
             event_time_field: None,
@@ -300,11 +301,11 @@ fn snapshot_body_registry_descriptors_preserved() {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 1,
-        },
+        }),
     );
     inner.events.insert(
         "Login".to_string(),
-        EventDescriptor {
+        Arc::new(EventDescriptor {
             name: "Login".to_string(),
             schema: small_event_schema(),
             event_time_field: None,
@@ -313,7 +314,7 @@ fn snapshot_body_registry_descriptors_preserved() {
             keep_events_for_ms: None,
             tolerate_delay_ms: None,
             registered_at_version: 2,
-        },
+        }),
     );
     inner.tables.insert(
         "UserStats".to_string(),
@@ -347,7 +348,13 @@ fn snapshot_body_registry_descriptors_preserved() {
     let decoded = SnapshotBody::decode(&bytes).expect("decode");
 
     assert_eq!(decoded.registry.version, inner.version);
-    assert_eq!(decoded.registry.events, inner.events);
+    // Plan 18-11 D-6: inner.events holds Arc<EventDescriptor>; the snapshot
+    // body holds plain EventDescriptor — compare element-wise.
+    assert_eq!(decoded.registry.events.len(), inner.events.len());
+    for (k, v) in &decoded.registry.events {
+        let arc = inner.events.get(k).expect("key in inner");
+        assert_eq!(v, arc.as_ref(), "event {} round-trip", k);
+    }
     assert_eq!(decoded.registry.tables, inner.tables);
     assert_eq!(decoded.registry.derivations, inner.derivations);
 }

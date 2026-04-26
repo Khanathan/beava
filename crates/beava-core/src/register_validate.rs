@@ -1483,7 +1483,7 @@ mod tests_structural {
         fields.insert("x".to_string(), FieldType::F64);
         current.events.insert(
             "A".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "A".to_string(),
                 schema: EventSchema {
                     fields,
@@ -1495,7 +1495,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         current.version = 1;
         let result = validate_payload(&current, vec![minimal_derivation("D", vec!["A"])]);
@@ -1522,7 +1522,7 @@ mod tests_structural {
         fields.insert("x".to_string(), FieldType::F64);
         current.events.insert(
             "KnownA".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "KnownA".to_string(),
                 schema: EventSchema {
                     fields: fields.clone(),
@@ -1534,11 +1534,11 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         current.events.insert(
             "KnownB".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "KnownB".to_string(),
                 schema: EventSchema {
                     fields,
@@ -1550,7 +1550,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         // D has 3 upstreams: KnownA (ok), KnownB (ok), Missing (bad)
         let errs = validate_payload(
@@ -1985,7 +1985,7 @@ mod tests_structural {
         fields.insert("x".to_string(), FieldType::F64);
         current.events.insert(
             "KnownA".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "KnownA".to_string(),
                 schema: EventSchema {
                     fields: fields.clone(),
@@ -1997,11 +1997,11 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         current.events.insert(
             "KnownB".to_string(),
-            EventDescriptor {
+            Arc::new(EventDescriptor {
                 name: "KnownB".to_string(),
                 schema: EventSchema {
                     fields,
@@ -2013,7 +2013,7 @@ mod tests_structural {
                 keep_events_for_ms: None,
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
-            },
+            }),
         );
         assert_err_contains_with_current(
             &current,

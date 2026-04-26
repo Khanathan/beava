@@ -40,9 +40,17 @@ pub struct RegistryDescriptorsOnly {
 
 impl From<&RegistryInner> for RegistryDescriptorsOnly {
     fn from(inner: &RegistryInner) -> Self {
+        // Plan 18-11 D-6: events live as Arc<EventDescriptor> on the
+        // RegistryInner; the snapshot body holds plain EventDescriptor.
+        // Unwrap the Arc by cloning the inner — cold path, infrequent.
+        let events: BTreeMap<String, EventDescriptor> = inner
+            .events
+            .iter()
+            .map(|(k, v)| (k.clone(), (**v).clone()))
+            .collect();
         RegistryDescriptorsOnly {
             version: inner.version,
-            events: inner.events.clone(),
+            events,
             tables: inner.tables.clone(),
             derivations: inner.derivations.clone(),
         }
