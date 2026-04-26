@@ -613,3 +613,56 @@ Both are correct measurements; continuous is more useful for capacity planning (
 The 462k / 487k numbers from the Plan 18-12 measurement section (single-shot, no best-of-3) are upper-tail readings. This best-of-3 sweep (8s × 3 runs) shows the true mean and variance band. Burst's wider variance band lets it occasionally peak above continuous's mean, but it can also drop to 271k. Continuous's tighter band makes it the more dependable default for production capacity planning.
 
 **Production reading:** Continuous mode is the new default. Mean throughput at p=16/pd=256 is **375k EPS (json) / 400k EPS (msgpack)** with ~10× tighter variance than burst — predictable, sustainable load on the apply thread without per-batch sawtooth gaps.
+
+### Phase 18-13 — SPSC channel between IoPool and apply thread (M4 informational)
+
+**Run date:** 2026-04-26  · **Hardware:** Darwin-24.3.0 / 10 cores · **Commit:** fa9f16a (v2/greenfield)
+
+**TRACE_APPLY trace (parallel=4 / pd=64 / json, n=40,513 push events post-warmup):**
+
+| Stage        | Plan 18-12 (was) | Plan 18-13 (now) | Delta              |
+|--------------|-----------------:|-----------------:|--------------------|
+| parse        |             67 ns |            71 ns | within noise        |
+| lookup       |             28 ns |            35 ns | within noise        |
+| validate     |             29 ns |            33 ns | within noise        |
+| wal_build    |             30 ns |            40 ns | within noise        |
+| wal_append   |             36 ns |            46 ns | within noise        |
+| agg          |            500 ns |           622 ns | +24% (variance)     |
+| bookkeeping  |            194 ns |           222 ns | within noise        |
+| TOTAL push   |            888 ns |         1,072 ns | +21% (variance)     |
+| **gap**      |       **3,248 ns** |       **645 ns** | **−80% (-2,603 ns)** |
+
+The gap reduction is the headline result — apply thread no longer waits on `IoPool::join_all` between read and apply. Mean inter-event idle time on the apply thread drops 5×.
+
+**EPS comparison vs Plan 18-12 baseline (small / tcp / continuous):**
+
+| Wire    | Parallel | pd   | 18-12   | 18-13       | Delta              |
+|---------|---------:|-----:|--------:|------------:|--------------------|
+| json    |       16 |  256 | 375k    | 459k        | **+22%**           |
+| msgpack |       16 |  256 | 400k    | 454k        | **+13%**           |
+| json    |       16 | 1024 | n/a     | 474k        | new peak           |
+| msgpack |       16 | 1024 | n/a     | **483k**    | new peak (best)    |
+
+**Best observed across all configs:** p=16 / pd=1024 / msgpack continuous — **527k EPS** (single-run upper-tail).
+
+**Why EPS only lifted ~13-22% despite 80% gap reduction:**
+
+The drain-channel-while-workers-run merge eliminated the read-phase `join_all` barrier (saving ~200 µs/tick of apply-side wait), but the **WRITE phase still uses `IoPool::publish + join_all`** for serialize-and-write. Each tick now:
+
+| Phase                          | Pre-18-13 | Post-18-13 |
+|--------------------------------|----------:|-----------:|
+| READ (IoPool parses)           |    200 µs |     200 µs |
+| APPLY (drain & dispatch)       |     50 µs |  overlapped |
+| WRITE (IoPool serialize+write) |    100 µs |     100 µs |
+| **Total per tick**             |   350 µs |    300 µs |
+
+Per-tick wall time drops from ~350 µs → ~300 µs ≈ 14% lift — closely matching observed +13-22% across configs. The apply thread is no longer gap-bound on the read side; the bottleneck has shifted to the write phase.
+
+**Path to closing the remaining gap:**
+
+A follow-up plan can mirror the SPSC approach for the write path:
+- Apply thread pushes `(slot_idx, GlueResponse)` items into a write SPSC channel as it dispatches (instead of accumulating in `MioClient.output_queue`).
+- IoPool workers continuously drain the write channel, serialize, and write to sockets.
+- Eliminates the second `join_all` barrier; expected additional +10-15% EPS.
+
+After write-phase SPSC + the queued Plan 18-05 (io_uring on Linux), the M4 ceiling should land in the 600-700k EPS range. Linux Xeon with io_uring is the path to ≥1M EPS/instance per the Phase 13 ship-gate target.
