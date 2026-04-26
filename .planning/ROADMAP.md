@@ -588,6 +588,112 @@ Plans:
 
 **Why this matters:** Beava's v0 ship gate is "users can declare a feature, push events, query it — in under 10 minutes, with curl alone." That promise breaks the moment a user hits an undocumented edge case — whether on the operator side (NaN behavior, retraction semantics, restart determinism) OR on the API side (which push variant gives which durability guarantee, what happens on dedupe replay, how /retract routes between stream and table writes). Phase 20 closes both gaps before public launch.
 
+### Phase 21: Nexmark MVP slice (Bucket A) — Rust generator + 8 queries vs Flink — 📋 PLANNED
+
+**Status:** Planned post Phase 20 (added 2026-04-26 from `.planning/research/nexmark-gap-analysis.md`). Implements the first tier of three-tier Nexmark coverage. Builds on Phase 19's `## 1M-event blast` ledger format.
+
+**Goal:** Run 8 Nexmark queries (q0, q1, q2, q14, q15, q17, q21, q22 — Bucket A in the gap analysis) on Beava with the upstream Nexmark generator, baselining against Flink reference outputs. Produces the published "Beava vs Flink on Nexmark" credibility line that fraud/streaming buyers ask for. Settles the row-emission-vs-state-serve drain pattern as a locked architectural decision. Lands the bundled scalar-DSL extension PR that unblocks half of Bucket B as a side effect.
+
+**Sub-goals:**
+
+1. **Nexmark generator port** — `crates/nexmark-gen/` Rust crate ports the Beam Nexmark generator with deterministic seed control. Inputs: `events_per_second`, `total_events`, `seed`, ratio knobs (Beam defaults: 92% bid, 6% auction, 2% person). Output: a `Stream<NexmarkRecord>` that an adapter shim translates into Beava `/push` payloads (HTTP + framed TCP). Aim ~1KLOC. Avoids JVM dep in the bench harness.
+
+2. **`crates/beava-bench --nexmark` mode** — wires the generator into the existing Phase 19 bench scaffolding. New flag `--nexmark-query=q0..q22` selects which adapter to register. Ledger rows append to `.planning/throughput-baselines.md` under a new `## nexmark` section (sibling to `## 1M-event blast`); same column shape but the `Pipeline` column carries the query id.
+
+3. **Expression-DSL bundle PR** — bundle these scalar additions in one commit set: `isin`, `lower`, `regex_extract(pattern, group)`, `split_index(sep, n)`, `format(fmt_string)`, `hour()` (date-part), `when(cond).then(val).otherwise(val)`, `%` (modulo). Plus aggregation modifier extension: confirm/extend `count(filter=expr)` and `count_distinct(filter=expr)`. All small, batch as one PR for review economy.
+
+4. **Drain-pattern decision lock-in** — discuss-phase MUST resolve the row-emission gap. Two candidates: (a) spec a `/tail?event=<name>` streaming endpoint (becomes a real Beava capability beyond Nexmark — useful for live debugging, dashboards), or (b) adapter-only drain-cadence contract (poll `/get-multi` every 1s, hash-and-compare buckets; Beava core unchanged; correctness is "approximate-row-equivalence within cadence window"). Decision goes in `21-CONTEXT.md` and propagates to Tier 2/3 phases.
+
+5. **Correctness harness** — for each of the 8 queries, run both Beava and Flink against the same deterministic generator seed; hash output row sequences (sort-then-hash for keyed-aggregation queries; raw-then-hash for streaming-tail queries); assert equality. Sketch-based ops (`count_distinct`, `percentile`) get ±epsilon tolerance per Beava's documented error bounds.
+
+6. **Per-query criterion microbench + ledger row** — at minimum one criterion microbench for the Nexmark hot path (e.g., `nexmark_q15_filtered_count`) appending to `.planning/perf-baselines.md`. Per-query rows in `## nexmark` section of `.planning/throughput-baselines.md`.
+
+**Depends on:** Phase 20 (operator catalogue audit lands one-page contracts that we cite from the Nexmark adapter docs). Phase 19 (1M-EPS bench harness wiring is the foundation for the `--nexmark` mode). The 8 Bucket A queries do NOT depend on Phase 15 (event-time PIT) — they all run on tumble + scalar transforms.
+
+**Success criteria:**
+- `crates/nexmark-gen/` ships a deterministic generator matching Beam reference output byte-for-byte (with documented seed/ratio knobs)
+- 8 queries (q0, q1, q2, q14, q15, q17, q21, q22) green via correctness harness vs Flink (within ±epsilon for sketches)
+- `## nexmark` section in `.planning/throughput-baselines.md` has all 8 query rows × HTTP/TCP × json/msgpack
+- Drain-pattern decision committed to `21-CONTEXT.md` and reflected in either `/tail?event=` endpoint code OR the adapter's drain-cadence implementation
+- Bundled scalar-DSL extension PR landed: 8 new ops/modifiers cited in this phase's CONTEXT
+- `count(filter=expr)` confirmed working (or extended to work) for q15, q17
+
+**Why this matters:** "Can Beava run Nexmark?" is the second-most-asked question after "Can Beava handle 1M EPS?" (Phase 19 covers the latter). For fraud/streaming buyers comparing platforms, Nexmark numbers vs Flink are table-stakes credibility. Tier 1 establishes that Beava covers the easy half (stateless transforms + per-key feature aggs) competitively; Tiers 2/3 extend coverage. Tier 1 also forces the row-emission decision that affects every future Beava product surface.
+
+### Phase 22: Nexmark winner-ops + windowing (Bucket B) — 8 more queries — 📋 PLANNED
+
+**Status:** Planned post Phase 21 (added 2026-04-26 from gap analysis). Adds the operators that unlock the next 8 queries.
+
+**Goal:** Land q3, q5, q7, q8, q11, q16, q18, q19 against Flink reference. Adds `top_n_by` + `arg_max` (the "winner" ops that show up across fraud/leaderboard recipes), session windows (huge value beyond Nexmark for engagement/fraud-session detection), HOP/sliding windows (rolling-velocity recipes), processing-time virtual column, tumble-aligned event-event joins, and `@bv.table(mode='row')` row-as-value table mode.
+
+**Sub-goals:**
+
+1. **`top_n_by(k, by, return=[fields])`** — exact heap-of-N op (distinct from existing `top_k` SpaceSaving sketch which is frequency-mode). Per-key memory bounded = N × row-size. TDD red-green per task.
+
+2. **`arg_max(by, return=[fields])`** — the k=1 specialization; returns the row tied to max. Underpins all "winner" patterns in fraud/auction/leaderboard recipes.
+
+3. **`@bv.table(mode='row')`** — store the entire event payload as the table value (not field-by-field). Cleaner primitive than `bv.last(field)` per column. Unblocks q18 dedupe pattern.
+
+4. **Session-window kind** — new operator family: `session_count(gap=)`, `session_sum(field, gap=)`, `session_first_event_time(gap=)`, `session_last_event_time(gap=)`. Data-driven boundaries (vs uniform tumble) require a new state machine: per-key `(session_start, last_seen, accumulator)`. Reuses bounded-buffer + apply machinery; the windowing kind is a new code path.
+
+5. **HOP/sliding-window iterator** — generalize the bucketing engine to report every step instead of every period. Adds `step=` parameter to existing windowed ops. Already partly enabled by 64-bucket-cap + uniform bucketing.
+
+6. **`proc_time` virtual column** — inject `proc_time` at apply time; existing windowed ops take it as the time field. Tiny addition (S effort), unblocks q12.
+
+7. **`align='tumble'` option on event↔event join** — both sides snap to identical window boundaries. Unblocks q8.
+
+8. **Per-query benches + ledger rows** — append rows to `## nexmark` section for q3/q5/q7/q8/q11/q16/q18/q19.
+
+**Depends on:** Phase 21 (Nexmark adapter + generator + drain pattern + DSL bundle must exist). Independent of Phase 15 PIT (none of the Bucket B queries need event-time PIT).
+
+**Success criteria:**
+- 8 queries (q3, q5, q7, q8, q11, q16, q18, q19) green via correctness harness vs Flink
+- New operators landed with TDD red-green commits + unit + property tests
+- Per-key memory bounds enforced and tested for `top_n_by` and session windows
+- `## nexmark` section has 8 more query rows × HTTP/TCP × json/msgpack
+- Phase 22 SUMMARY documents which new ops landed (the ops are first-class Beava primitives, not Nexmark-specific scaffolding)
+
+**Why this matters:** The Bucket B operators are the highest-leverage gap closers BEYOND Nexmark — `top_n_by`, `arg_max`, sessions, and HOP unlock standard fraud/engagement/leaderboard recipes that Beava's first wave of users will demand even without Nexmark framing. Nexmark is the forcing function; the operators are the deliverable.
+
+### Phase 23: Nexmark Bucket C — retraction-aware joins + Table.agg — 📋 PLANNED (gated on Phase 15)
+
+**Status:** Planned post Phase 22 AND Phase 15 (added 2026-04-26 from gap analysis). The remaining 4 Nexmark queries plus a major architectural item.
+
+**Goal:** Cover q4, q6, q9, q20 — the queries blocked on event-time PIT (Phase 15 prerequisite) and on table-level re-aggregation with retraction propagation. Lands `Table.agg()` as a first-class DAG primitive: aggregations layered on top of derived tables, with retractions propagating through stages. Documents the q10 (file-system sink) and q13 (CSV-side-input) skip rationale.
+
+**Sub-goals:**
+
+1. **`Table.agg()` table-level re-aggregation** — heavyweight architectural item. Make `.agg()` first-class on `Table`, not just `Event`. Stage-2 aggregations re-aggregate over a derived table's column distribution. Unlocks q4 directly and any "agg of agg" pattern (cohort statistics, leaderboards over leaderboards). Requires retraction propagation: when stage-1 max changes, stage-2 avg must recompute. Multi-week with new state semantics.
+
+2. **`last_n_avg(field, n)` rolling op** — small once Phase 15 PIT lands (rolling sum + count over the last N rows per key). Unblocks q6.
+
+3. **`arg_max` extension for PIT-bound joins** — auction.dateTime..auction.expires bounds become a real PIT constraint via Phase 15. Unblocks q9.
+
+4. **Row-emission contract finalization** — q20-style "emit every joined row" queries formalize the `/tail?event=` endpoint OR the cadence-drain pattern (whichever Phase 21 locked). Documents the contract in `docs/streaming-semantics.md`.
+
+5. **Per-query benches + ledger rows** — q4/q6/q9/q20 get rows in `## nexmark` section.
+
+6. **Skip-rationale docs** — q10 (file-system sink) and q13 (CSV side-input file loader) get documented "why not" entries in the Nexmark adapter README. Beava is a feature server, not an ETL framework; q10 measures sink throughput which has no analog. q13's join half runs on Beava's existing event↔table enrichment; only the file-loading step is adapter responsibility.
+
+**Depends on:** Phase 15 (event-time PIT join, watermark — hard dependency). Phase 22 (operators must exist). The order of Phase 15 vs Phase 23 is not flexible — Phase 15 must land first.
+
+**Success criteria:**
+- 4 queries (q4, q6, q9, q20) green via correctness harness vs Flink
+- `Table.agg()` is a first-class primitive with retraction propagation tests
+- Phase 23 SUMMARY closes the Nexmark coverage at 19 of 23 queries (q10/q13 documented skips; q12 covered in Phase 22 via proc_time virtual column)
+- "Beava vs Flink on Nexmark" published comparison covers all queries Beava is intended to support
+- Beava-native sister benchmark family scoped (per-entity P99 reads under load, batch-get fanout, fraud-shape feature packs) — defer the implementation to a stretch phase
+
+**Why this matters:** Closes Beava's Nexmark story — every query that aligns with Beava's feature-server model is benchmarked; non-aligned queries are documented as "not what Beava does" rather than as gaps. The `Table.agg()` primitive becomes a flagship Beava capability that competitors don't expose cleanly. After Phase 23, the marketing line is "Beava runs the half of Nexmark that maps to feature serving — at >10× the throughput per core" (numbers TBD by actual run).
+
+### Phase 24+ (stretch): Nexmark Plus — Beava-native sister benchmark — 💡 BACKLOG
+
+**Status:** Stretch / backlog (added 2026-04-26 from gap analysis). NOT v0 scope.
+
+**Goal:** Extend the Nexmark complement with queries that *only* Beava (or other feature servers) can run cleanly: per-entity P99 latency reads under load, batch-get fanout, fraud-shape feature packs (the kind documented in `crates/beava-bench/`'s small/medium/large pipelines). Position as the "Beava native" benchmark — Flink won't have an equivalent, which is the point.
+
+**Status:** moved to v0.0.x point releases / 999.x backlog parking lot. Revisit after v0 ships with Nexmark Tiers 1/2/3 green.
+
 ---
 
 ## Traceability (preview)
