@@ -714,4 +714,62 @@ mod tests {
             _ => panic!("expected Value::Str"),
         }
     }
+
+    // ── Plan 18-11 Task 11.4: Row SmallVec<[(CompactString, Value); 8]> ────────
+
+    /// Plan 18-11 D-1: `Row.0` storage is SmallVec inline for ≤8 fields.
+    /// Most events have ≤8 fields → zero heap allocation for the row container.
+    ///
+    /// Compile-fail RED until Row.0 is swapped from BTreeMap → SmallVec.
+    #[test]
+    fn row_smallvec_inline_no_spill_for_six_fields() {
+        use smallvec::SmallVec;
+        // Construct a 6-field row.
+        let row = Row::new()
+            .with_field("amount", Value::F64(99.95))
+            .with_field("ts", Value::I64(1_714_234_567_000))
+            .with_field("account_id", Value::Str("acc_123".into()))
+            .with_field("merchant", Value::Str("M_ACME".into()))
+            .with_field("country", Value::Str("US".into()))
+            .with_field("method", Value::Str("card".into()));
+
+        // The backing is a SmallVec — exposes spilled() — and 6 fields fit
+        // inline (capacity=8).
+        let _: &SmallVec<[(compact_str::CompactString, Value); 8]> = &row.0;
+        assert!(
+            !row.0.spilled(),
+            "6-field Row must use inline SmallVec storage (no heap)"
+        );
+        assert_eq!(row.0.len(), 6);
+    }
+
+    /// Row::get scans the SmallVec linearly (≤8 fields, cache-friendly).
+    /// Faster than BTreeMap O(log N) for small rows. Verify functional
+    /// correctness post-swap.
+    #[test]
+    fn row_get_linear_scan_returns_value() {
+        let row = Row::new()
+            .with_field("a", Value::I64(1))
+            .with_field("b", Value::Str("hello".into()))
+            .with_field("c", Value::F64(2.5));
+
+        assert_eq!(row.get("a"), Some(&Value::I64(1)));
+        assert_eq!(row.get("b"), Some(&Value::Str("hello".into())));
+        assert_eq!(row.get("c"), Some(&Value::F64(2.5)));
+        assert_eq!(row.get("nope"), None);
+    }
+
+    /// with_field: replaces in-place when the field already exists; pushes
+    /// otherwise. Iteration order is insertion order (no longer alphabetical).
+    #[test]
+    fn row_with_field_replaces_existing_field_in_place() {
+        let row = Row::new()
+            .with_field("x", Value::I64(1))
+            .with_field("y", Value::I64(2))
+            .with_field("x", Value::I64(99)); // overwrite x
+
+        assert_eq!(row.get("x"), Some(&Value::I64(99)));
+        assert_eq!(row.get("y"), Some(&Value::I64(2)));
+        assert_eq!(row.0.len(), 2, "no duplicate entry on overwrite");
+    }
 }
