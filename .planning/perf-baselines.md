@@ -194,3 +194,31 @@ Targets per Plan 18-10 D-4: parse_msgpack_envelope ≤80 ns; parse_json_envelope
 - parse_json_envelope: previously 583 ns (serde_json::from_slice::<PushEnvelope> + serde_json::to_vec) → 77.1 ns. **7.6× faster.**
 - msgpack body_to_row: previously included JsonValue alloc per field → 407.8 ns direct Row.
 - json body_to_row: previously included JsonValue alloc per field → 402.9 ns direct Row.
+
+### Phase 18-11 — body→Row + agg microbench (criterion microbench)
+
+Captured: 2026-04-26. hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Baseline saved as `18-11` (`cargo bench --baseline 18-11` from later phases).
+
+Plan 18-11 swapped Row.0 from `BTreeMap<String, Value>` to `SmallVec<[(CompactString, Value); 8]>`, switched `Value::Str` to CompactString (SSO ≤24 bytes), changed `AggStateTable.entities` from `BTreeMap<EntityKey, Vec<AggOp>>` to `hashbrown::HashMap<EntityKey, Vec<AggOp>, FxBuildHasher>` with `raw_entry_mut().from_key(key)` clone-free lookup. Microbench measures the full body→Row deserialise via the new Row visitor.
+
+| Bench | Median | Date | Phase | Notes |
+|---|---|---|---|---|
+| parse_envelope/parse_msgpack_envelope | 33.0 ns | 2026-04-26 | 18-11 | unchanged from 18-10 (envelope scanner is structural; not affected by Row storage swap) |
+| parse_envelope/parse_json_envelope | 75.4 ns | 2026-04-26 | 18-11 | unchanged from 18-10 |
+| parse_envelope/msgpack_body_to_row | 141.6 ns | 2026-04-26 | 18-11 | **2.9× faster** vs 18-10's 407.8 ns; matches variant-D spike (146 ns) within ±4% |
+| parse_envelope/json_body_to_row | 169.8 ns | 2026-04-26 | 18-11 | **2.4× faster** vs 18-10's 402.9 ns; matches variant-D spike (184 ns) within ±8% |
+
+**Improvement vs Plan 18-10 baseline:**
+- msgpack_body_to_row: 407.8 → 141.6 ns. **2.88× faster.** Variant-D landed in production.
+- json_body_to_row: 402.9 → 169.8 ns. **2.37× faster.** Variant-D landed in production.
+
+**Variant-D spike-to-production fidelity (M4):** spike measured RowD struct at 146 ns msgpack / 184 ns json; production Row hits 141.6 ns / 169.8 ns. Both within ±10% of the spike — the structural change closed the alloc gap as predicted.
+
+**Driver:** SmallVec inline (no BTreeMap node alloc) + CompactString inline (no per-key/per-value String alloc) + Row::Deserialize visit_map walking direct push (no with_field re-clone).
+
+**Targets per Plan 18-11 must_haves:**
+- msgpack_body_to_row ≤ 165 ns ±10% → ✅ 141.6 ns
+- json_body_to_row ≤ 200 ns ±10% → ✅ 169.8 ns
+
+Both met with headroom. parse_*_envelope numbers held steady (envelope scanner is independent of Row storage).
