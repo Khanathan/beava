@@ -605,6 +605,53 @@ mod tests {
         assert!(!ek2.0.spilled(), "2-key EntityKey must use inline storage");
     }
 
+    // ── Plan 18-11 Task 11.6: AggStateTable HashMap + raw_entry_mut + iter_sorted ──
+
+    /// AggStateTable.entities is a hashbrown::HashMap with FxBuildHasher
+    /// (Plan 18-11 D-4). Production type is exposed so callers can rely on
+    /// raw_entry_mut on the hot path. Compile-fail RED until the swap.
+    #[test]
+    fn agg_state_table_uses_hashbrown_hashmap_with_fx_hasher() {
+        // Type-name string check — the assertion must reference the new type.
+        let table: AggStateTable = AggStateTable::new();
+        let typename = std::any::type_name_of_val(&table.entities);
+        assert!(
+            typename.contains("hashbrown") && typename.contains("HashMap"),
+            "AggStateTable.entities must be hashbrown::HashMap, got {}",
+            typename
+        );
+        // FxHashBuilder presence (the third type parameter of HashMap).
+        assert!(
+            typename.contains("Fx") || typename.contains("fxhash"),
+            "AggStateTable.entities must use FxBuildHasher, got {}",
+            typename
+        );
+    }
+
+    /// iter_sorted returns entries in EntityKey-sorted order regardless of
+    /// HashMap insertion order (snapshot determinism per Plan 18-11 D-8).
+    #[test]
+    fn agg_state_table_iter_sorted_is_deterministic() {
+        let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
+        let mut table = AggStateTable::new();
+
+        // Insert in a non-sorted order.
+        for u in ["zebra", "alice", "monkey", "bob"] {
+            let key = make_user_key(u);
+            table.get_or_init(&key, &desc);
+        }
+
+        // iter_sorted yields lex-ordered EntityKeys.
+        let sorted_users: Vec<String> = table
+            .iter_sorted()
+            .map(|(k, _)| match &k.0[0].1 {
+                Value::Str(s) => s.to_string(),
+                other => panic!("expected Value::Str, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(sorted_users, vec!["alice", "bob", "monkey", "zebra"]);
+    }
+
     /// EntityKey::from_row canonicalises each group-key value to a
     /// `Value::Str(CompactString)` (pre-Plan-18-11 behaviour preserved for
     /// URL-query compat). I64(42) and F64(42.0) canonicalise to distinct
