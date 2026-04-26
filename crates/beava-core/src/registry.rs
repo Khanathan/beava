@@ -1223,4 +1223,92 @@ mod tests {
         assert_eq!(cached.features.len(), 1);
         assert_eq!(cached.features[0].feature_name, "cnt");
     }
+
+    // Plan 18-12 RED: EventDescriptor gains a `name_arc: Arc<str>` field that
+    // is populated to the descriptor's `name` at install/registration time.
+    // The bookkeeping site in dispatch_push_sync uses
+    // `descriptor.name_arc.clone()` (refcount bump) instead of
+    // `event_name.to_string()` (heap alloc per push).
+    //
+    // This test pins three invariants:
+    //   1. `name_arc.as_ref() == name` after install (population at register time)
+    //   2. consecutive `get_event_descriptor` calls return Arcs whose
+    //      `name_arc` field shares the same `Arc<str>` allocation
+    //      (proves the Arc is registry-owned, not re-derived per-call)
+    //   3. the EventDescriptor itself is also shared via Arc::ptr_eq
+    //      (re-asserts Plan 18-11 D-6, here as the carrier for invariant 2)
+    #[test]
+    fn event_descriptor_has_name_arc_and_registry_shares_it() {
+        let r = Registry::new();
+        let event = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: make_event_schema(),
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+            name_arc: Arc::from(""), // server overwrites at install; value here is a placeholder
+        };
+        r.install_descriptors(1, vec![event], vec![], vec![]);
+
+        let d1 = r
+            .get_event_descriptor("Txn")
+            .expect("descriptor should be present after install");
+        let d2 = r
+            .get_event_descriptor("Txn")
+            .expect("descriptor should be present on second lookup");
+
+        // Invariant 1: name_arc carries the event's name post-install.
+        assert_eq!(
+            d1.name_arc.as_ref(),
+            "Txn",
+            "install_descriptors must populate name_arc to the descriptor's name"
+        );
+
+        // Invariant 2: name_arc shares the same allocation across lookups.
+        assert!(
+            Arc::ptr_eq(&d1.name_arc, &d2.name_arc),
+            "consecutive get_event_descriptor calls must share the same name_arc allocation"
+        );
+
+        // Invariant 3: the carrier Arc<EventDescriptor> is also shared.
+        assert!(
+            Arc::ptr_eq(&d1, &d2),
+            "consecutive get_event_descriptor calls must share the same EventDescriptor Arc"
+        );
+    }
+
+    // Plan 18-12 RED (companion): apply_registration also populates name_arc.
+    // Mirrors the install_descriptors path so both registry-entry sites stay
+    // covered. This guards against accidentally regressing one path while
+    // fixing the other.
+    #[test]
+    fn apply_registration_populates_name_arc() {
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+        let event = EventDescriptor {
+            name: "Click".to_string(),
+            schema: make_event_schema(),
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+            name_arc: Arc::from(""), // overwritten server-side at apply_registration
+        };
+        r.apply_registration(vec![PayloadNode::Event(event)], vec![], vec![], vec![]);
+
+        let d = r
+            .get_event_descriptor("Click")
+            .expect("descriptor should be present after apply_registration");
+        assert_eq!(
+            d.name_arc.as_ref(),
+            "Click",
+            "apply_registration must populate name_arc to the descriptor's name"
+        );
+    }
 }
