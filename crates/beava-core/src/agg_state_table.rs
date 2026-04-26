@@ -31,13 +31,15 @@
 //! | `Null`             | → `None` (drop)   | null group-key means no entity   |
 //! | `Json/List/Map`    | → `None` (drop)   | structured outputs aren't keys   |
 
-use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use crate::agg_descriptor::AggregationDescriptor;
 use crate::agg_op::AggOp;
 use crate::row::{Row, Value};
 use compact_str::CompactString;
+use fxhash::FxBuildHasher;
+use hashbrown::HashMap;
+use hashbrown::hash_map::RawEntryMut;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -223,36 +225,56 @@ impl EntityKey {
 /// Per-aggregation state store: maps `EntityKey → Vec<AggOp>` (one slot per
 /// feature in `AggregationDescriptor::features`).
 ///
-/// The outer `BTreeMap` keeps entity entries in deterministic order (D-06).
+/// **Plan 18-11 D-4:** uses `hashbrown::HashMap` with `FxBuildHasher` for
+/// O(1) lookup on the apply hot path. FxBuildHasher is non-cryptographic
+/// and ~3× faster than the default SipHasher for short keys — safe here
+/// because the apply path is single-process, single-writer (no DoS attack
+/// surface).
+///
+/// **Plan 18-11 D-8 — snapshot determinism:** the implicit BTreeMap
+/// ordering is replaced by an explicit `iter_sorted()` method that materializes
+/// a sorted Vec at snapshot-write time. Hot path stays O(1); the sort cost
+/// (O(N log N)) lands once per snapshot (cold path).
+///
+/// Hot-path lookup uses `raw_entry_mut().from_key(key)` so the borrowed
+/// `&EntityKey` doesn't need to be cloned on lookup; only the cold-path
+/// vacant insert clones into the map.
 pub struct AggStateTable {
-    pub entities: BTreeMap<EntityKey, Vec<AggOp>>,
+    pub entities: HashMap<EntityKey, Vec<AggOp>, FxBuildHasher>,
 }
 
 impl AggStateTable {
     /// Create an empty table.
     pub fn new() -> Self {
         AggStateTable {
-            entities: BTreeMap::new(),
+            entities: HashMap::with_hasher(FxBuildHasher::default()),
         }
     }
 
-    /// Look up the per-entity `Vec<AggOp>` for `key`.  If the key is new,
+    /// Look up the per-entity `Vec<AggOp>` for `key`. If the key is new,
     /// initialise a fresh `Vec` with one `AggOp::new` per feature in `descriptor`.
     ///
-    /// Returns a mutable reference to the entity row so the apply loop can call
-    /// `update_with_row` on each slot.
+    /// Plan 18-11 D-4: uses `raw_entry_mut().from_key(key)` so the lookup
+    /// doesn't clone the key. Only the cold-path vacant insert clones.
+    /// Returns a mutable reference to the entity row so the apply loop can
+    /// call `update_with_row` on each slot.
     pub fn get_or_init(
         &mut self,
         key: &EntityKey,
         descriptor: &AggregationDescriptor,
     ) -> &mut Vec<AggOp> {
-        self.entities.entry(key.clone()).or_insert_with(|| {
-            descriptor
-                .features
-                .iter()
-                .map(|f| AggOp::new(&f.descriptor))
-                .collect()
-        })
+        match self.entities.raw_entry_mut().from_key(key) {
+            RawEntryMut::Occupied(entry) => entry.into_mut(),
+            RawEntryMut::Vacant(slot) => {
+                let new_row: Vec<AggOp> = descriptor
+                    .features
+                    .iter()
+                    .map(|f| AggOp::new(&f.descriptor))
+                    .collect();
+                let (_, v) = slot.insert(key.clone(), new_row);
+                v
+            }
+        }
     }
 
     /// Query feature `feature_index` for entity `key` at `query_time_ms`.
@@ -273,6 +295,17 @@ impl AggStateTable {
     /// Return the number of distinct entities in this table.
     pub fn entity_count(&self) -> usize {
         self.entities.len()
+    }
+
+    /// Plan 18-11 D-8: iterate entries in EntityKey-sorted order. Used by
+    /// the snapshot writer + debug routes to preserve D-06 determinism
+    /// despite the underlying HashMap's unordered iteration. Hot path
+    /// (per-push apply) uses HashMap O(1); sort cost lands once per
+    /// snapshot (cold path).
+    pub fn iter_sorted(&self) -> impl Iterator<Item = (&EntityKey, &Vec<AggOp>)> {
+        let mut entries: Vec<(&EntityKey, &Vec<AggOp>)> = self.entities.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        entries.into_iter()
     }
 }
 
@@ -535,38 +568,39 @@ mod tests {
         assert!(val.is_none(), "unknown key must return None");
     }
 
-    /// T11 (D-06 grep guard, Plan 18-11 update): file still uses BTreeMap as
-    /// the outer state-table container. Plan 18-11 Task 11.6 will swap this
-    /// to `hashbrown::HashMap` and replace the guard with an iter-sorted
-    /// snapshot determinism test.
+    /// T11 (Plan 18-11 D-8 replacement of D-06 grep guard):
+    /// Snapshot determinism is now preserved by `iter_sorted` + sort-on-write
+    /// instead of by BTreeMap-implicit ordering. This test asserts the new
+    /// invariant: two state tables built from the same input event sequence
+    /// must yield byte-identical iter_sorted output regardless of HashMap
+    /// insertion order.
     #[test]
-    fn agg_state_table_uses_btreemap() {
-        let src = include_str!("agg_state_table.rs");
+    fn agg_state_table_iter_sorted_byte_identical_for_same_inputs() {
+        let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
+        let users = ["alice", "bob", "carol", "dan"];
 
-        assert!(
-            src.contains("BTreeMap"),
-            "agg_state_table.rs must use BTreeMap for deterministic iteration (D-06)"
-        );
-
-        // The production code must not (yet) declare a HashMap field. Doc
-        // comments mentioning HashMap (e.g. about EntityKey serving as a
-        // HashMap key) are fine — only the field declaration is forbidden
-        // until Task 11.6 lands.
-        let forbidden_patterns = [
-            "BTreeMap = std::collections::HashMap",
-            ": HashMap<",
-            ": hashbrown::HashMap<",
-            ": FxHashMap<",
-        ];
-        let test_marker = "#[cfg(test)]";
-        let production_src = src.split(test_marker).next().unwrap_or("");
-        for pat in forbidden_patterns {
-            assert!(
-                !production_src.contains(pat),
-                "agg_state_table.rs production code must not use {} (D-06 determinism, until Task 11.6)",
-                pat
-            );
+        // Build two tables — order of inserts is the same; HashMap may pick
+        // different bucket layouts but iter_sorted must yield the same order.
+        let mut t1 = AggStateTable::new();
+        let mut t2 = AggStateTable::new();
+        for u in users {
+            t1.get_or_init(&make_user_key(u), &desc);
+            t2.get_or_init(&make_user_key(u), &desc);
         }
+
+        let view1: Vec<&EntityKey> = t1.iter_sorted().map(|(k, _)| k).collect();
+        let view2: Vec<&EntityKey> = t2.iter_sorted().map(|(k, _)| k).collect();
+        assert_eq!(view1, view2, "iter_sorted must be deterministic");
+
+        // Sorted yields the lex order: alice, bob, carol, dan.
+        let names: Vec<String> = view1
+            .iter()
+            .map(|k| match &k.0[0].1 {
+                Value::Str(s) => s.to_string(),
+                _ => panic!("expected Value::Str"),
+            })
+            .collect();
+        assert_eq!(names, vec!["alice", "bob", "carol", "dan"]);
     }
 
     // ── Plan 18-11 Task 11.3: EntityKey SmallVec + CompactString + Value ─────

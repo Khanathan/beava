@@ -85,11 +85,14 @@ impl SnapshotBody {
         next_event_id: u64,
         max_event_time_ms: i64,
     ) -> Self {
+        // Plan 18-11 D-8: iter_sorted on each AggStateTable so the snapshot
+        // entry order is byte-identical for the same input event sequence,
+        // regardless of HashMap insertion order. The outer state_tables map
+        // is still BTreeMap → already deterministic.
         let mut serialized_tables: SerializedStateTables = BTreeMap::new();
         for (node_name, table) in state_tables {
             let entries: Vec<(EntityKey, Vec<AggOp>)> = table
-                .entities
-                .iter()
+                .iter_sorted()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             serialized_tables.insert(node_name.clone(), entries);
