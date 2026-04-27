@@ -48,6 +48,10 @@ impl CountDistinctState {
     }
 
     /// Insert a precomputed u64 hash. Promotes mode if threshold exceeded.
+    ///
+    /// Plan 19.2-02 (D-02b): the input u64 is expected to come from a
+    /// FxHasher-backed hasher; HLL's internal `mix64` (`Hll::add_hash`)
+    /// post-processes for distribution. See `agg_state::hash_value_for_hll`.
     pub fn add_hash(&mut self, hash: u64) {
         match self {
             CountDistinctState::ExactArray { values } => {
