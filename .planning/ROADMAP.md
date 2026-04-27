@@ -744,15 +744,15 @@ Tier classification post-fix per uniformity audit:
 - Cost-class doc surface: source attribute (`#[doc(cost = "tier1")]`) vs separate markdown table in operator catalogue docs site.
 - Observability endpoint: `/debug/op-cost` always-on vs feature-gated behind `BEAVA_DEV_ENDPOINTS=1`.
 
-**Plans:** 6/8 plans executed
+**Plans:** 8/8 plans complete
 - [x] 19.2-01-PLAN.md — D-01 field pre-extraction (apply-loop one-pass row scan + register-time field-idx + missing-field reject) — Wave 1
 - [x] 19.2-02-PLAN.md — D-02a process-static AHasher RandomState + D-02b FxHasher for HLL input — Wave 2
 - [x] 19.2-03-PLAN.md — D-03 EntityKeyShape hybrid (SingleU64/SingleStr/Multi) + D-04 cluster signature dispatch + register-time NaN-float reject — Wave 2
 - [x] 19.2-04-PLAN.md — D-04a UDDSketch BTreeMap → flat sorted Vec with binary-search insert — Wave 1
 - [x] 19.2-05-PLAN.md — D-04b EventTypeMix AHashSet allowlist + str_from_row/value_to_key_string Cow refactor (Bloom/Entropy/EventTypeMix consumers) — Wave 3
 - [x] 19.2-06-PLAN.md — D-05 remove unique_cells/geo_entropy from catalogue (55 → 53) + add quadkey() builtin + D-05a bv.entropy max_categories cap + Prometheus counter — Wave 4
-- [ ] 19.2-07-PLAN.md — D-06 cost-class catalogue at docs/operators/cost-class.md + D-07 /debug/op-cost endpoint feature-gated by BEAVA_DEV_ENDPOINTS=1 — Wave 5
-- [ ] 19.2-08-PLAN.md — D-08 criterion microbench (apply_path_bench.rs, 4 groups) + Phase 19.2 throughput rebaseline matrix + verification verdict — Wave 6
+- [x] 19.2-07-PLAN.md — D-06 cost-class catalogue at docs/operators/cost-class.md + D-07 /debug/op-cost endpoint feature-gated by BEAVA_DEV_ENDPOINTS=1 — Wave 5
+- [x] 19.2-08-PLAN.md — D-08 criterion microbench (apply_path_bench.rs, 4 groups) + Phase 19.2 throughput rebaseline matrix + verification verdict — Wave 6 (completed 2026-04-27)
 
 Wave structure:
 - Wave 1: 19.2-01 (foundation), 19.2-04 (independent UDDSketch)
