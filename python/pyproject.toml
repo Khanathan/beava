@@ -34,6 +34,15 @@ Issues = "https://github.com/petrpan26/beava/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["beava"]
+# D-08 (Phase 19): benches/ is a developer tool, never shipped via pip.
+# `packages = ["beava"]` already restricts the wheel root to the beava package,
+# but the explicit exclude is belt-and-suspenders + matches CONTEXT.md D-08
+# language verbatim ("excluded from the pip wheel via [tool.hatch.build.targets.wheel]
+# exclude rules"). Same treatment for tests/ to keep the wheel slim.
+exclude = [
+    "benches/**",
+    "tests/**",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "tests/bench"]

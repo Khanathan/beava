@@ -41,14 +41,15 @@ BLAST_PY = BENCH_DIR / "blast.py"
 
 @pytest.mark.phase19
 def test_blast_total_events_1000_zipfian_msgpack(
-    beava_server: tuple[str, str],
+    beava_server_isolated: tuple[str, str],
 ) -> None:
     """End-to-end smoke: blast.py pushes 1000 events with zipfian/msgpack/tcp.
 
-    Uses the session ``beava_server`` fixture from conftest.py which spawns the
-    real ``beava`` binary on ephemeral HTTP+TCP ports. Passes both URLs to
-    ``--server-url http://...,tcp://...`` so blast.py registers via HTTP and
-    pushes via TCP.
+    Uses the local ``beava_server_isolated`` fixture (see ``conftest.py`` in
+    this directory) which spawns the real ``beava`` binary on ephemeral
+    HTTP+TCP ports with isolated WAL/snapshot dirs in ``tmp_path``. Passes
+    both URLs to ``--server-url http://...,tcp://...`` so blast.py registers
+    via HTTP and pushes via TCP.
 
     Asserts:
       - exit code 0 within 30s
@@ -59,7 +60,7 @@ def test_blast_total_events_1000_zipfian_msgpack(
     if not BLAST_PY.is_file():
         pytest.fail(f"blast.py not yet created at {BLAST_PY}")
 
-    http_url, tcp_url = beava_server
+    http_url, tcp_url = beava_server_isolated
     server_url = f"{http_url},{tcp_url}"
 
     env = os.environ.copy()
