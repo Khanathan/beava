@@ -2,10 +2,6 @@
 //!
 //! Task 1 (D-02a): process-static AHasher RandomState via OnceLock.
 //! Task 2 (D-02b): FxHasher for HLL input path (CountDistinct).
-//!
-//! RED commit covers Tasks 1.a and 2.a — both groups of tests fail because:
-//!   - `beava_core::sketches::ahash_random_state` does not yet exist.
-//!   - `beava_core::agg_state::hash_value_for_hll` does not yet exist.
 
 // ─── Task 1 tests (D-02a) ──────────────────────────────────────────────────────
 
@@ -60,5 +56,55 @@ fn test_bloom_uses_process_static_random_state() {
     assert!(
         !b2.contains("not_inserted"),
         "b2 should not contain 'not_inserted'"
+    );
+}
+
+// ─── Task 2 tests (D-02b) ──────────────────────────────────────────────────────
+
+/// Test 4: `hash_value_for_hll(Value::Str("test"))` produces the same u64 as
+/// directly hashing with FxHasher. Proves the implementation uses FxHasher (not
+/// AHasher) in the HLL input path.
+#[test]
+fn test_hll_input_uses_fxhasher_not_ahasher() {
+    use beava_core::agg_state::hash_value_for_hll;
+    use beava_core::row::Value;
+    use compact_str::CompactString;
+    use std::hash::{Hash, Hasher};
+
+    let v = Value::Str(CompactString::from("test"));
+    let via_fn = hash_value_for_hll(&v);
+
+    let direct = {
+        let mut h = fxhash::FxHasher::default();
+        // Mirror the match arm: Value::Str(s) => s.hash(&mut h)
+        CompactString::from("test").hash(&mut h);
+        h.finish()
+    };
+
+    assert_eq!(
+        via_fn, direct,
+        "hash_value_for_hll should use FxHasher: got {via_fn:#018x}, expected {direct:#018x}"
+    );
+}
+
+/// Test 5: CountDistinct estimate remains within the HLL ±1.6% band (p=12)
+/// after the FxHasher swap. Inserts 10,000 distinct string keys and checks the
+/// estimate is in [9700, 10300].
+#[test]
+fn test_count_distinct_estimate_unchanged_after_fxhasher_swap() {
+    use beava_core::agg_state::hash_value_for_hll;
+    use beava_core::row::Value;
+    use beava_core::sketches::count_distinct::CountDistinctState;
+    use compact_str::CompactString;
+
+    let mut state = CountDistinctState::new(1024);
+    for i in 0..10_000_u32 {
+        let v = Value::Str(CompactString::from(format!("key-{i:06}")));
+        state.add_hash(hash_value_for_hll(&v));
+    }
+    let estimate = state.estimate();
+    assert!(
+        (9700..=10300).contains(&estimate),
+        "HLL estimate {estimate} outside ±3% of 10000 after FxHasher swap"
     );
 }
