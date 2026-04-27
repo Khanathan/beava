@@ -140,7 +140,20 @@ impl GeoDistanceState {
 
 // ─── GeoSpreadState (AGG-GEO-03) ─────────────────────────────────────────────
 
-/// Maximum distance (km) of any observed event from the running mean centre.
+/// RMS dispersion (km) of observed events around the running mean centre.
+///
+/// Phase 19.1.2-01 rewrite: replaced O(n)-per-push samples-Vec walk with
+/// Welford online second-moment accumulators (O(1) update, O(1) query).
+/// Spec evolution: query value changed from "max distance from running mean"
+/// to "RMS dispersion = sqrt(var_lat_km² + var_lon_km²)" using a local-mean-
+/// latitude cos-correction for the equirectangular approximation.
+///
+/// Welford 1962: numerically stable online variance via running second moment.
+/// Sibling impl: see `VarianceState` in `agg_state.rs`.
+///
+/// Limitation: at extreme polar latitudes (|lat| > ~85°) the cos-correction
+/// degenerates. Fraud workloads rarely involve sub-arctic transactions; the
+/// approximation is documented and accepted for v0.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GeoSpreadState {
     pub lat_field: String,
@@ -148,11 +161,10 @@ pub struct GeoSpreadState {
     pub n: u64,
     pub mean_lat: f64,
     pub mean_lon: f64,
-    pub max_km: f64,
-    /// Keep all observed points so max recomputes correctly when the mean moves.
-    /// Bounded scaling: 16 bytes/sample → 16MB at 1M samples per entity (acceptable
-    /// for v0 capacity envelope; downsample sketch deferred to v0.1).
-    pub samples: Vec<(f64, f64)>,
+    /// Welford online sum of squared deviations from running mean (lat, deg²).
+    pub m2_lat: f64,
+    /// Welford online sum of squared deviations from running mean (lon, deg²).
+    pub m2_lon: f64,
 }
 
 impl GeoSpreadState {
@@ -173,26 +185,27 @@ impl GeoSpreadState {
         };
         self.n += 1;
         let inv_n = 1.0 / self.n as f64;
-        self.mean_lat += (lat - self.mean_lat) * inv_n;
-        self.mean_lon += (lon - self.mean_lon) * inv_n;
-        self.samples.push((lat, lon));
-        let mean = (self.mean_lat, self.mean_lon);
-        let mut new_max = 0.0_f64;
-        for &p in &self.samples {
-            let d = haversine_km(p, mean);
-            if d > new_max {
-                new_max = d;
-            }
-        }
-        self.max_km = new_max;
+        let prev_mean_lat = self.mean_lat;
+        let prev_mean_lon = self.mean_lon;
+        self.mean_lat += (lat - prev_mean_lat) * inv_n;
+        self.mean_lon += (lon - prev_mean_lon) * inv_n;
+        // Welford online second-moment update: m2 += (x - prev_mean) * (x - new_mean).
+        self.m2_lat += (lat - prev_mean_lat) * (lat - self.mean_lat);
+        self.m2_lon += (lon - prev_mean_lon) * (lon - self.mean_lon);
     }
 
     pub fn query(&self) -> Value {
-        if self.n == 0 {
-            Value::Null
-        } else {
-            Value::F64(self.max_km)
+        if self.n < 2 {
+            return Value::Null;
         }
+        let inv_n = 1.0 / self.n as f64;
+        let var_lat_deg2 = self.m2_lat * inv_n;
+        let var_lon_deg2 = self.m2_lon * inv_n;
+        const KM_PER_DEG_LAT: f64 = 111.32;
+        let km_per_deg_lon = KM_PER_DEG_LAT * self.mean_lat.to_radians().cos();
+        let var_lat_km2 = var_lat_deg2 * KM_PER_DEG_LAT * KM_PER_DEG_LAT;
+        let var_lon_km2 = var_lon_deg2 * km_per_deg_lon * km_per_deg_lon;
+        Value::F64((var_lat_km2 + var_lon_km2).sqrt())
     }
 }
 
