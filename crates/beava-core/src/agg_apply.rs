@@ -88,6 +88,12 @@ pub fn apply_event_to_aggregations(
     let mut feat_updates: u32 = 0;
     let mut desc_count: u32 = 0;
 
+    // Per-op-kind timing accumulator (only populated when trace is on).
+    // Phase 19 debug: extends the agg trace to break the `features` loop into
+    // per-AggKind buckets. Dumps with the trace line so callers can see which
+    // operator family dominates apply time on a given pipeline.
+    let mut per_kind: Vec<(crate::agg_op::AggKind, std::time::Duration, u32)> = Vec::new();
+
     for desc in descs {
         desc_count += 1;
         let t_a = t0.map(|t| t.elapsed());
@@ -116,12 +122,28 @@ pub fn apply_event_to_aggregations(
         let t_d = t0.map(|t| t.elapsed());
 
         for (i, feat) in desc.features.iter().enumerate() {
+            let op_t0 = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             entity_row[i].update_with_row(
                 row,
                 event_time_ms,
                 feat.descriptor.field.as_deref(),
                 feat.descriptor.where_expr.as_ref(),
             );
+            if let Some(t) = op_t0 {
+                let dur = t.elapsed();
+                let kind = feat.descriptor.kind;
+                // Linear scan; per-pipeline kind count is small (<30 typical).
+                if let Some(slot) = per_kind.iter_mut().find(|(k, _, _)| *k == kind) {
+                    slot.1 += dur;
+                    slot.2 += 1;
+                } else {
+                    per_kind.push((kind, dur, 1));
+                }
+            }
             feat_updates += 1;
         }
         let t_e = t0.map(|t| t.elapsed());
@@ -136,8 +158,16 @@ pub fn apply_event_to_aggregations(
 
     if let (Some(t0_inst), Some(reg)) = (t0, t_registry) {
         let total = t0_inst.elapsed();
+        // Format per-kind as "Count=42@1,Sum=120@1,..." (ns@count_per_event).
+        let mut per_kind_str = String::new();
+        for (kind, dur, cnt) in &per_kind {
+            if !per_kind_str.is_empty() {
+                per_kind_str.push(',');
+            }
+            per_kind_str.push_str(&format!("{:?}={}@{}", kind, dur.as_nanos(), cnt));
+        }
         eprintln!(
-            "TRACE_AGG ns: descs={} feat_updates={} registry_call={} entity_key={} table_lookup={} entity_row_init={} features={} TOTAL={}",
+            "TRACE_AGG ns: descs={} feat_updates={} registry_call={} entity_key={} table_lookup={} entity_row_init={} features={} TOTAL={} per_kind={}",
             desc_count,
             feat_updates,
             reg.as_nanos(),
@@ -145,7 +175,8 @@ pub fn apply_event_to_aggregations(
             t_table_lookup_total.as_nanos(),
             t_entity_row_total.as_nanos(),
             t_features_total.as_nanos(),
-            total.as_nanos()
+            total.as_nanos(),
+            per_kind_str,
         );
     }
 }
