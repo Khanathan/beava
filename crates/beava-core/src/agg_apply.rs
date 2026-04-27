@@ -267,6 +267,7 @@ mod tests {
                 .collect(),
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         }
     }
 
@@ -568,17 +569,16 @@ mod tests {
         apply_all(&mut tables1);
         apply_all(&mut tables2);
 
+        // Compare via iter_sorted (BTreeMap-ordered) for deterministic Debug output.
+        let snapshot1 =
+            crate::agg_state_table::lookup_table_by_name(&tables1, &registry, "UserCount")
+                .map(|t| t.iter_sorted().collect::<Vec<_>>());
+        let snapshot2 =
+            crate::agg_state_table::lookup_table_by_name(&tables2, &registry, "UserCount")
+                .map(|t| t.iter_sorted().collect::<Vec<_>>());
         assert_eq!(
-            format!(
-                "{:?}",
-                crate::agg_state_table::lookup_table_by_name(&tables1, &registry, "UserCount")
-                    .map(|t| &t.entities)
-            ),
-            format!(
-                "{:?}",
-                crate::agg_state_table::lookup_table_by_name(&tables2, &registry, "UserCount")
-                    .map(|t| &t.entities)
-            ),
+            format!("{snapshot1:?}"),
+            format!("{snapshot2:?}"),
             "apply_event_to_aggregations must be deterministic (D-06)"
         );
     }
@@ -661,17 +661,15 @@ mod tests {
         apply_event_to_aggregations("Transaction", &row, t, 99, &registry, &mut tables_99);
 
         // State must be identical regardless of event_id.
+        let snap_0 =
+            crate::agg_state_table::lookup_table_by_name(&tables_0, &registry, "UserCount")
+                .map(|t| t.iter_sorted().collect::<Vec<_>>());
+        let snap_99 =
+            crate::agg_state_table::lookup_table_by_name(&tables_99, &registry, "UserCount")
+                .map(|t| t.iter_sorted().collect::<Vec<_>>());
         assert_eq!(
-            format!(
-                "{:?}",
-                crate::agg_state_table::lookup_table_by_name(&tables_0, &registry, "UserCount")
-                    .map(|t| &t.entities)
-            ),
-            format!(
-                "{:?}",
-                crate::agg_state_table::lookup_table_by_name(&tables_99, &registry, "UserCount")
-                    .map(|t| &t.entities)
-            ),
+            format!("{snap_0:?}"),
+            format!("{snap_99:?}"),
             "event_id must have no observable effect in Phase 5"
         );
     }
@@ -748,6 +746,7 @@ mod registry_source_tests {
             }],
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         }
     }
 

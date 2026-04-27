@@ -107,6 +107,7 @@ fn make_agg(
             .collect(),
         agg_id: 0,
         field_names: vec![],
+        cluster_id: 0,
     }
 }
 

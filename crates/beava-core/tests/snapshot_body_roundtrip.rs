@@ -386,6 +386,7 @@ fn snapshot_body_state_tables_full_roundtrip() {
                 features: vec![],
                 agg_id: idx as u32,
                 field_names: vec![],
+                cluster_id: 0,
             }),
         );
         let table = &mut state_tables[idx];
@@ -402,7 +403,7 @@ fn snapshot_body_state_tables_full_roundtrip() {
             cnt.update(&Row::new(), 1, None, true);
             let mut s = mk_sum_op();
             s.update(&row_amount(10.0), 0, Some("amount"), true);
-            table.entities.insert(key, vec![cnt, s]);
+            table.insert_from_entity_key(key, vec![cnt, s]);
         }
     }
     let _unused = mk_count_op();

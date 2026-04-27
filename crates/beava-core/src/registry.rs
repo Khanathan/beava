@@ -195,6 +195,14 @@ pub struct RegistryInner {
     /// are stable for process lifetime (additive-only registration).
     /// Default = 0; first aggregation gets ID 0.
     pub next_agg_id: u32,
+    /// Plan 19.2-03 (D-04): maps a cluster-signature hash to a stable u32
+    /// cluster_id. Aggregations sharing the same `group_keys` signature
+    /// (declaration-order hash, NOT sorted-lex — see Warning 4 in PLAN.md)
+    /// share a cluster_id so the apply loop builds EntityKey ONCE per cluster.
+    pub cluster_id_by_signature: std::collections::HashMap<u64, u32>,
+    /// Plan 19.2-03 (D-04): monotonic counter for cluster_id assignment.
+    /// Default = 0; first unique cluster gets ID 0.
+    pub next_cluster_id: u32,
 }
 
 #[derive(Debug, Default)]
@@ -416,6 +424,24 @@ impl Registry {
                             agg_owned.agg_id = w.next_agg_id;
                             w.next_agg_id += 1;
 
+                            // Plan 19.2-03 (D-04): assign cluster_id — aggregations sharing
+                            // the same group_keys signature (declaration-order hash) share a
+                            // cluster_id so the apply loop builds EntityKey ONCE per cluster,
+                            // not once per agg.  The signature is stable across restarts
+                            // because it is computed from the group_keys in registration order
+                            // (NOT sorted-lex) and uses 0u8 separators to avoid prefix
+                            // collisions ("ab","c" ≠ "a","bc").
+                            let sig = Self::cluster_signature(&agg_owned.group_keys);
+                            agg_owned.cluster_id =
+                                if let Some(&existing) = w.cluster_id_by_signature.get(&sig) {
+                                    existing
+                                } else {
+                                    let id = w.next_cluster_id;
+                                    w.next_cluster_id += 1;
+                                    w.cluster_id_by_signature.insert(sig, id);
+                                    id
+                                };
+
                             // Plan 19.2-01 (D-01): resolve field indices at registration time.
                             // Look up the source event's schema to validate field references
                             // and populate field_idx on each feature descriptor, plus
@@ -627,6 +653,56 @@ impl Registry {
         }
         agg.field_names = field_names;
         Ok(())
+    }
+
+    /// Plan 19.2-03 (D-03): validate that none of the aggregation's `group_keys`
+    /// reference a float-typed column.
+    ///
+    /// Float group keys are rejected at register-time because NaN values are
+    /// silently dropped at push time (they produce `None` from
+    /// `EntityKeyShape::from_row`), which could cause confusing event drops.
+    /// Users must cast float columns or ensure non-NaN before using as group key.
+    ///
+    /// Returns `Ok(())` if no float group keys are found. Returns `Err(String)`
+    /// with a descriptive message if any group key has `FieldType::F64`.
+    pub fn validate_group_keys_for_agg(
+        &self,
+        agg: &crate::agg_descriptor::AggregationDescriptor,
+        schema: &crate::schema::EventSchema,
+    ) -> Result<(), String> {
+        for key in &agg.group_keys {
+            if let Some(field_type) = schema.fields.get(key.as_str()) {
+                if *field_type == crate::schema::FieldType::F64 {
+                    return Err(format!(
+                        "aggregation '{}': group_keys cannot include float field '{}' \
+                         — float NaN values are rejected at push time. \
+                         Use cast or ensure non-NaN.",
+                        agg.node_name, key
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Plan 19.2-03 (D-04): compute a stable cluster signature hash for the
+    /// given `group_keys` in DECLARATION ORDER (NOT sorted-lex).
+    ///
+    /// The existing `EntityKey::from_row` produces order-sensitive keys
+    /// (column_name + value pairs in a SmallVec; Hash derived over the SmallVec).
+    /// Sorting would create cluster_id collisions for aggs that produce different
+    /// EntityKeys at runtime, breaking the shared-lookup invariant.
+    ///
+    /// A separator byte (0u8) is hashed between each key so that
+    /// `["a","bc"]` and `["ab","c"]` produce different signatures.
+    fn cluster_signature(group_keys: &[String]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = fxhash::FxHasher::default();
+        for k in group_keys {
+            k.as_str().hash(&mut h);
+            0u8.hash(&mut h); // separator to prevent prefix collisions
+        }
+        h.finish()
     }
 
     /// Phase 7 Plan 03: install descriptors loaded from a snapshot.
@@ -1210,6 +1286,7 @@ mod tests {
             ],
             agg_id: 0, // placeholder; registry overwrites at apply_registration
             field_names: vec![],
+            cluster_id: 0,
         };
         let deriv = DerivationDescriptor {
             name: "AggTable".to_string(),
@@ -1303,6 +1380,7 @@ mod tests {
             }],
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         });
         let deriv_a = DerivationDescriptor {
             name: "AggA".to_string(),
@@ -1370,6 +1448,7 @@ mod tests {
             }],
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         });
         let deriv_b = DerivationDescriptor {
             name: "AggB".to_string(),
@@ -1456,6 +1535,7 @@ mod tests {
             }],
             agg_id: 0, // placeholder; registry overwrites at apply_registration
             field_names: vec![],
+            cluster_id: 0,
         };
         let agg_arc = Arc::new(agg_desc);
 
@@ -1627,6 +1707,7 @@ mod tests {
                 }],
                 agg_id: 0, // placeholder; registry overwrites at registration time
                 field_names: vec![],
+                cluster_id: 0,
             }
         };
 

@@ -68,7 +68,10 @@ pub fn load_snapshot_if_any(
                             };
                             let tbl = &mut tables[agg_id];
                             for (key, ops) in entries {
-                                tbl.entities.insert(key, ops);
+                                // Plan 19.2-03: AggStateTable no longer has a
+                                // direct `entities` map; use insert_from_entity_key
+                                // which routes through the multi sub-map.
+                                tbl.insert_from_entity_key(key, ops);
                             }
                         }
                     }

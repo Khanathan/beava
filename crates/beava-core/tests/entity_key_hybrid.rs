@@ -6,6 +6,7 @@
 
 use beava_core::agg_state_table::EntityKeyShape;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
+#[allow(unused_imports)]
 use beava_core::registry_diff::PayloadNode;
 use beava_core::row::{Row, Value};
 use beava_core::schema::{DerivedSchema, EventSchema, FieldType};
@@ -65,7 +66,7 @@ fn test_entity_key_shape_single_u64_for_i64() {
 /// A non-NaN F64 single-key produces EntityKeyShape::SingleU64.
 #[test]
 fn test_entity_key_shape_single_u64_for_f64() {
-    let row = Row::new().with_field("amount", Value::F64(3.14));
+    let row = Row::new().with_field("amount", Value::F64(2.5_f64));
     let shape = EntityKeyShape::from_row(&["amount".to_string()], &row);
     assert!(
         shape.is_some(),
@@ -168,15 +169,15 @@ fn test_entity_key_shape_multi_for_compound() {
 
     match shape.unwrap() {
         EntityKeyShape::Multi(pairs) => {
-            assert_eq!(pairs.len(), 2, "compound key must have 2 pairs");
+            assert_eq!(pairs.0.len(), 2, "compound key must have 2 pairs");
             // Declaration order: user_id first, merchant second.
             assert_eq!(
-                pairs[0].0.as_str(),
+                pairs.0[0].0.as_str(),
                 "user_id",
                 "first pair must be user_id (declaration order)"
             );
             assert_eq!(
-                pairs[1].0.as_str(),
+                pairs.0[1].0.as_str(),
                 "merchant",
                 "second pair must be merchant (declaration order)"
             );
@@ -253,8 +254,8 @@ fn test_register_time_rejects_nan_capable_float_group_key() {
         cluster_id: 0,
     });
 
-    let event = make_event_with_schema("Txn", schema.clone());
-    let deriv = DerivationDescriptor {
+    let _event = make_event_with_schema("Txn", schema.clone());
+    let _deriv = DerivationDescriptor {
         name: "FloatKeyAgg".to_string(),
         output_kind: OutputKind::Table,
         upstreams: vec!["Txn".to_string()],

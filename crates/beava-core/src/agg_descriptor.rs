@@ -75,6 +75,14 @@ pub struct AggregationDescriptor {
     /// a field (e.g. count-only aggregation). Populated by
     /// `Registry::resolve_field_indices` at registration time.
     pub field_names: Vec<String>,
+    /// Plan 19.2-03 (D-04): cluster identifier assigned at registration time.
+    /// Aggregations sharing the same `group_keys` signature (declaration-order
+    /// hash, NOT sorted-lex — see Warning 4 in 19.2-03-PLAN.md) get the same
+    /// `cluster_id`. The apply loop builds EntityKey ONCE per unique cluster_id
+    /// per event, then dispatches to each cluster member's own AggStateTable.
+    /// Default is 0; the registry always assigns the correct value at
+    /// `apply_registration` time.
+    pub cluster_id: u32,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -132,6 +140,7 @@ mod tests {
             }],
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         };
         assert_eq!(desc.node_name, "user_stats");
         assert_eq!(desc.source_node_name, "transactions");

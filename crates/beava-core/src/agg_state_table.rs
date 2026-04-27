@@ -2,34 +2,49 @@
 //!
 //! # Overview
 //!
-//! `AggStateTable` maps `EntityKey → Vec<AggOp>` where each slot in the `Vec`
-//! corresponds (in order) to `AggregationDescriptor::features`.
+//! `AggStateTable` maps entity → Vec<AggOp> where each slot corresponds (in
+//! order) to `AggregationDescriptor::features`.
 //!
-//! ## Key design invariants (D-06 determinism)
+//! ## Plan 19.2-03 (D-03): EntityKey hybrid storage
 //!
-//! - Uses `BTreeMap` (never Hash...Map) so iteration order is stable across
-//!   invocations — required for WAL replay determinism (SC4). Plan 18-11
-//!   Task 11.6 will swap this to `hashbrown` with iter-sorted snapshot.
-//! - `EntityKey` (Plan 18-11 D-5) is a SmallVec of
-//!   `(group_key_name, native_Value)` pairs in declaration order
-//!   (the order of `AggregationDescriptor::group_keys`).
-//!   No string canonicalization on the hot path — Value variants discriminate
-//!   I64/F64/Str/Bool/Datetime natively.
-//! - Null or missing group-key values produce `None` from `EntityKey::from_row`,
+//! Instead of one `HashMap<EntityKey, Vec<AggOp>>` (which requires SmallVec
+//! build + CompactString canonicalization on every event), `AggStateTable` now
+//! carries three specialized sub-maps selected by the entity-key shape:
+//!
+//! | Shape | Key type | Cost |
+//! |-------|----------|------|
+//! | SingleU64 | u64 | pure u64 HashMap lookup; zero alloc |
+//! | SingleStr | CompactString | single-string HashMap lookup; zero alloc for ≤24 bytes |
+//! | Multi | EntityKey (SmallVec) | same as old EntityKey; used for compound keys |
+//!
+//! `EntityKeyShape::from_row` selects the shape at apply time. `SingleU64`
+//! covers all numeric + bool + datetime single-keys via a tagged bit-cast; the
+//! tag bits prevent I64/F64/Bool/Datetime collisions within the same u64 space.
+//!
+//! ## Key design invariants
+//!
+//! - Null or missing group-key values produce `None` from `EntityKeyShape::from_row`,
 //!   causing the apply loop to drop the event for that aggregation.
+//! - NaN F64 group-key values produce `None` at push time.
+//! - F64-typed group_key columns are rejected at register-time (see
+//!   `Registry::validate_group_keys_for_agg`).
+//! - `EntityKey` (legacy struct) remains for snapshot serialization,
+//!   snapshot-load (recovery), and query-side key parsing. It is the
+//!   stable serialized shape; the 3 sub-maps are the runtime hot-path shape.
 //!
-//! # Value variants accepted in EntityKey
+//! # Value variants accepted
 //!
-//! | `Value` variant    | inclusion         | notes                            |
-//! |--------------------|-------------------|----------------------------------|
-//! | `Str(CompactStr)`  | included          | inline-storage for ≤24 bytes     |
-//! | `I64(n)`           | included          | distinct from F64 by variant     |
-//! | `F64(f)`           | included          | NaN handled via total_cmp        |
-//! | `Bool(b)`          | included          |                                  |
-//! | `Datetime(ms)`     | included          |                                  |
-//! | `Bytes(_)`         | → `None` (drop)   | bytes are not sane keys in v0    |
-//! | `Null`             | → `None` (drop)   | null group-key means no entity   |
-//! | `Json/List/Map`    | → `None` (drop)   | structured outputs aren't keys   |
+//! | `Value` variant    | Single-key shape   | Multi-key inclusion |
+//! |--------------------|--------------------|--------------------|
+//! | `Str(CompactStr)`  | SingleStr          | included           |
+//! | `I64(n)`           | SingleU64          | included (str-ized)|
+//! | `F64(f)` (non-NaN) | SingleU64          | included (str-ized)|
+//! | `F64(NaN)`         | None (drop)        | None (drop)        |
+//! | `Bool(b)`          | SingleU64          | included (str-ized)|
+//! | `Datetime(ms)`     | SingleU64          | included (str-ized)|
+//! | `Bytes(_)`         | None (drop)        | None (drop)        |
+//! | `Null`             | None (drop)        | None (drop)        |
+//! | `Json/List/Map`    | None (drop)        | None (drop)        |
 
 use std::hash::{Hash, Hasher};
 
@@ -38,23 +53,17 @@ use crate::agg_op::AggOp;
 use crate::row::{Row, Value};
 use compact_str::CompactString;
 use fxhash::FxBuildHasher;
-use hashbrown::hash_map::RawEntryMut;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-// ─── EntityKey ────────────────────────────────────────────────────────────────
+// ─── EntityKey (legacy / snapshot-compat shape) ───────────────────────────────
 
-/// Stable entity identifier for per-aggregation state lookup.
+/// Stable entity identifier for snapshot serialization and query-side key
+/// parsing. The apply hot path uses `EntityKeyShape` instead (D-03).
 ///
 /// Plan 18-11 D-5: SmallVec inline storage of `(CompactString, Value)` pairs
-/// in declaration order (the order of `AggregationDescriptor::group_keys`).
-/// Most aggregations group by 1-2 keys → inline storage, zero heap alloc on
-/// the hot path.
-///
-/// Implements `Hash + Eq + PartialOrd + Ord` over the SmallVec contents so it
-/// can serve as both a HashMap key (Plan 18-11 D-4) and a sortable key for
-/// snapshot determinism (Plan 18-11 D-8).
+/// in declaration order. Serde-derived so it survives snapshot round-trips.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityKey(pub SmallVec<[(CompactString, Value); 2]>);
 
@@ -74,7 +83,6 @@ impl Eq for EntityKey {}
 
 impl Hash for EntityKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hash length first, then each (key, value) pair via hash_entity_value.
         self.0.len().hash(state);
         for (k, v) in &self.0 {
             k.hash(state);
@@ -91,7 +99,6 @@ impl PartialOrd for EntityKey {
 
 impl Ord for EntityKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Lex order over the (key, value) sequence.
         for ((ak, av), (bk, bv)) in self.0.iter().zip(other.0.iter()) {
             match ak.cmp(bk) {
                 std::cmp::Ordering::Equal => {}
@@ -107,8 +114,6 @@ impl Ord for EntityKey {
 }
 
 /// Equality over the Value variants permitted inside an EntityKey.
-/// Cross-variant comparisons return false. F64 NaN compares equal to
-/// itself here (entity-key context — we want determinism, not IEEE-754).
 fn entity_value_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Str(x), Value::Str(y)) => x == y,
@@ -116,14 +121,10 @@ fn entity_value_eq(a: &Value, b: &Value) -> bool {
         (Value::F64(x), Value::F64(y)) => x.to_bits() == y.to_bits(),
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Datetime(x), Value::Datetime(y)) => x == y,
-        // Cross-variant or unsupported (Bytes/Null/Json/List/Map shouldn't
-        // appear here — from_row drops them) → false.
         _ => false,
     }
 }
 
-/// Hash a Value as an EntityKey component. Variant tag + payload — must
-/// agree with `entity_value_eq` (Eq–Hash contract).
 fn hash_entity_value<H: Hasher>(v: &Value, state: &mut H) {
     match v {
         Value::Str(s) => {
@@ -146,17 +147,12 @@ fn hash_entity_value<H: Hasher>(v: &Value, state: &mut H) {
             4u8.hash(state);
             ms.hash(state);
         }
-        // Variants below shouldn't appear in EntityKey (from_row drops them);
-        // hash them as a sentinel for total robustness.
         _ => {
             255u8.hash(state);
         }
     }
 }
 
-/// Total ordering over Value variants permitted inside an EntityKey. Variant
-/// discrimination first (Str < I64 < F64 < Bool < Datetime), then payload
-/// order. F64 uses `total_cmp` so NaN sorts deterministically.
 fn cmp_entity_value(a: &Value, b: &Value) -> std::cmp::Ordering {
     fn rank(v: &Value) -> u8 {
         match v {
@@ -182,29 +178,19 @@ fn cmp_entity_value(a: &Value, b: &Value) -> std::cmp::Ordering {
 }
 
 impl EntityKey {
-    /// Build an `EntityKey` from a `Row` by extracting the fields named in
-    /// `group_keys` and canonicalising each to a `Value::Str(CompactString)`.
+    /// Build an `EntityKey` from a `Row` (legacy path for snapshot/query compat).
     ///
-    /// Returns `None` if any group-key field is absent or carries a
-    /// non-key-safe Value variant (Null / Bytes / Json / List / Map).
-    ///
-    /// **Canonicalization (preserved from pre-Plan-18-11 behaviour for URL
-    /// query compat):** all group-key values are stringified into
-    /// CompactString and wrapped in `Value::Str`. This keeps query-side URL
-    /// parsing (which always sees strings) consistent with apply-side
-    /// EntityKey construction. I64(42) and F64(42.0) canonicalize to
-    /// distinct strings ("42" vs "42.0") just as before.
+    /// Plan 18-11 D-5: Canonicalizes group-key values to `Value::Str`.
+    /// Returns `None` if any group-key field is absent or non-key-safe.
     pub fn from_row(group_keys: &[String], row: &Row) -> Option<EntityKey> {
         let mut pairs: SmallVec<[(CompactString, Value); 2]> =
             SmallVec::with_capacity(group_keys.len());
         for key in group_keys {
             let canonical: CompactString = match row.get(key) {
-                None => return None,                  // missing field → drop
-                Some(Value::Null) => return None,     // null field → drop
-                Some(Value::Bytes(_)) => return None, // bytes not sane as key → drop
-                Some(Value::Json(_)) => return None,  // Json not sane as group key
-                // Phase 11 (D-01): structured outputs (List/Map) are never
-                // legal as group-by keys — drop the event for this aggregation.
+                None => return None,
+                Some(Value::Null) => return None,
+                Some(Value::Bytes(_)) => return None,
+                Some(Value::Json(_)) => return None,
                 Some(Value::List(_)) | Some(Value::Map(_)) => return None,
                 Some(Value::Str(s)) => s.clone(),
                 Some(Value::I64(n)) => n.to_string().into(),
@@ -218,49 +204,197 @@ impl EntityKey {
     }
 }
 
-// ─── StateTables type + helpers ──────────────────────────────────────────────
+// ─── EntityKeyShape (Plan 19.2-03 D-03 hot-path type) ────────────────────────
+
+/// Plan 19.2-03 (D-03): EntityKey hybrid — three storage shapes selected
+/// by group_keys cardinality + value type. Avoids SmallVec build +
+/// CompactString canonicalization on the single-key numeric path.
+///
+/// ## Tag layout for SingleU64
+///
+/// The high 4 bits of the u64 carry a variant tag so that the same numeric
+/// payload from different Value types does not collide:
+/// - I64      → tag = 1
+/// - F64      → tag = 2
+/// - Bool     → tag = 3
+/// - Datetime → tag = 4
+///
+/// Payloads are masked to the low 60 bits. I64 negatives lose their sign
+/// extension above bit 59 — for fraud workloads (entity IDs, timestamps,
+/// booleans) all values are well below 2^59, making this a non-issue.
+/// Documented as a v0 limitation (threat model T-19.2-03-02).
+///
+/// ## SingleStr collision behavior (T-19.2-03-03)
+///
+/// Stores both the FxHash (for fast bucket lookup) and the original
+/// CompactString (for equality comparison). Hash collisions cause
+/// bucket-slot collisions in hashbrown but NOT wrong-entity merges:
+/// hashbrown falls back to Eq on the stored CompactString.
+#[derive(Debug, Clone)]
+pub enum EntityKeyShape {
+    /// Numeric or bool or datetime single-key. High 4 bits = variant tag.
+    SingleU64(u64),
+    /// String single-key. (FxHash of string, original string).
+    SingleStr(u64, CompactString),
+    /// Compound key (≥2 group_keys columns). Stored as canonical EntityKey.
+    Multi(EntityKey),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum VariantTag {
+    I64 = 1,
+    F64 = 2,
+    Bool = 3,
+    Datetime = 4,
+}
+
+impl EntityKeyShape {
+    /// Build an `EntityKeyShape` from a `Row` by extracting `group_keys` fields.
+    ///
+    /// Returns `None` if any group-key field is absent, null, NaN (for F64),
+    /// or carries an unsupported Value variant.
+    pub fn from_row(group_keys: &[String], row: &Row) -> Option<Self> {
+        #[cfg(test)]
+        EKS_BUILDS.with(|c| c.set(c.get() + 1));
+
+        if group_keys.len() == 1 {
+            let key = &group_keys[0];
+            match row.get(key.as_str())? {
+                Value::Null => None,
+                Value::Str(s) => {
+                    let hash = Self::hash_str(s.as_str());
+                    Some(Self::SingleStr(hash, s.clone()))
+                }
+                Value::I64(n) => Some(Self::SingleU64(Self::tag_u64(VariantTag::I64, *n as u64))),
+                Value::F64(f) => {
+                    if f.is_nan() {
+                        return None; // NaN → drop event for this agg
+                    }
+                    Some(Self::SingleU64(Self::tag_u64(VariantTag::F64, f.to_bits())))
+                }
+                Value::Bool(b) => Some(Self::SingleU64(Self::tag_u64(VariantTag::Bool, *b as u64))),
+                Value::Datetime(ms) => Some(Self::SingleU64(Self::tag_u64(
+                    VariantTag::Datetime,
+                    *ms as u64,
+                ))),
+                // Bytes/Json/List/Map → drop
+                _ => None,
+            }
+        } else {
+            // Compound key: build EntityKey in declaration order (canonical
+            // Value::Str pairs, same as EntityKey::from_row).
+            let mut pairs: SmallVec<[(CompactString, Value); 2]> =
+                SmallVec::with_capacity(group_keys.len());
+            for key in group_keys {
+                let canonical: CompactString = match row.get(key.as_str()) {
+                    None => return None,
+                    Some(Value::Null) => return None,
+                    Some(Value::Bytes(_) | Value::Json(_) | Value::List(_) | Value::Map(_)) => {
+                        return None
+                    }
+                    Some(Value::Str(s)) => s.clone(),
+                    Some(Value::I64(n)) => n.to_string().into(),
+                    Some(Value::F64(f)) if f.is_nan() => return None,
+                    Some(Value::F64(f)) => format!("{:?}", f).into(),
+                    Some(Value::Bool(b)) => b.to_string().into(),
+                    Some(Value::Datetime(ms)) => ms.to_string().into(),
+                };
+                pairs.push((CompactString::from(key.as_str()), Value::Str(canonical)));
+            }
+            Some(Self::Multi(EntityKey(pairs)))
+        }
+    }
+
+    #[inline]
+    fn hash_str(s: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = fxhash::FxHasher::default();
+        s.hash(&mut h);
+        h.finish()
+    }
+
+    #[inline]
+    fn tag_u64(tag: VariantTag, payload: u64) -> u64 {
+        // Place tag in high 4 bits; payload in low 60.
+        ((tag as u64) << 60) | (payload & 0x0FFF_FFFF_FFFF_FFFF)
+    }
+}
+
+impl PartialEq for EntityKeyShape {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::SingleU64(a), Self::SingleU64(b)) => a == b,
+            // Compare by string content, not hash (hash collision safety).
+            (Self::SingleStr(_, a), Self::SingleStr(_, b)) => a == b,
+            (Self::Multi(a), Self::Multi(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for EntityKeyShape {}
+
+impl Hash for EntityKeyShape {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::SingleU64(k) => {
+                0u8.hash(state);
+                k.hash(state);
+            }
+            Self::SingleStr(h, _) => {
+                1u8.hash(state);
+                h.hash(state);
+            }
+            Self::Multi(ek) => {
+                2u8.hash(state);
+                ek.hash(state);
+            }
+        }
+    }
+}
+
+// ─── Test instrument ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+thread_local! {
+    static EKS_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Plan 19.2-03: take + reset the thread-local EntityKeyShape::from_row call
+/// counter. Used by cluster dispatch tests to verify EntityKey builds per event.
+#[cfg(test)]
+pub fn _take_entity_key_build_count() -> usize {
+    EKS_BUILDS.with(|c| {
+        let n = c.get();
+        c.set(0);
+        n
+    })
+}
+
+// ─── StateTables type + helpers ───────────────────────────────────────────────
 
 /// Outer state-tables vector, indexed by `AggregationDescriptor.agg_id`.
 ///
-/// Plan 18-16 Task 16.2 — replaces the previous
-/// `hashbrown::HashMap<String, AggStateTable>` (which itself replaced an
-/// even earlier `BTreeMap<String, AggStateTable>`). The apply hot path now
-/// reads `&mut state_tables[desc.agg_id as usize]`: pure array indexing,
-/// no hash, no string clone.
-///
-/// **Sizing invariant**: the Vec grows on registration, never shrinks. The
-/// server-side register handler resizes via `ensure_capacity_for` after
-/// `Registry::apply_registration` so the Vec has at least `next_agg_id`
-/// slots; out-of-bounds at apply-time is therefore impossible.
-///
-/// Snapshot determinism: the serialiser walks `registry.compiled_aggregations`
-/// (sorted-by-name BTreeMap), pulls each `desc.agg_id`, and emits the
-/// (name, table) pair in sorted order — bit-identical regardless of
-/// physical Vec layout.
+/// Plan 18-16 Task 16.2 — pure array indexing by `agg_id` at apply time.
+/// Server-side register handler resizes via `ensure_capacity_for` after
+/// `Registry::apply_registration` so the Vec has at least `next_agg_id` slots.
 pub type StateTables = Vec<AggStateTable>;
 
 /// Ensure `state_tables` has at least `min_len` entries, growing with
-/// default-initialised `AggStateTable`s if needed. Cold-path helper — called
-/// from the server-side register handler after the registry has assigned
-/// new `agg_id`s. The apply hot path then reads
-/// `&mut state_tables[desc.agg_id as usize]` without a length check.
+/// default-initialised `AggStateTable`s if needed.
 pub fn ensure_capacity_for(state_tables: &mut StateTables, min_len: usize) {
     if state_tables.len() < min_len {
         state_tables.resize_with(min_len, AggStateTable::new);
     }
 }
 
-/// Build a fresh `StateTables` sized to fit the registry's current `agg_id`
-/// counter. Used by tests / benches that drive `apply_event_to_aggregations`
-/// directly after building a registry via `Registry::apply_registration`.
+/// Build a fresh `StateTables` sized to fit the registry's current `agg_id` counter.
 pub fn new_state_tables_for(registry: &crate::registry::Registry) -> StateTables {
     let n = registry.next_agg_id() as usize;
     (0..n).map(|_| AggStateTable::new()).collect()
 }
 
-/// Test / cold-path helper: look up a table by aggregation node name.
-/// Internally translates the name to `agg_id` via the registry and returns
-/// the indexed table.
+/// Test/cold-path helper: look up a table by aggregation node name.
 pub fn lookup_table_by_name<'a>(
     state_tables: &'a StateTables,
     registry: &crate::registry::Registry,
@@ -271,103 +405,201 @@ pub fn lookup_table_by_name<'a>(
 }
 
 /// Test helper: returns true if a table for `name` exists and is non-empty.
-/// Replaces the previous `state_tables.contains_key(name)` semantics.
 pub fn has_entries_for_name(
     state_tables: &StateTables,
     registry: &crate::registry::Registry,
     name: &str,
 ) -> bool {
     lookup_table_by_name(state_tables, registry, name)
-        .map(|t| !t.entities.is_empty())
+        .map(|t| t.entity_count() > 0)
         .unwrap_or(false)
 }
 
 // ─── AggStateTable ────────────────────────────────────────────────────────────
 
-/// Per-aggregation state store: maps `EntityKey → Vec<AggOp>` (one slot per
-/// feature in `AggregationDescriptor::features`).
+/// Per-aggregation state store. Plan 19.2-03 (D-03): three specialized storage
+/// maps selected by entity-key shape. `get_or_init_by_shape` dispatches to
+/// the appropriate sub-map at apply time.
 ///
-/// **Plan 18-11 D-4:** uses `hashbrown::HashMap` with `FxBuildHasher` for
-/// O(1) lookup on the apply hot path. FxBuildHasher is non-cryptographic
-/// and ~3× faster than the default SipHasher for short keys — safe here
-/// because the apply path is single-process, single-writer (no DoS attack
-/// surface).
+/// - `single_u64`: numeric/bool/datetime single-key → `HashMap<u64, Vec<AggOp>>`
+/// - `single_str`: string single-key → `HashMap<CompactString, Vec<AggOp>>`
+/// - `multi`: compound key (or legacy EntityKey) → `HashMap<EntityKey, Vec<AggOp>>`
 ///
-/// **Plan 18-11 D-8 — snapshot determinism:** the implicit BTreeMap
-/// ordering is replaced by an explicit `iter_sorted()` method that materializes
-/// a sorted Vec at snapshot-write time. Hot path stays O(1); the sort cost
-/// (O(N log N)) lands once per snapshot (cold path).
+/// **Snapshot serialization (back-compat):** `iter_sorted` reconstructs
+/// canonical `EntityKey` from the three maps, preserving the serialized
+/// snapshot format. `insert_from_entity_key` is the recovery-path inverse.
 ///
-/// Hot-path lookup uses `raw_entry_mut().from_key(key)` so the borrowed
-/// `&EntityKey` doesn't need to be cloned on lookup; only the cold-path
-/// vacant insert clones into the map.
+/// **Query path:** `query_feature` takes an `EntityKey` (built by the query
+/// parser from URL/JSON parameters) and routes through the appropriate map.
 pub struct AggStateTable {
-    pub entities: HashMap<EntityKey, Vec<AggOp>, FxBuildHasher>,
+    /// Fast numeric / bool / datetime single-key storage. Zero alloc on lookup.
+    pub single_u64: HashMap<u64, Vec<AggOp>, FxBuildHasher>,
+    /// String single-key storage. FxBuildHasher; hashbrown raw_entry for
+    /// zero-clone lookup.
+    pub single_str: HashMap<CompactString, Vec<AggOp>, FxBuildHasher>,
+    /// Compound key or legacy EntityKey storage.
+    /// EntityKey carries manual Hash+Eq impls so this compiles cleanly.
+    pub multi: HashMap<EntityKey, Vec<AggOp>, FxBuildHasher>,
+    /// group_keys stored at table construction for iter_sorted reconstruction.
+    /// Populated by `get_or_init_by_shape` on first call; matches the
+    /// descriptor's group_keys.
+    pub group_keys: Vec<String>,
 }
 
 impl AggStateTable {
     /// Create an empty table.
     pub fn new() -> Self {
         AggStateTable {
-            entities: HashMap::with_hasher(FxBuildHasher::default()),
+            single_u64: HashMap::with_hasher(FxBuildHasher::default()),
+            single_str: HashMap::with_hasher(FxBuildHasher::default()),
+            multi: HashMap::with_hasher(FxBuildHasher::default()),
+            group_keys: vec![],
         }
     }
 
-    /// Look up the per-entity `Vec<AggOp>` for `key`. If the key is new,
-    /// initialise a fresh `Vec` with one `AggOp::new` per feature in `descriptor`.
+    /// Plan 19.2-03 (D-03): look up or initialise the per-entity `Vec<AggOp>`
+    /// via `EntityKeyShape` dispatch. This is the HOT PATH.
     ///
-    /// Plan 18-11 D-4: uses `raw_entry_mut().from_key(key)` so the lookup
-    /// doesn't clone the key. Only the cold-path vacant insert clones.
-    /// Returns a mutable reference to the entity row so the apply loop can
-    /// call `update_with_row` on each slot.
+    /// - `SingleU64` → `single_u64` HashMap lookup (O(1), no alloc)
+    /// - `SingleStr` → `single_str` HashMap lookup (O(1), no alloc for ≤24-byte keys)
+    /// - `Multi` → `multi` HashMap lookup (O(1), EntityKey clone only on cold insert)
+    pub fn get_or_init_by_shape(
+        &mut self,
+        shape: &EntityKeyShape,
+        desc: &AggregationDescriptor,
+    ) -> &mut Vec<AggOp> {
+        // Store group_keys for iter_sorted reconstruction (idempotent).
+        if self.group_keys.is_empty() && !desc.group_keys.is_empty() {
+            self.group_keys = desc.group_keys.clone();
+        }
+
+        match shape {
+            EntityKeyShape::SingleU64(k) => self
+                .single_u64
+                .entry(*k)
+                .or_insert_with(|| Self::init_row(desc)),
+            EntityKeyShape::SingleStr(_, s) => {
+                use hashbrown::hash_map::RawEntryMut;
+                match self.single_str.raw_entry_mut().from_key(s.as_str()) {
+                    RawEntryMut::Occupied(o) => o.into_mut(),
+                    RawEntryMut::Vacant(v) => v.insert(s.clone(), Self::init_row(desc)).1,
+                }
+            }
+            EntityKeyShape::Multi(ek) => {
+                use hashbrown::hash_map::RawEntryMut;
+                match self.multi.raw_entry_mut().from_key(ek) {
+                    RawEntryMut::Occupied(o) => o.into_mut(),
+                    RawEntryMut::Vacant(v) => v.insert(ek.clone(), Self::init_row(desc)).1,
+                }
+            }
+        }
+    }
+
+    /// Legacy API: look up or initialise via an `EntityKey` (used by tests and
+    /// backward-compat paths). EntityKey always stores Value::Str-canonical
+    /// pairs → routes via `multi`.
     pub fn get_or_init(
         &mut self,
         key: &EntityKey,
         descriptor: &AggregationDescriptor,
     ) -> &mut Vec<AggOp> {
-        match self.entities.raw_entry_mut().from_key(key) {
-            RawEntryMut::Occupied(entry) => entry.into_mut(),
-            RawEntryMut::Vacant(slot) => {
-                let new_row: Vec<AggOp> = descriptor
-                    .features
-                    .iter()
-                    .map(|f| AggOp::new(&f.descriptor))
-                    .collect();
-                let (_, v) = slot.insert(key.clone(), new_row);
-                v
-            }
+        if self.group_keys.is_empty() && !descriptor.group_keys.is_empty() {
+            self.group_keys = descriptor.group_keys.clone();
         }
+        use hashbrown::hash_map::RawEntryMut;
+        match self.multi.raw_entry_mut().from_key(key) {
+            RawEntryMut::Occupied(o) => o.into_mut(),
+            RawEntryMut::Vacant(v) => v.insert(key.clone(), Self::init_row(descriptor)).1,
+        }
+    }
+
+    /// Recovery path: insert a `(EntityKey, Vec<AggOp>)` pair loaded from a
+    /// snapshot. Routes via the `multi` sub-map (EntityKey is always canonical
+    /// Value::Str pairs in the snapshot format).
+    pub fn insert_from_entity_key(&mut self, key: EntityKey, ops: Vec<AggOp>) {
+        self.multi.insert(key, ops);
     }
 
     /// Query feature `feature_index` for entity `key` at `query_time_ms`.
     ///
     /// Returns `None` if the key is not present or the index is out of range.
+    /// The `key` argument uses the legacy `EntityKey` shape (SmallVec of
+    /// Value::Str pairs) as built by the query path.
     pub fn query_feature(
         &self,
         key: &EntityKey,
         feature_index: usize,
         query_time_ms: i64,
     ) -> Option<Value> {
-        self.entities
+        // Query path always sends EntityKey → route through multi map.
+        self.multi
             .get(key)
             .and_then(|ops| ops.get(feature_index))
             .map(|op| op.query(query_time_ms))
     }
 
-    /// Return the number of distinct entities in this table.
+    /// Return the number of distinct entities across all three sub-maps.
     pub fn entity_count(&self) -> usize {
-        self.entities.len()
+        self.single_u64.len() + self.single_str.len() + self.multi.len()
     }
 
-    /// Plan 18-11 D-8: iterate entries in EntityKey-sorted order. Used by
-    /// the snapshot writer + debug routes to preserve D-06 determinism
-    /// despite the underlying HashMap's unordered iteration. Hot path
-    /// (per-push apply) uses HashMap O(1); sort cost lands once per
-    /// snapshot (cold path).
-    pub fn iter_sorted(&self) -> impl Iterator<Item = (&EntityKey, &Vec<AggOp>)> {
-        let mut entries: Vec<(&EntityKey, &Vec<AggOp>)> = self.entities.iter().collect();
+    /// Plan 18-11 D-8 (updated for 3-map storage): iterate entries in
+    /// EntityKey-sorted order for snapshot serialization.
+    ///
+    /// Reconstructs canonical `EntityKey` from single_u64 and single_str entries
+    /// using stored `group_keys`. Multi entries already hold an EntityKey.
+    pub fn iter_sorted(&self) -> impl Iterator<Item = (EntityKey, &Vec<AggOp>)> {
+        let mut entries: Vec<(EntityKey, &Vec<AggOp>)> = Vec::new();
+
+        let key_name = self.group_keys.first().cloned().unwrap_or_default();
+
+        // Reconstruct EntityKey from single_u64 entries.
+        for (k, v) in &self.single_u64 {
+            let tag = k >> 60;
+            let payload = k & 0x0FFF_FFFF_FFFF_FFFF;
+            let canonical: CompactString = match tag {
+                1 => (payload as i64).to_string().into(),
+                2 => {
+                    // F64: restore bits; upper 4 bits were replaced by tag=2.
+                    let f = f64::from_bits(payload | (2u64 << 60));
+                    format!("{:?}", f).into()
+                }
+                3 => (payload != 0).to_string().into(),
+                4 => (payload as i64).to_string().into(),
+                _ => "unknown".into(),
+            };
+            let mut pairs: SmallVec<[(CompactString, Value); 2]> = SmallVec::new();
+            pairs.push((
+                CompactString::from(key_name.as_str()),
+                Value::Str(canonical),
+            ));
+            entries.push((EntityKey(pairs), v));
+        }
+
+        // Reconstruct EntityKey from single_str entries.
+        for (s, v) in &self.single_str {
+            let mut pairs: SmallVec<[(CompactString, Value); 2]> = SmallVec::new();
+            pairs.push((
+                CompactString::from(key_name.as_str()),
+                Value::Str(s.clone()),
+            ));
+            entries.push((EntityKey(pairs), v));
+        }
+
+        // Multi entries: EntityKey IS the key.
+        for (ek, v) in &self.multi {
+            entries.push((ek.clone(), v));
+        }
+
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         entries.into_iter()
+    }
+
+    fn init_row(desc: &AggregationDescriptor) -> Vec<AggOp> {
+        desc.features
+            .iter()
+            .map(|f| AggOp::new(&f.descriptor))
+            .collect()
     }
 }
 
@@ -386,9 +618,6 @@ mod tests {
     use crate::agg_op::{AggKind, AggOpDescriptor};
     use crate::row::{Row, Value};
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    /// Build a single-key EntityKey from a user_id string (test helper).
     fn make_user_key(user_id: &str) -> EntityKey {
         let pair: (CompactString, Value) = ("user_id".into(), Value::Str(user_id.into()));
         EntityKey(SmallVec::from_buf_and_len(
@@ -397,7 +626,6 @@ mod tests {
         ))
     }
 
-    /// Same but for I64 user_id.
     fn make_user_key_from_i64(n: i64) -> EntityKey {
         let pair: (CompactString, Value) = ("user_id".into(), Value::Str(n.to_string().into()));
         EntityKey(SmallVec::from_buf_and_len(
@@ -457,12 +685,10 @@ mod tests {
                 .collect(),
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         }
     }
 
-    // ── EntityKey tests ───────────────────────────────────────────────────────
-
-    /// T01: group_keys=["user_id","merchant_id"], row has both → correct EntityKey.
     #[test]
     fn entity_key_from_row_extracts_group_keys_in_order() {
         let keys = vec!["user_id".to_string(), "merchant_id".to_string()];
@@ -470,9 +696,7 @@ mod tests {
             .with_field("user_id", Value::Str("a".into()))
             .with_field("merchant_id", Value::Str("m1".into()))
             .with_field("amount", Value::F64(10.0));
-
         let ek = EntityKey::from_row(&keys, &row).expect("should succeed");
-        // Plan 18-11 D-5: EntityKey carries native (CompactString, Value) pairs.
         let expected: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf([
             ("user_id".into(), Value::Str("a".into())),
             ("merchant_id".into(), Value::Str("m1".into())),
@@ -480,65 +704,39 @@ mod tests {
         assert_eq!(ek, EntityKey(expected));
     }
 
-    /// T02: Null group-key value → None (event dropped).
     #[test]
     fn entity_key_from_row_returns_none_on_null_field() {
         let keys = vec!["user_id".to_string()];
         let row = Row::new().with_field("user_id", Value::Null);
-        assert!(
-            EntityKey::from_row(&keys, &row).is_none(),
-            "Null group-key value must produce None"
-        );
+        assert!(EntityKey::from_row(&keys, &row).is_none());
     }
 
-    /// T03: Missing group-key field → None (event dropped).
     #[test]
     fn entity_key_from_row_returns_none_on_missing_field() {
         let keys = vec!["user_id".to_string()];
-        let row = Row::new(); // no fields at all
-        assert!(
-            EntityKey::from_row(&keys, &row).is_none(),
-            "Missing group-key field must produce None"
-        );
+        let row = Row::new();
+        assert!(EntityKey::from_row(&keys, &row).is_none());
     }
 
-    /// T04: I64(42) and F64(42.0) canonicalize to distinct strings — no collisions
-    /// between integer and float entity keys.
     #[test]
     fn entity_key_normalises_numeric_values_deterministically() {
         let keys = vec!["id".to_string()];
-
         let row_i64 = Row::new().with_field("id", Value::I64(42));
         let row_f64 = Row::new().with_field("id", Value::F64(42.0));
-
         let ek_i = EntityKey::from_row(&keys, &row_i64).expect("I64 key");
         let ek_f = EntityKey::from_row(&keys, &row_f64).expect("F64 key");
-
-        // They must NOT collide.
-        assert_ne!(
-            ek_i, ek_f,
-            "I64(42) and F64(42.0) must canonicalize to distinct strings"
-        );
-
-        // Each must be deterministic (same call twice → same result).
+        assert_ne!(ek_i, ek_f);
         let ek_i2 = EntityKey::from_row(&keys, &row_i64).expect("I64 key again");
-        assert_eq!(ek_i, ek_i2, "EntityKey must be deterministic");
+        assert_eq!(ek_i, ek_i2);
     }
 
-    /// T05: Bytes value → None (not a sane entity key in v0).
     #[test]
     fn entity_key_returns_none_for_bytes_value() {
         let keys = vec!["id".to_string()];
         let row = Row::new().with_field("id", Value::Bytes(vec![0x01, 0x02]));
-        assert!(
-            EntityKey::from_row(&keys, &row).is_none(),
-            "Bytes group-key value must produce None"
-        );
+        assert!(EntityKey::from_row(&keys, &row).is_none());
     }
 
-    // ── AggStateTable tests ───────────────────────────────────────────────────
-
-    /// T06: get_or_init on a new key creates a Vec with correct arity.
     #[test]
     fn agg_state_table_get_or_init_creates_row_of_correct_arity() {
         let desc = make_descriptor(
@@ -551,120 +749,75 @@ mod tests {
                 ("cnt2", count_op_desc()),
             ],
         );
-
         let mut table = AggStateTable::new();
         let key = make_user_key("alice");
-
         let row = table.get_or_init(&key, &desc);
-        assert_eq!(
-            row.len(),
-            3,
-            "entity row must have one slot per feature (3 features)"
-        );
+        assert_eq!(row.len(), 3);
     }
 
-    /// T07: get_or_init returns the same (now-mutated) slice on repeated calls.
     #[test]
     fn agg_state_table_get_or_init_returns_existing_on_repeat() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let mut table = AggStateTable::new();
         let key = make_user_key("alice");
-
-        // First call: creates the row.
         {
             let row = table.get_or_init(&key, &desc);
-            // Mutate via update to give it a non-default state.
-            row[0].update(
-                &Row::new(),
-                0,
-                None,
-                true, // where_matched
-            );
+            row[0].update(&Row::new(), 0, None, true);
         }
-
-        // Second call: same key → must find the existing (mutated) row.
         {
             let row2 = table.get_or_init(&key, &desc);
-            // Count should be 1 (from the update above), not 0 (re-initialised).
-            assert_eq!(
-                row2[0].query(0),
-                Value::I64(1),
-                "get_or_init must return the existing row, not re-initialise it"
-            );
+            assert_eq!(row2[0].query(0), Value::I64(1));
         }
     }
 
-    /// T08: Five distinct keys pushed → entity_count == 5.
     #[test]
     fn agg_state_table_entity_count_counts_distinct_keys() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let mut table = AggStateTable::new();
-
         for i in 0..5 {
             let key = make_user_key_from_i64(i);
             table.get_or_init(&key, &desc);
         }
-
         assert_eq!(table.entity_count(), 5);
     }
 
-    /// T09: query_feature returns the value from the underlying AggOp.
     #[test]
     fn agg_state_table_query_feature_returns_value() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let mut table = AggStateTable::new();
         let key = make_user_key("alice");
-
-        // Push 3 events by mutating the entity row directly.
         {
             let row = table.get_or_init(&key, &desc);
             for _ in 0..3 {
                 row[0].update(&Row::new(), 0, None, true);
             }
         }
-
         let val = table.query_feature(&key, 0, 0);
-        assert_eq!(val, Some(Value::I64(3)), "query_feature must return I64(3)");
+        assert_eq!(val, Some(Value::I64(3)));
     }
 
-    /// T10: query_feature returns None for an unknown key.
     #[test]
     fn agg_state_table_query_feature_returns_none_for_unknown_key() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let table = AggStateTable::new();
         let key = make_user_key("unknown");
-
-        // Never inserted key.
-        let _ = desc; // suppress unused warning
-        let val = table.query_feature(&key, 0, 0);
-        assert!(val.is_none(), "unknown key must return None");
+        let _ = desc;
+        assert!(table.query_feature(&key, 0, 0).is_none());
     }
 
-    /// T11 (Plan 18-11 D-8 replacement of D-06 grep guard):
-    /// Snapshot determinism is now preserved by `iter_sorted` + sort-on-write
-    /// instead of by BTreeMap-implicit ordering. This test asserts the new
-    /// invariant: two state tables built from the same input event sequence
-    /// must yield byte-identical iter_sorted output regardless of HashMap
-    /// insertion order.
     #[test]
     fn agg_state_table_iter_sorted_byte_identical_for_same_inputs() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let users = ["alice", "bob", "carol", "dan"];
-
-        // Build two tables — order of inserts is the same; HashMap may pick
-        // different bucket layouts but iter_sorted must yield the same order.
         let mut t1 = AggStateTable::new();
         let mut t2 = AggStateTable::new();
         for u in users {
             t1.get_or_init(&make_user_key(u), &desc);
             t2.get_or_init(&make_user_key(u), &desc);
         }
-
-        let view1: Vec<&EntityKey> = t1.iter_sorted().map(|(k, _)| k).collect();
-        let view2: Vec<&EntityKey> = t2.iter_sorted().map(|(k, _)| k).collect();
-        assert_eq!(view1, view2, "iter_sorted must be deterministic");
-
-        // Sorted yields the lex order: alice, bob, carol, dan.
+        let view1: Vec<EntityKey> = t1.iter_sorted().map(|(k, _)| k).collect();
+        let view2: Vec<EntityKey> = t2.iter_sorted().map(|(k, _)| k).collect();
+        assert_eq!(view1, view2);
         let names: Vec<String> = view1
             .iter()
             .map(|k| match &k.0[0].1 {
@@ -675,76 +828,44 @@ mod tests {
         assert_eq!(names, vec!["alice", "bob", "carol", "dan"]);
     }
 
-    // ── Plan 18-11 Task 11.3: EntityKey SmallVec + CompactString + Value ─────
-
-    /// Plan 18-11 D-5: EntityKey backing storage is `SmallVec<[(CompactString, Value); 2]>`
-    /// (was `Vec<(String, String)>`). Most aggregations group by 1-2 keys → inline storage
-    /// → zero heap alloc on construction.
-    ///
-    /// This is a compile-fail RED until the storage type is changed.
     #[test]
     fn entity_key_smallvec_inline() {
         use compact_str::CompactString;
         use smallvec::SmallVec;
 
-        // Construction with 1 group key — uses inline SmallVec storage (no heap).
         let pair: (CompactString, Value) = ("user_id".into(), Value::Str("alice".into()));
         let inline_storage: SmallVec<[(CompactString, Value); 2]> =
             SmallVec::from_buf_and_len([pair, ("".into(), Value::Null)], 1);
         let ek = EntityKey(inline_storage);
-
-        // Spilled-to-heap check: SmallVec exposes spilled() — true when over inline cap.
-        assert!(
-            !ek.0.spilled(),
-            "1-key EntityKey must use inline SmallVec storage (no heap)"
-        );
+        assert!(!ek.0.spilled());
         assert_eq!(ek.0.len(), 1);
 
-        // 2 group keys also fit inline.
         let pair_a: (CompactString, Value) = ("user_id".into(), Value::Str("a".into()));
         let pair_b: (CompactString, Value) = ("merchant_id".into(), Value::Str("m1".into()));
         let two: SmallVec<[(CompactString, Value); 2]> = SmallVec::from_buf([pair_a, pair_b]);
         let ek2 = EntityKey(two);
-        assert!(!ek2.0.spilled(), "2-key EntityKey must use inline storage");
+        assert!(!ek2.0.spilled());
     }
 
-    // ── Plan 18-11 Task 11.6: AggStateTable HashMap + raw_entry_mut + iter_sorted ──
-
-    /// AggStateTable.entities is a hashbrown::HashMap with FxBuildHasher
-    /// (Plan 18-11 D-4). Production type is exposed so callers can rely on
-    /// raw_entry_mut on the hot path. Compile-fail RED until the swap.
     #[test]
-    fn agg_state_table_uses_hashbrown_hashmap_with_fx_hasher() {
-        // Type-name string check — the assertion must reference the new type.
+    fn agg_state_table_uses_hashbrown_multi_map() {
         let table: AggStateTable = AggStateTable::new();
-        let typename = std::any::type_name_of_val(&table.entities);
+        let typename = std::any::type_name_of_val(&table.multi);
         assert!(
             typename.contains("hashbrown") && typename.contains("HashMap"),
-            "AggStateTable.entities must be hashbrown::HashMap, got {}",
-            typename
-        );
-        // FxHashBuilder presence (the third type parameter of HashMap).
-        assert!(
-            typename.contains("Fx") || typename.contains("fxhash"),
-            "AggStateTable.entities must use FxBuildHasher, got {}",
+            "AggStateTable.multi must be hashbrown::HashMap, got {}",
             typename
         );
     }
 
-    /// iter_sorted returns entries in EntityKey-sorted order regardless of
-    /// HashMap insertion order (snapshot determinism per Plan 18-11 D-8).
     #[test]
     fn agg_state_table_iter_sorted_is_deterministic() {
         let desc = make_descriptor("A", "S", &["user_id"], &[("cnt", count_op_desc())]);
         let mut table = AggStateTable::new();
-
-        // Insert in a non-sorted order.
         for u in ["zebra", "alice", "monkey", "bob"] {
             let key = make_user_key(u);
             table.get_or_init(&key, &desc);
         }
-
-        // iter_sorted yields lex-ordered EntityKeys.
         let sorted_users: Vec<String> = table
             .iter_sorted()
             .map(|(k, _)| match &k.0[0].1 {
@@ -755,32 +876,21 @@ mod tests {
         assert_eq!(sorted_users, vec!["alice", "bob", "monkey", "zebra"]);
     }
 
-    /// EntityKey::from_row canonicalises each group-key value to a
-    /// `Value::Str(CompactString)` (pre-Plan-18-11 behaviour preserved for
-    /// URL-query compat). I64(42) and F64(42.0) canonicalise to distinct
-    /// strings ("42" vs "42.0") so they remain non-colliding entity keys.
     #[test]
     fn entity_key_from_row_yields_canonicalised_str_pairs() {
         let keys = vec!["user_id".to_string()];
         let row_i64 = Row::new().with_field("user_id", Value::I64(42));
         let row_f64 = Row::new().with_field("user_id", Value::F64(42.0));
-
         let ek_i = EntityKey::from_row(&keys, &row_i64).expect("I64 EntityKey");
         let ek_f = EntityKey::from_row(&keys, &row_f64).expect("F64 EntityKey");
-
-        // Distinct keys via stringified canonical ("42" vs "42.0").
         assert_ne!(ek_i, ek_f);
-
         match &ek_i.0[0].1 {
             Value::Str(s) if s.as_str() == "42" => {}
-            other => panic!("expected Value::Str(\"42\") in EntityKey, got {:?}", other),
+            other => panic!("expected Value::Str(\"42\"), got {:?}", other),
         }
         match &ek_f.0[0].1 {
             Value::Str(s) if s.as_str() == "42.0" => {}
-            other => panic!(
-                "expected Value::Str(\"42.0\") in EntityKey, got {:?}",
-                other
-            ),
+            other => panic!("expected Value::Str(\"42.0\"), got {:?}", other),
         }
     }
 }

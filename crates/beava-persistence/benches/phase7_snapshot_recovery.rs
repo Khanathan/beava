@@ -45,6 +45,7 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
             tolerate_delay_ms: None,
             registered_at_version: 1,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         }),
     );
     let mut derivations = BTreeMap::new();
@@ -80,6 +81,8 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
             group_keys: vec!["user_id".to_string()],
             features: vec![],
             agg_id: 0,
+            field_names: vec![],
+            cluster_id: 0,
         }),
     );
     RegistryInner {
@@ -92,6 +95,8 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
         feature_index: BTreeMap::new(),
         aggregations_by_source: std::collections::HashMap::new(),
         next_agg_id: 1,
+        cluster_id_by_signature: std::collections::HashMap::new(),
+        next_cluster_id: 1,
     }
 }
 
@@ -109,6 +114,7 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
         sigma: None,
         sketch_params: None,
         ext: Default::default(),
+        field_idx: beava_core::agg_op::FIELD_IDX_NONE,
     };
     let mut tbl = AggStateTable::new();
     for i in 0..n {
@@ -129,7 +135,7 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
             [pair, ("".into(), Value::Null)],
             1,
         ));
-        tbl.entities.insert(key, vec![op]);
+        tbl.insert_from_entity_key(key, vec![op]);
     }
     tbl
 }

@@ -237,6 +237,7 @@ fn test_per_source_aggregation_index_is_populated() {
         }],
         agg_id: 0,
         field_names: vec![],
+        cluster_id: 0,
     };
     let mut deriv_schema = BTreeMap::new();
     deriv_schema.insert("user_id".to_string(), FieldType::Str);
@@ -341,6 +342,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
             }],
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         };
         let mut deriv_schema = BTreeMap::new();
         deriv_schema.insert("user_id".to_string(), FieldType::Str);
@@ -417,7 +419,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
         if let Some(desc) = registry.compiled_aggregation(&node) {
             let t = &mut restored_tables[desc.agg_id as usize];
             for (k, ops) in entries {
-                t.entities.insert(k, ops);
+                t.insert_from_entity_key(k, ops);
             }
         }
     }

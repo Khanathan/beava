@@ -887,6 +887,9 @@ pub fn compile_aggregations_from_nodes(
                     // at apply_registration time. Placeholder here so compile step is
                     // decoupled from schema validation.
                     field_names: vec![],
+                    // Plan 19.2-03: assigned by Registry::apply_registration via
+                    // cluster_id_by_signature. Placeholder 0 here.
+                    cluster_id: 0,
                 };
                 compiled.push((deriv.name.clone(), Arc::new(desc)));
             }

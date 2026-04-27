@@ -186,6 +186,7 @@ fn make_agg_descriptor(
             .collect(),
         agg_id: 0,
         field_names: vec![],
+        cluster_id: 0,
     }
 }
 

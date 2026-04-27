@@ -226,6 +226,7 @@ mod tests {
             features,
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         }
     }
 
@@ -490,6 +491,7 @@ mod tests {
             features: vec![named("total", AggKind::Sum, Some("no_such_field"))],
             agg_id: 0,
             field_names: vec![],
+            cluster_id: 0,
         };
         let errs = assert_err(propagate_aggregation_schema(&upstream, &desc));
         assert!(
