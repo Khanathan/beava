@@ -522,36 +522,47 @@ async fn run_workload(
     };
     let blast_shape = cli.blast_shape.to_blast_shape(cli);
 
+    // Background-task stop signal — `tokio::sync::watch` lets each sampler
+    // race its sleep against the stop signal in `tokio::select!` and exit
+    // promptly, instead of sleeping a full interval past `stop`. Required for
+    // honest wall_clock_ms measurement at any N (per Phase 19.1-01 D-06/D-07
+    // and memory `project_phase19_bench_wallclock_fix`).
+    let (bg_stop_tx, _) = tokio::sync::watch::channel::<()>(());
+
     // RSS sampler.
-    let stop_rss = Arc::clone(&stop);
     let peak_rss = Arc::new(AtomicU64::new(0));
     let peak_rss_clone = Arc::clone(&peak_rss);
     let pid = std::process::id();
+    let mut rss_stop_rx = bg_stop_tx.subscribe();
     let rss_task = tokio::spawn(async move {
         loop {
-            if stop_rss.load(Ordering::Relaxed) {
-                break;
-            }
-            if let Ok(out) = std::process::Command::new("ps")
-                .args(["-o", "rss=", "-p", &pid.to_string()])
-                .output()
-            {
-                if let Ok(s) = std::str::from_utf8(&out.stdout) {
-                    if let Ok(rss_kb) = s.trim().parse::<u64>() {
-                        let rss_mb = rss_kb / 1024;
-                        let prev = peak_rss_clone.load(Ordering::Relaxed);
-                        if rss_mb > prev {
-                            peak_rss_clone.store(rss_mb, Ordering::Relaxed);
+            // tokio::select! between the stop signal and the 500 ms sample
+            // interval — exits within `select!` poll latency of `stop`, not
+            // up to a full 500 ms after.
+            tokio::select! {
+                biased;
+                _ = rss_stop_rx.changed() => break,
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                    if let Ok(out) = std::process::Command::new("ps")
+                        .args(["-o", "rss=", "-p", &pid.to_string()])
+                        .output()
+                    {
+                        if let Ok(s) = std::str::from_utf8(&out.stdout) {
+                            if let Ok(rss_kb) = s.trim().parse::<u64>() {
+                                let rss_mb = rss_kb / 1024;
+                                let prev = peak_rss_clone.load(Ordering::Relaxed);
+                                if rss_mb > prev {
+                                    peak_rss_clone.store(rss_mb, Ordering::Relaxed);
+                                }
+                            }
                         }
                     }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     });
 
     // Batch-get latency sampler.
-    let stop_get = Arc::clone(&stop);
     let get_hist: Arc<AsyncMutex<Histogram<u64>>> = Arc::new(AsyncMutex::new(
         Histogram::new_with_bounds(1, 60_000_000, 3)?,
     ));
@@ -564,35 +575,44 @@ async fn run_workload(
     let get_batch_keys = cli.get_batch_keys;
     let get_seed = cli.seed;
     let get_client = Arc::clone(&http_client);
+    let mut get_stop_rx = bg_stop_tx.subscribe();
     let get_task = tokio::spawn(async move {
         use rand::Rng;
         let mut rng = sampling_rng(get_seed.wrapping_add(0xDEAD));
         loop {
-            if stop_get.load(Ordering::Relaxed) {
-                break;
-            }
-            let keys: Vec<String> = (0..get_batch_keys)
-                .map(|_| format!("k{:08}", rng.gen_range(0..KEY_SPACE)))
-                .collect();
-            let body = serde_json::json!({"keys": keys, "features": features_clone});
-            let start = Instant::now();
-            let resp = get_client
-                .post(&get_url)
-                .header("Content-Type", "application/json")
-                .body(body.to_string())
-                .send()
-                .await;
-            if let Ok(r) = resp {
-                if r.status().is_success() {
-                    let elapsed_us = start.elapsed().as_micros() as u64;
-                    let _ = r.bytes().await;
-                    let mut h = get_hist_clone.lock().await;
-                    let _ = h.record(elapsed_us.max(1));
-                    drop(h);
-                    get_samples_clone.fetch_add(1, Ordering::Relaxed);
+            // tokio::select! between the stop signal and the get-interval
+            // sleep — same rationale as rss_task above. Without this, the
+            // task lingers up to `get_interval_ms` (default 1000) past `stop`,
+            // contaminating wall_clock_ms for any N where the genuine bench
+            // time is shorter than the sleep cycle.
+            tokio::select! {
+                biased;
+                _ = get_stop_rx.changed() => break,
+                _ = tokio::time::sleep(Duration::from_millis(get_interval_ms)) => {
+                    let keys: Vec<String> = (0..get_batch_keys)
+                        .map(|_| format!("k{:08}", rng.gen_range(0..KEY_SPACE)))
+                        .collect();
+                    let body =
+                        serde_json::json!({"keys": keys, "features": features_clone});
+                    let start = Instant::now();
+                    let resp = get_client
+                        .post(&get_url)
+                        .header("Content-Type", "application/json")
+                        .body(body.to_string())
+                        .send()
+                        .await;
+                    if let Ok(r) = resp {
+                        if r.status().is_success() {
+                            let elapsed_us = start.elapsed().as_micros() as u64;
+                            let _ = r.bytes().await;
+                            let mut h = get_hist_clone.lock().await;
+                            let _ = h.record(elapsed_us.max(1));
+                            drop(h);
+                            get_samples_clone.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(get_interval_ms)).await;
         }
     });
 
@@ -666,10 +686,21 @@ async fn run_workload(
     for w in workers {
         let _ = w.await;
     }
+
+    // wall_clock_ms — capture BEFORE awaiting `get_task` / `rss_task`. With
+    // their old raw `loop { sleep }` form, awaiting them would inflate elapsed
+    // by up to `get_interval_ms` + 500 ms at any N where the genuine bench
+    // time is shorter than those sleep cycles (the Phase 19 5x under-reporting
+    // bug — see memory `project_phase19_bench_wallclock_fix`). Background
+    // tasks now use tokio::select! so they exit promptly when signalled, but
+    // the elapsed capture stays before the awaits as a structural guard.
+    let elapsed = start.elapsed();
+
+    // Signal background tasks to stop (they tokio::select! on this watch
+    // channel) and join them for clean shutdown.
+    let _ = bg_stop_tx.send(());
     let _ = get_task.await;
     let _ = rss_task.await;
-
-    let elapsed = start.elapsed();
     let push_count = pushes.load(Ordering::Relaxed);
     let push_errors = errors.load(Ordering::Relaxed);
     let push_h = push_hist.lock().await;
