@@ -52,11 +52,10 @@ impl BloomFilter {
     }
 
     fn base_hashes(&self, value: &str) -> (u64, u64) {
+        // Plan 19.2-02 (D-02a): use process-static RandomState instead of
+        // per-call AHasher::default() — saves ~30-50 ns per insert/contains.
         // Hash the str via ahash for the input → 64-bit base; then derive h1/h2 with seeded finalizer.
-        use std::hash::{Hash, Hasher};
-        let mut h = ahash::AHasher::default();
-        value.hash(&mut h);
-        let raw = h.finish();
+        let raw = crate::sketches::ahash_random_state().hash_one(value);
         (murmur3_finalize(raw, SEED_A), murmur3_finalize(raw, SEED_B))
     }
 

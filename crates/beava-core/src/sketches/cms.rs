@@ -84,10 +84,9 @@ impl TopKValue {
     }
 
     pub fn hash64(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = ahash::AHasher::default();
-        self.hash(&mut h);
-        h.finish()
+        // Plan 19.2-02 (D-02a): use process-static RandomState instead of
+        // per-call AHasher::default() — saves ~30-50 ns per call.
+        crate::sketches::ahash_random_state().hash_one(self)
     }
 }
 
@@ -353,10 +352,7 @@ impl TopKHeap {
 mod tests {
     use super::*;
     fn h(s: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hh = ahash::AHasher::default();
-        s.hash(&mut hh);
-        hh.finish()
+        crate::sketches::ahash_random_state().hash_one(s)
     }
     #[test]
     fn cms_new_zeros() {

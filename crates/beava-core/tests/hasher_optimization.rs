@@ -22,21 +22,14 @@ fn test_ahash_random_state_is_process_static() {
     );
 }
 
-/// Test 2: Hashing the same bytes through `ahash_random_state().build_hasher()`
-/// twice produces the same u64. Proves the seed is stable within the process.
+/// Test 2: Hashing the same bytes through `ahash_random_state()` twice produces
+/// the same u64. Proves the seed is stable within the process.
 #[test]
 fn test_ahash_random_state_produces_stable_hash_within_process() {
     use beava_core::sketches::ahash_random_state;
-    use std::hash::{Hash, Hasher};
 
-    let make_hash = || {
-        let mut h = ahash_random_state().build_hasher();
-        "test-key-42".hash(&mut h);
-        h.finish()
-    };
-
-    let h1 = make_hash();
-    let h2 = make_hash();
+    let h1 = ahash_random_state().hash_one("test-key-42");
+    let h2 = ahash_random_state().hash_one("test-key-42");
     assert_eq!(
         h1, h2,
         "ahash_random_state() produced different hashes for the same input — seed is not stable"
@@ -60,6 +53,12 @@ fn test_bloom_uses_process_static_random_state() {
     assert!(b2.contains("x"), "b2 should contain 'x'");
     // Both filters hashed "x" the same way (same process-static seed).
     // We can verify this by checking contains("other") is also consistent.
-    assert!(!b1.contains("not_inserted"), "b1 should not contain 'not_inserted'");
-    assert!(!b2.contains("not_inserted"), "b2 should not contain 'not_inserted'");
+    assert!(
+        !b1.contains("not_inserted"),
+        "b1 should not contain 'not_inserted'"
+    );
+    assert!(
+        !b2.contains("not_inserted"),
+        "b2 should not contain 'not_inserted'"
+    );
 }
