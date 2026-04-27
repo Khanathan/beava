@@ -618,7 +618,7 @@ Plans:
 **Why this matters:** fraud-team.json is locked as the primary tuning benchmark per memory `project_fraud_team_primary_bench`. Without this fix, Phase 19.1's primary deliverable (re-baseline against fraud-team) cannot run. Fix is small (1-file change) and orthogonal to Phase 19.1's WAL + bench + lazy-bucket work.
 
 **Plans:**
-- [ ] 19.1.1-01-PLAN.md — http_listener buffer-cap split (Wave 1; sole plan)
+1/1 plans complete
 
 ### Phase 19.2: Apply-thread optimization — EntityKey cache, cluster-by-group_keys, single-u64 fast path — 📋 PLANNED
 
