@@ -283,14 +283,19 @@ pub fn apply_event_to_aggregations(
         // Written once per traced event under the mutex. Mutex contention is
         // negligible: writes at most once per event (trace-gated), reads at
         // HTTP scrape rate (~1 Hz from /debug/op-cost).
+        //
+        // D-06 compliance: we use `event_time_ms` (the event's logical time,
+        // already passed in as the canonical time source) instead of a
+        // wall-clock read. For live workloads event_time_ms ≈ wall-clock ms;
+        // it is deterministic for WAL replay. Note: the trace path itself
+        // uses `Instant::now()` for duration measurement, but Instant is a
+        // monotonic clock that does not affect replay determinism (it is
+        // not stored in the WAL or entity state).
         let snap = per_kind_latest();
-        snap.captured_at_ms.store(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        if event_time_ms > 0 {
+            snap.captured_at_ms
+                .store(event_time_ms as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         {
             let mut data = snap.data.lock();
             *data = per_kind.clone();
