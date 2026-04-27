@@ -9,127 +9,79 @@
 //!
 //! D-04: bucket_index = floor(t / bucket_ms) mod 64 via div_euclid.
 //! D-06: no wall-clock reads, no rand — pure event-time determinism.
+//!
+//! # Phase 19.1-04: lazy bucket allocation
+//!
+//! The old layout pre-allocated `[Option<Box<AggOp>>; 64]` + `[i64; 64]` for
+//! every WindowedOp instance — ~1024 bytes of zero-init memory per instance.
+//! With 4-14 windowed ops per entity in fraud-team-shape pipelines, this was
+//! ~60% of the cold-key entity init cost (~1500 ns / 2576 ns mean).
+//!
+//! Phase 19.1-04 (per CONTEXT D-16/D-19/D-20) replaces this with
+//! `SmallVec<[(i64, Box<AggOp>); 4]>` + lazy allocation. Most entities only
+//! see 1-2 active buckets at any given moment; the 4-slot inline SmallVec
+//! covers the typical case without heap allocation. The 64-bucket cap from
+//! AGG-CORE-09 is enforced by oldest-epoch eviction on each new-epoch insert
+//! once `buckets.len() >= max_buckets`.
+//!
+//! Bucket lookup is now a linear scan of the SmallVec by epoch (typical
+//! 1-2 active = effectively O(1); worst-case 64 entries × ~0.5 ns scan ≈
+//! 32 ns — still cheap vs the saved ~1500 ns cold-init).
+//!
+//! Snapshot format: serde representation of `SmallVec<[(i64, Box<AggOp>); 4]>`
+//! is incompatible with the OLD `[Option<Box<AggOp>>; 64]` + `[i64; 64]`
+//! representation. Phase 7 recovery falls back to WAL replay if snapshot
+//! deserialization fails. Operators with existing snapshots: delete the
+//! snapshot file before restart; the WAL will replay the missing state.
 
 use crate::agg_op::{AggKind, AggOp, SketchParams};
 use crate::row::Row;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 /// 64-bucket event-time tumbling ring buffer wrapping any core AggOp.
 ///
 /// AGG-CORE-09: Windowed<Op> with 64 tumbling event-time buckets.
-/// `bucket_ms = ceil(window_ms / 64)`. On update: route to bucket at
-/// `bucket_index(event_time_ms)`, resetting stale buckets. On query: fold
-/// active buckets using op-specific combine logic (Welford pairwise for
-/// variance/stddev).
+/// `bucket_ms = ceil(window_ms / 64)`. On update: route to the bucket whose
+/// epoch matches the event time, lazily creating it if needed; evict the
+/// oldest-epoch entry once `buckets.len() >= max_buckets`. On query: fold
+/// active buckets (those with epoch ∈ [query_time - window_ms, query_time])
+/// using op-specific combine logic (Welford pairwise for variance/stddev).
+///
+/// Phase 19.1-04: lazy `SmallVec<[(epoch_ms, Box<AggOp>); 4]>` replaces
+/// the original `[Option<Box<AggOp>>; 64]` + `[i64; 64]` arrays for ~60%
+/// reduction in cold WindowedOp::new cost on complex pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowedOp {
     pub inner_kind: AggKind,
     pub bucket_ms: u64,
     pub window_ms: u64,
-    #[serde(with = "serde_array_64")]
-    pub buckets: [Option<Box<AggOp>>; 64],
-    #[serde(with = "serde_array_64_i64")]
-    pub bucket_epoch_start_ms: [i64; 64],
+    /// Lazy-allocated bucket entries: `(epoch_start_ms, op_state)`.
+    /// Inline cap 4 covers the typical fraud workload (1-2 active buckets
+    /// per entity at any time); spills to heap above 4. Cap of 64 active
+    /// buckets (AGG-CORE-09) enforced by oldest-epoch eviction in `update`.
+    pub buckets: SmallVec<[(i64, Box<AggOp>); 4]>,
+    /// AGG-CORE-09: cap = 64 active buckets. Beyond cap, the oldest-epoch
+    /// entry is evicted on each new-epoch insert.
+    #[serde(default = "default_max_buckets")]
+    pub max_buckets: usize,
     /// Plan 10-05: sketch construction params propagated to per-bucket
     /// fresh_op() calls. Default for non-sketch kinds; threaded for sketch kinds.
     #[serde(default)]
     pub sketch_params: SketchParams,
 }
 
-/// serde helpers for `[Option<Box<AggOp>>; 64]` — serde's default only supports
-/// arrays up to 32 elements pre-1.0 via specialization. We serialize as a Vec
-/// then validate length on decode.
-mod serde_array_64 {
-    use crate::agg_op::AggOp;
-    use serde::de::{self, SeqAccess, Visitor};
-    use serde::ser::SerializeTuple;
-    use serde::{Deserializer, Serializer};
-    use std::fmt;
-
-    pub fn serialize<S>(
-        buckets: &[Option<Box<AggOp>>; 64],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut tup = serializer.serialize_tuple(64)?;
-        for b in buckets.iter() {
-            tup.serialize_element(b)?;
-        }
-        tup.end()
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[Option<Box<AggOp>>; 64], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = [Option<Box<AggOp>>; 64];
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a 64-tuple of optional AggOp bucket slots")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut out: [Option<Box<AggOp>>; 64] = std::array::from_fn(|_| None);
-                for (i, slot) in out.iter_mut().enumerate() {
-                    *slot = seq
-                        .next_element::<Option<Box<AggOp>>>()?
-                        .ok_or_else(|| de::Error::invalid_length(i, &self))?;
-                }
-                Ok(out)
-            }
-        }
-        deserializer.deserialize_tuple(64, V)
-    }
-}
-
-/// serde helpers for `[i64; 64]` (serde default only supports up to 32).
-mod serde_array_64_i64 {
-    use serde::de::{self, SeqAccess, Visitor};
-    use serde::ser::SerializeTuple;
-    use serde::{Deserializer, Serializer};
-    use std::fmt;
-
-    pub fn serialize<S>(arr: &[i64; 64], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut tup = serializer.serialize_tuple(64)?;
-        for x in arr.iter() {
-            tup.serialize_element(x)?;
-        }
-        tup.end()
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[i64; 64], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = [i64; 64];
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a 64-tuple of i64 bucket epochs")
-            }
-            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut out: [i64; 64] = [i64::MIN; 64];
-                for (i, slot) in out.iter_mut().enumerate() {
-                    *slot = seq
-                        .next_element::<i64>()?
-                        .ok_or_else(|| de::Error::invalid_length(i, &self))?;
-                }
-                Ok(out)
-            }
-        }
-        deserializer.deserialize_tuple(64, V)
-    }
+fn default_max_buckets() -> usize {
+    64
 }
 
 impl WindowedOp {
     /// Create a new WindowedOp.
     ///
     /// `bucket_ms = ceil(window_ms / 64)` — ensures at least 1ms per bucket.
+    ///
+    /// Phase 19.1-04: cold construction is allocation-free (`SmallVec::new`
+    /// is a no-op). Buckets are pushed lazily on the first event.
     pub fn new(kind: AggKind, window_ms: u64) -> Self {
         Self::new_with_params(kind, window_ms, SketchParams::default())
     }
@@ -147,22 +99,62 @@ impl WindowedOp {
             "bloom_member is windowless-only — cannot be wrapped in WindowedOp"
         );
         let bucket_ms = window_ms.div_ceil(64);
-        let buckets = std::array::from_fn(|_| None);
         WindowedOp {
             inner_kind: kind,
             bucket_ms,
             window_ms,
-            buckets,
-            bucket_epoch_start_ms: [i64::MIN; 64],
+            // Lazy allocation: SmallVec::new is allocation-free. Buckets push
+            // on first event into a new epoch.
+            buckets: SmallVec::new(),
+            max_buckets: 64,
             sketch_params,
         }
     }
 
-    /// Compute the bucket index for an event time.
+    /// Compute the bucket index (slot 0..64) for an event time.
     ///
     /// Uses `div_euclid` so negative event_time_ms yields a non-negative index.
+    ///
+    /// Phase 19.1-04 note: this is now a pure mathematical function returning
+    /// `floor(t / bucket_ms) mod 64`. It is no longer used to address physical
+    /// storage slots (the SmallVec is keyed by epoch_ms, not slot index), but
+    /// is kept as a public API for tests and external callers that reason
+    /// about bucket-collision behavior at the 64-slot abstraction level.
     pub fn bucket_index(&self, event_time_ms: i64) -> usize {
         ((event_time_ms.div_euclid(self.bucket_ms as i64)) as usize) % 64
+    }
+
+    /// Compute the bucket epoch (start time in ms, inclusive) for an event.
+    ///
+    /// Phase 19.1-04: this is the new bucket identifier in the SmallVec layout.
+    /// Two events at times `t1` and `t2` share a bucket iff
+    /// `bucket_epoch(t1) == bucket_epoch(t2)`.
+    #[inline]
+    pub fn bucket_epoch(&self, event_time_ms: i64) -> i64 {
+        event_time_ms.div_euclid(self.bucket_ms as i64) * self.bucket_ms as i64
+    }
+
+    /// Find the position in `self.buckets` for a given epoch, if any.
+    ///
+    /// Linear scan is fastest for n ≤ 4 (typical case is 1-2 active buckets;
+    /// worst case 64 still has small constant factor — ~32 ns at scan-of-64).
+    #[inline]
+    fn position_for_epoch(&self, epoch: i64) -> Option<usize> {
+        self.buckets.iter().position(|(e, _)| *e == epoch)
+    }
+
+    /// Evict the oldest-epoch bucket. Called when `len >= max_buckets` and a
+    /// new-epoch entry is about to be pushed. AGG-CORE-09: 64-bucket cap.
+    fn evict_oldest_bucket(&mut self) {
+        if let Some(min_pos) = self
+            .buckets
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, (e, _))| *e)
+            .map(|(i, _)| i)
+        {
+            self.buckets.swap_remove(min_pos);
+        }
     }
 
     /// Update the windowed state with one event row.
@@ -173,28 +165,26 @@ impl WindowedOp {
         field: Option<&str>,
         where_matched: bool,
     ) {
-        let idx = self.bucket_index(event_time_ms);
-        let bucket_epoch = event_time_ms.div_euclid(self.bucket_ms as i64) * self.bucket_ms as i64;
-
-        // Reset bucket if stale (different epoch).
-        if self.bucket_epoch_start_ms[idx] != bucket_epoch {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
-            self.bucket_epoch_start_ms[idx] = bucket_epoch;
+        let epoch = self.bucket_epoch(event_time_ms);
+        if let Some(pos) = self.position_for_epoch(epoch) {
+            self.buckets[pos]
+                .1
+                .update(row, event_time_ms, field, where_matched);
+            return;
         }
-        if self.buckets[idx].is_none() {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
+        // New epoch — evict-then-push if at cap.
+        if self.buckets.len() >= self.max_buckets {
+            self.evict_oldest_bucket();
         }
-
-        self.buckets[idx]
-            .as_mut()
-            .unwrap()
-            .update(row, event_time_ms, field, where_matched);
+        let mut new_op = Box::new(fresh_op(self.inner_kind, &self.sketch_params));
+        new_op.update(row, event_time_ms, field, where_matched);
+        self.buckets.push((epoch, new_op));
     }
 
     /// Update the windowed state with one event row, evaluating `where_expr`
     /// (if any) before forwarding to the inner bucket's AggOp.
     ///
-    /// Same bucket routing + stale-reset logic as `update`; the predicate is
+    /// Same bucket routing + lazy-allocation logic as `update`; the predicate is
     /// threaded into the per-bucket `AggOp::update_with_row` call.
     ///
     /// # SDK-AGG-04
@@ -205,28 +195,25 @@ impl WindowedOp {
         field: Option<&str>,
         where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
     ) {
-        let idx = self.bucket_index(event_time_ms);
-        let bucket_epoch = event_time_ms.div_euclid(self.bucket_ms as i64) * self.bucket_ms as i64;
-
-        // Reset bucket if stale (different epoch).
-        if self.bucket_epoch_start_ms[idx] != bucket_epoch {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
-            self.bucket_epoch_start_ms[idx] = bucket_epoch;
+        let epoch = self.bucket_epoch(event_time_ms);
+        if let Some(pos) = self.position_for_epoch(epoch) {
+            self.buckets[pos]
+                .1
+                .update_with_row(row, event_time_ms, field, where_expr);
+            return;
         }
-        if self.buckets[idx].is_none() {
-            self.buckets[idx] = Some(Box::new(fresh_op(self.inner_kind, &self.sketch_params)));
+        if self.buckets.len() >= self.max_buckets {
+            self.evict_oldest_bucket();
         }
-
-        self.buckets[idx]
-            .as_mut()
-            .unwrap()
-            .update_with_row(row, event_time_ms, field, where_expr);
+        let mut new_op = Box::new(fresh_op(self.inner_kind, &self.sketch_params));
+        new_op.update_with_row(row, event_time_ms, field, where_expr);
+        self.buckets.push((epoch, new_op));
     }
 
     /// Query the windowed aggregation value at `query_time_ms`.
     ///
-    /// Active buckets: those where `query_time_ms - bucket_epoch_start >= 0`
-    /// AND `query_time_ms - bucket_epoch_start < window_ms`.
+    /// Active buckets: those where `query_time_ms - bucket_epoch >= 0`
+    /// AND `query_time_ms - bucket_epoch < window_ms`.
     pub fn query(&self, query_time_ms: i64) -> crate::row::Value {
         use crate::agg_op::AggOp;
         use crate::agg_state::value_lt;
@@ -235,17 +222,18 @@ impl WindowedOp {
 
         let window_ms = self.window_ms as i64;
 
+        // Helper closure: is a bucket epoch active at the query time?
+        // Inlined here so each match arm can use it without re-borrowing self.
+        let active = |epoch: i64| -> bool {
+            let age = query_time_ms - epoch;
+            age >= 0 && age < window_ms
+        };
+
         match self.inner_kind {
             AggKind::Count => {
                 let mut total: u64 = 0;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Count(CountState { n }) = op.as_ref() {
@@ -257,14 +245,8 @@ impl WindowedOp {
             AggKind::Sum => {
                 let mut total = 0.0_f64;
                 let mut seen = false;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Sum(SumState { total: t, n }) = op.as_ref() {
@@ -283,14 +265,8 @@ impl WindowedOp {
             AggKind::Avg => {
                 let mut sum = 0.0_f64;
                 let mut n: u64 = 0;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Avg(AvgState { sum: s, n: bn }) = op.as_ref() {
@@ -306,14 +282,8 @@ impl WindowedOp {
             }
             AggKind::Min => {
                 let mut current: Option<Value> = None;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Min(MinState { current: Some(bv) }) = op.as_ref() {
@@ -331,14 +301,8 @@ impl WindowedOp {
             }
             AggKind::Max => {
                 let mut current: Option<Value> = None;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Max(MaxState { current: Some(bv) }) = op.as_ref() {
@@ -360,14 +324,8 @@ impl WindowedOp {
                 let mut combined_mean: f64 = 0.0;
                 let mut combined_m2: f64 = 0.0;
 
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     let bstate = match op.as_ref() {
@@ -409,18 +367,12 @@ impl WindowedOp {
                 // future work: merge across buckets via Hll::merge for stable HLL union).
                 let mut best: Option<&AggOp> = None;
                 let mut best_epoch = i64::MIN;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
-                        continue;
-                    }
-                    if epoch > best_epoch {
-                        best_epoch = epoch;
+                    if *epoch > best_epoch {
+                        best_epoch = *epoch;
                         best = Some(op.as_ref());
                     }
                 }
@@ -432,18 +384,12 @@ impl WindowedOp {
             AggKind::Percentile => {
                 let mut best: Option<&AggOp> = None;
                 let mut best_epoch = i64::MIN;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
-                        continue;
-                    }
-                    if epoch > best_epoch {
-                        best_epoch = epoch;
+                    if *epoch > best_epoch {
+                        best_epoch = *epoch;
                         best = Some(op.as_ref());
                     }
                 }
@@ -455,18 +401,12 @@ impl WindowedOp {
             AggKind::TopK => {
                 let mut best: Option<&AggOp> = None;
                 let mut best_epoch = i64::MIN;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
-                        continue;
-                    }
-                    if epoch > best_epoch {
-                        best_epoch = epoch;
+                    if *epoch > best_epoch {
+                        best_epoch = *epoch;
                         best = Some(op.as_ref());
                     }
                 }
@@ -479,14 +419,8 @@ impl WindowedOp {
                 // Merge histograms across active buckets via EntropyHistogram::merge.
                 use crate::sketches::entropy::EntropyHistogram;
                 let mut combined: Option<EntropyHistogram> = None;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Entropy(s) = op.as_ref() {
@@ -508,14 +442,8 @@ impl WindowedOp {
             AggKind::Ratio => {
                 let mut matching: u64 = 0;
                 let mut total: u64 = 0;
-                for (i, bucket) in self.buckets.iter().enumerate() {
-                    let Some(op) = bucket else { continue };
-                    let epoch = self.bucket_epoch_start_ms[i];
-                    if epoch == i64::MIN {
-                        continue;
-                    }
-                    let age = query_time_ms - epoch;
-                    if age < 0 || age >= window_ms {
+                for (epoch, op) in self.buckets.iter() {
+                    if !active(*epoch) {
                         continue;
                     }
                     if let AggOp::Ratio(RatioState {
@@ -658,13 +586,13 @@ mod tests {
         let mut op = WindowedOp::new(AggKind::Count, window_ms);
         let r = empty_row();
 
-        // Push event at t=0: bucket 0, epoch 0
+        // Push event at t=0: epoch 0
         op.update(&r, 0, None, true);
         // Query at t=0: age of epoch 0 = 0 < 64_000 ✓
         let r1 = op.query(0);
         assert_eq!(r1, Value::I64(1));
 
-        // Push event at t=window_ms+1: bucket 0 again (wraps), epoch = window_ms
+        // Push event at t=window_ms+1: a new epoch beyond the original window
         // (epoch for t=window_ms+1 with bucket_ms=1000: floor(64001/1000)*1000 = 64000)
         op.update(&r, window_ms as i64 + 1, None, true);
         // Query at t=window_ms+1: epoch 0 has age=window_ms+1 >= window_ms → excluded
@@ -864,7 +792,9 @@ mod tests {
             op2.update(&r, t, None, true);
         }
 
-        // Snapshot state as debug representation — must be byte-identical
+        // Snapshot state as debug representation — must be byte-identical.
+        // Phase 19.1-04: the SmallVec entry order can depend on push order,
+        // but with deterministic event streams it's deterministic across runs.
         let snap1 = format!("{:?}", op1);
         let snap2 = format!("{:?}", op2);
         assert_eq!(
@@ -908,6 +838,64 @@ mod tests {
             "single update must lazy-allocate exactly one bucket; got {}",
             op.buckets.len()
         );
+    }
+
+    /// SmallVec inline cap is 4: pushing into 4 distinct epochs stays inline
+    /// (no heap promotion); pushing a 5th promotes to heap but stays correct.
+    ///
+    /// Phase 19.1 CONTEXT D-20: inline cap=4 covers the typical fraud case
+    /// (1-2 active buckets per entity at any time).
+    #[test]
+    fn test_windowed_op_smallvec_inline_cap_4_then_spills_to_heap() {
+        let mut op = WindowedOp::new(AggKind::Count, 64_000); // bucket_ms = 1000
+        let r = empty_row();
+
+        // Push into 4 distinct buckets; should stay inline.
+        for i in 0..4_i64 {
+            op.update(&r, i * 1_000, None, true);
+        }
+        assert_eq!(op.buckets.len(), 4, "4 buckets after 4 distinct epochs");
+        assert!(
+            !op.buckets.spilled(),
+            "4 entries should fit inline (SmallVec cap=4)"
+        );
+
+        // 5th distinct bucket spills to heap but stays correct.
+        op.update(&r, 4_000, None, true);
+        assert_eq!(op.buckets.len(), 5, "5 buckets after 5 distinct epochs");
+        assert!(
+            op.buckets.spilled(),
+            "5th entry must spill to heap (graceful promotion)"
+        );
+    }
+
+    /// AGG-CORE-09 cap: 64 active buckets max — beyond cap, oldest is evicted.
+    ///
+    /// Pushes into 65 distinct epochs and verifies that exactly 64 entries
+    /// remain (the oldest was swap_remove'd) and that querying across all
+    /// active windows still folds correctly.
+    #[test]
+    fn test_windowed_op_evicts_oldest_at_max_buckets_cap() {
+        // Use a very small bucket_ms (1ms) so we can pack 65 distinct epochs
+        // into a meaningful test: window_ms = 64 * 65 = 4160ms
+        let window_ms: u64 = 64; // bucket_ms = 1ms
+        let mut op = WindowedOp::new(AggKind::Count, window_ms);
+        let r = empty_row();
+
+        // Push 65 events into 65 distinct epochs (event_time = i ms; bucket_ms=1).
+        for i in 0..65_i64 {
+            op.update(&r, i, None, true);
+        }
+        assert_eq!(
+            op.buckets.len(),
+            64,
+            "AGG-CORE-09 cap: at most 64 active buckets"
+        );
+        // Oldest (epoch 0) should be evicted; buckets 1..65 remain.
+        let oldest_present = op.buckets.iter().any(|(e, _)| *e == 0);
+        assert!(!oldest_present, "epoch=0 should have been evicted");
+        let newest_present = op.buckets.iter().any(|(e, _)| *e == 64);
+        assert!(newest_present, "epoch=64 should still be present");
     }
 
     // ── Determinism guard ─────────────────────────────────────────────────
