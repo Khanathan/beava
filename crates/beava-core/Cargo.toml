@@ -70,3 +70,7 @@ harness = false
 [[bench]]
 name = "windowed_op_init"
 harness = false
+
+[[test]]
+name = "field_idx_resolution"
+path = "tests/field_idx_resolution.rs"
