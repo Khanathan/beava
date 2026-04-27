@@ -1,46 +1,142 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-26T21:39:53.851Z",
-  "phase": "18-redis-hand-roll",
-  "phase_name": "Redis-shaped hand-rolled hot path",
-  "phase_dir": ".planning/phases/18-redis-hand-roll",
-  "plan": "18-06",
+  "timestamp": "2026-04-27T04:17:55.762Z",
+  "phase": "19",
+  "phase_name": "1m-bench",
+  "phase_dir": ".planning/phases/19-1m-bench",
+  "plan": null,
   "task": null,
   "total_tasks": null,
-  "status": "paused",
-  "completed_tasks": [
-    {"id": "18-05-wiring", "name": "Wire start_worker<MioBackend> into serve_with_dirs", "status": "done", "commit": "1d2ca82"},
-    {"id": "18-06-busyspin", "name": "Apply busy-spin + worker→apply waker", "status": "done", "commit": "7e05863"},
-    {"id": "18-06-encode-off", "name": "Move response encoding off apply (+36% EPS)", "status": "done", "commit": "ad782ad"},
-    {"id": "18-06-bookkeeping", "name": "event_id_index hashbrown+FxBuildHasher; bk substage trace", "status": "done", "commit": "4841cef"},
-    {"id": "18-16-vec", "name": "Vec[agg_id] state_tables (Plan 18-16 Task 16.2)", "status": "done", "commit": "10be7e2"},
-    {"id": "roadmap-19-20", "name": "Phase 19 (1M-EPS bench) + Phase 20 (op/semantics/push-get audit) added", "status": "done", "commit": "c1f2079"},
-    {"id": "cleanup", "name": "Phase 13.3 REJECTED + 14 worktrees pruned + 3 stashes dropped", "status": "done", "commit": "bbc1062"}
+  "status": "paused-debug",
+  "context_summary": "Phase 19 marked complete (98a3f8c) with PASS-WITH-DEFICIT. Post-completion debug session uncovered: (1) bench wall_clock_ms is bug-contaminated by background-task sleep cycles for N<500k; (2) WAL has bimodal-tail (1% of events stall 1-42ms each); (3) large-with-sketches apply-bound at 250k EPS theoretical with sketches consuming 76% of features-time; (4) WindowedOp's preallocated 64-slot bucket array is the cold-key allocation hotspot. Three Phase 19.0.x hotfix candidates queued.",
+  "completed_this_session": [
+    {
+      "item": "Per-AggKind timing extension to BEAVA_TRACE_AGG_TIMING",
+      "commit": "eed1cd2",
+      "files": ["crates/beava-core/src/agg_apply.rs"]
+    }
   ],
-  "remaining_tasks": [
-    {"id": "18-06-polish", "name": "Plan 18-06 wire polish (zero-copy argv, hand-rolled response formatters, static responses)", "status": "not_started"},
-    {"id": "18-06-perf-gate", "name": "Plan 18-06 perf gate 6.1 — Linux Xeon HARD >=3M EPS/core (out of scope on M4)", "status": "deferred"},
-    {"id": "18-summary", "name": "Phase 18 SUMMARY.md + verification + worktree archival decisions", "status": "not_started"},
-    {"id": "wip-bench-debug", "name": "Debug stashed --total-events bench stall (stash@{0})", "status": "not_started"},
-    {"id": "code-review", "name": "gsd-code-review chain on diff since c4c3f7a", "status": "not_started"},
-    {"id": "phase-19-bench", "name": "Phase 19: Python+Rust 1M-EPS bench harness", "status": "not_started"},
-    {"id": "phase-20-audit", "name": "Phase 20: operator + streaming-semantics + push/get API audit", "status": "not_started"}
+  "uncommitted_files": [
+    {
+      "path": ".planning/research/fraud-feature-catalogue.md",
+      "size_lines": 1054,
+      "status": "untracked",
+      "note": "research output from background agent — 110 features, 15 categories, 14 sources"
+    },
+    {
+      "path": "crates/beava-bench/configs/fraud-team.json",
+      "size_lines": 567,
+      "status": "untracked",
+      "note": "14-node pipeline config; 7 of 10 lifetime-only-with-window violations fixed; 3+ remaining param-shape errors (e.g. histogram bins vs buckets)"
+    },
+    {
+      "path": ".planning/phases/19-1m-bench/19-REVIEW.md",
+      "status": "untracked",
+      "note": "gsd-code-reviewer output from earlier in session"
+    }
+  ],
+  "experimental_changes_reverted": [
+    {
+      "file": "crates/beava-server/src/server.rs:577,588",
+      "what": "Bumped WAL buffers from 3x16MiB tick=2ms to 8x64MiB tick=100ms",
+      "result": "Bimodal wal_append tail eliminated; throughput +33% on cache-hot fixed shape",
+      "why_reverted": "Needs proper Phase 19.0.1 plan with TDD; 8x64MiB = 512MB resident is too aggressive; 4x32MiB likely the right middle ground"
+    }
   ],
   "blockers": [],
-  "human_actions_pending": [
-    {"action": "Run /gsd-resume-work in fresh session to start Plan 18-06 polish or jump to Phase 19", "context": "Context budget exhausted at 96% during this session; cleanup landed but Phase 18 wrap (SUMMARY + verification) deferred", "blocking": false}
-  ],
+  "human_actions_pending": [],
   "decisions": [
-    {"decision": "Phase 13.3 (lockless apply via RefCell + LocalSet) REJECTED", "rationale": "Beava commits to single-threaded data plane forever (Redis-cluster pattern); Phase 18 hand-rolled hot path achieved the apply-loop perf the rejected refactor targeted; further in-process apply sharding gives diminishing returns vs. multi-instance scale-out", "phase": "13.3"},
-    {"decision": "Encode response on worker thread (not apply)", "rationale": "Plan 18-04.7 property restored after Plan 18-06 wiring regression; +36% EPS at saturated load; via Box<dyn FnOnce(WorkerProto, &mut BytesMut)> closure shipped through write_rx", "phase": "18-06"},
-    {"decision": "Apply busy-spin + worker->apply waker (not pure tick)", "rationale": "Drops idle->active pickup gap from 8170 ns -> 278 ns (~30x lower); kqueue waker-only path was 2.5 us floor; busy-spin during active load eliminates that floor", "phase": "18-06"},
-    {"decision": "state_tables: Vec<AggStateTable> indexed by agg_id (not HashMap by name)", "rationale": "Plan 18-16 Task 16.2; eliminates per-push String clone + hashbrown probe on outer table_lookup; ~50 ns/event saved (54 -> 27 ns); agg_id assigned at register-time per Plan 18-16 Task 16.1", "phase": "18-16"},
-    {"decision": "event_id_index: hashbrown::HashMap<u64, _, FxBuildHasher>", "rationale": "Std HashMap with SipHash was 388 ns/insert; FxBuildHasher dropped to 266 ns (-31%); same pattern as Plan 18-11 D-7 outer state_tables", "phase": "18-06"}
+    {
+      "decision": "Per-op trace tool kept (committed) as production-safe debug aid",
+      "rationale": "Validates first-principles latency analysis; future optimizations can confirm gains"
+    },
+    {
+      "decision": "WAL config bump experimental — needs proper plan",
+      "rationale": "8x64MiB removes bimodal tail BUT 512MB RSS too heavy for default"
+    },
+    {
+      "decision": "Phase 19 verdict needs re-baselining after wall_clock fix",
+      "rationale": "PASS-WITH-DEFICIT was based on bug-contaminated number; real number clears M4 threshold"
+    }
   ],
-  "uncommitted_files": [],
-  "stashed_work": [
-    {"stash": "stash@{0}", "description": "wip: --total-events + pre-encoded-frame bench (stalled after pre-warm; debug next session as start of Phase 19)"}
+  "open_questions": [
+    "Default WAL config: 4x32MiB tick=20ms middle ground, or just fix wall_clock?",
+    "Histogram windowed semantics: add windowed_histogram op family, or document UDDSketch as the path?",
+    "Fraud-team config: ship as bench config or as /beava skill template?",
+    "Phase 19.0.x numbering: open 3 small phases or one combined Phase 19.1?"
   ],
-  "next_action": "Either (a) resume Phase 18 wrap (Plan 18-06 wire polish then Phase 18 SUMMARY); OR (b) jump to Phase 19 (debug stashed --total-events bench, finalize Rust harness, build Python harness). Recommendation: (b) — 1M EPS measurement is the headline question users ask.",
-  "context_notes": "M4 saturated EPS final state: 393k -> 522k (+33%) for msgpack TCP small p=16/pd=256. Apply hot path dispatch ~1080 ns/event total. agg substage entity_row_init dominant at ~350 ns (EntityKey hash). bk_evid the 2nd biggest bookkeeping cost at ~200 ns (event_id_index Mutex+insert). Highest-leverage remaining: smaller EntityKey (single-u64 fast path), or skip event_id_index when no descriptor needs retract."
+  "key_findings": {
+    "wall_clock_bug": {
+      "issue": "elapsed = start.elapsed() captured AFTER awaiting get_task (1s sleep) and rss_task (500ms sleep)",
+      "symptom": "For N < ~500k, wall_clock dominated by background-task shutdown latency, not throughput",
+      "impact": "Phase 19 published canonical-cell number 5x under-reported (106k vs 536k)",
+      "fix_location": "crates/beava-bench/src/bin/beava-bench-v18.rs:660-672"
+    },
+    "wal_bimodal_tail": {
+      "issue": "1% of events have wal_append > 1ms (range 1-42ms) under sustained 500k EPS",
+      "cause": "WAL writer with tick_ms=2 + 3x16MiB buffers can't keep up; apply blocks in wait_for_free_and_activate",
+      "fix": "Bump to 4-8 buffers x 32-64 MiB and/or longer tick (20-100ms)",
+      "trade_off": "RSS goes from 48MB to 128-512MB"
+    },
+    "pipeline_complexity_crossover": {
+      "wire_stack_ceiling": "~665k EPS for fixed shape (cache-hot)",
+      "apply_ceiling_simple": "~2M EPS theoretical (TOTAL p50 = 458 ns)",
+      "apply_ceiling_complex": "~250k EPS for large-with-sketches (TOTAL = 4 us/event)",
+      "sketch_costs_ns_per_call": {
+        "Percentile_UDDSketch": 257,
+        "Entropy": 224,
+        "TopK_SpaceSaving": 221,
+        "CountDistinct_HLL": 138,
+        "BloomMember": 44,
+        "Core_Sum_Avg_Min_Max": 20
+      }
+    },
+    "allocation_hotspot": {
+      "issue": "WindowedOp's [Option<Box<AggOp>>; 64] preallocated for every new entity",
+      "cost": "~1500ns of the 2576ns cold-key entity_row_init (60%)",
+      "fix": "Replace with SmallVec<[(i64, Box<AggOp>); 4]> or Vec; lazy-allocate buckets"
+    }
+  },
+  "phase_19_0_x_candidate_plans": {
+    "19_0_1_wall_clock_and_wal": {
+      "scope": "1-line elapsed-move + tokio::select! in get_task/rss_task + WAL config bump (4x32MiB tick=20ms)",
+      "estimated_effort_hours": "2-3",
+      "expected_gain": "Honest +30% reported EPS for cache-hot configs; clears Phase 19 M4 threshold"
+    },
+    "19_0_2_lazy_buckets": {
+      "scope": "Replace WindowedOp's [Option<Box<AggOp>>; 64] with SmallVec; lazy bucket allocation",
+      "estimated_effort_days": "2-3",
+      "expected_gain": "+50% EPS for uniform/cold-key complex pipelines"
+    },
+    "19_0_3_batch_or_op_push_many": {
+      "scope": "Either same-key batch sketch updates in apply dispatch, or OP_PUSH_MANY adoption in bench",
+      "estimated_effort_days": "2-3",
+      "expected_gain": "+30-50% EPS for zipfian/hot-key complex OR push wire-stack ceiling above 1M EPS"
+    }
+  },
+  "next_action_recommended": "Path A: Open Phase 19.0.1 plan for wall_clock measurement fix + WAL config bump. Test by re-running canonical cell at N=100k zipfian. Update 19-VERIFICATION.md verdict from PASS-WITH-DEFICIT to PASS.",
+  "next_action_alternatives": [
+    "Path B: Validate fraud-team.json (audit op-param schemas in agg_op.rs) and run zipfian benchmark on it",
+    "Path C: Just commit research artifacts (fraud-feature-catalogue.md + fraud-team.json with TODO comment)"
+  ],
+  "advisory_constraints": [
+    {
+      "severity": "advisory",
+      "constraint": "Don't trust bench wall_clock_ms for N<500k until 19.0.1 lands; use send_drain_ms for bench-side rate"
+    },
+    {
+      "severity": "advisory",
+      "constraint": "Cache-hot fixed shape misleads on apply work; use zipfian K=1M for realistic per-pipeline ceiling"
+    },
+    {
+      "severity": "advisory",
+      "constraint": "BEAVA_TRACE_APPLY_TIMING=1 slows bench ~10x via stderr eprintln"
+    },
+    {
+      "severity": "advisory",
+      "constraint": "19-VERIFICATION.md verdict needs amending after wall_clock fix"
+    }
+  ],
+  "background_processes": [],
+  "context_notes": "Throughput optimization debug from Phase 19's PASS-WITH-DEFICIT verdict. User pushed back on initial 'wire-stack-bound everywhere' framing; correctly identified that fixed-shape was masking apply work. Per-op trace + complexity sweep confirmed two-regime model (wire-bound simple, apply-bound complex). Most concrete win: WindowedOp lazy buckets. Most urgent fix: wall_clock_ms measurement bug. Pause invoked at user request before applying any of the three candidate hotfixes."
 }
