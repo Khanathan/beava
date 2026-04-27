@@ -183,16 +183,17 @@ fn test_bloom_consumes_cow_no_alloc() {
     // pointer equality proves the borrow was not copied through a new allocation.
     //
     // Task 2.a: this function doesn't exist yet → RED.
-    let raw_str = "hello_bloom";
-    let val = Value::Str(raw_str.into());
-    // Capture the pointer of the CompactString's underlying bytes inside the Value.
-    let val_ptr = match &val {
+    let raw_str = "hello_bloom_long_enough_to_heap_alloc";
+    let row = Row::new().with_field("token", Value::Str(raw_str.into()));
+
+    // Capture the pointer of the CompactString INSIDE the row (after the move).
+    // row.get returns &Value so we can borrow the underlying str slice.
+    let val_ptr = match row.get("token").expect("token must exist") {
         Value::Str(s) => s.as_str().as_ptr() as usize,
         _ => unreachable!(),
     };
 
     let mut bloom_state = BloomMemberStateWrap::default();
-    let row = Row::new().with_field("token", val);
     bloom_state.update(&row, 0, Some("token"), true);
 
     // _last_bloom_insert_ptr() must equal val_ptr → proves zero-alloc borrow.

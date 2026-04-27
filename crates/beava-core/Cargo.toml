@@ -86,3 +86,8 @@ required-features = ["test-utils"]
 name = "cluster_dispatch"
 path = "tests/cluster_dispatch.rs"
 required-features = ["test-utils"]
+
+[[test]]
+name = "event_type_mix_optimization"
+path = "tests/event_type_mix_optimization.rs"
+required-features = ["test-utils"]
