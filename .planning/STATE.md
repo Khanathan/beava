@@ -21,7 +21,18 @@ progress:
 **Created:** 2026-04-22
 **Last revised:** 2026-04-26 (Phase 19 CONTEXT.md captured at `.planning/phases/19-1m-bench/19-CONTEXT.md` — 4 areas locked: blast shape (4 modes side-by-side), pipelining (continuous + burst), Python harness via public app.push() multi-process, WIP stash receiver-flips-stop pattern. Phase 18 wrap items remaining: SUMMARY + verification + worktree archival decision)
 
-**Session resumed:** 2026-04-26 23:00 UTC — Phase 19 discuss complete; ready for `/gsd-plan-phase 19`. Phase 18 SUMMARY deferred until after Phase 19 produces the headline 1M EPS data point.
+**Session resumed:** 2026-04-27 — Phase 19 marked complete (PASS-WITH-DEFICIT, commit `98a3f8c`); pause handoff (`54805a7`) captures debug session that uncovered wall_clock measurement bug, WAL bimodal-tail, and WindowedOp alloc hotspot. Three Phase 19.0.x hotfix candidates queued (19.0.1 wall-clock + WAL, 19.0.2 lazy buckets, 19.0.3 batch-or-OP_PUSH_MANY).
+
+**Phase 19.1 OPENED 2026-04-27** as the consolidated umbrella for the post-Phase-19 follow-up work (rolls together what was originally proposed as 19.0.1 / 19.0.2 / 19.0.3 mini-phases). See ROADMAP.md → "Phase 19.1: Realistic-shape benchmark + bench/WAL fixes + complex-pipeline optimization" for the full goal/sub-goal/success-criteria block.
+
+**Phase 19.1 scope:**
+1. **Path B — fraud-team.json validation** (primary tuning benchmark; locked decision per memory `project_fraud_team_primary_bench`)
+2. **Bench wall_clock fix** (1-line elapsed-move + tokio::select! per memory `project_phase19_bench_wallclock_fix`; flips Phase 19 verdict PASS-WITH-DEFICIT → PASS)
+3. **WAL config bump** (4×32MiB tick=20ms middle-ground default candidate per memory `project_phase19_wal_experiment`; experimental 8×64MiB tick=100ms eliminated bimodal tail with +33% EPS but 512MB RSS)
+4. **Re-baselined Phase 19 numbers** (re-run small/medium/large/large_phase9 + new fraud-team.json zipfian cell; amend 19-VERIFICATION verdict)
+5. **Complex-pipeline apply-thread optimization** (≥1 of: WindowedOp lazy buckets / same-key batch sketch updates / OP_PUSH_MANY adoption — measured against fraud-team.json zipfian)
+
+**Next:** `/gsd-discuss-phase 19.1` to capture context decisions (numbering, WAL default, histogram windowed semantics, stretch scope), then `/gsd-plan-phase 19.1` to break into 4–5 plans across 3 waves.
 
 ## Core Value
 
