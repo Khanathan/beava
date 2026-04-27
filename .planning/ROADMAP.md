@@ -707,15 +707,15 @@ Plans:
 - Cluster storage shape: shared `Vec<AggOp>` across clustered aggs (split by agg_id via secondary indirection at update time) vs separate Vec<AggOp> per agg with shared row lookup. Shared-Vec saves more memory; split-by-agg_id is simpler.
 - Whether to land a per-process random-keyed SipHash variant for `SingleStr` (HashDoS resistance) or accept FxHash (faster, internal-only assumption).
 - TDD red-test shape for the cluster invariant: proptest asserting `forall events, M aggs sharing group_keys → 1 hashmap probe`.
-- Whether to fold same-key batch sketch updates (deferred from 19.1 per D-17) here, OR leave for Phase 19.3. Leaning leave-for-19.3: 19.2 is structural (per-agg-loop work), batch sketches is intra-op; mixing is more bug surface.
+- ~~Whether to fold same-key batch sketch updates here~~ — DECLINED 2026-04-27 as a v0 architectural commitment per memory `project_no_same_key_batching` (read-after-write semantic risk + Redis-shaped positioning).
 
 **Plans:** TBD during `/gsd-plan-phase 19.2` — likely 4–5 plans split as Wave 1 (cache + cluster, share register-time analysis), Wave 2 (single-u64 fast path), Wave 3 (microbench + rebaseline + verification).
 
-### Phase 19.3: Apply-path wrapping reduction — field pre-extraction + hasher optimization + same-key sketch batching — 📋 PLANNED
+### Phase 19.3: Apply-path wrapping reduction — field pre-extraction + hasher optimization + suspect-op audit — 📋 PLANNED
 
-**Status:** Planned 2026-04-27 from Phase 19.1.2's post-fix trace evidence. After GeoSpread O(1), HLL count_distinct emerged as the per-event bottleneck (952 ns/call traced × 9 calls = 8.6 µs/event = 65% of apply work on fraud-team). Decomposing the per-call cost showed **the sketch algorithms themselves are 1.5-15% of the time; the wrapping plumbing is 85-98%**. Phase 19.3 attacks the wrapping.
+**Status:** Planned 2026-04-27 from Phase 19.1.2's post-fix trace evidence. After GeoSpread O(1), HLL count_distinct emerged as the per-event bottleneck (952 ns/call traced × 9 calls = 8.6 µs/event = 65% of apply work on fraud-team). Decomposing the per-call cost showed **the sketch algorithms themselves are 1.5-15% of the time; the wrapping plumbing is 85-98%**. Phase 19.3 attacks the wrapping. Same-key sketch batching was DECLINED (see "Why no same-key batching" below).
 
-**Goal:** Drop fraud-team K=10k zipfian per-event apply work from 13.4 µs → ~6-8 µs by collapsing redundant per-op `row.get()` linear scans into one shared field-extraction pass, replacing per-call AHasher::default() reinitializations with a process-cached FxHasher path for sketch inputs, and adding same-key batch sketch updates for hot-key zipfian bursts. Predicted ceiling: ~125-150k EPS on fraud-team K=10k zipfian (vs 74k post-19.1.2).
+**Goal:** Drop fraud-team K=10k zipfian per-event apply work from 13.4 µs → ~9-11 µs by collapsing redundant per-op `row.get()` linear scans into one shared field-extraction pass and replacing per-call `AHasher::default()` reinitializations with a process-cached FxHasher path for sketch inputs. Predicted ceiling: ~100-120k EPS on fraud-team K=10k zipfian (vs 77k post-19.1.2). All sub-goals are semantically transparent — no read-after-write impact.
 
 **Sub-goals (in order of measured leverage):**
 
@@ -725,41 +725,41 @@ Plans:
    - Replace `ahash::AHasher::default()` per-call (which reads thread-local random seed) with a process-static AHasher initialized at registry-init time. Saves ~10-20 ns per hash op (HLL/Entropy/BloomMember).
    - For HLL specifically, switch from AHasher to FxHasher. HLL's `mix64` post-processes the input hash for distribution, so FxHasher's weaker statistical properties are repaired. FxHasher is ~3-5 ns vs AHasher's ~30-50 ns for short strings. ~9 HLL ops on fraud-team × ~30-80 ns saved each.
 
-3. **Same-key sketch batching** (~30-50% lift on hot-key zipfian; rolled forward from Phase 19.1 D-17 deferred) — On hot keys, consecutive pushes to the same `(entity_key, agg_id)` hammer the same sketch state. Add apply-dispatch peek-ahead: collect 50+ same-key updates, apply in one batch.
-   - HLL: SIMD-able batch (vectorized hash + register update)
-   - UDDSketch: sort-and-merge bucket inserts, amortizing log-bucket lookup
-   - SpaceSaving (TopK): defer heap rebalance until end of batch
-   - Entropy: collapse per-event probability-table updates
-   This is the apply-dispatch peek-ahead/accumulate-then-flush pattern that Phase 19.1 D-17 deferred for complexity reasons. Phase 19.3 takes it on with smaller blast radius now that the wrapping fixes (sub-goals 1+2) are in place.
+3. **Audit suspect O(n)-style ops surfaced by trace** — `EventTypeMix = 1,127 ns/call` is anomalously high for a 1-op-per-event aggregation (vs `HourOfDayHistogram = ~50 ns/call`, `SeasonalDeviation = ~91 ns/call`). Investigate whether it has a GeoSpread-style O(n) bug. Same audit pass for any other op that shows >500 ns/call in fraud-team-shape trace at warm keys (FYI: TopK 1,381 ns/call is expected — heap touches are inherently bigger; not necessarily a bug).
 
-4. **Audit suspect O(n)-style ops surfaced by trace** — `EventTypeMix = 1,127 ns/call` is anomalously high for a 1-op-per-event aggregation (vs `HourOfDayHistogram = ~50 ns/call`, `SeasonalDeviation = ~91 ns/call`). Investigate whether it has a GeoSpread-style O(n) bug. Same audit pass for any other op that shows >500 ns/call in fraud-team-shape trace at warm keys (FYI: TopK 1,381 ns/call is expected — heap touches are inherently bigger; not necessarily a bug).
+### Why no same-key batching (DECLINED 2026-04-27)
+
+Same-key sketch batching was considered as a 4th sub-goal (originally rolled forward from Phase 19.1 D-17 deferred). **Declined** as a v0 architectural commitment for two reasons:
+
+1. **Read-after-write semantic risk.** Batching delays the application of consecutive same-key updates. If a `GET` arrives between push N and the batch flush, the GET sees stale state — Beava's current promise ("after `app.push()` ACKs, all subsequent reads see the new value") would be violated. The safe variant (intra-tick-only batching, ACK after batch lands) is implementable but adds non-trivial design surface (push-and-get must trigger flush; WAL ordering must remain event-by-event; per-op batched-update primitives must preserve arrival order).
+
+2. **Redis-shaped semantics.** Memory `project_no_sharded_apply` and the broader "Redis for stateful streaming features" positioning in PROJECT.md commit Beava to Redis-style sequential processing per command. Redis itself has no algorithmic same-key batching — its "batching" is wire-layer pipelining only. Adding semantic-layer batching deviates from this model.
+
+**If batching becomes attractive again** post-19.3 measurement (e.g., HLL is still hot after wrapping fixes), revisit with explicit intra-tick-only contract + push-and-get flush hooks. Until then: **forbidden as a v0 architectural commitment**. See memory `project_no_same_key_batching`.
 
 **Depends on:** Phase 19.1 (verdict-flip baseline) and Phase 19.2 (EntityKey cluster work — separate concern, doesn't conflict but order-independence preferred). The two phases attack different parts of the apply path:
 - Phase 19.2: per-agg-loop redundancy (build EntityKey 9 times, do 9 hashmap probes for unique keys)
-- Phase 19.3: per-feature-update redundancy (do 88 row.get() scans, reinitialize AHasher 21+ times) + sketch batching
+- Phase 19.3: per-feature-update redundancy (do 88 row.get() scans, reinitialize AHasher 21+ times)
 
-Phase 19.2 + 19.3 stack to give: ~600-1,000 ns (19.2) + ~1,200-3,500 ns (19.3 sub-goals 1+2) + 30-50% sketch lift (19.3 sub-goal 3) ≈ **2× combined EPS lift** on fraud-team realistic shape.
+Phase 19.2 + 19.3 stack to give: ~600-1,000 ns (19.2) + ~1,200-3,500 ns (19.3) ≈ **30-50% combined EPS lift** on fraud-team realistic shape (vs the ~2× claim that included the now-declined same-key batching).
 
 **Success criteria:**
 - Apply-time `row.get()` calls per event drops from ~88 → ≤ ~10 (one per distinct field name) on fraud-team-shape pipelines
 - HLL per-call cost drops from ~952 ns traced → ≤ ~250 ns traced (untraced equivalent ~30 ns) — verifiable via TRACE_AGG per_kind output
 - AHasher initialization happens once per process, not per call — verifiable via `cargo bench --bench hash_init_caching` showing 0-allocation profile
-- Same-key batch path triggers when ≥4 consecutive pushes share `(entity_key, agg_id)` — verifiable via TRACE_BATCH=1 emit
 - fraud-team K=10k zipfian N=500k benchmark shows ≥ 100k EPS (vs 74k post-19.1.2)
 - `EventTypeMix` per-call cost: either documented as inherently expensive with rationale, OR fixed to <200 ns/call
 - `.planning/throughput-baselines.md` has `## 1M-event blast (rebaseline 19.3)` section with 5+ ledger rows
 - All 19.3 sub-goals' threat models are minimal (apply-path internals; no new attack surface; same trusted input fields)
 
-**Why this matters:** The trace evidence from Phase 19.1.2 unambiguously identified the wrapping plumbing as the dominant per-event cost. Phase 19.2 alone gives ~10-15% lift; Phase 19.3 gives 50-100% additional lift on the realistic-fraud shape. Combined, they push fraud-team K=10k zipfian apply ceiling toward 125-150k EPS — the regime where Beava can claim "single-instance fraud-feature-server clearing 100k complex-pipeline EPS on a laptop." That's a defendable benchmark for the v0 marketing claim.
+**Why this matters:** The trace evidence from Phase 19.1.2 unambiguously identified the wrapping plumbing as the dominant per-event cost. Phase 19.2 alone gives ~10-15% lift; Phase 19.3 gives 50-80% additional lift on the realistic-fraud shape (lower than the originally-claimed 100% because same-key batching is declined). Combined, they push fraud-team K=10k zipfian apply ceiling toward 100-120k EPS — the regime where Beava can claim "single-instance fraud-feature-server clearing 100k complex-pipeline EPS on a laptop." That's a defendable benchmark for the v0 marketing claim.
 
 **Key decisions to lock in `19.3-CONTEXT.md` during discuss:**
 - Field pre-extraction storage shape: indexed array (`Vec<&Value>` with field-idx-into-row) vs hashmap (`HashMap<&str, &Value>`). Indexed array is faster but requires a register-time field-idx assignment. Leaning indexed array.
 - HLL hasher choice: FxHasher (fastest, non-keyed) vs AHasher-cached (still has some randomness; more HashDoS-resistant). Internal fraud workloads are operator-controlled so HashDoS isn't a real concern; lean FxHasher.
-- Same-key batch threshold: how many consecutive same-key pushes trigger batch dispatch (e.g., ≥4, ≥8). Smaller threshold = more batching opportunities but more bookkeeping; bigger threshold = simpler code but misses opportunities.
-- Whether to land sub-goals 1+2 first (TDD'd, easy) and then 3 separately as a follow-up phase 19.4, OR bundle all in 19.3 as 3 plans across 2 waves.
 - Audit scope: just EventTypeMix or sweep all 55 ops looking for ones with >500 ns/call signatures.
 
-**Plans:** TBD during `/gsd-plan-phase 19.3` — likely 4 plans split as Wave 1 (sub-goals 1+2 — wrapping fixes; independent of each other), Wave 2 (sub-goal 3 same-key batching + sub-goal 4 audit), Wave 3 (criterion microbench + rebaseline + 19.3 verification).
+**Plans:** TBD during `/gsd-plan-phase 19.3` — likely 3 plans split as Wave 1 (sub-goals 1+2 — wrapping fixes; independent of each other), Wave 2 (sub-goal 3 audit), Wave 3 (criterion microbench + rebaseline + 19.3 verification).
 
 ### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
