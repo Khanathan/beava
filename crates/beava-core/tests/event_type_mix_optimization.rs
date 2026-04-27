@@ -166,3 +166,40 @@ fn test_event_type_mix_update_at_consumes_extracted_value() {
     // Drop unused variable warning suppressor
     drop(extracted);
 }
+
+// ─── Test 6: Bloom insert receives Cow::Borrowed &str (no allocation) ─────────
+
+#[test]
+fn test_bloom_consumes_cow_no_alloc() {
+    use beava_core::agg_state::BloomMemberStateWrap;
+    // Plan 19.2-05 (D-04b): verify that BloomFilter::insert receives the &str
+    // borrowed DIRECTLY from the Value::Str's CompactString (no intermediate
+    // String allocation). Uses a test-only thread-local pointer probe added to
+    // bloom.rs in Task 2.b.
+    //
+    // The probe: `beava_core::sketches::bloom::_last_bloom_insert_ptr()` returns
+    // the `as_ptr()` of the last &str passed to BloomFilter::insert. We compare
+    // it against the `as_ptr()` of the str slice stored inside the Value::Str —
+    // pointer equality proves the borrow was not copied through a new allocation.
+    //
+    // Task 2.a: this function doesn't exist yet → RED.
+    let raw_str = "hello_bloom";
+    let val = Value::Str(raw_str.into());
+    // Capture the pointer of the CompactString's underlying bytes inside the Value.
+    let val_ptr = match &val {
+        Value::Str(s) => s.as_str().as_ptr() as usize,
+        _ => unreachable!(),
+    };
+
+    let mut bloom_state = BloomMemberStateWrap::default();
+    let row = Row::new().with_field("token", val);
+    bloom_state.update(&row, 0, Some("token"), true);
+
+    // _last_bloom_insert_ptr() must equal val_ptr → proves zero-alloc borrow.
+    let last_ptr = beava_core::sketches::bloom::_last_bloom_insert_ptr();
+    assert_eq!(
+        last_ptr, val_ptr,
+        "BloomFilter::insert must receive a &str borrowed from the Value::Str CompactString, \
+         not a newly allocated String (ptr mismatch proves an intermediate allocation occurred)"
+    );
+}
