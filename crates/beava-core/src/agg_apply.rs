@@ -22,7 +22,7 @@
 //! monotonic counter (0, 1, 2, …).
 
 use crate::agg_op::{ExtractedFields, FIELD_IDX_NONE};
-use crate::agg_state_table::{EntityKey, StateTables};
+use crate::agg_state_table::{EntityKeyShape, StateTables};
 use crate::registry::Registry;
 use crate::row::Row;
 
@@ -95,14 +95,52 @@ pub fn apply_event_to_aggregations(
     // operator family dominates apply time on a given pipeline.
     let mut per_kind: Vec<(crate::agg_op::AggKind, std::time::Duration, u32)> = Vec::new();
 
+    // Plan 19.2-03 (D-04): cluster dispatch cache.
+    //
+    // Aggregations that share the same group_keys signature share a cluster_id
+    // (assigned at register-time). We build EntityKeyShape ONCE per cluster_id
+    // per event call, not once per aggregation, eliminating redundant SmallVec
+    // builds and CompactString allocations on the hot path.
+    //
+    // The cache is a small inline Vec<Option<EntityKeyShape>> indexed by
+    // cluster_id (u32). It is allocated lazily only for the first aggregation
+    // that references each cluster_id. For the common single-cluster case
+    // (all aggs on one event type have the same group_keys) the Vec has length 1
+    // and the branch is predicted.
+    //
+    // `None` in the slot means "not yet computed for this call"; the slot is
+    // never cleared within a single apply_event_to_aggregations call because
+    // all aggs in the same cluster share group_keys and thus share the result.
+    //
+    // Special sentinel `Option<Option<EntityKeyShape>>`:
+    //   - outer None → not computed yet
+    //   - outer Some(None) → computed, but the row was missing/NaN → skip slot
+    //   - outer Some(Some(shape)) → ready to use
+    let mut shape_cache: Vec<Option<Option<EntityKeyShape>>> = Vec::new();
+
     for desc in descs {
         desc_count += 1;
         let t_a = t0.map(|t| t.elapsed());
 
-        let entity_key = match EntityKey::from_row(&desc.group_keys, row) {
-            Some(k) => k,
-            None => continue,
+        // Plan 19.2-03 (D-04): build EntityKeyShape once per cluster_id.
+        let cluster_idx = desc.cluster_id as usize;
+        if shape_cache.len() <= cluster_idx {
+            shape_cache.resize_with(cluster_idx + 1, || None);
+        }
+        let shape_opt: &Option<EntityKeyShape> = match &shape_cache[cluster_idx] {
+            Some(cached) => cached,
+            None => {
+                // First agg in this cluster for this event: compute and cache.
+                let computed = EntityKeyShape::from_row(&desc.group_keys, row);
+                shape_cache[cluster_idx] = Some(computed);
+                shape_cache[cluster_idx].as_ref().unwrap()
+            }
         };
+        let shape = match shape_opt {
+            Some(s) => s,
+            None => continue, // missing/null/NaN group-key — skip this agg
+        };
+
         let t_b = t0.map(|t| t.elapsed());
 
         // Plan 18-16 Task 16.2: O(1) array index by `agg_id` (assigned at
@@ -119,7 +157,7 @@ pub fn apply_event_to_aggregations(
         let table = &mut state_tables[agg_idx];
         let t_c = t0.map(|t| t.elapsed());
 
-        let entity_row = table.get_or_init(&entity_key, &desc);
+        let entity_row = table.get_or_init_by_shape(shape, &desc);
         let t_d = t0.map(|t| t.elapsed());
 
         // Plan 19.2-01 (D-01): pre-extract distinct field values once per agg.

@@ -533,11 +533,49 @@ impl AggStateTable {
         feature_index: usize,
         query_time_ms: i64,
     ) -> Option<Value> {
-        // Query path always sends EntityKey → route through multi map.
-        self.multi
-            .get(key)
-            .and_then(|ops| ops.get(feature_index))
-            .map(|op| op.query(query_time_ms))
+        // Route through the correct sub-map based on the EntityKey's shape.
+        //
+        // The HTTP query path always produces Value::Str pairs (pipe-separated
+        // key parsing), so single-key Str queries look up in single_str.
+        // The test path builds EntityKey with the actual typed Value, so we
+        // must also handle I64/F64/Bool/Datetime via single_u64.
+        // Compound keys (len > 1) always go through multi.
+        let ops: &Vec<AggOp> = if key.0.len() == 1 {
+            let (_field_name, val) = &key.0[0];
+            match val {
+                Value::Str(s) => {
+                    // single_str is the primary path for string-typed group keys.
+                    // Fall back to multi for entries inserted via insert_from_entity_key
+                    // (snapshot recovery path uses multi unconditionally).
+                    if let Some(ops) = self.single_str.get(s) {
+                        ops
+                    } else {
+                        self.multi.get(key)?
+                    }
+                }
+                Value::I64(n) => {
+                    let k = EntityKeyShape::tag_u64(VariantTag::I64, *n as u64);
+                    self.single_u64.get(&k)?
+                }
+                Value::F64(f) => {
+                    let k = EntityKeyShape::tag_u64(VariantTag::F64, f.to_bits());
+                    self.single_u64.get(&k)?
+                }
+                Value::Bool(b) => {
+                    let k = EntityKeyShape::tag_u64(VariantTag::Bool, *b as u64);
+                    self.single_u64.get(&k)?
+                }
+                Value::Datetime(ms) => {
+                    let k = EntityKeyShape::tag_u64(VariantTag::Datetime, *ms as u64);
+                    self.single_u64.get(&k)?
+                }
+                Value::Null => return None,
+                _ => self.multi.get(key)?,
+            }
+        } else {
+            self.multi.get(key)?
+        };
+        ops.get(feature_index).map(|op| op.query(query_time_ms))
     }
 
     /// Return the number of distinct entities across all three sub-maps.

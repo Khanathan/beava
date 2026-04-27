@@ -121,8 +121,14 @@ fn test_same_group_keys_same_cluster_id() {
     );
 
     let inner = registry.read();
-    let agg1_desc = inner.compiled_aggregations.get("Agg1").expect("Agg1 must exist");
-    let agg2_desc = inner.compiled_aggregations.get("Agg2").expect("Agg2 must exist");
+    let agg1_desc = inner
+        .compiled_aggregations
+        .get("Agg1")
+        .expect("Agg1 must exist");
+    let agg2_desc = inner
+        .compiled_aggregations
+        .get("Agg2")
+        .expect("Agg2 must exist");
 
     assert_eq!(
         agg1_desc.cluster_id, agg2_desc.cluster_id,
@@ -159,7 +165,10 @@ fn test_different_group_keys_different_cluster_id() {
     );
 
     let inner = registry.read();
-    let agg1_desc = inner.compiled_aggregations.get("AggUser").expect("AggUser must exist");
+    let agg1_desc = inner
+        .compiled_aggregations
+        .get("AggUser")
+        .expect("AggUser must exist");
     let agg2_desc = inner
         .compiled_aggregations
         .get("AggMerchant")
@@ -198,7 +207,8 @@ fn test_entity_key_built_once_per_cluster() {
         ],
     );
 
-    let mut state_tables: StateTables = beava_core::agg_state_table::new_state_tables_for(&registry);
+    let mut state_tables: StateTables =
+        beava_core::agg_state_table::new_state_tables_for(&registry);
 
     // Reset the counter before the event.
     beava_core::agg_state_table::_take_entity_key_build_count();
@@ -235,7 +245,8 @@ fn test_apply_routes_single_u64_for_i64_group_key() {
         vec![("AcctAgg".to_string(), Arc::new(agg))],
     );
 
-    let mut state_tables: StateTables = beava_core::agg_state_table::new_state_tables_for(&registry);
+    let mut state_tables: StateTables =
+        beava_core::agg_state_table::new_state_tables_for(&registry);
     let row = Row::new().with_field("acct_id", Value::I64(42));
     apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables);
 
@@ -243,8 +254,16 @@ fn test_apply_routes_single_u64_for_i64_group_key() {
     let agg_desc = inner.compiled_aggregations.get("AcctAgg").expect("AcctAgg");
     let tbl = &state_tables[agg_desc.agg_id as usize];
 
-    assert_eq!(tbl.single_u64.len(), 1, "single_u64 must have 1 entry for I64 group key");
-    assert_eq!(tbl.multi.len(), 0, "multi map must be empty for I64 group key");
+    assert_eq!(
+        tbl.single_u64.len(),
+        1,
+        "single_u64 must have 1 entry for I64 group key"
+    );
+    assert_eq!(
+        tbl.multi.len(),
+        0,
+        "multi map must be empty for I64 group key"
+    );
 }
 
 // ── Test 5: SingleStr path for Str-typed group_key ────────────────────────────
@@ -268,7 +287,8 @@ fn test_apply_routes_single_str_for_str_group_key() {
         vec![("UserAgg".to_string(), Arc::new(agg))],
     );
 
-    let mut state_tables: StateTables = beava_core::agg_state_table::new_state_tables_for(&registry);
+    let mut state_tables: StateTables =
+        beava_core::agg_state_table::new_state_tables_for(&registry);
     let row = Row::new().with_field("user_id", Value::Str("alice".into()));
     apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables);
 
@@ -276,6 +296,14 @@ fn test_apply_routes_single_str_for_str_group_key() {
     let agg_desc = inner.compiled_aggregations.get("UserAgg").expect("UserAgg");
     let tbl = &state_tables[agg_desc.agg_id as usize];
 
-    assert_eq!(tbl.single_str.len(), 1, "single_str must have 1 entry for Str group key");
-    assert_eq!(tbl.multi.len(), 0, "multi map must be empty for Str group key");
+    assert_eq!(
+        tbl.single_str.len(),
+        1,
+        "single_str must have 1 entry for Str group key"
+    );
+    assert_eq!(
+        tbl.multi.len(),
+        0,
+        "multi map must be empty for Str group key"
+    );
 }
