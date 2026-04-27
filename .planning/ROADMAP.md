@@ -659,7 +659,7 @@ Plans:
 **Why this matters:** fraud-team.json's traced zipfian K=10k bench showed `geo_spread` consuming 30-50% of the warm-key features-stage time and contributing the lion's share of the hot-key slowdown observed in the K=10k vs K=1M comparison. Fixing this restores fraud-team's apply throughput on realistic warm-key shapes. Also makes `bv.geo_spread` semantically aligned with what fraud teams expect (spatial dispersion as stddev), instead of the confusing mean-drift-dependent max-distance metric.
 
 **Plans:**
-- [ ] 19.1.2-01-PLAN.md — GeoSpread Welford rewrite + RMS-km query (Wave 1; sole plan)
+1/1 plans complete
 
 ### Phase 19.2: Apply-thread optimization — EntityKey cache, cluster-by-group_keys, single-u64 fast path — 📋 PLANNED
 
