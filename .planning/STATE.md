@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Ready to plan
-last_updated: "2026-04-27T16:00:00.000Z"
+status: Executing Phase 19.2
+last_updated: "2026-04-27T19:47:23.559Z"
 progress:
-  total_phases: 35
+  total_phases: 36
   completed_phases: 21
-  total_plans: 139
+  total_plans: 147
   completed_plans: 105
-  percent: 76
+  percent: 71
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -24,6 +24,7 @@ progress:
 **Session resumed:** 2026-04-27 — Phase 19.1 family fully complete (verdict PASS, HEAD `3e28b77`). Phase 19.2 consolidated from prior 19.2 + 19.3 + two opus audit findings.
 
 **Phase 19.2 CONTEXT captured 2026-04-27** at `.planning/phases/19.2-big-apply-path-optimization/19.2-CONTEXT.md` (commit `666099b`) — 8 decisions locked across 7 questions:
+
 - D-01: Field pre-extraction = indexed array (`Vec<&Value>`, register-time field-idx)
 - D-02a/b: Process-static AHasher init + FxHasher for HLL ops
 - D-03: EntityKey hybrid (`SingleU64`/`SingleStr`/`Multi`)
