@@ -261,3 +261,28 @@ RAM (D-02 architectural rationale).
 
 **Targets per Plan 19-04:** no targets (this is the start of the line). Future regressions
 gate at +10% WARN / +25% BLOCK per CLAUDE.md §Performance Discipline.
+
+### Phase 19.1 — WindowedOp lazy buckets (criterion microbench)
+
+Captured: 2026-04-27. hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Baseline saved as `19.1-04-lazy-buckets` (`cargo bench --baseline 19.1-04-lazy-buckets` from later phases).
+
+Plan 19.1-04 replaced `WindowedOp.buckets: [Option<Box<AggOp>>; 64]` + `bucket_epoch_start_ms: [i64; 64]` with `buckets: SmallVec<[(i64, Box<AggOp>); 4]>` + lazy allocation. The OLD layout zero-init'd ~1024 bytes per WindowedOp at construction (~1500 ns / 2576 ns of cold-key entity init on fraud-team per Phase 19's debug analysis); the NEW layout's `SmallVec::new` is allocation-free, with bucket entries pushed lazily on the first event into a new epoch. AGG-CORE-09's 64-bucket cap is enforced by oldest-epoch eviction (swap_remove of min-epoch entry once `len >= max_buckets`).
+
+Bench: `crates/beava-core/benches/windowed_op_init.rs`.
+
+| Bench | OLD median | NEW median | Lift | Captured | Phase | Notes |
+|---|---|---|---|---|---|---|
+| windowed_op_init/new_count_60s          | 130.71 ns | 6.66 ns   | -94.9% (~20×) | 2026-04-27 | 19.1 | Cold WindowedOp::new(Count, 60s); SmallVec::new is a no-op |
+| windowed_op_init/new_percentile_60s     | 428.51 ns | 12.50 ns  | -97.1% (~34×) | 2026-04-27 | 19.1 | Cold WindowedOp::new(Percentile, 60s); UDDSketch params not allocated until first event |
+| windowed_op_init/new_plus_first_update  | 581.00 ns | 154.62 ns | -73.4% (~3.8×) | 2026-04-27 | 19.1 | Full cold-key path: new + 1 update; first push allocates inner AggOp + SmallVec entry |
+
+OLD baseline saved as `old-fixed-array` for reproducibility (commit `f47ae55`, before GREEN). All three benches well above the ≥50% target per Plan 19.1-04 acceptance criteria.
+
+**Driver:** lazy allocation — `[Option<Box<AggOp>>; 64]` zero-init (memset 512 B) + `[i64; 64]` set to `i64::MIN` (memset 512 B) eliminated; SmallVec inline cap=4 covers 99% of typical fraud workloads (1-2 active buckets/entity); spill-to-heap on >4 active buckets stays graceful (regular Vec under the hood).
+
+**Predicted EPS lift on fraud-team zipfian:** ~50% per CONTEXT D-16 (4-14 windowed ops × ~400 ns saved per op × cold-key init rate). Wall-clock-honest measurement deferred to Plan 19.1-05's re-baseline matrix (depends on Plan 19.1-01 bench wall_clock fix landing).
+
+**Targets per Plan 19.1-04 must_haves:** Cold WindowedOp::new ≥50% faster than the 64-slot zero-init baseline → ✅ all three benches show ≥73%.
+
+Both gate types apply (criterion microbench + future throughput-baselines.md re-baseline).
