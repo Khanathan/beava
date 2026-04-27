@@ -666,3 +666,34 @@ A follow-up plan can mirror the SPSC approach for the write path:
 - Eliminates the second `join_all` barrier; expected additional +10-15% EPS.
 
 After write-phase SPSC + the queued Plan 18-05 (io_uring on Linux), the M4 ceiling should land in the 600-700k EPS range. Linux Xeon with io_uring is the path to ≥1M EPS/instance per the Phase 13 ship-gate target.
+
+## 1M-event blast — Phase 19 (apple-m4 / Darwin-24.3.0 / 10 cores)
+
+**Created:** 2026-04-26 · **Plan:** 19-05 · **Runner:** `scripts/run_phase19_blast_matrix.sh`
+
+Saturation bench: pre-encoded `Pool=N` frames blasted at the server with
+`--total-events N` (default `N = 1_000_000`). Per CONTEXT.md `<specifics>`:
+
+- **Why Pool=N:** eliminates per-iteration RNG + encode cost; bench-side floor = TCP `write_all` drain rate.
+- **Why all 4 shapes side-by-side:** one row per `(shape, mode)` prevents cherry-picking; marketing claim and realistic claim live one row apart.
+- **Why both pipelining modes:** continuous = REAL per-event latency users observe at saturation; burst = upper-bound EPS the apply loop sustains when network isn't waiting.
+- **Why `--isolation-mode` (3 columns):** `wall_clock_ms` / `send_drain_ms` / `ack_lag_ms` — distinguishes bench-bound from server-bound at a glance.
+- **Why no warm-up:** D-15 cold-start honesty.
+- **Why public Python SDK in the Python harness:** Python rows reflect what `pip install beava` users actually observe — not a wire-direct bypass.
+
+**Canonical regression-gate cell:** `small + zipfian + continuous + msgpack + tcp + rust`. Phase 19
+verification BLOCKS only on this cell missing the 2-second M4 wall-clock target. All other cells
+are capture-only.
+
+**M4 thresholds (canonical cell only):** small ≤ 2 s · medium ≤ 4 s · large ≤ 8 s · large_phase9 ≤ 12 s.
+
+**Schema (20 columns):**
+
+| Phase | Date | Pipeline | Transport | Shape | Mode | Language | parallel | pd | N | wall_clock_ms | send_drain_ms | ack_lag_ms | EPS | P50 push (µs) | P95 push (µs) | P99 push (µs) | Peak RSS (MB) | Commit | Notes |
+|-------|------|----------|-----------|-------|------|----------|---------:|---:|--:|--------------:|--------------:|-----------:|----:|--------------:|--------------:|--------------:|--------------:|--------|-------|
+<!-- rows appended by scripts/run_phase19_blast_matrix.sh -->
+
+> **Phase 18 D-16 single-instance ceiling remains in effect.** These numbers are per-instance.
+> For higher aggregate throughput users run multi-instance shards (Redis-cluster pattern, per
+> `project_no_sharded_apply.md`). Phase 19 measures one instance only.
+
