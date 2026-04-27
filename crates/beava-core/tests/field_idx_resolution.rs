@@ -89,7 +89,11 @@ fn avg_op(field: &str) -> AggOpDescriptor {
 }
 
 /// Build a minimal AggregationDescriptor with given features.
-fn make_agg(node_name: &str, source: &str, features: Vec<(&str, AggOpDescriptor)>) -> AggregationDescriptor {
+fn make_agg(
+    node_name: &str,
+    source: &str,
+    features: Vec<(&str, AggOpDescriptor)>,
+) -> AggregationDescriptor {
     AggregationDescriptor {
         node_name: node_name.to_string(),
         source_node_name: source.to_string(),
@@ -119,7 +123,8 @@ fn register_with_validation(
     // Plan 19.2-01: resolve_field_indices must be called here before installing.
     // The registry's apply_registration should call resolve_field_indices
     // and return Err if any referenced field is not in the source schema.
-    registry.resolve_field_indices_for_agg(&agg, &schema)
+    registry
+        .resolve_field_indices_for_agg(&agg, &schema)
         .map_err(|e| e.to_string())?;
 
     registry.apply_registration(
@@ -141,10 +146,7 @@ fn register_with_validation(
 /// and the word "schema".
 #[test]
 fn test_missing_field_rejected_at_register_time() {
-    let schema = make_schema(&[
-        ("user_id", FieldType::Str),
-        ("amount", FieldType::F64),
-    ]);
+    let schema = make_schema(&[("user_id", FieldType::Str), ("amount", FieldType::F64)]);
 
     let agg = make_agg(
         "FeatureTable",
@@ -153,7 +155,10 @@ fn test_missing_field_rejected_at_register_time() {
     );
 
     let result = register_with_validation("Transaction", schema, agg);
-    assert!(result.is_err(), "expected Err when field 'nonexistent' is not in schema");
+    assert!(
+        result.is_err(),
+        "expected Err when field 'nonexistent' is not in schema"
+    );
 
     let err_msg = result.unwrap_err();
     assert!(
@@ -182,30 +187,34 @@ fn test_field_idx_resolved_at_register_time() {
     let mut agg = make_agg(
         "FeatureTable",
         "Transaction",
-        vec![
-            ("cnt", count_op()),
-            ("total", sum_op("amount")),
-        ],
+        vec![("cnt", count_op()), ("total", sum_op("amount"))],
     );
 
     // Plan 19.2-01: resolve field indices in-place on the agg descriptor.
     let registry = Registry::new();
-    registry.resolve_field_indices_for_agg_mut(&mut agg, &schema)
+    registry
+        .resolve_field_indices_for_agg_mut(&mut agg, &schema)
         .expect("resolve_field_indices must succeed when fields exist");
 
     // Count has no field → field_idx must be FIELD_IDX_NONE.
-    let count_feat = agg.features.iter().find(|f| f.feature_name == "cnt").unwrap();
+    let count_feat = agg
+        .features
+        .iter()
+        .find(|f| f.feature_name == "cnt")
+        .unwrap();
     assert_eq!(
-        count_feat.descriptor.field_idx,
-        FIELD_IDX_NONE,
+        count_feat.descriptor.field_idx, FIELD_IDX_NONE,
         "Count feature must have field_idx == FIELD_IDX_NONE (no field)"
     );
 
     // Sum(amount) has a field → field_idx must NOT be FIELD_IDX_NONE.
-    let sum_feat = agg.features.iter().find(|f| f.feature_name == "total").unwrap();
+    let sum_feat = agg
+        .features
+        .iter()
+        .find(|f| f.feature_name == "total")
+        .unwrap();
     assert_ne!(
-        sum_feat.descriptor.field_idx,
-        FIELD_IDX_NONE,
+        sum_feat.descriptor.field_idx, FIELD_IDX_NONE,
         "Sum(amount) feature must have a resolved field_idx (not FIELD_IDX_NONE)"
     );
 }
@@ -216,28 +225,33 @@ fn test_field_idx_resolved_at_register_time() {
 /// to the SAME field_idx.
 #[test]
 fn test_field_idx_stable_across_features_sharing_field() {
-    let schema = make_schema(&[
-        ("user_id", FieldType::Str),
-        ("amount", FieldType::F64),
-    ]);
+    let schema = make_schema(&[("user_id", FieldType::Str), ("amount", FieldType::F64)]);
 
     let mut agg = make_agg(
         "FeatureTable",
         "Transaction",
-        vec![
-            ("total", sum_op("amount")),
-            ("mean", avg_op("amount")),
-        ],
+        vec![("total", sum_op("amount")), ("mean", avg_op("amount"))],
     );
 
     let registry = Registry::new();
-    registry.resolve_field_indices_for_agg_mut(&mut agg, &schema)
+    registry
+        .resolve_field_indices_for_agg_mut(&mut agg, &schema)
         .expect("resolve_field_indices must succeed");
 
-    let sum_idx = agg.features.iter().find(|f| f.feature_name == "total").unwrap()
-        .descriptor.field_idx;
-    let avg_idx = agg.features.iter().find(|f| f.feature_name == "mean").unwrap()
-        .descriptor.field_idx;
+    let sum_idx = agg
+        .features
+        .iter()
+        .find(|f| f.feature_name == "total")
+        .unwrap()
+        .descriptor
+        .field_idx;
+    let avg_idx = agg
+        .features
+        .iter()
+        .find(|f| f.feature_name == "mean")
+        .unwrap()
+        .descriptor
+        .field_idx;
 
     assert_ne!(sum_idx, FIELD_IDX_NONE, "sum field_idx must be resolved");
     assert_ne!(avg_idx, FIELD_IDX_NONE, "avg field_idx must be resolved");
@@ -258,10 +272,10 @@ fn test_field_idx_stable_across_features_sharing_field() {
 /// thread-local counter incremented on every `Row::get` call.
 #[test]
 fn test_apply_uses_pre_extraction_not_per_op_row_get() {
-    use beava_core::agg_state_table::{new_state_tables_for, EntityKey};
     use beava_core::agg_apply::apply_event_to_aggregations;
-    use smallvec::SmallVec;
+    use beava_core::agg_state_table::{new_state_tables_for, EntityKey};
     use compact_str::CompactString;
+    use smallvec::SmallVec;
 
     let schema = make_schema(&[
         ("user_id", FieldType::Str),
@@ -305,11 +319,12 @@ fn test_apply_uses_pre_extraction_not_per_op_row_get() {
     let get_calls = beava_core::row::_take_get_count();
 
     // Functional check: count=1, sum=42.0, avg=42.0.
-    let agg_desc = registry.compiled_aggregation("FeatureTable")
+    let agg_desc = registry
+        .compiled_aggregation("FeatureTable")
         .expect("FeatureTable must be registered");
-    let table = beava_core::agg_state_table::lookup_table_by_name(
-        &state_tables, &registry, "FeatureTable"
-    ).expect("FeatureTable table must exist");
+    let table =
+        beava_core::agg_state_table::lookup_table_by_name(&state_tables, &registry, "FeatureTable")
+            .expect("FeatureTable table must exist");
 
     let key = EntityKey({
         let mut sv: SmallVec<[(CompactString, Value); 2]> = SmallVec::new();
@@ -350,21 +365,14 @@ fn test_apply_uses_pre_extraction_not_per_op_row_get() {
 /// Pre-extraction array is empty. Push 1 event; count must be 1.
 #[test]
 fn test_apply_with_count_only_no_field_extraction() {
-    use beava_core::agg_state_table::{new_state_tables_for, EntityKey};
     use beava_core::agg_apply::apply_event_to_aggregations;
-    use smallvec::SmallVec;
+    use beava_core::agg_state_table::{new_state_tables_for, EntityKey};
     use compact_str::CompactString;
+    use smallvec::SmallVec;
 
-    let schema = make_schema(&[
-        ("user_id", FieldType::Str),
-        ("amount", FieldType::F64),
-    ]);
+    let schema = make_schema(&[("user_id", FieldType::Str), ("amount", FieldType::F64)]);
 
-    let agg = make_agg(
-        "CountOnly",
-        "Login",
-        vec![("cnt", count_op())],
-    );
+    let agg = make_agg("CountOnly", "Login", vec![("cnt", count_op())]);
 
     let registry = Registry::new();
     registry.apply_registration(
@@ -385,9 +393,9 @@ fn test_apply_with_count_only_no_field_extraction() {
 
     apply_event_to_aggregations("Login", &row, 0, 0, &registry, &mut state_tables);
 
-    let table = beava_core::agg_state_table::lookup_table_by_name(
-        &state_tables, &registry, "CountOnly"
-    ).expect("CountOnly table must exist");
+    let table =
+        beava_core::agg_state_table::lookup_table_by_name(&state_tables, &registry, "CountOnly")
+            .expect("CountOnly table must exist");
 
     let key = EntityKey({
         let mut sv: SmallVec<[(CompactString, Value); 2]> = SmallVec::new();
@@ -396,5 +404,9 @@ fn test_apply_with_count_only_no_field_extraction() {
     });
 
     let cnt = table.query_feature(&key, 0, 0).expect("cnt must exist");
-    assert_eq!(cnt, Value::I64(1), "count-only aggregation must count 1 event");
+    assert_eq!(
+        cnt,
+        Value::I64(1),
+        "count-only aggregation must count 1 event"
+    );
 }

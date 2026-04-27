@@ -44,6 +44,7 @@ fn windowless_desc(kind: AggKind, field: Option<&str>) -> AggOpDescriptor {
         sigma: None,
         sketch_params: None,
         ext: Default::default(),
+        field_idx: beava_core::agg_op::FIELD_IDX_NONE,
     }
 }
 
@@ -148,6 +149,7 @@ fn make_event_descriptor(name: &str) -> EventDescriptor {
         tolerate_delay_ms: None,
         registered_at_version: 0,
         name_arc: Arc::from(""),
+        apply_field_names: vec![],
     }
 }
 
@@ -183,6 +185,7 @@ fn make_agg_descriptor(
             })
             .collect(),
         agg_id: 0,
+        field_names: vec![],
     }
 }
 
@@ -219,6 +222,7 @@ fn build_registry() -> Registry {
                 sigma: None,
                 sketch_params: None,
                 ext: Default::default(),
+                field_idx: beava_core::agg_op::FIELD_IDX_NONE,
             },
         )],
     );

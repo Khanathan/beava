@@ -21,6 +21,7 @@
 //! In Phase 5 it is ignored (prefixed `_event_id`).  Dev-endpoint callers pass a
 //! monotonic counter (0, 1, 2, …).
 
+use crate::agg_op::{ExtractedFields, FIELD_IDX_NONE};
 use crate::agg_state_table::{EntityKey, StateTables};
 use crate::registry::Registry;
 use crate::row::Row;
@@ -121,17 +122,41 @@ pub fn apply_event_to_aggregations(
         let entity_row = table.get_or_init(&entity_key, &desc);
         let t_d = t0.map(|t| t.elapsed());
 
+        // Plan 19.2-01 (D-01): pre-extract distinct field values once per agg.
+        // `desc.field_names` is the per-agg distinct-field list populated at
+        // register-time by `resolve_field_indices_for_agg_mut`. Each
+        // `feat.descriptor.field_idx` indexes into this array so every feature
+        // sharing the same field reuses the same pre-fetched `Option<&Value>`.
+        let extracted: ExtractedFields = desc
+            .field_names
+            .iter()
+            .map(|f| row.get(f.as_str()))
+            .collect();
+
         for (i, feat) in desc.features.iter().enumerate() {
             let op_t0 = if trace {
                 Some(std::time::Instant::now())
             } else {
                 None
             };
-            entity_row[i].update_with_row(
-                row,
+            // Look up the pre-extracted value for this feature's field.
+            // FIELD_IDX_NONE (u8::MAX) means the op is fieldless (Count, Ratio, etc.)
+            // and pre_val will be None — the op ignores it.
+            let pre_val: Option<&crate::row::Value> = if feat.descriptor.field_idx != FIELD_IDX_NONE
+            {
+                extracted
+                    .get(feat.descriptor.field_idx as usize)
+                    .copied()
+                    .flatten()
+            } else {
+                None
+            };
+            entity_row[i].update_with_extracted(
+                pre_val,
                 event_time_ms,
-                feat.descriptor.field.as_deref(),
                 feat.descriptor.where_expr.as_ref(),
+                row,
+                feat.descriptor.field.as_deref(),
             );
             if let Some(t) = op_t0 {
                 let dur = t.elapsed();

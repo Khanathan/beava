@@ -817,6 +817,125 @@ impl AggOp {
         }
     }
 
+    /// Plan 19.2-01 (D-01): apply-loop fast-path using a pre-extracted field value.
+    ///
+    /// This is the hot-path entry point for non-windowed ops. Rather than
+    /// calling `Row::get(field)` once per feature (as `update_with_row` does),
+    /// the apply loop pre-extracts each distinct field once into `ExtractedFields`
+    /// and passes the result here. Field-bearing ops call `update_pre(pre_val, ...)`
+    /// on their concrete state; fieldless ops (Count, Ratio, Recency, Streak, etc.)
+    /// receive `pre_val = None` and ignore it.
+    ///
+    /// Windowed ops fall back to `update_with_row` because windowed bucket routing
+    /// delegates to `WindowedOp::update_with_row` which still needs `(row, field)`.
+    ///
+    /// `where_expr` still evaluates against `row` — expression predicates may
+    /// reference multiple fields and cannot be pre-extracted in the same way.
+    pub fn update_with_extracted(
+        &mut self,
+        pre_val: Option<&Value>,
+        event_time_ms: i64,
+        where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
+        row: &Row,
+        field: Option<&str>,
+    ) {
+        let where_matched = match where_expr {
+            Some(e) => crate::agg_where::evaluate_where_predicate(e, row),
+            None => true,
+        };
+
+        match self {
+            // Windowed: still needs (row, field) for bucket routing — fall back.
+            AggOp::Windowed(w) => {
+                w.update_with_row(row, event_time_ms, field, where_expr);
+            }
+            // Fieldless ops: pre_val is None, where_matched gates the update.
+            AggOp::Count(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::FirstSeen(s)
+            | AggOp::LastSeen(s)
+            | AggOp::Age(s)
+            | AggOp::HasSeen(s)
+            | AggOp::TimeSince(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TimeSinceLastN(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Streak(s) | AggOp::MaxStreak(s) => {
+                s.update(row, event_time_ms, field, where_matched)
+            }
+            AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
+            // Geo ops: use multi-field row access — fall back to row-based update.
+            AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
+            AggOp::GeoDistance(s) => s.update(row, where_matched),
+            AggOp::GeoSpread(s) => s.update(row, where_matched),
+            AggOp::UniqueCells(s) => s.update(row, where_matched),
+            AggOp::GeoEntropy(s) => s.update(row, where_matched),
+            AggOp::DistanceFromHome(s) => s.update(row, where_matched),
+            // Histogram ops: no field, time-based.
+            AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),
+            // Decay / velocity ops with field access — pre_val path.
+            AggOp::Ewma(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwVar(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwZScore(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedSum(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::Twa(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::RateOfChange(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::InterArrivalStats(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::BurstCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sub_window_ms)
+            }
+            AggOp::DeltaFromPrev(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Trend(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TrendResidual(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::OutlierCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sigma)
+            }
+            AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 11 structural outputs using row-based field access — fall back.
+            AggOp::Histogram(s) => s.update(row, field, where_matched),
+            AggOp::EventTypeMix(s) => s.update(row, field, where_matched),
+            AggOp::MostRecentN(s) => s.update(row, field, where_matched),
+            AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
+            // Field-bearing ops with update_pre — hot path.
+            AggOp::Sum(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Avg(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Min(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Max(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Variance(s) => s.update_pre(pre_val, where_matched),
+            AggOp::StdDev(s) => s.update_pre(pre_val, where_matched),
+            AggOp::CountDistinct(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Percentile(s) => s.update_pre(pre_val, where_matched),
+            AggOp::TopK(s) => s.update_pre(pre_val, where_matched),
+            AggOp::BloomMember(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Entropy(s) => s.update_pre(pre_val, where_matched),
+            AggOp::First(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Last(s) => s.update_pre(pre_val, where_matched),
+            AggOp::FirstN(s) => s.update_pre(pre_val, where_matched),
+            AggOp::LastN(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Lag(s) => s.update_pre(pre_val, where_matched),
+        }
+    }
+
     /// Query current aggregation value. Dispatches to the concrete per-op impl.
     ///
     /// `query_time_ms` is the query-time event clock (used by WindowedOp to

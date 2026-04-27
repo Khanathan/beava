@@ -38,6 +38,7 @@ fn desc(
         sigma: None,
         sketch_params: None,
         ext: Default::default(),
+        field_idx: beava_core::agg_op::FIELD_IDX_NONE,
     }
 }
 
