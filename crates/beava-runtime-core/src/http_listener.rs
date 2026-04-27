@@ -66,12 +66,20 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     let mut headers = vec![httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut req = httparse::Request::new(&mut headers);
 
-    // Guard against absurdly large headers causing an OOM probe.
-    let probe = if buf.len() > MAX_HEADER_BYTES {
+    // Guard against absurdly large headers causing an OOM probe — but ONLY
+    // for header bytes. Phase 19.1.1: the cap previously applied to the whole
+    // buffer, which (incorrectly) rejected any HTTP request whose headers +
+    // body combined exceeded 8 KiB, even when Content-Length was well within
+    // MAX_BODY_BYTES = 4 MiB. The body cap below at the Content-Length check
+    // was unreachable. Fix: scan for `\r\n\r\n` to detect whether headers are
+    // complete. If yes — body bytes follow and are gated by Content-Length.
+    // If no — and we already have > MAX_HEADER_BYTES of unfinished headers —
+    // it's a genuine header bomb; reject as before.
+    let header_end_found = buf.windows(4).any(|w| w == b"\r\n\r\n");
+    if !header_end_found && buf.len() > MAX_HEADER_BYTES {
         return Err(ParseError::TooLarge);
-    } else {
-        buf.as_ref()
-    };
+    }
+    let probe = buf.as_ref();
 
     let header_end = match req.parse(probe)? {
         httparse::Status::Complete(n) => n,
