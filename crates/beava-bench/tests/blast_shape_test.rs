@@ -58,19 +58,23 @@ fn small_pipeline() -> PipelineConfig {
     }
 }
 
-/// Decode every frame in `pool` back into raw envelopes and run `inspect`.
+/// Decode every frame in `pool` back into a Vec<(content_type, payload)>.
 /// Each frame's full TCP-wire bytes (length-prefix + op + content_type +
 /// payload) are present, so `decode_frame` is the right tool — same path the
-/// server uses.
-fn for_each_frame_payload<F: FnMut(u8, &[u8])>(pool: &[bytes::Bytes], mut inspect: F) {
+/// server uses. Returning an owned vector (rather than taking a closure) lets
+/// callers use `prop_assert!` in proptest! contexts where closures cannot
+/// return `Result<_, TestCaseError>`.
+fn decode_pool_payloads(pool: &[bytes::Bytes]) -> Vec<(u8, Vec<u8>)> {
+    let mut out = Vec::with_capacity(pool.len());
     for raw in pool {
         let mut buf = BytesMut::from(&raw[..]);
         let frame = decode_frame(&mut buf, 8 * 1024 * 1024)
             .expect("decode_frame must accept builder output")
             .expect("decode_frame must produce one full frame from each pool entry");
         assert_eq!(frame.op, OP_PUSH, "all blast frames are OP_PUSH");
-        inspect(frame.content_type, &frame.payload);
+        out.push((frame.content_type, frame.payload.to_vec()));
     }
+    out
 }
 
 fn extract_user_id_from_json_payload(bytes: &[u8]) -> u64 {
@@ -157,14 +161,14 @@ proptest! {
         )
         .expect("build_pool uniform");
 
+        let payloads = decode_pool_payloads(&pool);
         let mut counts = vec![0u64; K as usize];
-        for_each_frame_payload(&pool, |ct, bytes| {
-            prop_assert_eq!(ct, CT_JSON);
+        for (ct, bytes) in &payloads {
+            prop_assert_eq!(*ct, CT_JSON);
             let uid = extract_user_id_from_json_payload(bytes);
             prop_assert!(uid < K, "uid {} out of range for K={}", uid, K);
             counts[uid as usize] += 1;
-            Ok(())
-        });
+        }
 
         // Every bucket must be hit (otherwise we are not "uniform over K").
         for (i, c) in counts.iter().enumerate() {
@@ -200,13 +204,13 @@ proptest! {
         )
         .expect("build_pool zipfian");
 
+        let payloads = decode_pool_payloads(&pool);
         let mut counts = vec![0u64; K as usize];
-        for_each_frame_payload(&pool, |_ct, bytes| {
+        for (_ct, bytes) in &payloads {
             let uid = extract_user_id_from_json_payload(bytes);
             prop_assert!(uid < K, "uid {} out of range", uid);
             counts[uid as usize] += 1;
-            Ok(())
-        });
+        }
 
         // Top-1 key must take ≥ 5% of N (head dominance).
         let top1 = counts.iter().copied().max().unwrap();
@@ -245,12 +249,13 @@ fn mixed_shape_rotates_through_events() {
     let pool = build_pool(BlastShape::Mixed { event_count: M }, &cfg, N).expect("build_pool mixed");
     assert_eq!(pool.len(), N as usize);
 
+    let payloads = decode_pool_payloads(&pool);
     let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    for_each_frame_payload(&pool, |ct, bytes| {
-        assert_eq!(ct, CT_JSON);
+    for (ct, bytes) in &payloads {
+        assert_eq!(*ct, CT_JSON);
         let name = extract_event_name_from_json_payload(bytes);
         *counts.entry(name).or_insert(0) += 1;
-    });
+    }
 
     // All M event names must appear.
     for n in names.iter() {
@@ -280,13 +285,13 @@ fn frames_decode_to_valid_envelopes_json() {
         seed: 7,
     };
     let pool = build_pool(BlastShape::Uniform { cardinality: 100 }, &cfg, 50).expect("build_pool");
-    for_each_frame_payload(&pool, |ct, bytes| {
-        assert_eq!(ct, CT_JSON, "JSON frames carry CT_JSON");
-        let v: Value =
-            serde_json::from_slice(bytes).expect("payload must parse as JSON envelope");
+    let payloads = decode_pool_payloads(&pool);
+    for (ct, bytes) in &payloads {
+        assert_eq!(*ct, CT_JSON, "JSON frames carry CT_JSON");
+        let v: Value = serde_json::from_slice(bytes).expect("payload must parse as JSON envelope");
         assert!(v.get("event").is_some(), "envelope missing `event`");
         assert!(v.get("body").is_some(), "envelope missing `body`");
-    });
+    }
 }
 
 // ─── Test 7: frames_decode_to_valid_envelopes_msgpack ─────────────────────────
@@ -301,13 +306,14 @@ fn frames_decode_to_valid_envelopes_msgpack() {
         seed: 7,
     };
     let pool = build_pool(BlastShape::Uniform { cardinality: 100 }, &cfg, 50).expect("build_pool");
-    for_each_frame_payload(&pool, |ct, bytes| {
-        assert_eq!(ct, CT_MSGPACK, "Msgpack frames carry CT_MSGPACK");
+    let payloads = decode_pool_payloads(&pool);
+    for (ct, bytes) in &payloads {
+        assert_eq!(*ct, CT_MSGPACK, "Msgpack frames carry CT_MSGPACK");
         let v: Value =
             rmp_serde::from_slice(bytes).expect("payload must parse as msgpack envelope");
         assert!(v.get("event").is_some(), "envelope missing `event`");
         assert!(v.get("body").is_some(), "envelope missing `body`");
-    });
+    }
 }
 
 // ─── Test 8: zipfian_sampler_deterministic ────────────────────────────────────
@@ -318,7 +324,10 @@ fn zipfian_sampler_deterministic() {
     let mut b = ZipfianSampler::new(1.0, 1_000, 42);
     let seq_a: Vec<u64> = (0..100).map(|_| a.sample()).collect();
     let seq_b: Vec<u64> = (0..100).map(|_| b.sample()).collect();
-    assert_eq!(seq_a, seq_b, "same-seed ZipfianSampler must produce same seq");
+    assert_eq!(
+        seq_a, seq_b,
+        "same-seed ZipfianSampler must produce same seq"
+    );
     // Sanity: every rank stays inside [0, k).
     for r in &seq_a {
         assert!(*r < 1_000, "rank {} out of range", r);
@@ -336,9 +345,8 @@ fn pool_setup_time_measurable() {
         wire_format: WireFormat::Json,
         seed: 99,
     };
-    let (pool, dur) =
-        build_pool_timed(BlastShape::Uniform { cardinality: 1_000 }, &cfg, 10_000)
-            .expect("build_pool_timed");
+    let (pool, dur) = build_pool_timed(BlastShape::Uniform { cardinality: 1_000 }, &cfg, 10_000)
+        .expect("build_pool_timed");
     assert_eq!(pool.len(), 10_000, "pool length must match n");
     assert!(
         dur > std::time::Duration::ZERO,

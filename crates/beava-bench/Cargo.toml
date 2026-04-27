@@ -25,6 +25,7 @@ tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 rmp-serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
