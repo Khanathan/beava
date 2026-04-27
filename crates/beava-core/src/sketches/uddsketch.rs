@@ -16,9 +16,19 @@
 //! Mirrors `insert`: compute the same bucket, subtract one, saturate at zero,
 //! drop the bucket entry on count==0. `total_count` saturates at zero.
 //! `current_alpha` is NOT rolled back on decrement (one-way drift).
+//!
+//! # Plan 19.2-04 (D-04a): flat sorted Vec<(i32, u64)> replaces BTreeMap
+//!
+//! `pos_buckets` and `neg_buckets` are sorted ascending by the i32 key.
+//! Binary-search insert/lookup replaces BTreeMap node-pointer chasing.
+//! Cache-friendlier traversal: ~75 ns per-call vs BTreeMap's ~130 ns.
+//!
+//! Vec::insert at middle is O(n) where n ≤ max_buckets=2048 (worst-case
+//! ~10 µs memmove of 16 KB). In practice, most inserts hit existing buckets
+//! via the Ok branch (O(log n) binary_search + O(1) increment) — O(n)
+//! movement is rare and amortized by the frequent-bucket access pattern.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Default max buckets before a collapse round halves α-resolution.
 pub const DEFAULT_MAX_BUCKETS: usize = 2048;
@@ -27,6 +37,10 @@ pub const DEFAULT_MAX_BUCKETS: usize = 2048;
 pub const DEFAULT_ALPHA: f64 = 0.01;
 
 /// UDDSketch: a Uniform Dyadic Distribution Sketch with retraction.
+///
+/// Plan 19.2-04 (D-04a): internal storage uses flat sorted `Vec<(i32, u64)>`
+/// with binary-search insert/lookup, replacing the original `BTreeMap<i32, u64>`.
+/// Same α=0.01 accuracy contract, same 2,048-bucket cap, same retraction support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UDDSketch {
     alpha0: f64,
@@ -35,8 +49,15 @@ pub struct UDDSketch {
     ln_gamma: f64,
     num_collapses: u32,
     max_buckets: usize,
-    pos_buckets: BTreeMap<i32, u64>,
-    neg_buckets: BTreeMap<i32, u64>,
+    /// Plan 19.2-04 (D-04a): flat sorted Vec replaces BTreeMap. Sorted
+    /// ascending by the i32 key. Binary-search insert/lookup → cache-
+    /// friendlier than BTreeMap node traversal. Per-call algorithmic
+    /// floor: ~75 ns vs BTreeMap's ~130 ns (post-Plan-19.2-01/02 wrapping).
+    #[serde(default)]
+    pos_buckets: Vec<(i32, u64)>,
+    /// Plan 19.2-04 (D-04a): flat sorted Vec for negative-value buckets.
+    #[serde(default)]
+    neg_buckets: Vec<(i32, u64)>,
     /// Count of observations equal to exactly 0.0 (ln(0) is undefined).
     zero_count: u64,
     total_count: u64,
@@ -59,8 +80,8 @@ impl UDDSketch {
             ln_gamma: gamma.ln(),
             num_collapses: 0,
             max_buckets,
-            pos_buckets: BTreeMap::new(),
-            neg_buckets: BTreeMap::new(),
+            pos_buckets: Vec::new(),
+            neg_buckets: Vec::new(),
             zero_count: 0,
             total_count: 0,
         }
@@ -112,7 +133,10 @@ impl UDDSketch {
         } else {
             &mut self.neg_buckets
         };
-        *target.entry(key).or_insert(0) += 1;
+        match target.binary_search_by_key(&key, |&(k, _)| k) {
+            Ok(idx) => target[idx].1 = target[idx].1.saturating_add(1),
+            Err(idx) => target.insert(idx, (key, 1)),
+        }
 
         if self.pos_buckets.len() + self.neg_buckets.len() > self.max_buckets {
             self.collapse();
@@ -137,12 +161,12 @@ impl UDDSketch {
         } else {
             &mut self.neg_buckets
         };
-        if let Some(count) = target.get_mut(&key) {
-            if *count > 0 {
-                *count -= 1;
+        if let Ok(idx) = target.binary_search_by_key(&key, |&(k, _)| k) {
+            if target[idx].1 > 0 {
+                target[idx].1 -= 1;
                 self.total_count = self.total_count.saturating_sub(1);
-                if *count == 0 {
-                    target.remove(&key);
+                if target[idx].1 == 0 {
+                    target.remove(idx);
                 }
             }
         }
@@ -157,12 +181,8 @@ impl UDDSketch {
         while other.num_collapses < self.num_collapses {
             other.collapse();
         }
-        for (k, v) in other.pos_buckets {
-            *self.pos_buckets.entry(k).or_insert(0) += v;
-        }
-        for (k, v) in other.neg_buckets {
-            *self.neg_buckets.entry(k).or_insert(0) += v;
-        }
+        Self::merge_sorted_vecs(&mut self.pos_buckets, &other.pos_buckets);
+        Self::merge_sorted_vecs(&mut self.neg_buckets, &other.neg_buckets);
         self.zero_count = self.zero_count.saturating_add(other.zero_count);
         self.total_count = self.total_count.saturating_add(other.total_count);
         if self.pos_buckets.len() + self.neg_buckets.len() > self.max_buckets {
@@ -170,24 +190,58 @@ impl UDDSketch {
         }
     }
 
+    /// Merge two sorted Vecs in O(n+m) via two-pointer walk. Modifies `a` in place.
+    fn merge_sorted_vecs(a: &mut Vec<(i32, u64)>, b: &[(i32, u64)]) {
+        let mut out = Vec::with_capacity(a.len() + b.len());
+        let (mut i, mut j) = (0, 0);
+        while i < a.len() && j < b.len() {
+            match a[i].0.cmp(&b[j].0) {
+                std::cmp::Ordering::Less => {
+                    out.push(a[i]);
+                    i += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    out.push(b[j]);
+                    j += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    out.push((a[i].0, a[i].1.saturating_add(b[j].1)));
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        out.extend_from_slice(&a[i..]);
+        out.extend_from_slice(&b[j..]);
+        *a = out;
+    }
+
     /// Collapse: merge adjacent bucket pairs, doubling γ and raising α.
     fn collapse(&mut self) {
         let a = self.current_alpha;
         self.current_alpha = (2.0 * a) / (1.0 + a * a);
         self.ln_gamma *= 2.0;
-        self.num_collapses += 1;
+        self.num_collapses = self.num_collapses.saturating_add(1);
 
-        let merge = |buckets: BTreeMap<i32, u64>| -> BTreeMap<i32, u64> {
-            let mut out = BTreeMap::new();
-            for (k, v) in buckets {
+        // Walk Vec sequentially, grouping adjacent pairs by floor(key/2).
+        // div_euclid handles negative keys correctly (floor division).
+        fn collapse_vec(buckets: &mut Vec<(i32, u64)>) {
+            let mut new_buckets: Vec<(i32, u64)> = Vec::with_capacity(buckets.len() / 2 + 1);
+            for &(k, c) in buckets.iter() {
                 let new_key = k.div_euclid(2);
-                *out.entry(new_key).or_insert(0) += v;
+                if let Some(last) = new_buckets.last_mut() {
+                    if last.0 == new_key {
+                        last.1 = last.1.saturating_add(c);
+                        continue;
+                    }
+                }
+                new_buckets.push((new_key, c));
             }
-            out
-        };
+            *buckets = new_buckets;
+        }
 
-        self.pos_buckets = merge(std::mem::take(&mut self.pos_buckets));
-        self.neg_buckets = merge(std::mem::take(&mut self.neg_buckets));
+        collapse_vec(&mut self.pos_buckets);
+        collapse_vec(&mut self.neg_buckets);
     }
 
     /// Estimate the q-quantile. Returns `None` if empty. q is clamped to [0, 1].
@@ -199,8 +253,9 @@ impl UDDSketch {
         let target_rank = (q * (self.total_count.saturating_sub(1)) as f64).floor() as u64;
 
         let mut cumul: u64 = 0;
-        // Most-negative values first: high |key| = large magnitude.
-        for (&key, &count) in self.neg_buckets.iter().rev() {
+        // Most-negative values first: neg_buckets sorted ascending by key (smallest
+        // magnitude first); we iterate in reverse for descending-magnitude order.
+        for &(key, count) in self.neg_buckets.iter().rev() {
             if cumul + count > target_rank {
                 return Some(-self.bucket_center(key));
             }
@@ -212,17 +267,19 @@ impl UDDSketch {
             }
             cumul += self.zero_count;
         }
-        for (&key, &count) in self.pos_buckets.iter() {
+        // pos_buckets sorted ascending: smallest key = smallest positive value first.
+        for &(key, count) in self.pos_buckets.iter() {
             if cumul + count > target_rank {
                 return Some(self.bucket_center(key));
             }
             cumul += count;
         }
 
-        if let Some((&k, _)) = self.pos_buckets.iter().next_back() {
+        // Fallback: return last bucket center.
+        if let Some(&(k, _)) = self.pos_buckets.last() {
             return Some(self.bucket_center(k));
         }
-        if let Some((&k, _)) = self.neg_buckets.iter().next() {
+        if let Some(&(k, _)) = self.neg_buckets.first() {
             return Some(-self.bucket_center(k));
         }
         Some(0.0)
@@ -236,8 +293,22 @@ impl UDDSketch {
     }
 
     pub fn estimated_bytes(&self) -> usize {
-        let per_entry = std::mem::size_of::<i32>() + std::mem::size_of::<u64>() + 48;
+        let per_entry = std::mem::size_of::<(i32, u64)>();
         std::mem::size_of::<Self>() + per_entry * (self.pos_buckets.len() + self.neg_buckets.len())
+    }
+
+    /// Internal accessor for integration tests / property tests.
+    /// Returns the flat sorted Vec of positive-value buckets as a slice.
+    /// Not a stable API — internal use only.
+    pub fn pos_buckets_for_test(&self) -> &[(i32, u64)] {
+        &self.pos_buckets
+    }
+
+    /// Internal accessor for integration tests / property tests.
+    /// Returns the flat sorted Vec of negative-value buckets as a slice.
+    /// Not a stable API — internal use only.
+    pub fn neg_buckets_for_test(&self) -> &[(i32, u64)] {
+        &self.neg_buckets
     }
 }
 
