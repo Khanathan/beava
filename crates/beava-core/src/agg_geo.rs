@@ -459,8 +459,12 @@ mod tests {
 
     // ── GeoSpreadState ───────────────────────────────────────────────────────
 
+    // Phase 19.1.2-01: GeoSpread now returns RMS dispersion (km), not max distance.
+    // The 4 corners of a unit square at lat 0 happen to coincide between the two
+    // semantics (~78.7 km), so this test is preserved as a smoke baseline that
+    // exercises both old & new code paths to the same number.
     #[test]
-    fn geo_spread_returns_max_distance_from_centroid() {
+    fn geo_spread_unit_square_at_origin_smoke() {
         let mut s = GeoSpreadState::with_fields("lat".into(), "lon".into());
         s.update(&row_geo(0.5, 0.5), true);
         s.update(&row_geo(0.5, -0.5), true);
@@ -470,8 +474,151 @@ mod tests {
             Value::F64(x) => x,
             _ => panic!(),
         };
-        // Centroid is (0,0); each corner is ~78.6 km away.
-        assert!((d - 78.6).abs() < 1.0, "expected ~78.6 km, got {d}");
+        // For 4 corners at (±0.5, ±0.5) with mean (0,0):
+        // - old max-from-mean: each corner is ~78.6 km away → 78.6
+        // - new RMS: sqrt(var_lat_km² + var_lon_km²) = sqrt(0.25 * 111.32² * 2) ≈ 78.7
+        assert!((d - 78.7).abs() < 1.0, "expected ~78.7 km, got {d}");
+    }
+
+    // Phase 19.1.2-01 RED tests — Welford RMS semantics.
+
+    /// New contract: variance is undefined for n<2; query returns Null.
+    /// Old contract returned F64(0.0) for n=1 (max_km init = 0). RED.
+    #[test]
+    fn geo_spread_returns_null_for_zero_or_one_event() {
+        let mut s = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        assert!(matches!(s.query(), Value::Null), "n=0 must be Null");
+
+        s.update(&row_geo(40.7128, -74.0060), true);
+        assert!(
+            matches!(s.query(), Value::Null),
+            "n=1 must be Null (variance undefined); got {:?}",
+            s.query()
+        );
+    }
+
+    /// 4 points at (0,0), (1,0), (0,1), (1,1). Mean = (0.5, 0.5).
+    /// var_lat_deg² = var_lon_deg² = 1.0 / 4 = 0.25.
+    /// At lat 0.5°, cos ≈ 1.0, so km/deg lon ≈ km/deg lat = 111.32.
+    /// var_lat_km² = var_lon_km² ≈ 0.25 * 111.32² ≈ 3098.
+    /// RMS = sqrt(2 * 3098) ≈ 78.7 km.
+    #[test]
+    fn geo_spread_returns_rms_km_for_unit_square() {
+        let mut s = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        s.update(&row_geo(0.0, 0.0), true);
+        s.update(&row_geo(1.0, 0.0), true);
+        s.update(&row_geo(0.0, 1.0), true);
+        s.update(&row_geo(1.0, 1.0), true);
+        let result = match s.query() {
+            Value::F64(v) => v,
+            other => panic!("expected F64, got {:?}", other),
+        };
+        assert!(
+            (result - 78.7).abs() < 1.0,
+            "expected ~78.7 km RMS, got {result}"
+        );
+    }
+
+    /// Welford RMS is permutation-invariant by construction (combinable across orders).
+    /// Old max-from-mean was permutation-invariant too because it re-walked all samples;
+    /// this test still locks in the contract for the new impl.
+    #[test]
+    fn geo_spread_permutation_invariant() {
+        // Simple deterministic point set; reverse order should give identical RMS.
+        let points: Vec<(f64, f64)> = (0..20)
+            .map(|i| {
+                let f = i as f64;
+                (f * 0.13 - 1.3, f * 0.07 - 0.7)
+            })
+            .collect();
+
+        let mut s1 = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        for &(lat, lon) in &points {
+            s1.update(&row_geo(lat, lon), true);
+        }
+        let r1 = match s1.query() {
+            Value::F64(v) => v,
+            _ => panic!("forward order returned non-F64"),
+        };
+
+        let mut shuffled = points.clone();
+        shuffled.reverse();
+        let mut s2 = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        for &(lat, lon) in &shuffled {
+            s2.update(&row_geo(lat, lon), true);
+        }
+        let r2 = match s2.query() {
+            Value::F64(v) => v,
+            _ => panic!("reversed order returned non-F64"),
+        };
+
+        // Welford has well-known FP rounding under different orders; tolerance 1e-6.
+        assert!(
+            (r1 - r2).abs() < 1e-6,
+            "permutation invariance broken: forward={r1} reversed={r2}"
+        );
+    }
+
+    /// Scaling all displacements by k must scale the RMS by k.
+    /// Welford variance is exactly homogeneous of degree 2; sqrt → degree 1 in scatter.
+    /// Old max-from-mean was approximately linear in small scatter (haversine ≈
+    /// linear for small angles), so this test is a soft RED for old code.
+    #[test]
+    fn geo_spread_monotone_in_scatter() {
+        let mut s_small = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        let mut s_large = GeoSpreadState::with_fields("lat".into(), "lon".into());
+
+        for i in 0..10 {
+            let lat = (i as f64) * 0.01; // small spread
+            let lon = (i as f64) * 0.01;
+            s_small.update(&row_geo(lat, lon), true);
+            s_large.update(&row_geo(lat * 10.0, lon * 10.0), true); // 10× scatter
+        }
+
+        let small = match s_small.query() {
+            Value::F64(v) => v,
+            _ => panic!("small returned non-F64"),
+        };
+        let large = match s_large.query() {
+            Value::F64(v) => v,
+            _ => panic!("large returned non-F64"),
+        };
+
+        let ratio = large / small;
+        assert!(
+            ratio > 9.5 && ratio < 10.5,
+            "expected ~10× scatter ratio; small={small} large={large} ratio={ratio}"
+        );
+    }
+
+    /// 10 points at NYC + 1 outlier at LA. Old code returns max_km ≈ 3700 km
+    /// (LA-to-mean is huge); new RMS code returns ≈ 1100 km (variance over coords).
+    /// This is a STRONG RED test — the two semantics give very different numbers.
+    #[test]
+    fn geo_spread_asymmetric_cluster_has_lower_rms_than_max() {
+        let mut s = GeoSpreadState::with_fields("lat".into(), "lon".into());
+        // 10 NYC events.
+        for _ in 0..10 {
+            s.update(&row_geo(40.7128, -74.0060), true);
+        }
+        // 1 LA outlier.
+        s.update(&row_geo(34.0522, -118.2437), true);
+
+        let v = match s.query() {
+            Value::F64(v) => v,
+            _ => panic!("expected F64"),
+        };
+        // RMS expected: variance of 10 zeros and 1 large deviation, divided by 11,
+        // sqrt'd → small fraction of the LA distance. For these points, RMS ≈ 1100 km.
+        // Old max-from-mean would be ≈ 3580 km (LA-to-running-mean).
+        assert!(
+            v < 1500.0,
+            "RMS for 10×NYC + 1×LA must be < 1500 km (saw {v}); old max-from-mean returns ~3580"
+        );
+        assert!(
+            v > 500.0,
+            "RMS for 10×NYC + 1×LA must be > 500 km (saw {v}); collapsing to 0 means math is broken"
+        );
     }
 
     // ── UniqueCellsState ─────────────────────────────────────────────────────
