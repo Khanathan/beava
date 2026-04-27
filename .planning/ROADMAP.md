@@ -546,6 +546,49 @@ Plans:
 - [x] 19-04-PLAN.md — criterion microbench for blast_shape + 6 baseline rows in perf-baselines.md (Wave 2)
 - [x] 19-05-PLAN.md — throughput run + ledger ## 1M-event blast section + VERIFICATION + SUMMARY (Wave 3)
 
+### Phase 19.1: Realistic-shape benchmark + bench/WAL fixes + complex-pipeline optimization — 📋 PLANNED
+
+**Status:** Planned 2026-04-27 as the consolidated follow-up to Phase 19's PASS-WITH-DEFICIT verdict. Rolls together what was originally proposed as three separate Phase 19.0.x mini-phases (19.0.1 wall-clock + WAL, 19.0.2 lazy buckets, 19.0.3 batch sketch updates) into one phase, scoped around making `crates/beava-bench/configs/fraud-team.json` the primary tuning benchmark and using it to drive complex-pipeline apply-thread optimizations.
+
+**Goal:** Re-baseline Phase 19's published EPS numbers with three corrections in place — (1) bench wall_clock measurement bug fixed, (2) WAL config bumped to a sensible middle-ground default, (3) realistic 14-node fraud-team config validated and added to the canonical bench matrix — and then drive at least one complex-pipeline apply-thread optimization landing measurably on the new fraud-team zipfian cell. Outcome: Phase 19 verdict flips from PASS-WITH-DEFICIT → PASS, and the published per-instance ceiling for realistic complex shapes is honest and known.
+
+**Sub-goals:**
+
+1. **Path B — fraud-team.json validation** — read `AggOpDescriptor` parsing in `crates/beava-core/src/agg_op.rs` for each `AggKind`; write a quick validator that audits `crates/beava-bench/configs/fraud-team.json` against the canonical param schemas; fix the 14 known/suspected items (histogram `bins` → `buckets`, geo lat/lon field names, unique_cells precision, burst_count param names, reservoir_sample n→size, first_n/last_n/lag, amount_to_count_ratio degeneracy, cb_streak field check, ssn_reuse 7d/30d naming, etc. — see `.planning/phases/19-1m-bench/.continue-here.md` Path B for the full list). Commit fraud-team.json + the supporting `.planning/research/fraud-feature-catalogue.md` (1054 lines, 110 features, 14 sources, anti-feature list).
+
+2. **Bench wall_clock fix** — `crates/beava-bench/src/bin/beava-bench-v18.rs:660-672`: move `let elapsed = start.elapsed();` before the `for w in workers { ... }; let _ = get_task.await; let _ = rss_task.await;` block; convert `get_task` and `rss_task` from raw sleep loops to `tokio::select!` with stop signal. Re-run canonical cell; confirm `wall_clock_ms < 1000ms` and EPS > 500k for N=100k zipfian small. (See memory `project_phase19_bench_wallclock_fix` for the full recipe.)
+
+3. **WAL config bump** — pick the middle-ground default (4×32 MiB tick_ms=20 is the proposed candidate; 8×64 MiB tick_ms=100 was the experimental upper bound that eliminated the bimodal tail with +33% EPS but at 512 MB RSS). Edit `crates/beava-server/src/server.rs:577,588` area; add tunables. Land with TDD per phase 3+ rule. Trace at N=500k zipfian to confirm bimodal `wal_append > 1ms` tail collapses. (See memory `project_phase19_wal_experiment` for experimental data.)
+
+4. **Re-baselined Phase 19 numbers** — re-run the canonical small/medium/large/large_phase9 matrix AND a new fraud-team.json zipfian cell after corrections (1)–(3) land. Append a new section to `.planning/throughput-baselines.md`. Amend `.planning/phases/19-1m-bench/19-VERIFICATION.md` verdict from PASS-WITH-DEFICIT → PASS with a footnote explaining the deficit was a measurement artifact. Update Phase 19 SUMMARY.md headlines.
+
+5. **Complex-pipeline apply-thread optimization (at least one of)** — measured against fraud-team.json zipfian as the primary cell:
+   - **WindowedOp lazy buckets** (highest-leverage pick): replace `[Option<Box<AggOp>>; 64]` preallocation with `SmallVec<[(i64, Box<AggOp>); 4]>` so cold-key entity init doesn't pay the 4×512B zero-init cost. Predicted savings: ~1500 ns of the 2576 ns cold `entity_row_init` (~60%); +50% EPS for cold-key complex shapes.
+   - **Same-key batch sketch updates** in apply dispatch — batch up consecutive events with the same entity-key for sketch ops (HLL/UDDSketch/SpaceSaving/Entropy) to amortize per-call overhead. Sketches consume 76% of features-time on `large-with-sketches` (Percentile_UDDSketch=257ns, Entropy=224ns, TopK=221ns, HLL=138ns); batching lets one update touch state once instead of N times for hot keys.
+   - **OP_PUSH_MANY adoption in bench** — alternative path that lifts the wire-stack ceiling above 1M EPS instead of optimizing apply.
+
+   Phase 19.1 lands at minimum the lazy-buckets optimization (concrete win, well-scoped); same-key batching and OP_PUSH_MANY are scoped as stretch.
+
+**Depends on:** Phase 19 SUMMARY/VERIFICATION (already shipped at commit `98a3f8c`). Reads `crates/beava-core/src/agg_op.rs` AggOpDescriptor schema, `crates/beava-server/src/server.rs` WAL wiring, `crates/beava-bench/src/bin/beava-bench-v18.rs` (sub-goal 2), and `crates/beava-core/src/agg_apply.rs` WindowedOp (sub-goal 5).
+
+**Success criteria:**
+- `fraud-team.json` validates clean against `AggOpDescriptor` schemas (zero param-shape errors); committed alongside `fraud-feature-catalogue.md`.
+- Bench `wall_clock_ms` reports honest elapsed time for N≥100k (no background-task contamination).
+- WAL `wal_append > 1ms` tail collapses to 0 events under sustained 500k EPS at N=500k zipfian; default RSS ≤ 200MB.
+- Phase 19 VERIFICATION verdict: PASS-WITH-DEFICIT → PASS.
+- At least one complex-pipeline apply-thread optimization lands with measurable EPS lift on fraud-team.json zipfian (≥20% over re-baselined number).
+- Per-instance ceiling for realistic complex shapes documented in `throughput-baselines.md` with `(pipeline, transport, format, blast_shape)` keying.
+
+**Why this matters:** Phase 19's PASS-WITH-DEFICIT was based on bug-contaminated `wall_clock_ms`; the real number clears the M4 threshold by 2.5×. Fixing the bench restores honesty in the published number. Establishing fraud-team.json as the primary tuning benchmark grounds future perf work in a realistic shape (not synthetic configs that mask apply-bound work). Landing at least the WindowedOp lazy-buckets win demonstrates that the new bench actually drives optimization decisions — the loop closes.
+
+**Key decisions to lock in `19.1-CONTEXT.md` during discuss:**
+- Numbering: Phase 19.1 (single umbrella) vs three separate 19.0.1/19.0.2/19.0.3 phases — leaning umbrella for momentum.
+- WAL default: 4×32 MiB tick=20ms (middle ground) vs 3×16 MiB + just-fix-wall_clock (cheap default, accept the bimodal tail).
+- Histogram windowed semantics: add `windowed_histogram` op family vs document `percentile (UDDSketch)` as the windowed-distribution path.
+- Stretch scope: cap at lazy buckets, OR also include same-key batching, OR also include OP_PUSH_MANY adoption.
+
+**Plans:** TBD during `/gsd-plan-phase 19.1` — likely 4–5 plans split as Wave 1 (validation + bench fix), Wave 2 (WAL bump + re-baseline), Wave 3 (complex-pipeline optimization + verification).
+
 ### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
 **Status:** Planned post Phase 19 (added 2026-04-26; push/get API audit scope folded in 2026-04-26).
