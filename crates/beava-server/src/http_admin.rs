@@ -16,6 +16,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use beava_core::agg_state::EntropyStateWrap;
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 
@@ -89,6 +90,8 @@ async fn metrics_handler(State(state): State<AdminState>) -> impl IntoResponse {
     // Prometheus exposition format (text/plain; version=0.0.4).
     // Plan 18-04.6 Task 4.6.5: add beava_runtime_kind gauge to identify
     // which runtime is serving the data plane.
+    // Plan 19.2-06 (D-05a): add beava_entropy_categories_capped_total counter.
+    let entropy_capped = EntropyStateWrap::categories_capped_count();
     let body = format!(
         "# HELP beava_registry_version Registry version (monotonic).\n\
          # TYPE beava_registry_version gauge\n\
@@ -98,9 +101,13 @@ async fn metrics_handler(State(state): State<AdminState>) -> impl IntoResponse {
          beava_node_count {node_count}\n\
          # HELP beava_runtime_kind Data-plane runtime (1=active). Labels: runtime.\n\
          # TYPE beava_runtime_kind gauge\n\
-         beava_runtime_kind{{runtime=\"mio\"}} 1\n",
+         beava_runtime_kind{{runtime=\"mio\"}} 1\n\
+         # HELP beava_entropy_categories_capped_total Total new-category insertions dropped due to max_categories cap.\n\
+         # TYPE beava_entropy_categories_capped_total counter\n\
+         beava_entropy_categories_capped_total {entropy_capped}\n",
         registry_version = snap.version,
         node_count = snap.node_count,
+        entropy_capped = entropy_capped,
     );
 
     (

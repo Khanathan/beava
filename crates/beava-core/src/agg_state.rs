@@ -26,6 +26,7 @@ use crate::sketches::entropy::EntropyHistogram;
 use crate::sketches::percentile::PercentileState as InnerPercentile;
 use crate::sketches::top_k::TopKState as InnerTopK;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1250,21 +1251,67 @@ impl BloomMemberStateWrap {
     }
 }
 
+/// Process-global counter: total new-category insertions dropped due to max_categories cap.
+/// Polled by the `/metrics` endpoint for `beava_entropy_categories_capped_total`.
+static ENTROPY_CATEGORIES_CAPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 /// AGG-SKETCH-05: entropy wrapper.
+///
+/// Plan 19.2-06 (D-05a): adds `max_categories` cap (drop-new policy) and a
+/// process-global Prometheus counter `beava_entropy_categories_capped_total`
+/// that increments each time a new category is silently dropped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntropyStateWrap {
     pub inner: EntropyHistogram,
+    /// Maximum distinct categories to track. Novel categories beyond this limit
+    /// are silently dropped (not folded into a spill bucket). Default: 1024.
+    pub max_categories: usize,
 }
 
 impl Default for EntropyStateWrap {
     fn default() -> Self {
         Self {
             inner: EntropyHistogram::new(1024),
+            max_categories: 1024,
         }
     }
 }
 
 impl EntropyStateWrap {
+    /// Create with an explicit `max_categories` cap (must be ≥ 1; clamped).
+    pub fn new(max_categories: usize) -> Self {
+        let cap = max_categories.max(1);
+        Self {
+            inner: EntropyHistogram::new(cap),
+            max_categories: cap,
+        }
+    }
+
+    /// Returns the configured max_categories cap.
+    pub fn max_categories(&self) -> usize {
+        self.max_categories
+    }
+
+    /// Returns the current value of the process-global cap-hit counter.
+    pub fn categories_capped_count() -> u64 {
+        ENTROPY_CATEGORIES_CAPPED_TOTAL.load(Ordering::Relaxed)
+    }
+
+    /// Insert a string value, applying the max_categories drop-new guard.
+    ///
+    /// If `inner.distinct_count() >= max_categories` AND the value is not
+    /// already tracked, the insert is silently dropped and the global counter
+    /// is incremented.
+    fn insert_guarded(&mut self, s: &str) {
+        // Fast path: already tracked → always accept (no cap check needed).
+        // Slow path: at-or-over cap with a novel key → drop and count.
+        if self.inner.distinct_count() >= self.max_categories && !self.inner.contains_category(s) {
+            ENTROPY_CATEGORIES_CAPPED_TOTAL.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        self.inner.insert(s);
+    }
+
     pub fn update(
         &mut self,
         row: &crate::row::Row,
@@ -1281,7 +1328,8 @@ impl EntropyStateWrap {
             return;
         };
         // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
-        self.inner.insert(s.as_ref());
+        // Plan 19.2-06 (D-05a): drop-new guard applied via insert_guarded.
+        self.insert_guarded(s.as_ref());
     }
 
     /// Pre-extraction fast-path.
@@ -1294,7 +1342,8 @@ impl EntropyStateWrap {
             return;
         };
         // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
-        self.inner.insert(s.as_ref());
+        // Plan 19.2-06 (D-05a): drop-new guard applied via insert_guarded.
+        self.insert_guarded(s.as_ref());
     }
 
     pub fn query(&self) -> Value {

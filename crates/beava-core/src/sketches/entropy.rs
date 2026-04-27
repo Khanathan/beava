@@ -45,6 +45,18 @@ impl EntropyHistogram {
         self.cap
     }
 
+    /// Returns `true` if `value` is already a tracked category (i.e. has a
+    /// non-spill entry in the counts map).
+    pub fn contains_category(&self, value: &str) -> bool {
+        self.counts.contains_key(value)
+    }
+
+    /// Returns the number of distinct tracked categories (including the spill
+    /// bucket `"__beava_other__"` if it exists).
+    pub fn category_count(&self) -> usize {
+        self.counts.len()
+    }
+
     pub fn insert(&mut self, value: &str) {
         self.total = self.total.saturating_add(1);
         // 1) Already-tracked key → bump and return.

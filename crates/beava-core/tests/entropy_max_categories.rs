@@ -124,10 +124,11 @@ fn entropy_wrap_cap_hit_counter_increments() {
     wrap.update(&row_str(field, "w"), 0, Some(field), true);
 
     let after = EntropyStateWrap::categories_capped_count();
-    assert_eq!(
-        after - before,
-        3,
-        "expected 3 cap-hit counter increments, got {}",
+    // The global counter is process-wide; parallel tests may add their own drops.
+    // Assert at least 3 increments came from this test's 3 dropped categories.
+    assert!(
+        after >= before + 3,
+        "expected at least 3 cap-hit counter increments from this test, got {}",
         after - before
     );
 }
