@@ -62,6 +62,11 @@ pub const BUILTINS: &[BuiltinFn] = &[
         arity: Arity::Fixed(1),
         eval: isnull_eval,
     },
+    BuiltinFn {
+        name: "quadkey",
+        arity: Arity::Fixed(3),
+        eval: quadkey_eval,
+    },
 ];
 
 // ─── Lookup ───────────────────────────────────────────────────────────────────
@@ -180,6 +185,54 @@ fn cast_to_bool(v: &Value) -> Value {
         Value::Json(_) => Value::Null,
         Value::List(_) | Value::Map(_) => Value::Null,
     }
+}
+
+// ─── quadkey ─────────────────────────────────────────────────────────────────
+
+/// Evaluate `quadkey(lat, lon, zoom)`.
+///
+/// Returns a deterministic `Value::I64` cell-id using a simplified-Mercator
+/// formula (NOT RFC slippy-tile — no external tile dependency required).
+///
+/// # Formula
+///
+/// ```text
+/// n   = 1 << zoom                         (tiles per axis)
+/// row = floor((sin(lat_clamped_rad) + 1) / 2 * n)
+/// col = floor((lon + 180) / 360 * n)
+/// cell_id = col * n + row.clamp(0, n-1)
+/// ```
+///
+/// # Null / range rules
+/// - Any `Null` argument → `Null`.
+/// - `zoom` outside `1..=24` → `Null`.
+/// - `lat` is clamped to `[-85.05112878, 85.05112878]` (Web-Mercator bounds).
+fn quadkey_eval(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return Value::Null;
+    }
+    let lat = match &args[0] {
+        Value::F64(v) => *v,
+        Value::I64(v) => *v as f64,
+        _ => return Value::Null,
+    };
+    let lon = match &args[1] {
+        Value::F64(v) => *v,
+        Value::I64(v) => *v as f64,
+        _ => return Value::Null,
+    };
+    let zoom = match &args[2] {
+        Value::I64(v) if (1..=24).contains(v) => *v,
+        _ => return Value::Null,
+    };
+    let n = 1i64 << zoom;
+    let lat_clamped = lat.clamp(-85.051_128_78, 85.051_128_78);
+    let row = ((lat_clamped.to_radians().sin() + 1.0) / 2.0 * (n as f64)).floor() as i64;
+    let col = ((lon + 180.0) / 360.0 * (n as f64)).floor() as i64;
+    Value::I64(
+        col.saturating_mul(n)
+            .saturating_add(row.clamp(0, n.saturating_sub(1))),
+    )
 }
 
 // ─── isnull ───────────────────────────────────────────────────────────────────

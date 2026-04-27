@@ -19,10 +19,7 @@ use crate::agg_buffer::{
     DowHourHistogramState, EventTypeMixState, HistogramState, HourOfDayHistogramState,
     MostRecentNState, ReservoirSampleState, SeasonalDeviationState,
 };
-use crate::agg_geo::{
-    DistanceFromHomeState, GeoDistanceState, GeoEntropyState, GeoSpreadState, GeoVelocityState,
-    UniqueCellsState,
-};
+use crate::agg_geo::{DistanceFromHomeState, GeoDistanceState, GeoSpreadState, GeoVelocityState};
 use crate::agg_state::{
     AvgState, BloomMemberStateWrap, CountDistinctStateWrap, CountState, EntropyStateWrap,
     FirstNState, FirstSeenInWindowState, FirstState, LagState, LastNState, LastState, MaxState,
@@ -119,8 +116,6 @@ pub enum AggKind {
     GeoVelocity,
     GeoDistance,
     GeoSpread,
-    UniqueCells,
-    GeoEntropy,
     DistanceFromHome,
 }
 
@@ -426,8 +421,6 @@ pub enum AggOp {
     GeoVelocity(GeoVelocityState),
     GeoDistance(GeoDistanceState),
     GeoSpread(GeoSpreadState),
-    UniqueCells(UniqueCellsState),
-    GeoEntropy(GeoEntropyState),
     DistanceFromHome(DistanceFromHomeState),
 }
 
@@ -594,16 +587,6 @@ impl AggOp {
             AggKind::GeoSpread => AggOp::GeoSpread(GeoSpreadState::with_fields(
                 desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
                 desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
-            )),
-            AggKind::UniqueCells => AggOp::UniqueCells(UniqueCellsState::with_fields(
-                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
-                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
-                desc.ext.precision.unwrap_or(10),
-            )),
-            AggKind::GeoEntropy => AggOp::GeoEntropy(GeoEntropyState::with_fields(
-                desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
-                desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
-                desc.ext.precision.unwrap_or(10),
             )),
             AggKind::DistanceFromHome => {
                 AggOp::DistanceFromHome(DistanceFromHomeState::with_fields(
@@ -775,8 +758,6 @@ impl AggOp {
             AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
             AggOp::GeoDistance(s) => s.update(row, where_matched),
             AggOp::GeoSpread(s) => s.update(row, where_matched),
-            AggOp::UniqueCells(s) => s.update(row, where_matched),
-            AggOp::GeoEntropy(s) => s.update(row, where_matched),
             AggOp::DistanceFromHome(s) => s.update(row, where_matched),
         }
     }
@@ -874,8 +855,6 @@ impl AggOp {
             AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
             AggOp::GeoDistance(s) => s.update(row, where_matched),
             AggOp::GeoSpread(s) => s.update(row, where_matched),
-            AggOp::UniqueCells(s) => s.update(row, where_matched),
-            AggOp::GeoEntropy(s) => s.update(row, where_matched),
             AggOp::DistanceFromHome(s) => s.update(row, where_matched),
             // Histogram ops: no field, time-based.
             AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
@@ -1014,8 +993,6 @@ impl AggOp {
             AggOp::GeoVelocity(s) => s.query(),
             AggOp::GeoDistance(s) => s.query(),
             AggOp::GeoSpread(s) => s.query(),
-            AggOp::UniqueCells(s) => s.query(),
-            AggOp::GeoEntropy(s) => s.query(),
             AggOp::DistanceFromHome(s) => s.query(),
         }
     }
@@ -1128,9 +1105,7 @@ pub fn output_type_for(
         | AggKind::GeoVelocity
         | AggKind::GeoDistance
         | AggKind::GeoSpread
-        | AggKind::GeoEntropy
         | AggKind::DistanceFromHome => Ok(FieldType::F64),
-        AggKind::UniqueCells => Ok(FieldType::I64),
     }
 }
 

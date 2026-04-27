@@ -16,7 +16,6 @@
 use crate::row::{Row, Value};
 use haversine::{distance, Location, Units};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -209,126 +208,7 @@ impl GeoSpreadState {
     }
 }
 
-// ─── UniqueCellsState (AGG-GEO-04) ───────────────────────────────────────────
-
-/// Distinct grid cells visited by an entity. Equirectangular cell encoding:
-/// `(floor(lat * precision), floor(lon * precision))` (i32 pairs).
-///
-/// precision examples (degrees per cell):
-/// - precision = 1   → 1° cell ≈ 111 km
-/// - precision = 10  → 0.1° cell ≈ 11 km
-/// - precision = 100 → 0.01° cell ≈ 1.1 km
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UniqueCellsState {
-    pub lat_field: String,
-    pub lon_field: String,
-    pub precision: u32,
-    pub cells: BTreeMap<(i32, i32), u64>,
-}
-
-impl UniqueCellsState {
-    pub fn new(precision: u32) -> Self {
-        Self {
-            lat_field: String::new(),
-            lon_field: String::new(),
-            precision: precision.max(1),
-            cells: BTreeMap::new(),
-        }
-    }
-
-    pub fn with_fields(lat_field: String, lon_field: String, precision: u32) -> Self {
-        Self {
-            lat_field,
-            lon_field,
-            precision: precision.max(1),
-            cells: BTreeMap::new(),
-        }
-    }
-
-    pub(crate) fn cell_id(precision: u32, lat: f64, lon: f64) -> (i32, i32) {
-        let p = precision as f64;
-        ((lat * p).floor() as i32, (lon * p).floor() as i32)
-    }
-
-    pub fn update(&mut self, row: &Row, where_matched: bool) {
-        if !where_matched {
-            return;
-        }
-        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
-            return;
-        };
-        let cell = Self::cell_id(self.precision, lat, lon);
-        *self.cells.entry(cell).or_insert(0) += 1;
-    }
-
-    pub fn query(&self) -> Value {
-        Value::I64(self.cells.len() as i64)
-    }
-}
-
-// ─── GeoEntropyState (AGG-GEO-05) ────────────────────────────────────────────
-
-/// Shannon entropy (bits) over the distribution of grid-cell visits.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeoEntropyState {
-    pub lat_field: String,
-    pub lon_field: String,
-    pub precision: u32,
-    pub cells: BTreeMap<(i32, i32), u64>,
-    pub total: u64,
-}
-
-impl GeoEntropyState {
-    pub fn new(precision: u32) -> Self {
-        Self {
-            lat_field: String::new(),
-            lon_field: String::new(),
-            precision: precision.max(1),
-            cells: BTreeMap::new(),
-            total: 0,
-        }
-    }
-
-    pub fn with_fields(lat_field: String, lon_field: String, precision: u32) -> Self {
-        Self {
-            lat_field,
-            lon_field,
-            precision: precision.max(1),
-            cells: BTreeMap::new(),
-            total: 0,
-        }
-    }
-
-    pub fn update(&mut self, row: &Row, where_matched: bool) {
-        if !where_matched {
-            return;
-        }
-        let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
-            return;
-        };
-        let cell = UniqueCellsState::cell_id(self.precision, lat, lon);
-        *self.cells.entry(cell).or_insert(0) += 1;
-        self.total += 1;
-    }
-
-    pub fn query(&self) -> Value {
-        if self.total == 0 {
-            return Value::Null;
-        }
-        let denom = self.total as f64;
-        let mut h = 0.0_f64;
-        for &c in self.cells.values() {
-            if c == 0 {
-                continue;
-            }
-            let p = c as f64 / denom;
-            h -= p * p.log2();
-        }
-        Value::F64(h)
-    }
-}
-
-// ─── DistanceFromHomeState (AGG-GEO-06) ──────────────────────────────────────
+// ─── DistanceFromHomeState (AGG-GEO-04, renumbered from 06 after Plan 19.2-06) ─
 
 /// Distance (km) of the *current* event from the running centroid of the last
 /// `samples` events for this entity.
@@ -634,48 +514,9 @@ mod tests {
         );
     }
 
-    // ── UniqueCellsState ─────────────────────────────────────────────────────
-
-    #[test]
-    fn unique_cells_counts_distinct_cells() {
-        let mut s = UniqueCellsState::with_fields("lat".into(), "lon".into(), 10);
-        s.update(&row_geo(0.05, 0.05), true);
-        s.update(&row_geo(0.07, 0.05), true); // same cell as first
-        s.update(&row_geo(1.0, 0.0), true); // different cell
-        s.update(&row_geo(2.0, 2.0), true); // different cell
-        assert_eq!(s.query(), Value::I64(3));
-    }
-
-    // ── GeoEntropyState ──────────────────────────────────────────────────────
-
-    #[test]
-    fn geo_entropy_uniform_distribution_high_entropy() {
-        let mut s = GeoEntropyState::with_fields("lat".into(), "lon".into(), 10);
-        for &(lat, lon) in &[(0.05, 0.05), (1.0, 0.0), (2.0, 2.0), (3.0, 3.0)] {
-            s.update(&row_geo(lat, lon), true);
-        }
-        match s.query() {
-            Value::F64(h) => assert!(
-                (h - 2.0).abs() < 1e-9,
-                "expected H=2.0 bits for uniform 4-cell distribution, got {h}"
-            ),
-            _ => panic!(),
-        }
-    }
-
-    #[test]
-    fn geo_entropy_single_cell_zero_entropy() {
-        let mut s = GeoEntropyState::with_fields("lat".into(), "lon".into(), 10);
-        for _ in 0..5 {
-            s.update(&row_geo(0.05, 0.05), true);
-        }
-        match s.query() {
-            Value::F64(h) => assert!(h.abs() < 1e-9, "expected H=0 for single cell, got {h}"),
-            _ => panic!(),
-        }
-    }
-
     // ── DistanceFromHomeState ────────────────────────────────────────────────
+    // (UniqueCellsState + GeoEntropyState tests removed in Plan 19.2-06 D-05;
+    // recipe pattern: count_distinct(quadkey(lat, lon)) + entropy(quadkey(lat, lon)))
 
     #[test]
     fn distance_from_home_uses_centroid_of_last_n() {

@@ -87,10 +87,7 @@ fn geo_agg_nodes(
         registered_at_version: 0,
     };
 
-    vec![
-        PayloadNode::Event(event),
-        PayloadNode::Derivation(deriv),
-    ]
+    vec![PayloadNode::Event(event), PayloadNode::Derivation(deriv)]
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -201,5 +198,9 @@ fn test_quadkey_returns_deterministic_cell_id() {
     let r_zoom0 = (b.eval)(&[lat.clone(), lon.clone(), Value::I64(0)]);
     assert_eq!(r_zoom0, Value::Null, "zoom=0 must return Null");
     let r_zoom25 = (b.eval)(&[lat, lon, Value::I64(25)]);
-    assert_eq!(r_zoom25, Value::Null, "zoom=25 must return Null (max is 24)");
+    assert_eq!(
+        r_zoom25,
+        Value::Null,
+        "zoom=25 must return Null (max is 24)"
+    );
 }

@@ -2,7 +2,11 @@
 //!
 //! Bench groups (D-10 in 11-CONTEXT.md):
 //!   buffer/{histogram,hour_of_day_histogram,seasonal_deviation,most_recent_n,reservoir_sample}/update
-//!   geo/{geo_velocity,unique_cells,distance_from_home}/update
+//!   geo/{geo_velocity,geo_distance,distance_from_home}/update
+//!
+//! Plan 19.2-06 (D-05): unique_cells + geo_entropy benches removed (ops removed from catalogue).
+//! Recipe replacements (count_distinct(quadkey) + entropy(quadkey)) are covered by Plan 19.2-08
+//! apply_path_bench.rs on the fraud-team pipeline shape.
 //!
 //! Per-bench rows captured to .planning/phases/11-bounded-buffer-geo-operators/11-perf-row.md
 //! after running `cargo bench -p beava-core --bench phase11_buffer_geo`.
@@ -11,9 +15,7 @@ use beava_core::agg_buffer::{
     DowHourHistogramState, EventTypeMixState, HistogramState, HourOfDayHistogramState,
     MostRecentNState, ReservoirSampleState, SeasonalDeviationState,
 };
-use beava_core::agg_geo::{
-    DistanceFromHomeState, GeoDistanceState, GeoEntropyState, GeoVelocityState, UniqueCellsState,
-};
+use beava_core::agg_geo::{DistanceFromHomeState, GeoDistanceState, GeoVelocityState};
 use beava_core::row::{Row, Value};
 use criterion::{criterion_group, criterion_main, Criterion};
 
@@ -127,26 +129,6 @@ fn bench_geo_distance(c: &mut Criterion) {
     });
 }
 
-fn bench_unique_cells(c: &mut Criterion) {
-    let mut s = UniqueCellsState::with_fields("lat".into(), "lon".into(), 100);
-    let r = row_geo(40.7128, -74.0060);
-    c.bench_function("geo/unique_cells/update", |b| {
-        b.iter(|| {
-            s.update(std::hint::black_box(&r), true);
-        });
-    });
-}
-
-fn bench_geo_entropy(c: &mut Criterion) {
-    let mut s = GeoEntropyState::with_fields("lat".into(), "lon".into(), 100);
-    let r = row_geo(40.7128, -74.0060);
-    c.bench_function("geo/geo_entropy/update", |b| {
-        b.iter(|| {
-            s.update(std::hint::black_box(&r), true);
-        });
-    });
-}
-
 fn bench_distance_from_home(c: &mut Criterion) {
     let mut s = DistanceFromHomeState::with_fields("lat".into(), "lon".into(), 8);
     for i in 0..8 {
@@ -171,8 +153,6 @@ criterion_group!(
     bench_reservoir_sample,
     bench_geo_velocity,
     bench_geo_distance,
-    bench_unique_cells,
-    bench_geo_entropy,
     bench_distance_from_home,
 );
 criterion_main!(buffer_geo);

@@ -491,18 +491,15 @@
                 }
               },
               "unique_cells_24h": {
-                "op": "unique_cells",
+                "op": "count_distinct",
                 "params": {
-                  "lat": "lat",
-                  "lon": "lon",
-                  "precision": 7
+                  "expr": "quadkey(lat, lon, 7)"
                 }
               },
               "geo_entropy_24h": {
-                "op": "geo_entropy",
+                "op": "entropy",
                 "params": {
-                  "lat": "lat",
-                  "lon": "lon"
+                  "expr": "quadkey(lat, lon, 7)"
                 }
               },
               "dist_from_home": {

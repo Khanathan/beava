@@ -46,7 +46,7 @@ Grouped by theme. Every entry is a hypothesis until shipped + used in production
 - **Velocity / trend:** `bv.rate_of_change`, `bv.inter_arrival_stats`, `bv.burst_count`, `bv.delta_from_prev`, `bv.trend`, `bv.trend_residual`, `bv.outlier_count`, `bv.value_change_count`
 - **Recency / identity:** `bv.streak`, `bv.max_streak`, `bv.negative_streak`, `bv.time_since`, `bv.first_seen`, `bv.last_seen`, `bv.age`, `bv.has_seen`, `bv.first_seen_in_window`, `bv.time_since_last_n`
 - **Bounded buffers:** `bv.histogram`, `bv.hour_of_day_histogram`, `bv.dow_hour_histogram`, `bv.seasonal_deviation`, `bv.event_type_mix`, `bv.most_recent_n`, `bv.reservoir_sample`
-- **Geo:** `bv.geo_velocity`, `bv.geo_distance`, `bv.geo_spread`, `bv.unique_cells`, `bv.geo_entropy`, `bv.distance_from_home`
+- **Geo:** `bv.geo_velocity`, `bv.geo_distance`, `bv.geo_spread`, `bv.distance_from_home` (Plan 19.2-06: `bv.unique_cells` + `bv.geo_entropy` removed; use `count_distinct(quadkey(lat,lon,zoom))` + `entropy(quadkey(...))` recipe instead)
 - **Z-score at current event:** `bv.z_score` (uses running baseline of that entity)
 
 **D. Durability + recovery**

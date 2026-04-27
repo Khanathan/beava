@@ -1,6 +1,6 @@
 {
   "name": "geo",
-  "description": "Phase 11 geo+buffer shape. Exercises geo_velocity + unique_cells + most_recent_n. Heavier than simple-fraud (haversine math + buffer state).",
+  "description": "Phase 11 geo+buffer shape. Exercises geo_velocity + geo_distance + most_recent_n. Plan 19.2-06: unique_cells removed from catalogue; geo_distance used instead for cardinality-free geo coverage.",
   "register": {
     "nodes": [
       {
@@ -29,7 +29,7 @@
             "keys": ["user_id"],
             "agg": {
               "kmh": { "op": "geo_velocity", "params": {"lat": "lat", "lon": "lon"} },
-              "cells": { "op": "unique_cells", "params": {"lat": "lat", "lon": "lon", "precision": 10} },
+              "path_km": { "op": "geo_distance", "params": {"lat": "lat", "lon": "lon"} },
               "last5": { "op": "most_recent_n", "params": {"field": "amount", "n": 5} }
             }
           }
@@ -38,7 +38,7 @@
           "fields": {
             "user_id": "str",
             "kmh": "f64",
-            "cells": "i64",
+            "path_km": "f64",
             "last5": "str"
           },
           "optional_fields": []
@@ -48,7 +48,7 @@
     ]
   },
   "event_name": "GeoTxn",
-  "features": ["kmh", "cells", "last5"],
+  "features": ["kmh", "path_km", "last5"],
   "key_field": "user_id",
   "extra_fields": {
     "lat": "f64",

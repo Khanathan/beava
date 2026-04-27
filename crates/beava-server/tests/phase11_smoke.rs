@@ -1,8 +1,12 @@
 //! Phase 11 end-to-end smoke test (SC3): structured outputs round-trip through
 //! `POST /register` + `POST /dev/apply_events` + `GET /get/{feature}/{key}`.
 //!
-//! Covers all 13 Phase 11 operators registered in a single payload, then
-//! verifies each operator's output type and structured envelope.
+//! Covers Phase 11 operators registered in a single payload, then verifies each
+//! operator's output type and structured envelope.
+//!
+//! Plan 19.2-06 (D-05): unique_cells + geo_entropy removed from operator
+//! catalogue; replaced by count_distinct(quadkey(lat, lon, zoom)) + entropy(quadkey(...))
+//! recipe pattern, matching the migration in fraud-team.json and geo.json bench configs.
 //!
 //! Geo math is verified against the haversine crate (cited in
 //! `crates/beava-core/src/agg_geo.rs::haversine_nyc_to_london_matches_published`).
@@ -64,11 +68,12 @@ async fn call_get(r: axum::Router, uri: &str) -> (StatusCode, serde_json::Value)
     (status, json)
 }
 
-/// Build a registry + dev_state, register all 13 Phase 11 ops via /register,
-/// push a deterministic event sequence via /dev/apply_events, then GET each
-/// feature and verify its envelope shape (D-02 + Phase 11 D-01).
+/// Build a registry + dev_state, register Phase 11 ops (11, down from 13 after
+/// Plan 19.2-06 D-05 removed unique_cells + geo_entropy) via /register, push a
+/// deterministic event sequence via /dev/apply_events, then GET each feature and
+/// verify its envelope shape (D-02 + Phase 11 D-01).
 #[tokio::test]
-async fn all_thirteen_ops_round_trip_through_http() {
+async fn all_eleven_ops_round_trip_through_http() {
     let registry = Arc::new(Registry::new());
     let dev_state = DevAggState::new(registry.clone());
 
@@ -80,7 +85,10 @@ async fn all_thirteen_ops_round_trip_through_http() {
         Some(dev_state.clone()),
     );
 
-    // ── 1. Register the event + a derivation that contains all 13 Phase 11 ops ─
+    // ── 1. Register the event + a derivation with the 11 surviving Phase 11 ops ─
+    // Note: unique_cells + geo_entropy removed in Plan 19.2-06 (D-05).
+    // Geo cell cardinality / entropy now handled via count_distinct(quadkey(...))
+    // and entropy(quadkey(...)) recipe pattern in derived expressions.
     let payload = serde_json::json!({
         "nodes": [
             {
@@ -115,8 +123,6 @@ async fn all_thirteen_ops_round_trip_through_http() {
                     "kmh":              {"op": "geo_velocity",         "params": {"lat": "lat", "lon": "lon"}},
                     "path_km":          {"op": "geo_distance",         "params": {"lat": "lat", "lon": "lon"}},
                     "spread_km":        {"op": "geo_spread",           "params": {"lat": "lat", "lon": "lon"}},
-                    "n_cells":          {"op": "unique_cells",         "params": {"lat": "lat", "lon": "lon", "precision": 10}},
-                    "geo_h":            {"op": "geo_entropy",          "params": {"lat": "lat", "lon": "lon", "precision": 10}},
                     "home_dist":        {"op": "distance_from_home",   "params": {"lat": "lat", "lon": "lon", "samples": 5}}
                 }}],
                 "schema": {
@@ -132,8 +138,6 @@ async fn all_thirteen_ops_round_trip_through_http() {
                         "kmh":         "f64",
                         "path_km":     "f64",
                         "spread_km":   "f64",
-                        "n_cells":     "i64",
-                        "geo_h":       "f64",
                         "home_dist":   "f64"
                     },
                     "optional_fields": []
@@ -262,22 +266,6 @@ async fn all_thirteen_ops_round_trip_through_http() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["value"].as_f64().unwrap() > 0.0);
 
-    // n_cells (unique_cells → I64)
-    let (status, body) = call_get(r.clone(), "/get/n_cells/alice").await;
-    assert_eq!(status, StatusCode::OK);
-    let n = body["value"].as_i64().expect("n_cells i64");
-    // precision=10, cells: floor(40.7*10),floor(-74.0*10) etc — 4 distinct cells
-    assert!((3..=6).contains(&n), "n_cells expected ~4, got {n}");
-
-    // geo_h (geo_entropy → F64)
-    let (status, body) = call_get(r.clone(), "/get/geo_h/alice").await;
-    assert_eq!(status, StatusCode::OK);
-    let h = body["value"].as_f64().expect("geo_h F64");
-    assert!(
-        h > 0.0,
-        "entropy must be positive across distinct cells, got {h}"
-    );
-
     // home_dist (distance_from_home → F64)
     let (status, body) = call_get(r.clone(), "/get/home_dist/alice").await;
     assert_eq!(status, StatusCode::OK);
@@ -285,7 +273,8 @@ async fn all_thirteen_ops_round_trip_through_http() {
 }
 
 /// SC4 (replay determinism): pushing the same event sequence twice into two
-/// fresh registries produces identical query results across all 13 ops.
+/// fresh registries produces identical query results for geo_distance + reservoir_sample.
+/// Plan 19.2-06: unique_cells removed; geo_distance used instead for determinism check.
 #[tokio::test]
 async fn replay_determinism_across_two_runs() {
     let run = || async {
@@ -302,10 +291,10 @@ async fn replay_determinism_across_two_runs() {
                 {"kind":"event","name":"E","schema":{"fields":{"event_time":"i64","u":"str","x":"f64","lat":"f64","lon":"f64"},"optional_fields":[]},"event_time_field":"event_time"},
                 {"kind":"derivation","name":"D","output_kind":"table","upstreams":["E"],
                  "ops":[{"op":"group_by","keys":["u"],"agg":{
-                    "n_cells":{"op":"unique_cells","params":{"lat":"lat","lon":"lon","precision":100}},
+                    "path_km":{"op":"geo_distance","params":{"lat":"lat","lon":"lon"}},
                     "sample":{"op":"reservoir_sample","params":{"field":"x","k":3}}
                  }}],
-                 "schema":{"fields":{"u":"str","n_cells":"i64","sample":"str"},"optional_fields":[]},
+                 "schema":{"fields":{"u":"str","path_km":"f64","sample":"str"},"optional_fields":[]},
                  "table_primary_key":["u"]}
             ]
         });
@@ -320,13 +309,13 @@ async fn replay_determinism_across_two_runs() {
             let (s, _) = call_post(r.clone(), "/dev/apply_events", body).await;
             assert_eq!(s, StatusCode::OK);
         }
-        let (_, b1) = call_get(r.clone(), "/get/n_cells/u1").await;
+        let (_, b1) = call_get(r.clone(), "/get/path_km/u1").await;
         let (_, b2) = call_get(r.clone(), "/get/sample/u1").await;
         (b1["value"].clone(), b2["value"].clone())
     };
     let (r1_n, r1_s) = run().await;
     let (r2_n, r2_s) = run().await;
-    assert_eq!(r1_n, r2_n, "n_cells must replay identically");
+    assert_eq!(r1_n, r2_n, "path_km must replay identically");
     assert_eq!(
         r1_s, r2_s,
         "reservoir sample must replay identically (D-06)"

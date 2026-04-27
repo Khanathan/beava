@@ -299,12 +299,10 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "event_type_mix" => Some(AggKind::EventTypeMix),
         "most_recent_n" => Some(AggKind::MostRecentN),
         "reservoir_sample" => Some(AggKind::ReservoirSample),
-        // Phase 11 geo operators (AGG-GEO-01..06)
+        // Phase 11 geo operators (AGG-GEO-01..04; unique_cells + geo_entropy removed in Plan 19.2-06)
         "geo_velocity" => Some(AggKind::GeoVelocity),
         "geo_distance" => Some(AggKind::GeoDistance),
         "geo_spread" => Some(AggKind::GeoSpread),
-        "unique_cells" => Some(AggKind::UniqueCells),
-        "geo_entropy" => Some(AggKind::GeoEntropy),
         "distance_from_home" => Some(AggKind::DistanceFromHome),
         _ => None,
     }
@@ -357,8 +355,6 @@ fn agg_kind_rejects_window(kind: AggKind) -> bool {
             | AggKind::GeoVelocity
             | AggKind::GeoDistance
             | AggKind::GeoSpread
-            | AggKind::UniqueCells
-            | AggKind::GeoEntropy
             | AggKind::DistanceFromHome
     )
 }
