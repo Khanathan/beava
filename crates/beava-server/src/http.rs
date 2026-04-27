@@ -130,7 +130,10 @@ pub fn router_with_push(
             }))
             .merge(dev_apply_ops_router(registry.clone()))
             .merge(dev_apply_events_router(agg_state.clone()))
-            .merge(feature_query_router(FeatureQueryState::new(agg_state)));
+            .merge(feature_query_router(FeatureQueryState::new(agg_state)))
+            // Plan 19.2-07 (D-07): per-kind cost endpoint. Feature-gated here
+            // (only mounted when dev_endpoints_enabled). Default posture: absent.
+            .route("/debug/op-cost", get(handle_debug_op_cost));
     }
 
     // Plan 18-07 Task 7.2: stamp all data-plane responses with X-Runtime header.
@@ -149,6 +152,127 @@ async fn ready(State(flag): State<ReadinessFlag>) -> impl IntoResponse {
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "status": "starting" })),
         )
+    }
+}
+
+// ─── Plan 19.2-07 (D-07): GET /debug/op-cost ─────────────────────────────────
+//
+// Feature-gated: only mounted when `dev_endpoints_enabled = true` (i.e. when
+// the operator sets `BEAVA_DEV_ENDPOINTS=1`). Default posture: not mounted →
+// 404 in production. Mirrors Phase 15's pattern for dev/PIT-debug endpoints.
+//
+// Returns the latest TRACE_AGG per-kind snapshot as JSON:
+//
+//   {
+//     "ops": [
+//       {"kind": "Count", "tier": 1, "last_traced_ns": 25, "last_traced_count": 1},
+//       ...
+//     ],
+//     "captured_at_ms": 1714000000000
+//   }
+//
+// `ops` is empty when BEAVA_TRACE_AGG_TIMING has never been set in this process.
+// `captured_at_ms` is 0 in that case.
+//
+// The `tier` field is derived from a static `tier_for(kind)` helper that encodes
+// the post-Plan-19.2-06 tier classification (38 Tier 1 / 6 Tier 2 / 9 Tier 3).
+
+use beava_core::agg_op::AggKind;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct DebugOpCostEntry {
+    /// AggKind variant name (e.g. "Count", "UDDSketch").
+    kind: String,
+    /// Cost tier: 1 (≤40 ns), 2 (30–100 ns), or 3 (100–300 ns).
+    tier: u8,
+    /// Last traced duration for this op kind in nanoseconds.
+    last_traced_ns: u128,
+    /// Number of calls accumulated in the last traced window for this kind.
+    last_traced_count: u32,
+}
+
+#[derive(Serialize)]
+struct DebugOpCostResponse {
+    ops: Vec<DebugOpCostEntry>,
+    /// Wall-clock ms since UNIX_EPOCH of the last snapshot write. 0 if never traced.
+    captured_at_ms: u64,
+}
+
+/// GET /debug/op-cost handler (dev-only, see module comment above).
+async fn handle_debug_op_cost() -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+
+    let snap = beava_core::agg_apply::per_kind_latest();
+    let captured_at_ms = snap.captured_at_ms.load(Ordering::Relaxed);
+    let data = snap.data.lock();
+    let ops: Vec<DebugOpCostEntry> = data
+        .iter()
+        .map(|(kind, dur, cnt)| DebugOpCostEntry {
+            kind: format!("{:?}", kind),
+            tier: tier_for(*kind),
+            last_traced_ns: dur.as_nanos(),
+            last_traced_count: *cnt,
+        })
+        .collect();
+    drop(data); // release mutex before serialising
+    (
+        StatusCode::OK,
+        Json(DebugOpCostResponse {
+            ops,
+            captured_at_ms,
+        }),
+    )
+}
+
+/// Map an AggKind to its cost tier per the post-Plan-19.2-06 classification.
+///
+/// Tiers per `docs/operators/cost-class.md`:
+/// - Tier 1 (≤40 ns): 38 ops — plain register-arithmetic, direct array writes.
+/// - Tier 2 (30–100 ns): 6 ops — hashing, sqrt, haversine, small bounded DS.
+/// - Tier 3 (100–300 ns): 9 ops — BTreeMap traversal, heap sift, Value clone.
+///
+/// The match is exhaustive over all 53 post-removal AggKind variants so the
+/// compiler enforces that newly added variants get a tier assignment.
+fn tier_for(kind: AggKind) -> u8 {
+    use AggKind::*;
+    match kind {
+        // ── Tier 1 (38 ops) ──────────────────────────────────────────────────
+        // Phase 5 / core (8)
+        Count | Sum | Avg | Min | Max | Variance | StdDev | Ratio
+        // Phase 8 / point + recency + streak (15)
+        | First | Last | FirstN | LastN | Lag
+        | FirstSeen | LastSeen | Age | HasSeen | TimeSince | TimeSinceLastN
+        | Streak | MaxStreak | NegativeStreak | FirstSeenInWindow
+        // Phase 9 / decay + velocity + z-score (14 + 1 = 15, minus OutlierCount)
+        | Ewma | EwVar | EwZScore | DecayedSum | DecayedCount | Twa
+        | RateOfChange | InterArrivalStats | BurstCount | DeltaFromPrev
+        | Trend | TrendResidual | ValueChangeCount | ZScore
+        // Phase 11 / buffer (3 direct-array ops only)
+        | HourOfDayHistogram | DowHourHistogram | SeasonalDeviation => 1,
+
+        // ── Tier 2 (6 ops) ───────────────────────────────────────────────────
+        // OutlierCount: Welford + sqrt (Phase 9)
+        // CountDistinct: HLL/HashSet/ExactArray modes (Phase 10)
+        // BloomMember: 7 hashes × 7 bit-sets (Phase 10)
+        // GeoVelocity / GeoDistance: haversine (Phase 11)
+        // Percentile (Exact mode ≤256): Vec push (Phase 10)
+        //   NOTE: Percentile is dual-tier; Exact mode is Tier 2, UDDSketch is Tier 3.
+        //         The AggKind is a single variant; tier_for returns Tier 2 as the
+        //         conservative (lower-cost) assignment. The snapshot reflects
+        //         real measured ns so callers can see when UDDSketch dominates.
+        OutlierCount | CountDistinct | BloomMember | GeoVelocity | GeoDistance | Percentile => 2,
+
+        // ── Tier 3 (9 ops) ───────────────────────────────────────────────────
+        // TopK: CMS + heap log-k sift (Phase 10)
+        // Entropy: BTreeMap key insert + cap logic (Phase 10)
+        // EventTypeMix: BTreeMap + AHashSet allowlist (Phase 11)
+        // Histogram: UPDATE Tier 1 but QUERY allocates a map — listed Tier 3
+        // MostRecentN / ReservoirSample: Value clone through cold cache
+        // DistanceFromHome: ring buffer write O(1) but QUERY is O(samples)
+        // GeoSpread: Welford 2D post-fix; borderline Tier 2/3 (audit keeps Tier 3)
+        TopK | Entropy | EventTypeMix | Histogram
+        | MostRecentN | ReservoirSample | DistanceFromHome | GeoSpread => 3,
     }
 }
 

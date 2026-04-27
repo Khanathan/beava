@@ -21,10 +21,43 @@
 //! In Phase 5 it is ignored (prefixed `_event_id`).  Dev-endpoint callers pass a
 //! monotonic counter (0, 1, 2, …).
 
-use crate::agg_op::{ExtractedFields, FIELD_IDX_NONE};
+use crate::agg_op::{AggKind, ExtractedFields, FIELD_IDX_NONE};
 use crate::agg_state_table::{EntityKeyShape, StateTables};
 use crate::registry::Registry;
 use crate::row::Row;
+
+// ─── Plan 19.2-07 (D-07): per-kind snapshot for /debug/op-cost ──────────────
+
+/// Process-static snapshot of the latest TRACE_AGG per-kind output.
+///
+/// Updated by `apply_event_to_aggregations` whenever `BEAVA_TRACE_AGG_TIMING=1`
+/// is active; read by the optional `GET /debug/op-cost` HTTP route.
+///
+/// Empty (data vec is empty, captured_at_ms == 0) when tracing has never been
+/// enabled in this process.
+pub struct PerKindSnapshot {
+    /// Wall-clock ms since UNIX_EPOCH at the time of the last snapshot write.
+    pub captured_at_ms: std::sync::atomic::AtomicU64,
+    /// Per-AggKind (kind, total_duration, call_count) from the most recent
+    /// TRACE_AGG measurement window.  Protected by a `parking_lot::Mutex`
+    /// because writes happen at apply-thread frequency (once per traced event)
+    /// and reads happen at HTTP scrape rate (~1 Hz from /debug/op-cost).
+    pub data: parking_lot::Mutex<Vec<(AggKind, std::time::Duration, u32)>>,
+}
+
+static PER_KIND_LATEST: std::sync::OnceLock<PerKindSnapshot> = std::sync::OnceLock::new();
+
+/// Return a reference to the process-static per-kind snapshot.
+///
+/// Initialises the singleton on first call (zero-filled, data is empty).
+/// Called by `apply_event_to_aggregations` (write path) and by the
+/// `/debug/op-cost` HTTP handler (read path).
+pub fn per_kind_latest() -> &'static PerKindSnapshot {
+    PER_KIND_LATEST.get_or_init(|| PerKindSnapshot {
+        captured_at_ms: std::sync::atomic::AtomicU64::new(0),
+        data: parking_lot::Mutex::new(Vec::new()),
+    })
+}
 
 /// Apply a single event to every aggregation whose `source_node_name` matches
 /// `source_name`.
@@ -245,6 +278,23 @@ pub fn apply_event_to_aggregations(
             total.as_nanos(),
             per_kind_str,
         );
+
+        // Plan 19.2-07 (D-07): snapshot per_kind data for /debug/op-cost.
+        // Written once per traced event under the mutex. Mutex contention is
+        // negligible: writes at most once per event (trace-gated), reads at
+        // HTTP scrape rate (~1 Hz from /debug/op-cost).
+        let snap = per_kind_latest();
+        snap.captured_at_ms.store(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        {
+            let mut data = snap.data.lock();
+            *data = per_kind.clone();
+        }
     }
 }
 

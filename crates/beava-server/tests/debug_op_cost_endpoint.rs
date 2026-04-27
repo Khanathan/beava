@@ -49,6 +49,7 @@ async fn get(r: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
     }
 }
 
+#[allow(dead_code)] // retained for future tests that push events before querying
 async fn post_json(
     r: axum::Router,
     uri: &str,
