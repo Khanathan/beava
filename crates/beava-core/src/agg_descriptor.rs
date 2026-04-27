@@ -46,6 +46,12 @@ pub struct NamedAggOp {
 /// registry's monotonic `next_agg_id` counter. Used as an O(1) index into the
 /// `Vec<AggStateTable>` that replaces the BTreeMap in `DevAggState.state_tables`.
 /// Snapshot serializer skips it (re-derived from registry order on replay).
+///
+/// Plan 19.2-01 (D-01): `field_names` is the ordered list of distinct field
+/// names referenced by features in this aggregation. Built by
+/// `Registry::resolve_field_indices` at registration time. Each feature's
+/// `descriptor.field_idx` is an index into this list. The apply-loop uses
+/// `field_names` to drive pre-extraction.
 #[derive(Debug, Clone)]
 pub struct AggregationDescriptor {
     /// Derivation node name — the Table this aggregation produces.
@@ -63,6 +69,12 @@ pub struct AggregationDescriptor {
     /// Default is 0 (placeholder); the registry always overwrites this at
     /// `apply_registration` time for newly-inserted aggregations.
     pub agg_id: u32,
+    /// Plan 19.2-01 (D-01): distinct field names referenced by features in this
+    /// aggregation, in resolution order. Each feature with `field: Some(fname)`
+    /// resolves `fname` to an index into this Vec. Empty if no feature references
+    /// a field (e.g. count-only aggregation). Populated by
+    /// `Registry::resolve_field_indices` at registration time.
+    pub field_names: Vec<String>,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -84,6 +96,7 @@ mod tests {
             sigma: None,
             sketch_params: None,
             ext: Default::default(),
+            field_idx: crate::agg_op::FIELD_IDX_NONE,
         }
     }
 
@@ -118,6 +131,7 @@ mod tests {
                 descriptor: count_desc(),
             }],
             agg_id: 0,
+            field_names: vec![],
         };
         assert_eq!(desc.node_name, "user_stats");
         assert_eq!(desc.source_node_name, "transactions");

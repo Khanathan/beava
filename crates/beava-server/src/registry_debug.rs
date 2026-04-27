@@ -473,6 +473,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         }
     }
 
@@ -611,6 +612,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
 
         // 2. Build and compile the derivation.
@@ -716,6 +718,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
 
         let mut wc_exprs = BTreeMap::new();

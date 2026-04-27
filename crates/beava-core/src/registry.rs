@@ -62,6 +62,16 @@ pub struct EventDescriptor {
     /// behaves intuitively even across different allocations.
     #[serde(skip, default = "default_event_name_arc")]
     pub name_arc: Arc<str>,
+    /// Plan 19.2-01 (D-01): ordered list of distinct field names referenced by
+    /// ALL aggregations that source from this event. Built as the union of all
+    /// `AggregationDescriptor.field_names` lists across aggs for this source.
+    /// Each `AggOpDescriptor.field_idx` is an index into this per-event list.
+    /// The apply-loop pre-extracts `extracted[i] = row.get(apply_field_names[i])`
+    /// once per event — O(distinct_fields) total — then each feature reads
+    /// `extracted[feature.descriptor.field_idx]` in O(1).
+    /// Populated by `Registry::apply_registration`; client JSON omits it.
+    #[serde(skip, default)]
+    pub apply_field_names: Vec<String>,
 }
 
 impl EventDescriptor {
@@ -397,18 +407,39 @@ impl Registry {
                         // index.
                         // Plan 18-16: assign a stable u32 agg_id from the
                         // monotonic counter and write it into the descriptor
-                        // before inserting. We must Arc::make_mut (or
-                        // clone+mutate) since the caller passed Arc<Desc>.
+                        // before inserting. We must clone+mutate since the
+                        // caller passed Arc<Desc>.
                         if let Some(agg) = agg_map.remove(&d.name) {
                             newly_inserted_agg_names.push(d.name.clone());
                             // Assign the next available agg_id.
                             let mut agg_owned = (*agg).clone();
                             agg_owned.agg_id = w.next_agg_id;
                             w.next_agg_id += 1;
+
+                            // Plan 19.2-01 (D-01): resolve field indices at registration time.
+                            // Look up the source event's schema to validate field references
+                            // and populate field_idx on each feature descriptor, plus
+                            // build agg.field_names (the per-agg distinct-fields list).
+                            // `field_idx` indexes into `agg.field_names`; the apply loop
+                            // pre-extracts by iterating `agg.field_names` once per event.
+                            // Silently skip if the source event is not yet registered
+                            // (register_validate enforces ordering before we reach here).
+                            if let Some(src_event) = w.events.get(&agg_owned.source_node_name) {
+                                let schema = src_event.schema.clone();
+                                // Ignore errors: register_validate already checked field refs.
+                                // Any remaining mismatch is a latent inconsistency — don't
+                                // panic in the write path.
+                                let _ = Self::resolve_field_indices_for_agg_mut_inner(
+                                    &mut agg_owned,
+                                    &schema,
+                                );
+                            }
+
                             let agg = Arc::new(agg_owned);
                             // Update aggregations_by_source for O(1) lookup at apply time.
+                            let source_name = agg.source_node_name.clone();
                             w.aggregations_by_source
-                                .entry(agg.source_node_name.clone())
+                                .entry(source_name)
                                 .or_default()
                                 .push(Arc::clone(&agg));
                             w.compiled_aggregations.insert(d.name.clone(), agg);
@@ -447,6 +478,155 @@ impl Registry {
 
         w.version = new_version;
         new_version
+    }
+
+    /// Plan 19.2-01 (D-01): validate field references in `agg` against `schema`
+    /// and return an error if any field is missing. Does NOT mutate the descriptor.
+    /// Use `resolve_field_indices_for_agg_mut` for the in-place mutation path.
+    ///
+    /// Error message format:
+    ///   `"aggregation '{node}': field '{fname}' referenced by feature '{feature}' is not in source schema for event '{source}'"`
+    pub fn resolve_field_indices_for_agg(
+        &self,
+        agg: &crate::agg_descriptor::AggregationDescriptor,
+        schema: &crate::schema::EventSchema,
+    ) -> Result<(), String> {
+        for feat in &agg.features {
+            if let Some(fname) = &feat.descriptor.field {
+                if !schema.fields.contains_key(fname.as_str()) {
+                    return Err(format!(
+                        "aggregation '{}': field '{}' referenced by feature '{}' is not in source schema for event '{}'",
+                        agg.node_name, fname, feat.feature_name, agg.source_node_name
+                    ));
+                }
+            }
+            // Geo ops: validate ext.lat_field + ext.lon_field if present.
+            if let Some(lat) = &feat.descriptor.ext.lat_field {
+                if !schema.fields.contains_key(lat.as_str()) {
+                    return Err(format!(
+                        "aggregation '{}': geo lat_field '{}' referenced by feature '{}' is not in source schema for event '{}'",
+                        agg.node_name, lat, feat.feature_name, agg.source_node_name
+                    ));
+                }
+            }
+            if let Some(lon) = &feat.descriptor.ext.lon_field {
+                if !schema.fields.contains_key(lon.as_str()) {
+                    return Err(format!(
+                        "aggregation '{}': geo lon_field '{}' referenced by feature '{}' is not in source schema for event '{}'",
+                        agg.node_name, lon, feat.feature_name, agg.source_node_name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Plan 19.2-01 (D-01): resolve field indices in-place on `agg`.
+    ///
+    /// For each feature with `field: Some(fname)`:
+    ///   - Validates that `fname` exists in `schema`. Returns `Err` if not.
+    ///   - Assigns `feature.descriptor.field_idx` as the index into
+    ///     `agg.field_names` (inserting if not already present).
+    ///   - Two features referencing the same field get the same `field_idx`.
+    ///
+    /// Features with `field: None` keep `field_idx = FIELD_IDX_NONE`.
+    ///
+    /// Also validates geo `ext.lat_field` + `ext.lon_field` for existence
+    /// (but does NOT assign lat_idx/lon_idx — that's Plan 19.2-06 Task 3).
+    ///
+    /// Populates `agg.field_names` with the distinct field list in resolution order.
+    pub fn resolve_field_indices_for_agg_mut(
+        &self,
+        agg: &mut crate::agg_descriptor::AggregationDescriptor,
+        schema: &crate::schema::EventSchema,
+    ) -> Result<(), String> {
+        use crate::agg_op::FIELD_IDX_NONE;
+
+        // First pass: validate all field references exist.
+        self.resolve_field_indices_for_agg(agg, schema)?;
+
+        // Second pass: build field_names and assign field_idx to each feature.
+        let mut field_names: Vec<String> = Vec::new();
+
+        for feat in &mut agg.features {
+            if let Some(fname) = &feat.descriptor.field {
+                let idx = if let Some(pos) = field_names.iter().position(|f| f == fname) {
+                    pos
+                } else {
+                    let pos = field_names.len();
+                    field_names.push(fname.clone());
+                    pos
+                };
+                feat.descriptor.field_idx = idx as u8;
+            } else {
+                feat.descriptor.field_idx = FIELD_IDX_NONE;
+            }
+        }
+
+        agg.field_names = field_names;
+        Ok(())
+    }
+
+    /// Plan 19.2-01 (D-01): static (no `&self`) version of
+    /// `resolve_field_indices_for_agg_mut`, called inside the write-locked
+    /// `apply_registration` closure where borrowing `self` is not possible.
+    ///
+    /// Same contract as `resolve_field_indices_for_agg_mut`:
+    ///   - Validates field refs against `schema`. Returns `Err` on first missing field.
+    ///   - Assigns `field_idx` (index into the per-agg `agg.field_names` list).
+    ///   - Populates `agg.field_names` with the distinct ordered field list.
+    fn resolve_field_indices_for_agg_mut_inner(
+        agg: &mut crate::agg_descriptor::AggregationDescriptor,
+        schema: &crate::schema::EventSchema,
+    ) -> Result<(), String> {
+        use crate::agg_op::FIELD_IDX_NONE;
+
+        // Validate all field references first.
+        for feat in &agg.features {
+            if let Some(fname) = &feat.descriptor.field {
+                if !schema.fields.contains_key(fname.as_str()) {
+                    return Err(format!(
+                        "aggregation '{}': field '{}' referenced by feature '{}' is not in source schema for event '{}'",
+                        agg.node_name, fname, feat.feature_name, agg.source_node_name
+                    ));
+                }
+            }
+            if let Some(lat) = &feat.descriptor.ext.lat_field {
+                if !schema.fields.contains_key(lat.as_str()) {
+                    return Err(format!(
+                        "aggregation '{}': geo lat_field '{}' referenced by feature '{}' is not in source schema for event '{}'",
+                        agg.node_name, lat, feat.feature_name, agg.source_node_name
+                    ));
+                }
+            }
+            if let Some(lon) = &feat.descriptor.ext.lon_field {
+                if !schema.fields.contains_key(lon.as_str()) {
+                    return Err(format!(
+                        "aggregation '{}': geo lon_field '{}' referenced by feature '{}' is not in source schema for event '{}'",
+                        agg.node_name, lon, feat.feature_name, agg.source_node_name
+                    ));
+                }
+            }
+        }
+
+        // Build field_names and assign field_idx.
+        let mut field_names: Vec<String> = Vec::new();
+        for feat in &mut agg.features {
+            if let Some(fname) = &feat.descriptor.field {
+                let idx = if let Some(pos) = field_names.iter().position(|f| f == fname) {
+                    pos
+                } else {
+                    let pos = field_names.len();
+                    field_names.push(fname.clone());
+                    pos
+                };
+                feat.descriptor.field_idx = idx as u8;
+            } else {
+                feat.descriptor.field_idx = FIELD_IDX_NONE;
+            }
+        }
+        agg.field_names = field_names;
+        Ok(())
     }
 
     /// Phase 7 Plan 03: install descriptors loaded from a snapshot.
@@ -683,6 +863,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 1,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let mut b = a.clone();
         b.registered_at_version = 99;
@@ -713,6 +894,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
 
         r.install_descriptors(1, vec![event_a], vec![], vec![]);
@@ -863,6 +1045,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let new_version =
             r.apply_registration(vec![PayloadNode::Event(event_a)], vec![], vec![], vec![]);
@@ -888,6 +1071,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let v1 = r.apply_registration(vec![PayloadNode::Event(e1)], vec![], vec![], vec![]);
         assert_eq!(v1, 1);
@@ -902,6 +1086,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let v2 = r.apply_registration(vec![PayloadNode::Event(e2)], vec![], vec![], vec![]);
         assert_eq!(v2, 2);
@@ -927,6 +1112,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         r.apply_registration(
             vec![PayloadNode::Event(event_a.clone())],
@@ -947,6 +1133,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let v2 = r.apply_registration(
             vec![PayloadNode::Event(event_a), PayloadNode::Event(event_b)],
@@ -981,6 +1168,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let agg_desc = AggregationDescriptor {
             node_name: "AggTable".to_string(),
@@ -1000,6 +1188,7 @@ mod tests {
                         sigma: None,
                         sketch_params: None,
                         ext: Default::default(),
+                        field_idx: crate::agg_op::FIELD_IDX_NONE,
                     },
                 },
                 NamedAggOp {
@@ -1015,10 +1204,12 @@ mod tests {
                         sigma: None,
                         sketch_params: None,
                         ext: Default::default(),
+                        field_idx: crate::agg_op::FIELD_IDX_NONE,
                     },
                 },
             ],
             agg_id: 0, // placeholder; registry overwrites at apply_registration
+            field_names: vec![],
         };
         let deriv = DerivationDescriptor {
             name: "AggTable".to_string(),
@@ -1088,6 +1279,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let agg_a = Arc::new(AggregationDescriptor {
             node_name: "AggA".to_string(),
@@ -1106,9 +1298,11 @@ mod tests {
                     sigma: None,
                     sketch_params: None,
                     ext: Default::default(),
+                    field_idx: crate::agg_op::FIELD_IDX_NONE,
                 },
             }],
             agg_id: 0,
+            field_names: vec![],
         });
         let deriv_a = DerivationDescriptor {
             name: "AggA".to_string(),
@@ -1152,6 +1346,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let agg_b = Arc::new(AggregationDescriptor {
             node_name: "AggB".to_string(),
@@ -1170,9 +1365,11 @@ mod tests {
                     sigma: None,
                     sketch_params: None,
                     ext: Default::default(),
+                    field_idx: crate::agg_op::FIELD_IDX_NONE,
                 },
             }],
             agg_id: 0,
+            field_names: vec![],
         });
         let deriv_b = DerivationDescriptor {
             name: "AggB".to_string(),
@@ -1234,6 +1431,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
 
         let agg_desc = AggregationDescriptor {
@@ -1253,9 +1451,11 @@ mod tests {
                     sigma: None,
                     sketch_params: None,
                     ext: Default::default(),
+                    field_idx: crate::agg_op::FIELD_IDX_NONE,
                 },
             }],
             agg_id: 0, // placeholder; registry overwrites at apply_registration
+            field_names: vec![],
         };
         let agg_arc = Arc::new(agg_desc);
 
@@ -1323,6 +1523,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""), // server overwrites at install; value here is a placeholder
+            apply_field_names: vec![],
         };
         r.install_descriptors(1, vec![event], vec![], vec![]);
 
@@ -1372,6 +1573,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""), // overwritten server-side at apply_registration
+            apply_field_names: vec![],
         };
         r.apply_registration(vec![PayloadNode::Event(event)], vec![], vec![], vec![]);
 
@@ -1420,9 +1622,11 @@ mod tests {
                         sigma: None,
                         sketch_params: None,
                         ext: Default::default(),
+                        field_idx: crate::agg_op::FIELD_IDX_NONE,
                     },
                 }],
                 agg_id: 0, // placeholder; registry overwrites at registration time
+                field_names: vec![],
             }
         };
 
@@ -1437,6 +1641,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 0,
                 name_arc: Arc::from(""),
+            apply_field_names: vec![],
             }
         };
 

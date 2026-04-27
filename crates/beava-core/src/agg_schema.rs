@@ -207,6 +207,7 @@ mod tests {
             sigma: None,
             sketch_params: None,
             ext: Default::default(),
+            field_idx: crate::agg_op::FIELD_IDX_NONE,
         }
     }
 
@@ -224,6 +225,7 @@ mod tests {
             group_keys: group_keys.iter().map(|s| s.to_string()).collect(),
             features,
             agg_id: 0,
+            field_names: vec![],
         }
     }
 
@@ -487,6 +489,7 @@ mod tests {
             group_keys: vec!["missing_key1".to_string(), "missing_key2".to_string()],
             features: vec![named("total", AggKind::Sum, Some("no_such_field"))],
             agg_id: 0,
+            field_names: vec![],
         };
         let errs = assert_err(propagate_aggregation_schema(&upstream, &desc));
         assert!(

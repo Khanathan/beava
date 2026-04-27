@@ -35,6 +35,7 @@ fn mk_count_op() -> AggOp {
         sigma: None,
         sketch_params: None,
         ext: Default::default(),
+        field_idx: beava_core::agg_op::FIELD_IDX_NONE,
     })
 }
 
@@ -302,6 +303,7 @@ fn snapshot_body_registry_descriptors_preserved() {
             tolerate_delay_ms: None,
             registered_at_version: 1,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         }),
     );
     inner.events.insert(
@@ -316,6 +318,7 @@ fn snapshot_body_registry_descriptors_preserved() {
             tolerate_delay_ms: None,
             registered_at_version: 2,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         }),
     );
     inner.tables.insert(
@@ -382,6 +385,7 @@ fn snapshot_body_state_tables_full_roundtrip() {
                 group_keys: vec!["user_id".to_string()],
                 features: vec![],
                 agg_id: idx as u32,
+                field_names: vec![],
             }),
         );
         let table = &mut state_tables[idx];

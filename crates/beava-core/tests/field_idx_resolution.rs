@@ -45,6 +45,7 @@ fn make_event(name: &str, schema: EventSchema) -> EventDescriptor {
         tolerate_delay_ms: None,
         registered_at_version: 0,
         name_arc: Arc::from(""),
+        apply_field_names: vec![],
     }
 }
 
@@ -101,6 +102,7 @@ fn make_agg(node_name: &str, source: &str, features: Vec<(&str, AggOpDescriptor)
             })
             .collect(),
         agg_id: 0,
+        field_names: vec![],
     }
 }
 

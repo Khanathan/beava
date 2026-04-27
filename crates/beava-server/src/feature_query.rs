@@ -408,6 +408,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
 
         // Aggregation descriptor
@@ -429,6 +430,7 @@ mod tests {
                         sigma: None,
                         sketch_params: None,
                         ext: Default::default(),
+                        field_idx: beava_core::agg_op::FIELD_IDX_NONE,
                     },
                 },
                 NamedAggOp {
@@ -444,10 +446,12 @@ mod tests {
                         sigma: None,
                         sketch_params: None,
                         ext: Default::default(),
+                        field_idx: beava_core::agg_op::FIELD_IDX_NONE,
                     },
                 },
             ],
             agg_id: 0, // placeholder; registry overwrites at apply_registration
+            field_names: vec![],
         });
 
         // Derivation descriptor

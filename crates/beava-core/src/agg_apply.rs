@@ -219,6 +219,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         }
     }
 
@@ -240,6 +241,7 @@ mod tests {
                 })
                 .collect(),
             agg_id: 0,
+            field_names: vec![],
         }
     }
 
@@ -255,6 +257,7 @@ mod tests {
             sigma: None,
             sketch_params: None,
             ext: Default::default(),
+            field_idx: crate::agg_op::FIELD_IDX_NONE,
         }
     }
 
@@ -270,6 +273,7 @@ mod tests {
             sigma: None,
             sketch_params: None,
             ext: Default::default(),
+            field_idx: crate::agg_op::FIELD_IDX_NONE,
         }
     }
 
@@ -475,6 +479,7 @@ mod tests {
                     sigma: None,
                     sketch_params: None,
                     ext: Default::default(),
+                    field_idx: crate::agg_op::FIELD_IDX_NONE,
                 },
             )],
         );
@@ -691,6 +696,7 @@ mod registry_source_tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         }
     }
 
@@ -712,9 +718,11 @@ mod registry_source_tests {
                     sigma: None,
                     sketch_params: None,
                     ext: Default::default(),
+                    field_idx: crate::agg_op::FIELD_IDX_NONE,
                 },
             }],
             agg_id: 0,
+            field_names: vec![],
         }
     }
 

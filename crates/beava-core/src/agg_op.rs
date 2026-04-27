@@ -186,6 +186,28 @@ impl AggKind {
     }
 }
 
+// ─── Field index constants ────────────────────────────────────────────────────
+
+/// Plan 19.2-01 (D-01): sentinel value for `AggOpDescriptor.field_idx` when
+/// the op has no field (Count, Ratio, HourOfDayHistogram, DowHourHistogram)
+/// or when resolution has not yet been performed.
+///
+/// Using `u8::MAX` (255) as sentinel keeps the value fitting in a byte while
+/// leaving 0..=254 for actual indices. Since Beava limits events to ≤8 inline
+/// fields (Row SmallVec capacity), indices 0..7 cover the steady-state case.
+pub const FIELD_IDX_NONE: u8 = u8::MAX;
+
+// ─── ExtractedFields ─────────────────────────────────────────────────────────
+
+/// Plan 19.2-01 (D-01): pre-extracted field values for one event, indexed
+/// by `AggOpDescriptor.field_idx`. Length matches
+/// `AggregationDescriptor.field_names`. Built ONCE per event at apply-loop
+/// entry; consumed by every per-feature update call.
+///
+/// SmallVec inline capacity = 8 — covers the common case (≤8 distinct fields)
+/// with zero heap allocation. Falls back to heap for exotic pipelines.
+pub type ExtractedFields<'a> = smallvec::SmallVec<[Option<&'a crate::row::Value>; 8]>;
+
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
 
 /// Register-time descriptor for one aggregation feature.
@@ -196,6 +218,10 @@ impl AggKind {
 /// `ext` carries Phase 11-family optional params (buckets, n, k, precision,
 /// lat_field, lon_field, samples, categories). Default = empty / no extended
 /// config so existing core ops stay source-compatible.
+///
+/// `field_idx` (Plan 19.2-01 D-01): pre-resolved index into the apply-loop's
+/// `ExtractedFields` array. Populated by `Registry::resolve_field_indices` at
+/// apply_registration time. `FIELD_IDX_NONE` (u8::MAX) = no field needed.
 #[derive(Debug, Clone)]
 pub struct AggOpDescriptor {
     pub kind: AggKind,
@@ -221,6 +247,13 @@ pub struct AggOpDescriptor {
     pub sketch_params: Option<SketchParams>,
     /// Phase 11 extended params (optional; None-valued for non-Phase-11 ops).
     pub ext: AggExtParams,
+    /// Plan 19.2-01 (D-01): pre-resolved index into the apply-loop's
+    /// `ExtractedFields` array. Populated by `Registry::resolve_field_indices`
+    /// at `apply_registration` time. Default = `FIELD_IDX_NONE`; client-supplied
+    /// JSON omits this field (resolved server-side only).
+    /// Not serialized: `AggOpDescriptor` is not a serde type; `field_idx` is
+    /// computed server-side at registration and never transported over the wire.
+    pub field_idx: u8,
 }
 
 impl Default for AggOpDescriptor {
@@ -237,6 +270,7 @@ impl Default for AggOpDescriptor {
             sigma: None,
             sketch_params: None,
             ext: AggExtParams::default(),
+            field_idx: FIELD_IDX_NONE,
         }
     }
 }

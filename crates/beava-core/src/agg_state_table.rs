@@ -418,6 +418,7 @@ mod tests {
             sigma: None,
             sketch_params: None,
             ext: Default::default(),
+            field_idx: crate::agg_op::FIELD_IDX_NONE,
         }
     }
 
@@ -433,6 +434,7 @@ mod tests {
             sigma: None,
             sketch_params: None,
             ext: Default::default(),
+            field_idx: crate::agg_op::FIELD_IDX_NONE,
         }
     }
 
@@ -454,6 +456,7 @@ mod tests {
                 })
                 .collect(),
             agg_id: 0,
+            field_names: vec![],
         }
     }
 
