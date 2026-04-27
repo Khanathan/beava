@@ -1,0 +1,1176 @@
+{
+  "name": "fraud-team",
+  "description": "Realistic YC-fintech fraud pipeline \u2014 5 event types (Txn, Login, Signup, CardAdd, Refund), 5 group_by axes (user, card, device, ip, merchant), 90 features exercising all 55 Beava ops. Mirrors industry feature-catalogues from Stripe Radar, Adyen RevenueProtect, Shopify, Tecton, Feldera. See .planning/research/fraud-feature-catalogue.md for source attribution.",
+  "register": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Txn",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "card_fp": "str",
+            "device_id": "str",
+            "ip_address": "str",
+            "ip_block": "str",
+            "merchant_id": "str",
+            "amount": "f64",
+            "currency": "str",
+            "mcc": "str",
+            "card_country": "str",
+            "ip_country": "str",
+            "billing_country": "str",
+            "lat": "f64",
+            "lon": "f64",
+            "declined": "i64",
+            "is_3ds": "i64",
+            "card_funding": "str",
+            "ssn_hash": "str"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "event",
+        "name": "Login",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "device_id": "str",
+            "ip_address": "str",
+            "success": "i64",
+            "user_agent": "str",
+            "lat": "f64",
+            "lon": "f64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "event",
+        "name": "Signup",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "email": "str",
+            "email_domain": "str",
+            "phone": "str",
+            "ssn_hash": "str",
+            "ip_address": "str",
+            "ip_block": "str",
+            "device_id": "str",
+            "dob_hash": "str"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "event",
+        "name": "CardAdd",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "card_fp": "str",
+            "bin": "str",
+            "card_country": "str",
+            "card_funding": "str",
+            "device_id": "str",
+            "ip_address": "str",
+            "success": "i64"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "event",
+        "name": "Refund",
+        "schema": {
+          "fields": {
+            "event_time": "i64",
+            "user_id": "str",
+            "card_fp": "str",
+            "amount": "f64",
+            "is_chargeback": "i64",
+            "reason_code": "str"
+          },
+          "optional_fields": []
+        },
+        "event_time_field": "event_time"
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnByUser",
+        "output_kind": "table",
+        "upstreams": [
+          "Txn"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "user_id"
+            ],
+            "agg": {
+              "txn_count_lifetime": {
+                "op": "count",
+                "params": {}
+              },
+              "txn_count_5m": {
+                "op": "count",
+                "params": {
+                  "window": "5m"
+                }
+              },
+              "txn_count_1h": {
+                "op": "count",
+                "params": {
+                  "window": "1h"
+                }
+              },
+              "txn_count_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "sum_amount_24h": {
+                "op": "sum",
+                "params": {
+                  "field": "amount",
+                  "window": "24h"
+                }
+              },
+              "sum_amount_lifetime": {
+                "op": "sum",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "avg_amount_24h": {
+                "op": "avg",
+                "params": {
+                  "field": "amount",
+                  "window": "24h"
+                }
+              },
+              "min_amount_24h": {
+                "op": "min",
+                "params": {
+                  "field": "amount",
+                  "window": "24h"
+                }
+              },
+              "max_amount_lifetime": {
+                "op": "max",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "var_amount_24h": {
+                "op": "variance",
+                "params": {
+                  "field": "amount",
+                  "window": "24h"
+                }
+              },
+              "std_amount_24h": {
+                "op": "stddev",
+                "params": {
+                  "field": "amount",
+                  "window": "24h"
+                }
+              },
+              "p99_amount_24h": {
+                "op": "percentile",
+                "params": {
+                  "field": "amount",
+                  "q": 0.99,
+                  "window": "24h"
+                }
+              },
+              "p50_amount_24h": {
+                "op": "percentile",
+                "params": {
+                  "field": "amount",
+                  "q": 0.5,
+                  "window": "24h"
+                }
+              },
+              "merchants_distinct_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "merchant_id",
+                  "window": "24h"
+                }
+              },
+              "countries_distinct_7d": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "card_country",
+                  "window": "7d"
+                }
+              },
+              "ips_distinct_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "ip_address",
+                  "window": "24h"
+                }
+              },
+              "top_merchants_24h": {
+                "op": "top_k",
+                "params": {
+                  "field": "merchant_id",
+                  "k": 5,
+                  "window": "24h"
+                }
+              },
+              "mcc_entropy_24h": {
+                "op": "entropy",
+                "params": {
+                  "field": "mcc",
+                  "window": "24h"
+                }
+              },
+              "device_seen": {
+                "op": "bloom_member",
+                "params": {
+                  "field": "device_id"
+                }
+              },
+              "amount_ewma_1h": {
+                "op": "ewma",
+                "params": {
+                  "field": "amount",
+                  "half_life": "1h"
+                }
+              },
+              "amount_ewvar_1h": {
+                "op": "ewvar",
+                "params": {
+                  "field": "amount",
+                  "half_life": "1h"
+                }
+              },
+              "amount_ew_zscore": {
+                "op": "ew_zscore",
+                "params": {
+                  "field": "amount",
+                  "half_life": "1h"
+                }
+              },
+              "amount_decayed_sum_24h": {
+                "op": "decayed_sum",
+                "params": {
+                  "field": "amount",
+                  "half_life": "24h"
+                }
+              },
+              "txn_decayed_count_24h": {
+                "op": "decayed_count",
+                "params": {
+                  "half_life": "24h"
+                }
+              },
+              "amount_twa_5m": {
+                "op": "twa",
+                "params": {
+                  "field": "amount",
+                  "window": "5m"
+                }
+              },
+              "amount_rate_5m": {
+                "op": "rate_of_change",
+                "params": {
+                  "field": "amount",
+                  "window": "5m"
+                }
+              },
+              "inter_arrival_1h": {
+                "op": "inter_arrival_stats",
+                "params": {
+                  "window": "1h"
+                }
+              },
+              "burst_count_5m": {
+                "op": "burst_count",
+                "params": {
+                  "sub_window": "10s",
+                  "window": "5m"
+                }
+              },
+              "amount_delta": {
+                "op": "delta_from_prev",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "amount_trend_5m": {
+                "op": "trend",
+                "params": {
+                  "field": "amount",
+                  "window": "5m"
+                }
+              },
+              "amount_trend_resid_5m": {
+                "op": "trend_residual",
+                "params": {
+                  "field": "amount",
+                  "window": "5m"
+                }
+              },
+              "amount_outliers_5m": {
+                "op": "outlier_count",
+                "params": {
+                  "field": "amount",
+                  "window": "5m"
+                }
+              },
+              "device_change_count_5m": {
+                "op": "value_change_count",
+                "params": {
+                  "field": "device_id",
+                  "window": "5m"
+                }
+              },
+              "amount_z_score": {
+                "op": "z_score",
+                "params": {
+                  "field": "amount",
+                  "window": "24h"
+                }
+              },
+              "first_seen": {
+                "op": "first_seen",
+                "params": {}
+              },
+              "last_seen": {
+                "op": "last_seen",
+                "params": {}
+              },
+              "age": {
+                "op": "age",
+                "params": {}
+              },
+              "has_seen": {
+                "op": "has_seen",
+                "params": {}
+              },
+              "first_amount": {
+                "op": "first",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "last_amount": {
+                "op": "last",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "first_5_merchants": {
+                "op": "first_n",
+                "params": {
+                  "field": "merchant_id",
+                  "n": 5
+                }
+              },
+              "last_5_amounts": {
+                "op": "last_n",
+                "params": {
+                  "field": "amount",
+                  "n": 5
+                }
+              },
+              "amount_lag1": {
+                "op": "lag",
+                "params": {
+                  "field": "amount",
+                  "n": 1
+                }
+              },
+              "time_since_last": {
+                "op": "time_since",
+                "params": {}
+              },
+              "time_since_last_5": {
+                "op": "time_since_last_n",
+                "params": {
+                  "n": 5
+                }
+              },
+              "first_in_24h": {
+                "op": "first_seen_in_window",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "txn_streak": {
+                "op": "streak",
+                "params": {}
+              },
+              "max_streak": {
+                "op": "max_streak",
+                "params": {}
+              },
+              "decline_streak": {
+                "op": "negative_streak",
+                "params": {
+                  "field": "declined"
+                }
+              },
+              "amount_p95_24h": {
+                "op": "percentile",
+                "params": {
+                  "field": "amount",
+                  "q": 0.95,
+                  "window": "24h"
+                }
+              },
+              "hour_hist_30d": {
+                "op": "hour_of_day_histogram",
+                "params": {}
+              },
+              "dow_hour_hist_30d": {
+                "op": "dow_hour_histogram",
+                "params": {}
+              },
+              "seasonal_dev": {
+                "op": "seasonal_deviation",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "event_mix_24h": {
+                "op": "event_type_mix",
+                "params": {
+                  "field": "mcc"
+                }
+              },
+              "recent_5_amts": {
+                "op": "most_recent_n",
+                "params": {
+                  "field": "amount",
+                  "n": 5
+                }
+              },
+              "reservoir_50": {
+                "op": "reservoir_sample",
+                "params": {
+                  "field": "amount",
+                  "k": 50
+                }
+              },
+              "geo_kmh": {
+                "op": "geo_velocity",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon"
+                }
+              },
+              "geo_dist_last": {
+                "op": "geo_distance",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon"
+                }
+              },
+              "geo_spread_24h": {
+                "op": "geo_spread",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon"
+                }
+              },
+              "unique_cells_24h": {
+                "op": "unique_cells",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon",
+                  "precision": 7
+                }
+              },
+              "geo_entropy_24h": {
+                "op": "geo_entropy",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon"
+                }
+              },
+              "dist_from_home": {
+                "op": "distance_from_home",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id": "str",
+            "txn_count_lifetime": "i64",
+            "txn_count_5m": "i64",
+            "txn_count_1h": "i64",
+            "txn_count_24h": "i64",
+            "sum_amount_24h": "f64",
+            "sum_amount_lifetime": "f64",
+            "avg_amount_24h": "f64",
+            "min_amount_24h": "f64",
+            "max_amount_lifetime": "f64",
+            "var_amount_24h": "f64",
+            "std_amount_24h": "f64",
+            "p99_amount_24h": "f64",
+            "p50_amount_24h": "f64",
+            "merchants_distinct_24h": "i64",
+            "countries_distinct_7d": "i64",
+            "ips_distinct_24h": "i64",
+            "top_merchants_24h": "json",
+            "mcc_entropy_24h": "f64",
+            "device_seen": "bool",
+            "amount_ewma_1h": "f64",
+            "amount_ewvar_1h": "f64",
+            "amount_ew_zscore": "f64",
+            "amount_decayed_sum_24h": "f64",
+            "txn_decayed_count_24h": "f64",
+            "amount_twa_5m": "f64",
+            "amount_rate_5m": "f64",
+            "inter_arrival_1h": "json",
+            "burst_count_5m": "i64",
+            "amount_delta": "f64",
+            "amount_trend_5m": "f64",
+            "amount_trend_resid_5m": "f64",
+            "amount_outliers_5m": "i64",
+            "device_change_count_5m": "i64",
+            "amount_z_score": "f64",
+            "first_seen": "i64",
+            "last_seen": "i64",
+            "age": "i64",
+            "has_seen": "bool",
+            "first_amount": "f64",
+            "last_amount": "f64",
+            "first_5_merchants": "json",
+            "last_5_amounts": "json",
+            "amount_lag1": "f64",
+            "time_since_last": "i64",
+            "time_since_last_5": "i64",
+            "first_in_24h": "bool",
+            "txn_streak": "i64",
+            "max_streak": "i64",
+            "decline_streak": "i64",
+            "amount_p95_24h": "f64",
+            "hour_hist_30d": "json",
+            "dow_hour_hist_30d": "json",
+            "seasonal_dev": "f64",
+            "event_mix_24h": "json",
+            "recent_5_amts": "json",
+            "reservoir_50": "json",
+            "geo_kmh": "f64",
+            "geo_dist_last": "f64",
+            "geo_spread_24h": "f64",
+            "unique_cells_24h": "i64",
+            "geo_entropy_24h": "f64",
+            "dist_from_home": "f64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "user_id"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnByCard",
+        "output_kind": "table",
+        "upstreams": [
+          "Txn"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "card_fp"
+            ],
+            "agg": {
+              "txn_per_card_1h": {
+                "op": "count",
+                "params": {
+                  "window": "1h"
+                }
+              },
+              "txn_per_card_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "decline_count_1h": {
+                "op": "count",
+                "params": {
+                  "window": "1h"
+                }
+              },
+              "small_amt_burst_5m": {
+                "op": "burst_count",
+                "params": {
+                  "sub_window": "5s",
+                  "window": "5m"
+                }
+              },
+              "decline_streak_card": {
+                "op": "negative_streak",
+                "params": {
+                  "field": "declined"
+                }
+              },
+              "card_first_seen": {
+                "op": "first_seen",
+                "params": {}
+              },
+              "card_age": {
+                "op": "age",
+                "params": {}
+              },
+              "merchants_per_card_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "merchant_id",
+                  "window": "24h"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "card_fp": "str",
+            "txn_per_card_1h": "i64",
+            "txn_per_card_24h": "i64",
+            "decline_count_1h": "i64",
+            "small_amt_burst_5m": "i64",
+            "decline_streak_card": "i64",
+            "card_first_seen": "i64",
+            "card_age": "i64",
+            "merchants_per_card_24h": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "card_fp"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnByDevice",
+        "output_kind": "table",
+        "upstreams": [
+          "Txn"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "device_id"
+            ],
+            "agg": {
+              "users_per_device_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "user_id",
+                  "window": "24h"
+                }
+              },
+              "cards_per_device_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "card_fp",
+                  "window": "24h"
+                }
+              },
+              "device_first_seen": {
+                "op": "first_seen",
+                "params": {}
+              },
+              "device_last_seen": {
+                "op": "last_seen",
+                "params": {}
+              },
+              "device_age": {
+                "op": "age",
+                "params": {}
+              },
+              "device_txn_count_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "device_id": "str",
+            "users_per_device_24h": "i64",
+            "cards_per_device_24h": "i64",
+            "device_first_seen": "i64",
+            "device_last_seen": "i64",
+            "device_age": "i64",
+            "device_txn_count_24h": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "device_id"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnByIp",
+        "output_kind": "table",
+        "upstreams": [
+          "Txn"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "ip_address"
+            ],
+            "agg": {
+              "txn_per_ip_1h": {
+                "op": "count",
+                "params": {
+                  "window": "1h"
+                }
+              },
+              "txn_per_ip_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "cards_per_ip_1h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "card_fp",
+                  "window": "1h"
+                }
+              },
+              "users_per_ip_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "user_id",
+                  "window": "24h"
+                }
+              },
+              "ip_first_seen": {
+                "op": "first_seen",
+                "params": {}
+              },
+              "ip_age": {
+                "op": "age",
+                "params": {}
+              },
+              "amount_sum_per_ip_1h": {
+                "op": "sum",
+                "params": {
+                  "field": "amount",
+                  "window": "1h"
+                }
+              },
+              "ip_top_users": {
+                "op": "top_k",
+                "params": {
+                  "field": "user_id",
+                  "k": 3,
+                  "window": "24h"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "ip_address": "str",
+            "txn_per_ip_1h": "i64",
+            "txn_per_ip_24h": "i64",
+            "cards_per_ip_1h": "i64",
+            "users_per_ip_24h": "i64",
+            "ip_first_seen": "i64",
+            "ip_age": "i64",
+            "amount_sum_per_ip_1h": "f64",
+            "ip_top_users": "json"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "ip_address"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "TxnByMerchant",
+        "output_kind": "table",
+        "upstreams": [
+          "Txn"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "merchant_id"
+            ],
+            "agg": {
+              "txn_per_merchant_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "users_per_merchant_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "user_id",
+                  "window": "24h"
+                }
+              },
+              "merchant_amount_p99_24h": {
+                "op": "percentile",
+                "params": {
+                  "field": "amount",
+                  "q": 0.99,
+                  "window": "24h"
+                }
+              },
+              "merchant_first_seen": {
+                "op": "first_seen",
+                "params": {}
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "merchant_id": "str",
+            "txn_per_merchant_24h": "i64",
+            "users_per_merchant_24h": "i64",
+            "merchant_amount_p99_24h": "f64",
+            "merchant_first_seen": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "merchant_id"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "LoginByUser",
+        "output_kind": "table",
+        "upstreams": [
+          "Login"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "user_id"
+            ],
+            "agg": {
+              "login_count_1h": {
+                "op": "count",
+                "params": {
+                  "window": "1h"
+                }
+              },
+              "login_count_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "ips_distinct_login_1h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "ip_address",
+                  "window": "1h"
+                }
+              },
+              "uas_distinct_login_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "user_agent",
+                  "window": "24h"
+                }
+              },
+              "failed_login_streak": {
+                "op": "negative_streak",
+                "params": {
+                  "field": "success"
+                }
+              },
+              "last_login_at": {
+                "op": "last_seen",
+                "params": {}
+              },
+              "time_since_last_login": {
+                "op": "time_since",
+                "params": {}
+              },
+              "login_geo_kmh": {
+                "op": "geo_velocity",
+                "params": {
+                  "lat": "lat",
+                  "lon": "lon"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id": "str",
+            "login_count_1h": "i64",
+            "login_count_24h": "i64",
+            "ips_distinct_login_1h": "i64",
+            "uas_distinct_login_24h": "i64",
+            "failed_login_streak": "i64",
+            "last_login_at": "i64",
+            "time_since_last_login": "i64",
+            "login_geo_kmh": "f64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "user_id"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "SignupByIp",
+        "output_kind": "table",
+        "upstreams": [
+          "Signup"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "ip_address"
+            ],
+            "agg": {
+              "signup_per_ip_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "signup_burst_10m": {
+                "op": "burst_count",
+                "params": {
+                  "sub_window": "5s",
+                  "window": "10m"
+                }
+              },
+              "ssn_reuse_per_ip_30d": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "ssn_hash",
+                  "window": "30d"
+                }
+              },
+              "emails_per_ip_24h": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "email",
+                  "window": "24h"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "ip_address": "str",
+            "signup_per_ip_24h": "i64",
+            "signup_burst_10m": "i64",
+            "ssn_reuse_per_ip_30d": "i64",
+            "emails_per_ip_24h": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "ip_address"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "CardAddByDevice",
+        "output_kind": "table",
+        "upstreams": [
+          "CardAdd"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "device_id"
+            ],
+            "agg": {
+              "card_add_per_device_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "cards_per_device_lifetime": {
+                "op": "count_distinct",
+                "params": {
+                  "field": "card_fp"
+                }
+              },
+              "card_add_failure_streak": {
+                "op": "negative_streak",
+                "params": {
+                  "field": "success"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "device_id": "str",
+            "card_add_per_device_24h": "i64",
+            "cards_per_device_lifetime": "i64",
+            "card_add_failure_streak": "i64"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "device_id"
+        ]
+      },
+      {
+        "kind": "derivation",
+        "name": "RefundByUser",
+        "output_kind": "table",
+        "upstreams": [
+          "Refund"
+        ],
+        "ops": [
+          {
+            "op": "group_by",
+            "keys": [
+              "user_id"
+            ],
+            "agg": {
+              "refund_count_24h": {
+                "op": "count",
+                "params": {
+                  "window": "24h"
+                }
+              },
+              "refund_count_lifetime": {
+                "op": "count",
+                "params": {}
+              },
+              "refund_amount_lifetime": {
+                "op": "sum",
+                "params": {
+                  "field": "amount"
+                }
+              },
+              "chargeback_count_lifetime": {
+                "op": "count",
+                "params": {}
+              },
+              "chargeback_decayed_count": {
+                "op": "decayed_count",
+                "params": {
+                  "half_life": "30d"
+                }
+              },
+              "time_since_last_cb": {
+                "op": "time_since",
+                "params": {}
+              },
+              "cb_streak": {
+                "op": "streak",
+                "params": {
+                  "field": "is_chargeback"
+                }
+              },
+              "first_refund_in_30d": {
+                "op": "first_seen_in_window",
+                "params": {
+                  "window": "30d"
+                }
+              }
+            }
+          }
+        ],
+        "schema": {
+          "fields": {
+            "user_id": "str",
+            "refund_count_24h": "i64",
+            "refund_count_lifetime": "i64",
+            "refund_amount_lifetime": "f64",
+            "chargeback_count_lifetime": "i64",
+            "chargeback_decayed_count": "f64",
+            "time_since_last_cb": "i64",
+            "cb_streak": "i64",
+            "first_refund_in_30d": "bool"
+          },
+          "optional_fields": []
+        },
+        "table_primary_key": [
+          "user_id"
+        ]
+      }
+    ]
+  },
+  "event_name": "Txn",
+  "features": [
+    "txn_count_24h",
+    "sum_amount_24h",
+    "avg_amount_24h",
+    "amount_z_score",
+    "amount_ewma_1h",
+    "merchants_distinct_24h",
+    "p99_amount_24h",
+    "geo_kmh",
+    "decline_streak",
+    "device_seen"
+  ],
+  "key_field": "user_id",
+  "extra_fields": {
+    "card_fp": "str",
+    "device_id": "str",
+    "ip_address": "str",
+    "ip_block": "str",
+    "merchant_id": "str",
+    "amount": "f64",
+    "currency": "str",
+    "mcc": "str",
+    "card_country": "str",
+    "ip_country": "str",
+    "billing_country": "str",
+    "lat": "f64",
+    "lon": "f64",
+    "declined": "i64",
+    "is_3ds": "i64",
+    "card_funding": "str",
+    "ssn_hash": "str"
+  }
+}
