@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Ready to plan
-last_updated: "2026-04-27T08:52:47.464Z"
+last_updated: "2026-04-27T16:00:00.000Z"
 progress:
   total_phases: 35
   completed_phases: 21
@@ -21,7 +21,20 @@ progress:
 **Created:** 2026-04-22
 **Last revised:** 2026-04-26 (Phase 19 CONTEXT.md captured at `.planning/phases/19-1m-bench/19-CONTEXT.md` — 4 areas locked: blast shape (4 modes side-by-side), pipelining (continuous + burst), Python harness via public app.push() multi-process, WIP stash receiver-flips-stop pattern. Phase 18 wrap items remaining: SUMMARY + verification + worktree archival decision)
 
-**Session resumed:** 2026-04-27 — Phase 19 marked complete (PASS-WITH-DEFICIT, commit `98a3f8c`); pause handoff (`54805a7`) captures debug session that uncovered wall_clock measurement bug, WAL bimodal-tail, and WindowedOp alloc hotspot. Three Phase 19.0.x hotfix candidates queued (19.0.1 wall-clock + WAL, 19.0.2 lazy buckets, 19.0.3 batch-or-OP_PUSH_MANY).
+**Session resumed:** 2026-04-27 — Phase 19.1 family fully complete (verdict PASS, HEAD `3e28b77`). Phase 19.2 consolidated from prior 19.2 + 19.3 + two opus audit findings.
+
+**Phase 19.2 CONTEXT captured 2026-04-27** at `.planning/phases/19.2-big-apply-path-optimization/19.2-CONTEXT.md` (commit `666099b`) — 8 decisions locked across 7 questions:
+- D-01: Field pre-extraction = indexed array (`Vec<&Value>`, register-time field-idx)
+- D-02a/b: Process-static AHasher init + FxHasher for HLL ops
+- D-03: EntityKey hybrid (`SingleU64`/`SingleStr`/`Multi`)
+- D-04: Cluster shape = split-by-agg_id (shared EntityKey + lookup; per-agg `Vec<AggOp>`)
+- D-05: **Remove `bv.unique_cells` + `bv.geo_entropy`** (catalogue 55→53; recipes: `count_distinct(quadkey)`, `entropy(quadkey)`)
+- D-05a: Apply `max_categories` cap + drop-new + cap-hit metric to `bv.entropy`
+- D-06: Cost-class metadata = hand-maintained `docs/operators/cost-class.md`
+- D-07: `/debug/op-cost` endpoint feature-gated behind `BEAVA_DEV_ENDPOINTS=1`
+- D-08: `apply_path_bench.rs` criterion microbench + Phase 19.2 rebaseline matrix
+
+**Next:** `/gsd-plan-phase 19.2` to break into 6-8 plans across 3-4 waves.
 
 **Phase 19.1 OPENED 2026-04-27** as the consolidated umbrella for the post-Phase-19 follow-up work (rolls together what was originally proposed as 19.0.1 / 19.0.2 / 19.0.3 mini-phases). See ROADMAP.md → "Phase 19.1: Realistic-shape benchmark + bench/WAL fixes + complex-pipeline optimization" for the full goal/sub-goal/success-criteria block.
 
