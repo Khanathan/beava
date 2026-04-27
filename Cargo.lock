@@ -183,6 +183,7 @@ dependencies = [
  "beava-server",
  "bytes",
  "clap",
+ "criterion",
  "futures",
  "hdrhistogram",
  "proptest",

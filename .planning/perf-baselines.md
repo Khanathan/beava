@@ -222,3 +222,42 @@ Plan 18-11 swapped Row.0 from `BTreeMap<String, Value>` to `SmallVec<[(CompactSt
 - json_body_to_row ≤ 200 ns ±10% → ✅ 169.8 ns
 
 Both met with headroom. parse_*_envelope numbers held steady (envelope scanner is independent of Row storage).
+
+### Phase 19 — blast_shape sampler + pool builder (criterion microbench)
+
+Captured: 2026-04-26. hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Baseline saved as `19` (`cargo bench --baseline 19` from later phases).
+
+Plan 19-01 introduced the `blast_shape` module + four-shape Pool=N builder + ZipfianSampler.
+This bench captures the start-of-line numbers — future bench changes regress against these.
+
+| Bench | Median | Date | Phase | Notes |
+|---|---|---|---|---|
+| build_pool/fixed/n_10000 | 46.344 µs | 2026-04-26 | 19 | One frame, cloned 10k times via Bytes refcount; single encode amortised across N |
+| build_pool/uniform/n_10000_k_1000 | 12.528 ms | 2026-04-26 | 19 | 10k frames, K=1000 uniform sampling; full per-frame encode (json envelope + body) |
+| build_pool/zipfian/n_10000_k_1000_alpha_1.0 | 5.2559 ms | 2026-04-26 | 19 | 10k frames, K=1000 hand-rolled Zipfian (alpha=1.0 log-uniform branch) |
+| build_pool/mixed/n_10000_m_3 | 5.1835 ms | 2026-04-26 | 19 | 10k frames, 3 round-robin event names; key cardinality 1M default |
+| sampler/sample_zipfian/k_1000_alpha_1.0 | 18.384 ns | 2026-04-26 | 19 | Single-sample cost; alpha=1.0 log-uniform inverse-CDF + StdRng |
+| sampler/sample_uniform/k_1000 | 6.8615 ns | 2026-04-26 | 19 | Single-sample baseline (`rand::Rng::gen_range` over StdRng) |
+
+**Driver:** Pool=N elimination of per-iteration encode + RNG cost in the bench hot loop.
+Pool memory at N=1M ≈ 100-300 MB (depends on shape's per-frame body size; Plan 19-01
+SUMMARY estimates ~500 MB-1 GB at N=1M). Operator's responsibility to size against host
+RAM (D-02 architectural rationale).
+
+**Observations:**
+- `fixed` is ~270× faster than `uniform` because Bytes refcount clones don't repeat the
+  envelope encode. This is by design — `fixed` is the cache-warm marketing peak.
+- `uniform` (12.5 ms) is ~2.4× slower than `zipfian` (5.3 ms) because the `format!("k{:08}")`
+  per-frame allocation dominates non-fixed shapes; uniform's `gen_range` cost over K=1000
+  was expected to be cheaper than Zipfian's two-RNG-draw + log/exp pipeline, but in
+  practice the encode-side allocator pressure dominates and the two distributions land
+  within the same order of magnitude. Mixed is the same cost as zipfian (within 2%) — the
+  encode path is the bottleneck, not the sampler.
+- `sample_zipfian` is ~2.7× slower than `sample_uniform` (18 ns vs 7 ns) — the alpha=1
+  log-uniform inverse-CDF requires `ln`/`exp` on the hot path. This number is the
+  start-of-line for the sampler itself; if Plan 19-05 ever needs to sample a 1M-element
+  pool at 1M EPS, the sampler floor is ~55 Melem/s.
+
+**Targets per Plan 19-04:** no targets (this is the start of the line). Future regressions
+gate at +10% WARN / +25% BLOCK per CLAUDE.md §Performance Discipline.

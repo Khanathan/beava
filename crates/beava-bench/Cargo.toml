@@ -31,6 +31,8 @@ thiserror = { workspace = true }
 tempfile = { workspace = true }
 # proptest powers Phase 19's blast_shape distribution tests.
 proptest = { workspace = true }
+# criterion powers the Phase 19-04 blast_shape microbench.
+criterion = { workspace = true }
 
 [lib]
 name = "beava_bench"
@@ -47,3 +49,7 @@ path = "src/bin/temporal_throughput.rs"
 [[bin]]
 name = "beava-bench-v18"
 path = "src/bin/beava-bench-v18.rs"
+
+[[bench]]
+name = "blast_shape_bench"
+harness = false
