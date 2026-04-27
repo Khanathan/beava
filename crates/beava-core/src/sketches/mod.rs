@@ -10,6 +10,29 @@ pub mod retracting_ring;
 pub mod top_k;
 pub mod uddsketch;
 
+/// Plan 19.2-02 (D-02a): process-static `ahash::RandomState` for the hot path.
+///
+/// Initialized once at first call via `OnceLock`; subsequent calls return the
+/// same reference. Amortizes the seed-lookup cost: `build_hasher()` on this
+/// returns an `AHasher` seeded from the stored `RandomState` (~2-3 ns) vs the
+/// per-call `AHasher::default()` which reads thread-local random state on every
+/// construction (~30-50 ns).
+///
+/// HashDoS resistance: a single random seed is generated at process startup via
+/// `RandomState::new()`. Different processes get different seeds (same as
+/// `AHasher::default()` today — no regression). Cross-process determinism is
+/// explicitly NOT provided, which is correct: single-tenant fraud workloads are
+/// not an adversarial HashDoS surface.
+///
+/// Mirrors the Phase 18 `OnceLock` env-var caching pattern in `agg_apply.rs`.
+///
+/// Consumers: `sketches::bloom`, `sketches::cms` (non-HLL), `sketches::entropy`,
+/// `sketches::top_k`. CountDistinct/HLL uses FxHasher instead (D-02b).
+pub fn ahash_random_state() -> &'static ahash::RandomState {
+    static RS: std::sync::OnceLock<ahash::RandomState> = std::sync::OnceLock::new();
+    RS.get_or_init(ahash::RandomState::new)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -31,10 +54,8 @@ mod proptest_round_trip {
     use proptest::prelude::*;
 
     fn hash_str(s: &str) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = ahash::AHasher::default();
-        s.hash(&mut h);
-        h.finish()
+        // Plan 19.2-02 (D-02a): use process-static RandomState.
+        crate::sketches::ahash_random_state().hash_one(s)
     }
 
     proptest! {

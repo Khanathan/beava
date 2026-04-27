@@ -26,7 +26,6 @@ use crate::sketches::entropy::EntropyHistogram;
 use crate::sketches::percentile::PercentileState as InnerPercentile;
 use crate::sketches::top_k::TopKState as InnerTopK;
 use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -962,10 +961,15 @@ mod hex {
 
 // ─── Sketch wrappers (Plan 10-05) ─────────────────────────────────────────────
 
-/// Hash a `Value` for use as a CountDistinct entry. Uses ahash deterministic
-/// seed (BuildHasher) — same seed across the process so estimates are stable.
-fn hash_value(v: &Value) -> u64 {
-    let mut h = ahash::AHasher::default();
+/// Plan 19.2-02 (D-02b): FxHasher for HLL input. HLL's `mix64` post-processes
+/// the input hash for distribution, repairing FxHasher's weaker statistical
+/// properties (Heule et al. 2013 — standard HLL recommendation). Saves
+/// ~25-45 ns per call vs `ahash::AHasher::default()`.
+///
+/// Public for `tests/hasher_optimization.rs`; not a stable API.
+pub fn hash_value_for_hll(v: &Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = fxhash::FxHasher::default();
     match v {
         Value::Str(s) => s.hash(&mut h),
         Value::I64(n) => n.hash(&mut h),
@@ -1027,7 +1031,7 @@ impl CountDistinctStateWrap {
         if matches!(v, Value::Null) {
             return;
         }
-        self.inner.add_hash(hash_value(v));
+        self.inner.add_hash(hash_value_for_hll(v));
     }
 
     /// Pre-extraction fast-path.
@@ -1039,7 +1043,7 @@ impl CountDistinctStateWrap {
         if matches!(v, Value::Null) {
             return;
         }
-        self.inner.add_hash(hash_value(v));
+        self.inner.add_hash(hash_value_for_hll(v));
     }
 
     pub fn query(&self) -> Value {
