@@ -1524,7 +1524,7 @@ mod tests_structural {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         current.version = 1;
@@ -1565,7 +1565,7 @@ mod tests_structural {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         current.events.insert(
@@ -1583,7 +1583,7 @@ mod tests_structural {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         // D has 3 upstreams: KnownA (ok), KnownB (ok), Missing (bad)
@@ -2034,7 +2034,7 @@ mod tests_structural {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         current.events.insert(
@@ -2052,7 +2052,7 @@ mod tests_structural {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         assert_err_contains_with_current(

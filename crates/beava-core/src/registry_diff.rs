@@ -420,7 +420,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         r.version = 1;
@@ -864,7 +864,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         current.events.insert(
@@ -879,7 +879,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
 
@@ -918,7 +918,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
         current.events.insert(
@@ -933,7 +933,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }),
         );
 

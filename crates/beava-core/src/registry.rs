@@ -1641,7 +1641,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 0,
                 name_arc: Arc::from(""),
-            apply_field_names: vec![],
+                apply_field_names: vec![],
             }
         };
 
