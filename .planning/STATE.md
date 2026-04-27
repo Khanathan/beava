@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Ready to plan
-last_updated: "2026-04-27T02:40:14.065Z"
+status: Ready to execute
+last_updated: "2026-04-27T05:28:20.629Z"
 progress:
-  total_phases: 32
+  total_phases: 33
   completed_phases: 18
-  total_plans: 132
+  total_plans: 137
   completed_plans: 98
-  percent: 74
+  percent: 72
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -26,6 +26,7 @@ progress:
 **Phase 19.1 OPENED 2026-04-27** as the consolidated umbrella for the post-Phase-19 follow-up work (rolls together what was originally proposed as 19.0.1 / 19.0.2 / 19.0.3 mini-phases). See ROADMAP.md → "Phase 19.1: Realistic-shape benchmark + bench/WAL fixes + complex-pipeline optimization" for the full goal/sub-goal/success-criteria block.
 
 **Phase 19.1 scope:**
+
 1. **Path B — fraud-team.json validation** (primary tuning benchmark; locked decision per memory `project_fraud_team_primary_bench`)
 2. **Bench wall_clock fix** (1-line elapsed-move + tokio::select! per memory `project_phase19_bench_wallclock_fix`; flips Phase 19 verdict PASS-WITH-DEFICIT → PASS)
 3. **WAL config bump** (4×32MiB tick=20ms middle-ground default candidate per memory `project_phase19_wal_experiment`; experimental 8×64MiB tick=100ms eliminated bimodal tail with +33% EPS but 512MB RSS)
