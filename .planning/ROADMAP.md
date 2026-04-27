@@ -587,7 +587,64 @@ Plans:
 - Histogram windowed semantics: add `windowed_histogram` op family vs document `percentile (UDDSketch)` as the windowed-distribution path.
 - Stretch scope: cap at lazy buckets, OR also include same-key batching, OR also include OP_PUSH_MANY adoption.
 
-**Plans:** TBD during `/gsd-plan-phase 19.1` — likely 4–5 plans split as Wave 1 (validation + bench fix), Wave 2 (WAL bump + re-baseline), Wave 3 (complex-pipeline optimization + verification).
+**Plans:** 5 plans across 3 waves (planned 2026-04-27)
+
+Plans:
+- [ ] 19.1-01-PLAN.md — bench wall_clock measurement fix (Wave 1; verdict-flip pre-condition)
+- [ ] 19.1-02-PLAN.md — fraud-team.json validation + catalogue commit (Wave 1; primary tuning bench)
+- [ ] 19.1-03-PLAN.md — WAL config bump 4×32 MiB tick=20ms + env-tunables (Wave 2; depends on 01)
+- [ ] 19.1-04-PLAN.md — WindowedOp lazy buckets via SmallVec (Wave 2; depends on 01)
+- [ ] 19.1-05-PLAN.md — re-baseline matrix + Phase 19 verdict-flip + Phase 19.1 verification (Wave 3; depends on 01-04)
+
+### Phase 19.2: Apply-thread optimization — EntityKey cache, cluster-by-group_keys, single-u64 fast path — 📋 PLANNED
+
+**Status:** Planned 2026-04-27 as the next-tier complex-pipeline optimization phase after Phase 19.1. Lifts the apply-bound ceiling on multi-agg complex pipelines (fraud-team-style 14-node configs) by collapsing per-agg redundant work in `apply_event_to_aggregations`.
+
+**Goal:** For events that fire multiple aggregations (the fraud-team realistic shape), eliminate the redundant work currently paid per-agg: rebuilding the same `EntityKey` multiple times, doing N hashmap probes when M unique key signatures would suffice, and paying full `EntityKey` SmallVec construction + structural hash when the key is a single numeric/string field. Measured against fraud-team.json zipfian (the primary tuning benchmark per memory `project_fraud_team_primary_bench`); stacks on top of Phase 19.1's WindowedOp lazy-bucket lift.
+
+**Sub-goals:**
+
+1. **EntityKey cache across aggs sharing `group_keys`** — `apply_event_to_aggregations` (`crates/beava-core/src/agg_apply.rs:97-103`) currently calls `EntityKey::from_row(&desc.group_keys, row)` once per `desc`. Cache by `group_keys` signature so M aggs sharing `["user_id"]` build the EntityKey once. Saves ~30 ns × (M-1) per event.
+
+2. **Cluster aggs by `group_keys` + single hashmap lookup per unique signature** — Currently each desc does its own `state_tables[agg_idx].get_or_init(&entity_key, &desc)` (28 ns warm hashbrown probe per agg). Cluster `descs` by group_keys signature at register time so one lookup serves all aggs sharing that key set. The Vec<AggOp> per row is shared (or split by agg_idx via secondary indirection) — the planner picks the storage shape during discuss. Saves ~28 ns × (M-unique_keys) per event. For fraud-team with 14 aggs over ~3 unique key signatures: ~308 ns lift.
+
+3. **EntityKey single-u64 fast path** — Specialize the entity row map for single-field keys. Three candidate approaches (one to be picked during discuss):
+   - **Approach A (identity-cast, zero collision):** For `Value::I64`/`Value::U64`/`Value::Bool`, the value IS the u64 key. `HashMap<u64, Vec<AggOp>, IdentityHasher>`. Zero collision because the u64 is the canonical identity, not a hash of it. Misses string-keyed aggs.
+   - **Approach B (FxHash to u64, probabilistic collision):** Pre-hash all single-keys to u64 at EntityKey construction. Identity-hashed map. Collision: birthday-paradox ~0.27 expected at 100M entities; HashDoS risk if adversary controls IDs (acceptable for internal fraud, risky for public-facing).
+   - **Approach C (hybrid, RECOMMENDED):** `enum EntityKeyShape { SingleU64(u64), SingleStr(u64), Multi(SmallVec<...>) }` with two storage maps per AggStateTable (`entities_u64` for single-key fast path, `entities_multi` fallback). Register-time decides routing. Zero collision for numeric, birthday-paradox for strings, zero for multi. One `match` arm per apply iteration.
+
+   Predicted lift: ~150 ns per agg with single-key (the `entity_row_init` 350 → 150 ns lever flagged in Phase 18 .continue-here.md). For fraud-team with ~half single-key aggs: ~7 × 150 = ~1,050 ns per event.
+
+4. **Per-phase microbench (CLAUDE.md Phase 6+ rule)** — criterion microbench at `crates/beava-core/benches/apply_path_bench.rs` (or extend existing) covering: cold-key 14-agg apply with old vs cluster+u64 path; warm-key apply same comparison. Append rows to `.planning/perf-baselines.md` with hw-class tagging.
+
+5. **Re-baseline + Phase 19.1 verdict reaffirmation** — Re-run the Phase 19.1 targeted matrix (`small/medium/large/large_phase9/fraud-team` × zipfian × tcp × msgpack) post-19.2 changes. Append rows to `.planning/throughput-baselines.md` under new section `## 1M-event blast (rebaseline 19.2)`. Confirm Phase 19.1's verdict still holds and document the additional EPS lift.
+
+**Combined predicted lift on fraud-team (14 aggs, ~3 unique key signatures, ~7 single-key):**
+- EntityKey cache: ~30 × 13 = ~390 ns saved
+- Cluster + single lookup: ~28 × 11 = ~308 ns saved
+- Single-u64 fast path: ~150 × 7 = ~1,050 ns saved
+- **Total: ~1,750 ns per event saved → fraud-team zipfian ~213k → ~330-380k EPS**
+
+**Depends on:** Phase 19.1 (lazy buckets + bench fix + WAL bump must land first; fraud-team validated; rebaseline ledger established as starting point). Reads `crates/beava-core/src/agg_apply.rs` + `crates/beava-core/src/agg_state_table.rs` + `crates/beava-core/src/registry.rs` (where `compiled_aggregations_for_source` lives — clustering at register-time touches this).
+
+**Success criteria:**
+- `apply_event_to_aggregations` builds EntityKey once per unique `group_keys` signature, not once per agg.
+- Aggs clustered by `group_keys` at register time; single `get_or_init` lookup per cluster.
+- EntityKey single-u64 fast path lands; zero-collision for numeric single-keys (Approach A or C).
+- `crates/beava-core/benches/apply_path_bench.rs` shows ≥30% speedup on cold-key 14-agg synthetic vs old path.
+- fraud-team.json zipfian EPS lifts by ≥40% over Phase 19.1's baseline (not blocking, capture-only).
+- `.planning/throughput-baselines.md` has `## 1M-event blast (rebaseline 19.2)` section with 5 ledger rows.
+
+**Why this matters:** Phase 19.1 fixes per-AGG cold-key allocation cost (lazy buckets). Phase 19.2 fixes per-AGG redundant lookup work — the next-leverage lever for complex pipelines where multiple aggs share entity-key shapes. Stacks cleanly: 19.1 gives ~50% on cold-key complex; 19.2 gives ~40% on warm-key complex. fraud-team.json zipfian becomes the regression-gate cell as locked benchmark.
+
+**Key decisions to lock in `19.2-CONTEXT.md` during discuss:**
+- Single-u64 collision approach: Approach A (numeric only, zero collision, narrow) vs B (FxHash all single, HashDoS risk) vs C (hybrid, RECOMMENDED).
+- Cluster storage shape: shared `Vec<AggOp>` across clustered aggs (split by agg_id via secondary indirection at update time) vs separate Vec<AggOp> per agg with shared row lookup. Shared-Vec saves more memory; split-by-agg_id is simpler.
+- Whether to land a per-process random-keyed SipHash variant for `SingleStr` (HashDoS resistance) or accept FxHash (faster, internal-only assumption).
+- TDD red-test shape for the cluster invariant: proptest asserting `forall events, M aggs sharing group_keys → 1 hashmap probe`.
+- Whether to fold same-key batch sketch updates (deferred from 19.1 per D-17) here, OR leave for Phase 19.3. Leaning leave-for-19.3: 19.2 is structural (per-agg-loop work), batch sketches is intra-op; mixing is more bug surface.
+
+**Plans:** TBD during `/gsd-plan-phase 19.2` — likely 4–5 plans split as Wave 1 (cache + cluster, share register-time analysis), Wave 2 (single-u64 fast path), Wave 3 (microbench + rebaseline + verification).
 
 ### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
