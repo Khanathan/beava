@@ -77,6 +77,10 @@ harness = false
 name = "windowed_op_init"
 harness = false
 
+[[bench]]
+name = "apply_path_bench"
+harness = false
+
 [[test]]
 name = "field_idx_resolution"
 path = "tests/field_idx_resolution.rs"
