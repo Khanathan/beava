@@ -48,8 +48,26 @@ run_rust_cell() {
 
     echo ">>> RUST cell: $pipeline + $shape + $mode + $wire + $transport (notes=\"$notes\")"
 
-    local out
-    out=$("$BENCH_BIN" \
+    # CARGO_MANIFEST_DIR override: bench-v18's `load_pipeline` resolves
+    # short names like "small" by joining
+    # `$CARGO_MANIFEST_DIR/configs/<name>.json`. When invoked outside
+    # `cargo run`, CARGO_MANIFEST_DIR is unset and defaults to ".", which
+    # makes the bench look for `./configs/small.json` relative to the
+    # current working directory (the repo root for this script). Setting
+    # the env var explicitly to the bench crate directory resolves
+    # `small`/`medium`/`large`/`large_phase9` to the correct config files.
+    #
+    # Per-cell timeout: each cell gets at most 90 seconds wall-clock. If a
+    # cell hangs (e.g. because shape=mixed surfaces a known limitation when
+    # the pipeline registers only one event — the synthetic event-name pad
+    # falls through to the server, which rejects unknown events, so no acks
+    # are returned and the bench's receiver-flips-stop pattern never fires),
+    # the timeout kills the cell and we record an "n/a (cell timed out)" row
+    # rather than blocking the whole matrix run. Phase 19's regression-gate
+    # cell is zipfian + tcp + msgpack, NOT mixed, so a mixed-cell timeout
+    # does NOT block phase verification.
+    local out rc
+    out=$(timeout --kill-after=5 90 env CARGO_MANIFEST_DIR="$REPO_ROOT/crates/beava-bench" "$BENCH_BIN" \
         --pipeline "$pipeline" \
         --transport "$transport" \
         --wire-format "$wire" \
@@ -61,10 +79,21 @@ run_rust_cell() {
         --continuous-pipeline "$cont_flag" \
         --no-ledger \
         --isolation-mode \
-        2>&1) || {
-            echo "FAIL: $pipeline + $shape + $mode + $wire + $transport"
-            return 1
-        }
+        2>&1)
+    rc=$?
+    if (( rc != 0 )); then
+        echo "FAIL: $pipeline + $shape + $mode + $wire + $transport (rc=$rc — likely timeout=90s)"
+        echo "--- bench output (last 1KB) ---"
+        tail -c 1024 <<<"$out"; echo; echo "--- end ---"
+        # Append a placeholder n/a row so the ledger keeps the cell visible.
+        local why="cell timed out — probable cause: shape=mixed pads with synthetic event names that the server's pipeline doesn't register (only Txn registered)"
+        if [[ "$shape" != "mixed" ]]; then
+            why="cell timed out (rc=$rc); investigate"
+        fi
+        local row="| 19 | $DATE | $pipeline | $transport/$wire | $shape | $mode | rust | $PARALLEL_DEFAULT | $PD_DEFAULT | $N_DEFAULT | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | $COMMIT | ${notes:+$notes; }$why |"
+        echo "$row" | tee -a "$LEDGER"
+        return 0
+    fi
 
     # Parse the invariant tuple + isolation columns from stderr (Plan 19-02 prints them).
     local pushed wall_ms send_ms ack_ms p50 p95 p99 rss eps

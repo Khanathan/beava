@@ -696,4 +696,15 @@ are capture-only.
 > **Phase 18 D-16 single-instance ceiling remains in effect.** These numbers are per-instance.
 > For higher aggregate throughput users run multi-instance shards (Redis-cluster pattern, per
 > `project_no_sharded_apply.md`). Phase 19 measures one instance only.
-
+| 19 | 2026-04-27 | small | tcp/msgpack | zipfian | continuous | rust | 16 | 1024 | 100000 | 943 | 126 | 817 | 106044 | 50 | 95 | 99 | 19 | 2a4ba3f | regression-gate cell |
+| 19 | 2026-04-27 | small | tcp/msgpack | fixed | continuous | rust | 16 | 1024 | 100000 | 999 | 130 | 869 | 100100 | 50 | 95 | 99 | 66 | 2a4ba3f |  |
+| 19 | 2026-04-27 | small | tcp/msgpack | uniform | continuous | rust | 16 | 1024 | 100000 | 936 | 153 | 783 | 106837 | 50 | 95 | 99 | 25 | 2a4ba3f |  |
+| 19 | 2026-04-27 | small | tcp/msgpack | mixed | continuous | rust | 16 | 1024 | 100000 | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | 2a4ba3f | cell timed out — probable cause: shape=mixed pads with synthetic event names that the server's pipeline doesn't register (only Txn registered) |
+| 19 | 2026-04-27 | medium | tcp/msgpack | zipfian | continuous | rust | 16 | 1024 | 100000 | 931 | 134 | 797 | 107411 | 50 | 95 | 99 | 17 | 2a4ba3f |  |
+| 19 | 2026-04-27 | large | tcp/msgpack | zipfian | continuous | rust | 16 | 1024 | 100000 | 786 | 148 | 638 | 127226 | 50 | 95 | 99 | 18 | 2a4ba3f |  |
+| 19 | 2026-04-27 | large_phase9 | tcp/msgpack | zipfian | continuous | rust | 16 | 1024 | 100000 | 902 | 267 | 635 | 110864 | 50 | 95 | 99 | 531 | 2a4ba3f |  |
+| 19 | 2026-04-27 | small | tcp/msgpack | zipfian | burst | rust | 16 | 1024 | 100000 | 936 | 140 | 796 | 106837 | n/a | n/a | n/a | 17 | 2a4ba3f |  |
+| 19 | 2026-04-27 | small | tcp/json | zipfian | continuous | rust | 16 | 1024 | 100000 | 908 | 133 | 775 | 110132 | 50 | 95 | 99 | 21 | 2a4ba3f |  |
+| 19 | 2026-04-27 | small | http/json | zipfian | continuous | rust | 16 | 1024 | 100000 | 3007 | 2156 | 851 | 33255 | 50 | 95 | 99 | 110 | 2a4ba3f |  |
+| 19 | 2026-04-27 | small | tcp/msgpack | zipfian | burst | python | 9 | 1024 | 100000 | 1187 | 814 | 373 | 84245 | n/a | n/a | n/a | n/a | 2a4ba3f | python(burst-only) — D-05 continuous deferred to Phase 19.1 (asyncio) |
+| 19 | 2026-04-27 | small | http/json | zipfian | burst | python | 9 | 1024 | 100000 | 44010 | 43590 | 420 | 2272 | n/a | n/a | n/a | n/a | 2a4ba3f | python(burst-only) — D-05 continuous deferred to Phase 19.1 (asyncio) |
