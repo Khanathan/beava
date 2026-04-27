@@ -1,142 +1,56 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-27T04:17:55.762Z",
-  "phase": "19",
-  "phase_name": "1m-bench",
-  "phase_dir": ".planning/phases/19-1m-bench",
+  "timestamp": "2026-04-27T15:19:49.493Z",
+  "phase": "19.2",
+  "phase_name": "big-apply-path-optimization",
+  "phase_dir": ".planning/phases/19.2-big-apply-path-optimization",
   "plan": null,
   "task": null,
   "total_tasks": null,
-  "status": "paused-debug",
-  "context_summary": "Phase 19 marked complete (98a3f8c) with PASS-WITH-DEFICIT. Post-completion debug session uncovered: (1) bench wall_clock_ms is bug-contaminated by background-task sleep cycles for N<500k; (2) WAL has bimodal-tail (1% of events stall 1-42ms each); (3) large-with-sketches apply-bound at 250k EPS theoretical with sketches consuming 76% of features-time; (4) WindowedOp's preallocated 64-slot bucket array is the cold-key allocation hotspot. Three Phase 19.0.x hotfix candidates queued.",
+  "status": "ready-to-discuss",
+  "context_summary": "Phase 19.1 + 19.1.1 + 19.1.2 all COMPLETE (verdict PASS). Phase 19.2 consolidated from prior 19.2 + 19.3 + two opus-research-agent audit findings. Roadmap entry written with 8 sub-goals; CONTEXT/PLAN files NOT yet created. Next step: /gsd-discuss-phase 19.2 to lock the 7 key decisions, then /gsd-plan-phase 19.2 to break into 6-8 plans across 3-4 waves.",
   "completed_this_session": [
-    {
-      "item": "Per-AggKind timing extension to BEAVA_TRACE_AGG_TIMING",
-      "commit": "eed1cd2",
-      "files": ["crates/beava-core/src/agg_apply.rs"]
-    }
-  ],
-  "uncommitted_files": [
-    {
-      "path": ".planning/research/fraud-feature-catalogue.md",
-      "size_lines": 1054,
-      "status": "untracked",
-      "note": "research output from background agent — 110 features, 15 categories, 14 sources"
-    },
-    {
-      "path": "crates/beava-bench/configs/fraud-team.json",
-      "size_lines": 567,
-      "status": "untracked",
-      "note": "14-node pipeline config; 7 of 10 lifetime-only-with-window violations fixed; 3+ remaining param-shape errors (e.g. histogram bins vs buckets)"
-    },
-    {
-      "path": ".planning/phases/19-1m-bench/19-REVIEW.md",
-      "status": "untracked",
-      "note": "gsd-code-reviewer output from earlier in session"
-    }
-  ],
-  "experimental_changes_reverted": [
-    {
-      "file": "crates/beava-server/src/server.rs:577,588",
-      "what": "Bumped WAL buffers from 3x16MiB tick=2ms to 8x64MiB tick=100ms",
-      "result": "Bimodal wal_append tail eliminated; throughput +33% on cache-hot fixed shape",
-      "why_reverted": "Needs proper Phase 19.0.1 plan with TDD; 8x64MiB = 512MB resident is too aggressive; 4x32MiB likely the right middle ground"
-    }
+    {"item": "Phase 19.1 verdict-flip + rebaseline (5/5 plans)", "result": "PASS — small zipfian 637k EPS @ N=1M, fraud-team K=10k zipfian 77k EPS @ N=1M"},
+    {"item": "Phase 19.1.1 HTTP buffer-cap fix", "result": "Fraud-team 15 KiB register POST works"},
+    {"item": "Phase 19.1.2 GeoSpread Welford O(1) rewrite", "result": "5-25 µs/call → 64 ns mean / 333 ns p99; fraud-team K=10k EPS 2,863 → 74,447 (~26×)"},
+    {"item": "Operator efficiency audit", "result": ".planning/research/operator-update-efficiency-audit.md (56 ops classified; 1 O(n) bug found in EventTypeMix; UniqueCells/GeoEntropy unbounded memory)"},
+    {"item": "Operator uniformity audit", "result": ".planning/research/operator-update-uniformity-audit.md (Tier 1: 38 ops at ≤30 ns post-fix; Tier 3: 9 ops at algorithmic floor; UDDSketch BTreeMap → sorted Vec recommendation)"},
+    {"item": "Phase 19.2 + 19.3 consolidation", "result": "Single big Phase 19.2 with 8 sub-goals; commit 3e28b77"},
+    {"item": "Memory: project_no_same_key_batching", "result": "Locked architectural commitment — same-key sketch batching FORBIDDEN as v0 commitment"}
   ],
   "blockers": [],
   "human_actions_pending": [],
   "decisions": [
-    {
-      "decision": "Per-op trace tool kept (committed) as production-safe debug aid",
-      "rationale": "Validates first-principles latency analysis; future optimizations can confirm gains"
-    },
-    {
-      "decision": "WAL config bump experimental — needs proper plan",
-      "rationale": "8x64MiB removes bimodal tail BUT 512MB RSS too heavy for default"
-    },
-    {
-      "decision": "Phase 19 verdict needs re-baselining after wall_clock fix",
-      "rationale": "PASS-WITH-DEFICIT was based on bug-contaminated number; real number clears M4 threshold"
-    }
+    {"decision": "Phase 19.1 verdict PASS-WITH-DEFICIT → PASS", "rationale": "Bench wall_clock fix (19.1-01) revealed prior under-reporting was measurement bug; canonical small zipfian clears 2s threshold by 1.27× margin"},
+    {"decision": "fraud-team.json is primary tuning benchmark", "rationale": "Locked in memory project_fraud_team_primary_bench; all Phase 19.2+ measurements should reference fraud-team K=10k zipfian as canonical complex-pipeline cell"},
+    {"decision": "Same-key sketch batching FORBIDDEN as v0 commitment", "rationale": "Read-after-write semantic risk + Redis-shaped positioning per memory project_no_same_key_batching; Redis itself has no algorithmic same-key batching"},
+    {"decision": "GeoSpread changed from max-distance-from-mean → RMS dispersion (Welford)", "rationale": "v0 not shipped publicly; current semantics counter-intuitive (mean-drift collapses outliers); RMS is what fraud teams actually want"},
+    {"decision": "Multi-thread apply parallelism remains FORBIDDEN", "rationale": "Per memory project_no_sharded_apply; coordination overhead exceeds work for sub-µs apply; horizontal scaling via multi-instance Redis-cluster pattern"}
   ],
-  "open_questions": [
-    "Default WAL config: 4x32MiB tick=20ms middle ground, or just fix wall_clock?",
-    "Histogram windowed semantics: add windowed_histogram op family, or document UDDSketch as the path?",
-    "Fraud-team config: ship as bench config or as /beava skill template?",
-    "Phase 19.0.x numbering: open 3 small phases or one combined Phase 19.1?"
+  "open_questions_for_19.2_discuss": [
+    "Field pre-extraction storage: indexed array vs HashMap (lean indexed array)",
+    "HLL hasher: FxHasher vs cached AHasher (lean FxHasher)",
+    "EntityKey single-u64: Approach A (numeric only) vs C (hybrid, recommended)",
+    "Cluster storage: shared Vec<AggOp> vs split-by-agg_id (lean split-by-agg_id, simpler)",
+    "UniqueCells/GeoEntropy cap behavior: drop-new vs HLL-fallback vs LRU-evict",
+    "Cost-class doc surface: source attribute vs catalogue markdown",
+    "Observability endpoint: always-on /debug/op-cost vs feature-gated"
   ],
-  "key_findings": {
-    "wall_clock_bug": {
-      "issue": "elapsed = start.elapsed() captured AFTER awaiting get_task (1s sleep) and rss_task (500ms sleep)",
-      "symptom": "For N < ~500k, wall_clock dominated by background-task shutdown latency, not throughput",
-      "impact": "Phase 19 published canonical-cell number 5x under-reported (106k vs 536k)",
-      "fix_location": "crates/beava-bench/src/bin/beava-bench-v18.rs:660-672"
-    },
-    "wal_bimodal_tail": {
-      "issue": "1% of events have wal_append > 1ms (range 1-42ms) under sustained 500k EPS",
-      "cause": "WAL writer with tick_ms=2 + 3x16MiB buffers can't keep up; apply blocks in wait_for_free_and_activate",
-      "fix": "Bump to 4-8 buffers x 32-64 MiB and/or longer tick (20-100ms)",
-      "trade_off": "RSS goes from 48MB to 128-512MB"
-    },
-    "pipeline_complexity_crossover": {
-      "wire_stack_ceiling": "~665k EPS for fixed shape (cache-hot)",
-      "apply_ceiling_simple": "~2M EPS theoretical (TOTAL p50 = 458 ns)",
-      "apply_ceiling_complex": "~250k EPS for large-with-sketches (TOTAL = 4 us/event)",
-      "sketch_costs_ns_per_call": {
-        "Percentile_UDDSketch": 257,
-        "Entropy": 224,
-        "TopK_SpaceSaving": 221,
-        "CountDistinct_HLL": 138,
-        "BloomMember": 44,
-        "Core_Sum_Avg_Min_Max": 20
-      }
-    },
-    "allocation_hotspot": {
-      "issue": "WindowedOp's [Option<Box<AggOp>>; 64] preallocated for every new entity",
-      "cost": "~1500ns of the 2576ns cold-key entity_row_init (60%)",
-      "fix": "Replace with SmallVec<[(i64, Box<AggOp>); 4]> or Vec; lazy-allocate buckets"
-    }
-  },
-  "phase_19_0_x_candidate_plans": {
-    "19_0_1_wall_clock_and_wal": {
-      "scope": "1-line elapsed-move + tokio::select! in get_task/rss_task + WAL config bump (4x32MiB tick=20ms)",
-      "estimated_effort_hours": "2-3",
-      "expected_gain": "Honest +30% reported EPS for cache-hot configs; clears Phase 19 M4 threshold"
-    },
-    "19_0_2_lazy_buckets": {
-      "scope": "Replace WindowedOp's [Option<Box<AggOp>>; 64] with SmallVec; lazy bucket allocation",
-      "estimated_effort_days": "2-3",
-      "expected_gain": "+50% EPS for uniform/cold-key complex pipelines"
-    },
-    "19_0_3_batch_or_op_push_many": {
-      "scope": "Either same-key batch sketch updates in apply dispatch, or OP_PUSH_MANY adoption in bench",
-      "estimated_effort_days": "2-3",
-      "expected_gain": "+30-50% EPS for zipfian/hot-key complex OR push wire-stack ceiling above 1M EPS"
-    }
-  },
-  "next_action_recommended": "Path A: Open Phase 19.0.1 plan for wall_clock measurement fix + WAL config bump. Test by re-running canonical cell at N=100k zipfian. Update 19-VERIFICATION.md verdict from PASS-WITH-DEFICIT to PASS.",
+  "uncommitted_files": [
+    {"path": ".planning/phases/19-1m-bench/19-REVIEW.md", "status": "untracked", "note": "code-review output from earlier session; pre-existing"},
+    {"path": ".planning/research/operator-update-efficiency-audit.md", "status": "untracked", "note": "first audit (efficiency); commit alongside the second"},
+    {"path": ".planning/research/operator-update-uniformity-audit.md", "status": "untracked", "note": "second audit (uniformity); both feed Phase 19.2 CONTEXT"},
+    {"path": ".planning/research/fraud-feature-catalogue.md (already committed)", "status": "tracked", "note": "1054-line research catalogue committed in Phase 19.1-02"},
+    {"path": "Multiple beava-website .bak files", "status": "untracked", "note": "stale; not Phase-19-related; unrelated work"},
+    {"path": "Launch_beava-bench_2026-04-25_*.trace/", "status": "untracked", "note": "macOS Instruments trace from earlier; not Phase-19-related"}
+  ],
+  "next_action_recommended": "/gsd-discuss-phase 19.2 — start with the 7 open questions listed above. Reference both audit docs (.planning/research/operator-update-{efficiency,uniformity}-audit.md) as required reading for the discussion.",
   "next_action_alternatives": [
-    "Path B: Validate fraud-team.json (audit op-param schemas in agg_op.rs) and run zipfian benchmark on it",
-    "Path C: Just commit research artifacts (fraud-feature-catalogue.md + fraud-team.json with TODO comment)"
-  ],
-  "advisory_constraints": [
-    {
-      "severity": "advisory",
-      "constraint": "Don't trust bench wall_clock_ms for N<500k until 19.0.1 lands; use send_drain_ms for bench-side rate"
-    },
-    {
-      "severity": "advisory",
-      "constraint": "Cache-hot fixed shape misleads on apply work; use zipfian K=1M for realistic per-pipeline ceiling"
-    },
-    {
-      "severity": "advisory",
-      "constraint": "BEAVA_TRACE_APPLY_TIMING=1 slows bench ~10x via stderr eprintln"
-    },
-    {
-      "severity": "advisory",
-      "constraint": "19-VERIFICATION.md verdict needs amending after wall_clock fix"
-    }
+    "/gsd-plan-phase 19.2 — skip discuss, plan directly from roadmap entry (the 8 sub-goals are already detailed)",
+    "/gsd-discuss-phase 19.2 --auto — auto-decide all 7 open questions with recommended defaults",
+    "Tackle Phase 18 wrap (SUMMARY + verification + worktree archival decision) before continuing",
+    "Commit the two audit docs as standalone research artifacts before any phase work"
   ],
   "background_processes": [],
-  "context_notes": "Throughput optimization debug from Phase 19's PASS-WITH-DEFICIT verdict. User pushed back on initial 'wire-stack-bound everywhere' framing; correctly identified that fixed-shape was masking apply work. Per-op trace + complexity sweep confirmed two-regime model (wire-bound simple, apply-bound complex). Most concrete win: WindowedOp lazy buckets. Most urgent fix: wall_clock_ms measurement bug. Pause invoked at user request before applying any of the three candidate hotfixes."
+  "context_notes": "Phase 19.1 family is fully complete with verdict PASS and ~26× lift on fraud-team realistic shape. Two opus research agents audited the 55-op catalogue: 67% can hit Tier 1 (~25-40 ns/call) post-Phase-19.2 wrapping fixes, 16% are at algorithmic floor (sketches), 17% borderline. Phase 19.2 consolidates ALL the optimization work — wrapping reduction (highest leverage), EntityKey clustering, op-specific tuning (UDDSketch BTreeMap→Vec, EventTypeMix allowlist), unbounded-state caps, cost-class observability — into one big phase. Stacked target: 13.4 µs → 7-10 µs/event = 100-150k EPS on fraud-team K=10k zipfian. The architectural anti-patterns (same-key batching, multi-thread apply, cross-event reordering) are locked in memory."
 }
