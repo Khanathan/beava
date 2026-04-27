@@ -14,12 +14,14 @@
 //! See `.planning/phases/19.1-realistic-bench-rebaseline/19.1-02-PLAN.md`
 //! for the audit list (D-10) and the rationale (D-11/12/15).
 
+use beava_core::agg_op::AggOp;
 use beava_core::register_validate::{validate_payload, ValidationError};
-use beava_core::registry::RegistryInner;
+use beava_core::registry::{Registry, RegistryInner};
 use beava_core::registry_diff::PayloadNode;
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[test]
 fn test_fraud_team_registers_clean() {
@@ -53,16 +55,9 @@ fn test_fraud_team_registers_clean() {
         match serde_json::from_value::<PayloadNode>(n.clone()) {
             Ok(node) => nodes.push(node),
             Err(e) => {
-                let name = n
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let kind = n
-                    .get("kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                deserialization_failures
-                    .push(format!("nodes[{idx}] kind={kind} name={name}: {e}"));
+                let name = n.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let kind = n.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                deserialization_failures.push(format!("nodes[{idx}] kind={kind} name={name}: {e}"));
             }
         }
     }
@@ -80,22 +75,40 @@ fn test_fraud_team_registers_clean() {
     let registry = RegistryInner::default();
     let result = validate_payload(&registry, nodes);
 
-    match result {
-        Ok(_validated) => {
-            // Success — every node + every aggregation feature parsed and
-            // validated cleanly against AggOpDescriptor + per-kind rules.
-        }
+    let validated = match result {
+        Ok(v) => v,
         Err(errors) => {
             let mut msg = format!(
                 "fraud-team.json failed register_validate with {} error(s):",
                 errors.len()
             );
             for ValidationError { code, path, reason } in &errors {
-                msg.push_str(&format!(
-                    "\n  - [{code:?}] {path}\n      reason: {reason}",
-                ));
+                msg.push_str(&format!("\n  - [{code:?}] {path}\n      reason: {reason}",));
             }
             panic!("{msg}");
+        }
+    };
+
+    // Beyond the validator: also exercise apply_registration + AggOp::new for
+    // every compiled aggregation. The validator (`compile_aggregations_from_nodes`)
+    // does not actually construct live state — it only builds descriptors. The
+    // panic-prone path is `AggOp::new(&desc)` which reads `desc.ext.{lat_field,
+    // lon_field, k, n, precision, ...}` via `unwrap_or` defaults. If a descriptor
+    // built from JSON has an unexpected combination, this is where it surfaces.
+    let live_registry = Registry::new();
+    let (nodes, chains, schemas, aggs) = validated.into_parts();
+    // Note: keep an Arc'd copy of the agg descriptors before apply_registration
+    // moves them, so we can iterate features afterwards.
+    let agg_desc_clones: Vec<Arc<beava_core::agg_descriptor::AggregationDescriptor>> =
+        aggs.iter().map(|(_, d)| Arc::clone(d)).collect();
+    live_registry.apply_registration(nodes, chains, schemas, aggs);
+
+    // Construct one AggOp per compiled feature — same path the apply hot loop
+    // hits on first event for a new entity. Catches descriptors that pass
+    // validation but explode at AggOp::new (e.g., bad sketch params).
+    for agg in &agg_desc_clones {
+        for named in &agg.features {
+            let _live = AggOp::new(&named.descriptor);
         }
     }
 }
