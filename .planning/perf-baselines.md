@@ -286,3 +286,26 @@ OLD baseline saved as `old-fixed-array` for reproducibility (commit `f47ae55`, b
 **Targets per Plan 19.1-04 must_haves:** Cold WindowedOp::new ≥50% faster than the 64-slot zero-init baseline → ✅ all three benches show ≥73%.
 
 Both gate types apply (criterion microbench + future throughput-baselines.md re-baseline).
+
+### Phase 19.2 — apply-path bench (post-stacked-fix)
+
+Captured: 2026-04-27 (Phase 19.2-08). hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Bench: `crates/beava-core/benches/apply_path_bench.rs`.
+
+Stacked optimizations measured: D-01 field pre-extraction, D-02 AHasher process-static + FxHasher for HLL, D-03 EntityKey hybrid SingleU64/SingleStr/Multi, D-04 cluster dispatch dedup, D-04a UDDSketch flat sorted Vec, D-04b EventTypeMix AHashSet + Cow.
+
+Synthetic registry shape: 14 features (7 user-keyed, 4 user×merchant-keyed, 3 device-keyed). Mix of Count, Sum, Percentile (UDDSketch), Ewma, TopK, Entropy, EventTypeMix, CountDistinct, BloomMember — spans Tier 1/2/3. This is a synthetic stand-in for the real fraud-team.json (throughput rebaseline in Phase 19.2-08 Task 2 drives the actual end-to-end pipeline).
+
+| Bench | Median | Date | Phase | Notes |
+|---|---|---|---|---|
+| apply_path/cold_key/14_aggs | 1.424 µs | 2026-04-27 | 19.2 | Cold-key 14-agg fraud-team-shape synthetic registry; full per-entity init + all 3 cluster EntityKey builds. Post-stacked-fix (D-01..D-04b). Pre-19.2 reference: ~13.4 µs (Phase 19.1 trace avg); 9.4× improvement. |
+| apply_path/warm_key/14_aggs | 362.71 ns | 2026-04-27 | 19.2 | Warm-key steady state; 200-event pre-warm; no per-entity init cost; measures pure apply-loop throughput. Post-stacked-fix. |
+| apply_path/uddsketch/insert_warm | 71.774 ns | 2026-04-27 | 19.2 | Plan 19.2-04 flat sorted Vec at 1k pre-loaded buckets; binary-search insert at steady state. Pre-fix reference: ~130 ns (BTreeMap, Phase 10 baseline). 1.8× faster. |
+| apply_path/uddsketch/quantile_warm | 105.31 ns | 2026-04-27 | 19.2 | Quantile q=0.5 over 1k-insert warm sketch. Sequential Vec traversal; no pointer chasing. |
+| apply_path/event_type_mix/allowed_hit | 25.027 ns | 2026-04-27 | 19.2 | Plan 19.2-05 AHashSet 1024-allowed; cat_500 hit path. Pre-fix reference: ~1,127 ns (Vec linear scan per efficiency audit). 45× faster. |
+| apply_path/event_type_mix/allowed_miss | 7.865 ns | 2026-04-27 | 19.2 | Same; category not in allowlist → O(1) AHashSet miss + early return. |
+
+**Key results vs predicted targets (CONTEXT.md D-04a / D-04b):**
+- UDDSketch insert_warm: 71.8 ns — target was ~75 ns (algo floor); **within target band.**
+- EventTypeMix allowed_hit: 25.0 ns — target was ~50-100 ns; **better than target (45× vs 10-20× predicted).**
+- Cold-key 14-agg: 1.424 µs — predicted was 6-8 µs/event (post stacking); bench measures a simpler synthetic subset but shows the apply-loop overhead itself is well under 2 µs for cold paths. The 6-8 µs prediction included all WAL/bookkeeping/IO overhead in the full server path; this bench isolates the apply-loop-only cost.
