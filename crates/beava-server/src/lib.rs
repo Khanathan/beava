@@ -25,6 +25,7 @@ pub mod shutdown;
 pub mod snapshot_task;
 pub mod tcp;
 pub mod temporal_http;
+pub mod wal_config;
 
 #[cfg(any(feature = "testing", test))]
 pub mod testing;

@@ -152,6 +152,10 @@ path = "tests/phase18_11_hot_path_test.rs"
 name = "phase18_05_continuous_workers_test"
 path = "tests/phase18_05_continuous_workers_test.rs"
 
+[[test]]
+name = "wal_env_var_tunables"
+path = "tests/wal_env_var_tunables.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
