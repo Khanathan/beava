@@ -186,6 +186,28 @@ impl AggKind {
     }
 }
 
+// ─── Field index constants ────────────────────────────────────────────────────
+
+/// Plan 19.2-01 (D-01): sentinel value for `AggOpDescriptor.field_idx` when
+/// the op has no field (Count, Ratio, HourOfDayHistogram, DowHourHistogram)
+/// or when resolution has not yet been performed.
+///
+/// Using `u8::MAX` (255) as sentinel keeps the value fitting in a byte while
+/// leaving 0..=254 for actual indices. Since Beava limits events to ≤8 inline
+/// fields (Row SmallVec capacity), indices 0..7 cover the steady-state case.
+pub const FIELD_IDX_NONE: u8 = u8::MAX;
+
+// ─── ExtractedFields ─────────────────────────────────────────────────────────
+
+/// Plan 19.2-01 (D-01): pre-extracted field values for one event, indexed
+/// by `AggOpDescriptor.field_idx`. Length matches
+/// `AggregationDescriptor.field_names`. Built ONCE per event at apply-loop
+/// entry; consumed by every per-feature update call.
+///
+/// SmallVec inline capacity = 8 — covers the common case (≤8 distinct fields)
+/// with zero heap allocation. Falls back to heap for exotic pipelines.
+pub type ExtractedFields<'a> = smallvec::SmallVec<[Option<&'a crate::row::Value>; 8]>;
+
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
 
 /// Register-time descriptor for one aggregation feature.
@@ -196,6 +218,10 @@ impl AggKind {
 /// `ext` carries Phase 11-family optional params (buckets, n, k, precision,
 /// lat_field, lon_field, samples, categories). Default = empty / no extended
 /// config so existing core ops stay source-compatible.
+///
+/// `field_idx` (Plan 19.2-01 D-01): pre-resolved index into the apply-loop's
+/// `ExtractedFields` array. Populated by `Registry::resolve_field_indices` at
+/// apply_registration time. `FIELD_IDX_NONE` (u8::MAX) = no field needed.
 #[derive(Debug, Clone)]
 pub struct AggOpDescriptor {
     pub kind: AggKind,
@@ -221,6 +247,13 @@ pub struct AggOpDescriptor {
     pub sketch_params: Option<SketchParams>,
     /// Phase 11 extended params (optional; None-valued for non-Phase-11 ops).
     pub ext: AggExtParams,
+    /// Plan 19.2-01 (D-01): pre-resolved index into the apply-loop's
+    /// `ExtractedFields` array. Populated by `Registry::resolve_field_indices`
+    /// at `apply_registration` time. Default = `FIELD_IDX_NONE`; client-supplied
+    /// JSON omits this field (resolved server-side only).
+    /// Not serialized: `AggOpDescriptor` is not a serde type; `field_idx` is
+    /// computed server-side at registration and never transported over the wire.
+    pub field_idx: u8,
 }
 
 impl Default for AggOpDescriptor {
@@ -237,6 +270,7 @@ impl Default for AggOpDescriptor {
             sigma: None,
             sketch_params: None,
             ext: AggExtParams::default(),
+            field_idx: FIELD_IDX_NONE,
         }
     }
 }
@@ -780,6 +814,125 @@ impl AggOp {
                 // only when where_matched is true.
                 self.update(row, event_time_ms, field, where_matched);
             }
+        }
+    }
+
+    /// Plan 19.2-01 (D-01): apply-loop fast-path using a pre-extracted field value.
+    ///
+    /// This is the hot-path entry point for non-windowed ops. Rather than
+    /// calling `Row::get(field)` once per feature (as `update_with_row` does),
+    /// the apply loop pre-extracts each distinct field once into `ExtractedFields`
+    /// and passes the result here. Field-bearing ops call `update_pre(pre_val, ...)`
+    /// on their concrete state; fieldless ops (Count, Ratio, Recency, Streak, etc.)
+    /// receive `pre_val = None` and ignore it.
+    ///
+    /// Windowed ops fall back to `update_with_row` because windowed bucket routing
+    /// delegates to `WindowedOp::update_with_row` which still needs `(row, field)`.
+    ///
+    /// `where_expr` still evaluates against `row` — expression predicates may
+    /// reference multiple fields and cannot be pre-extracted in the same way.
+    pub fn update_with_extracted(
+        &mut self,
+        pre_val: Option<&Value>,
+        event_time_ms: i64,
+        where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
+        row: &Row,
+        field: Option<&str>,
+    ) {
+        let where_matched = match where_expr {
+            Some(e) => crate::agg_where::evaluate_where_predicate(e, row),
+            None => true,
+        };
+
+        match self {
+            // Windowed: still needs (row, field) for bucket routing — fall back.
+            AggOp::Windowed(w) => {
+                w.update_with_row(row, event_time_ms, field, where_expr);
+            }
+            // Fieldless ops: pre_val is None, where_matched gates the update.
+            AggOp::Count(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::FirstSeen(s)
+            | AggOp::LastSeen(s)
+            | AggOp::Age(s)
+            | AggOp::HasSeen(s)
+            | AggOp::TimeSince(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TimeSinceLastN(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Streak(s) | AggOp::MaxStreak(s) => {
+                s.update(row, event_time_ms, field, where_matched)
+            }
+            AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
+            // Geo ops: use multi-field row access — fall back to row-based update.
+            AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
+            AggOp::GeoDistance(s) => s.update(row, where_matched),
+            AggOp::GeoSpread(s) => s.update(row, where_matched),
+            AggOp::UniqueCells(s) => s.update(row, where_matched),
+            AggOp::GeoEntropy(s) => s.update(row, where_matched),
+            AggOp::DistanceFromHome(s) => s.update(row, where_matched),
+            // Histogram ops: no field, time-based.
+            AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),
+            // Decay / velocity ops with field access — pre_val path.
+            AggOp::Ewma(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwVar(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::EwZScore(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedSum(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::DecayedCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+            }
+            AggOp::Twa(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::RateOfChange(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::InterArrivalStats(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::BurstCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sub_window_ms)
+            }
+            AggOp::DeltaFromPrev(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Trend(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::TrendResidual(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::OutlierCount(op) => {
+                op.state
+                    .update(row, event_time_ms, field, where_matched, op.sigma)
+            }
+            AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
+            // Phase 11 structural outputs using row-based field access — fall back.
+            AggOp::Histogram(s) => s.update(row, field, where_matched),
+            AggOp::EventTypeMix(s) => s.update(row, field, where_matched),
+            AggOp::MostRecentN(s) => s.update(row, field, where_matched),
+            AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
+            // Field-bearing ops with update_pre — hot path.
+            AggOp::Sum(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Avg(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Min(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Max(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Variance(s) => s.update_pre(pre_val, where_matched),
+            AggOp::StdDev(s) => s.update_pre(pre_val, where_matched),
+            AggOp::CountDistinct(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Percentile(s) => s.update_pre(pre_val, where_matched),
+            AggOp::TopK(s) => s.update_pre(pre_val, where_matched),
+            AggOp::BloomMember(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Entropy(s) => s.update_pre(pre_val, where_matched),
+            AggOp::First(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Last(s) => s.update_pre(pre_val, where_matched),
+            AggOp::FirstN(s) => s.update_pre(pre_val, where_matched),
+            AggOp::LastN(s) => s.update_pre(pre_val, where_matched),
+            AggOp::Lag(s) => s.update_pre(pre_val, where_matched),
         }
     }
 

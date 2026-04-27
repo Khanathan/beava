@@ -420,6 +420,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
+                apply_field_names: vec![],
             }),
         );
         r.version = 1;
@@ -447,6 +448,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         })
     }
 
@@ -625,6 +627,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.changed[0].reason, DiffReason::EventTimeFieldMismatch);
@@ -663,6 +666,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.changed[0].reason, DiffReason::TtlMismatch);
@@ -860,6 +864,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
+                apply_field_names: vec![],
             }),
         );
         current.events.insert(
@@ -874,6 +879,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
+                apply_field_names: vec![],
             }),
         );
 
@@ -912,6 +918,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
+                apply_field_names: vec![],
             }),
         );
         current.events.insert(
@@ -926,6 +933,7 @@ mod tests {
                 tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
+                apply_field_names: vec![],
             }),
         );
 
@@ -962,6 +970,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 99,
             name_arc: Arc::from(""), // server-assigned, should be ignored
+            apply_field_names: vec![],
         })];
         let diff = compute_diff(&current, &payload);
         assert_eq!(diff.already_present, vec!["A"]);
@@ -1020,6 +1029,7 @@ mod proptests {
                     tolerate_delay_ms: None,
                     registered_at_version: 0,
                     name_arc: Arc::from(""),
+                    apply_field_names: vec![],
                 }
             })
     }

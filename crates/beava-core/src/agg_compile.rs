@@ -869,6 +869,9 @@ pub fn compile_aggregations_from_nodes(
                         sigma: params.sigma,
                         sketch_params: params.sketch_params.clone(),
                         ext,
+                        // Plan 19.2-01: placeholder; registry overwrites at apply_registration
+                        // via resolve_field_indices_for_agg_mut.
+                        field_idx: crate::agg_op::FIELD_IDX_NONE,
                     },
                 });
             }
@@ -880,6 +883,10 @@ pub fn compile_aggregations_from_nodes(
                     group_keys: keys.clone(),
                     features,
                     agg_id: 0, // placeholder; registry overwrites at apply_registration
+                    // Plan 19.2-01: populated by Registry::resolve_field_indices_for_agg_mut
+                    // at apply_registration time. Placeholder here so compile step is
+                    // decoupled from schema validation.
+                    field_names: vec![],
                 };
                 compiled.push((deriv.name.clone(), Arc::new(desc)));
             }
@@ -1087,6 +1094,7 @@ mod tests {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         })
     }
 

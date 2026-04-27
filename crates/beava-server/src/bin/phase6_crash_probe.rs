@@ -73,6 +73,7 @@ fn main() {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         registry.apply_registration(vec![PayloadNode::Event(event)], vec![], vec![], vec![]);
 

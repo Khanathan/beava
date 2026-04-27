@@ -157,6 +157,7 @@ fn test_registry_get_event_descriptor_returns_arc() {
         tolerate_delay_ms: None,
         registered_at_version: 0,
         name_arc: Arc::from(""),
+        apply_field_names: vec![],
     };
     registry.apply_registration(vec![PayloadNode::Event(event)], vec![], vec![], vec![]);
 
@@ -212,6 +213,7 @@ fn test_per_source_aggregation_index_is_populated() {
         tolerate_delay_ms: None,
         registered_at_version: 0,
         name_arc: Arc::from(""),
+        apply_field_names: vec![],
     };
     let agg = AggregationDescriptor {
         node_name: "AggTxn".to_string(),
@@ -230,9 +232,11 @@ fn test_per_source_aggregation_index_is_populated() {
                 sigma: None,
                 sketch_params: None,
                 ext: Default::default(),
+                field_idx: beava_core::agg_op::FIELD_IDX_NONE,
             },
         }],
         agg_id: 0,
+        field_names: vec![],
     };
     let mut deriv_schema = BTreeMap::new();
     deriv_schema.insert("user_id".to_string(), FieldType::Str);
@@ -313,6 +317,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
             tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
+            apply_field_names: vec![],
         };
         let agg = AggregationDescriptor {
             node_name: "AggTxn".to_string(),
@@ -331,9 +336,11 @@ fn test_snapshot_byte_identical_for_same_inputs() {
                     sigma: None,
                     sketch_params: None,
                     ext: Default::default(),
+                    field_idx: beava_core::agg_op::FIELD_IDX_NONE,
                 },
             }],
             agg_id: 0,
+            field_names: vec![],
         };
         let mut deriv_schema = BTreeMap::new();
         deriv_schema.insert("user_id".to_string(), FieldType::Str);

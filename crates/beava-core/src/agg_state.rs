@@ -41,6 +41,17 @@ fn numeric_from_row(row: &crate::row::Row, field: &str) -> Option<f64> {
     }
 }
 
+/// Extract a numeric (F64 or I64) value from a pre-extracted `Option<&Value>`.
+/// Used by `update_pre` paths that skip per-op `Row::get` in the apply loop.
+pub(crate) fn numeric_from_value(v: Option<&Value>) -> Option<f64> {
+    match v? {
+        Value::F64(f) => Some(*f),
+        Value::I64(n) => Some(*n as f64),
+        Value::Null => None,
+        _ => None,
+    }
+}
+
 /// Same-type less-than comparison for Min/Max ordering.
 /// Returns true iff `a < b` using natural ordering for the type.
 /// Cross-type comparisons always return false (type-stable ordering).
@@ -110,6 +121,19 @@ impl SumState {
         self.n += 1;
     }
 
+    /// Pre-extraction fast-path: accepts an already-looked-up value, avoids
+    /// a second `Row::get` when the apply loop pre-extracts distinct fields.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(v) = numeric_from_value(pre_val) else {
+            return;
+        };
+        self.total += v;
+        self.n += 1;
+    }
+
     pub fn query(&self) -> Value {
         if self.n == 0 {
             Value::Null
@@ -141,6 +165,18 @@ impl AvgState {
         }
         let Some(fname) = field else { return };
         let Some(v) = numeric_from_row(row, fname) else {
+            return;
+        };
+        self.sum += v;
+        self.n += 1;
+    }
+
+    /// Pre-extraction fast-path: accepts an already-looked-up value.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(v) = numeric_from_value(pre_val) else {
             return;
         };
         self.sum += v;
@@ -191,6 +227,25 @@ impl MinState {
         }
     }
 
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let val = match pre_val {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        match &self.current {
+            None => self.current = Some(val),
+            Some(current) => {
+                if value_lt(&val, current) {
+                    self.current = Some(val);
+                }
+            }
+        }
+    }
+
     pub fn query(&self) -> Value {
         self.current.clone().unwrap_or(Value::Null)
     }
@@ -217,6 +272,25 @@ impl MaxState {
         }
         let Some(fname) = field else { return };
         let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        match &self.current {
+            None => self.current = Some(val),
+            Some(current) => {
+                if value_lt(current, &val) {
+                    self.current = Some(val);
+                }
+            }
+        }
+    }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let val = match pre_val {
             None | Some(Value::Null) => return,
             Some(v) => v.clone(),
         };
@@ -272,6 +346,21 @@ impl VarianceState {
             return;
         };
 
+        self.n += 1;
+        let delta = x - self.mean;
+        self.mean += delta / self.n as f64;
+        let delta2 = x - self.mean;
+        self.m2 += delta * delta2;
+    }
+
+    /// Pre-extraction fast-path (Welford online, same as `update`).
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(x) = numeric_from_value(pre_val) else {
+            return;
+        };
         self.n += 1;
         let delta = x - self.mean;
         self.mean += delta / self.n as f64;
@@ -365,6 +454,18 @@ impl FirstState {
         self.current = Some(val);
     }
 
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched || self.current.is_some() {
+            return;
+        }
+        let val = match pre_val {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        self.current = Some(val);
+    }
+
     pub fn query(&self) -> Value {
         self.current.clone().unwrap_or(Value::Null)
     }
@@ -391,6 +492,18 @@ impl LastState {
         }
         let Some(fname) = field else { return };
         let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        self.current = Some(val);
+    }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let val = match pre_val {
             None | Some(Value::Null) => return,
             Some(v) => v.clone(),
         };
@@ -440,6 +553,18 @@ impl FirstNState {
         self.values.push(val);
     }
 
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched || self.values.len() >= self.n as usize {
+            return;
+        }
+        let val = match pre_val {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        self.values.push(val);
+    }
+
     pub fn query(&self) -> Value {
         Value::Str(values_to_json_array(&self.values).into())
     }
@@ -472,6 +597,21 @@ impl LastNState {
         }
         let Some(fname) = field else { return };
         let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        if self.values.len() == self.n as usize {
+            self.values.pop_front();
+        }
+        self.values.push_back(val);
+    }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let val = match pre_val {
             None | Some(Value::Null) => return,
             Some(v) => v.clone(),
         };
@@ -524,6 +664,21 @@ impl LagState {
         }
         let Some(fname) = field else { return };
         let val = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
+        };
+        if self.values.len() == self.n as usize + 1 {
+            self.values.pop_front();
+        }
+        self.values.push_back(val);
+    }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let val = match pre_val {
             None | Some(Value::Null) => return,
             Some(v) => v.clone(),
         };
@@ -874,6 +1029,19 @@ impl CountDistinctStateWrap {
         }
         self.inner.add_hash(hash_value(v));
     }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(v) = pre_val else { return };
+        if matches!(v, Value::Null) {
+            return;
+        }
+        self.inner.add_hash(hash_value(v));
+    }
+
     pub fn query(&self) -> Value {
         Value::I64(self.inner.estimate() as i64)
     }
@@ -912,6 +1080,18 @@ impl PercentileStateWrap {
         };
         self.inner.insert(v);
     }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(v) = numeric_from_value(pre_val) else {
+            return;
+        };
+        self.inner.insert(v);
+    }
+
     pub fn query(&self) -> Value {
         match self.inner.quantile(self.q) {
             Some(v) => Value::F64(v),
@@ -962,6 +1142,28 @@ impl TopKStateWrap {
         };
         self.inner.insert(tkv);
     }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let v = match pre_val {
+            None | Some(Value::Null) => return,
+            Some(other) => other,
+        };
+        let tkv = match v {
+            Value::Str(s) => TopKValue::Str(s.to_string()),
+            Value::I64(n) => TopKValue::Int(*n),
+            Value::F64(f) => TopKValue::Float(ordered_float::OrderedFloat(*f)),
+            Value::Bool(b) => TopKValue::Bool(*b),
+            Value::Datetime(ms) => TopKValue::Int(*ms),
+            Value::Bytes(_) | Value::Null | Value::Json(_) => return,
+            Value::List(_) | Value::Map(_) => return,
+        };
+        self.inner.insert(tkv);
+    }
+
     pub fn query(&self) -> Value {
         let entries: Vec<serde_json::Value> = self
             .inner
@@ -1016,6 +1218,20 @@ impl BloomMemberStateWrap {
         self.inner.insert(&s);
         self.n_inserts = self.n_inserts.saturating_add(1);
     }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(v) = pre_val else { return };
+        let Some(s) = value_to_key_string(v) else {
+            return;
+        };
+        self.inner.insert(&s);
+        self.n_inserts = self.n_inserts.saturating_add(1);
+    }
+
     pub fn query(&self) -> Value {
         Value::Bool(self.n_inserts > 0)
     }
@@ -1053,6 +1269,19 @@ impl EntropyStateWrap {
         };
         self.inner.insert(&s);
     }
+
+    /// Pre-extraction fast-path.
+    pub fn update_pre(&mut self, pre_val: Option<&Value>, where_matched: bool) {
+        if !where_matched {
+            return;
+        }
+        let Some(v) = pre_val else { return };
+        let Some(s) = value_to_key_string(v) else {
+            return;
+        };
+        self.inner.insert(&s);
+    }
+
     pub fn query(&self) -> Value {
         Value::F64(self.inner.entropy_bits())
     }

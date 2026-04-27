@@ -241,6 +241,12 @@ impl Row {
     /// Linear scan over the SmallVec — O(N) in the number of fields,
     /// but fast in cache for the common case (≤8 fields).
     pub fn get(&self, field: &str) -> Option<&Value> {
+        #[cfg(feature = "test-utils")]
+        {
+            GET_COUNT.with(|c| {
+                *c.borrow_mut() += 1;
+            });
+        }
         self.0
             .iter()
             .find(|(k, _)| k.as_str() == field)
@@ -507,6 +513,30 @@ impl serde::Serialize for Row {
         }
         map.end()
     }
+}
+
+// ─── Test probe: Row::get call counter ───────────────────────────────────────
+
+// Plan 19.2-01 (D-01): thread-local counter incremented on every `Row::get`
+// call when `feature = "test-utils"` is active. Lets integration tests assert
+// that the apply-loop uses pre-extraction (O(distinct_fields) calls) rather
+// than per-feature scanning (O(n_features × distinct_fields) calls).
+// Never active in production builds.
+#[cfg(feature = "test-utils")]
+thread_local! {
+    static GET_COUNT: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };
+}
+
+/// Plan 19.2-01 (D-01): drain and return the accumulated `Row::get` call count
+/// for the current thread. Resets the counter to zero. Available only when
+/// `feature = "test-utils"` is enabled on the beava-core crate.
+#[cfg(feature = "test-utils")]
+pub fn _take_get_count() -> usize {
+    GET_COUNT.with(|c| {
+        let v = *c.borrow();
+        *c.borrow_mut() = 0;
+        v
+    })
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

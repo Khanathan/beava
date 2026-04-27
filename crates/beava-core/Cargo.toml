@@ -11,6 +11,12 @@ description = "Core library for Beava v2 — domain types, operators, state. Sha
 name = "beava_core"
 path = "src/lib.rs"
 
+[features]
+# Plan 19.2-01: expose Row::get call counter for integration tests that verify
+# the apply-loop uses pre-extraction. Enable via `--features test-utils` on the
+# test binary; never enabled in production builds.
+test-utils = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -70,3 +76,8 @@ harness = false
 [[bench]]
 name = "windowed_op_init"
 harness = false
+
+[[test]]
+name = "field_idx_resolution"
+path = "tests/field_idx_resolution.rs"
+required-features = ["test-utils"]
