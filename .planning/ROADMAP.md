@@ -744,11 +744,11 @@ Tier classification post-fix per uniformity audit:
 - Cost-class doc surface: source attribute (`#[doc(cost = "tier1")]`) vs separate markdown table in operator catalogue docs site.
 - Observability endpoint: `/debug/op-cost` always-on vs feature-gated behind `BEAVA_DEV_ENDPOINTS=1`.
 
-**Plans:** 8 plans across 6 waves (planned 2026-04-27 via `/gsd-plan-phase 19.2`):
-- [ ] 19.2-01-PLAN.md — D-01 field pre-extraction (apply-loop one-pass row scan + register-time field-idx + missing-field reject) — Wave 1
+**Plans:** 3/8 plans executed
+- [x] 19.2-01-PLAN.md — D-01 field pre-extraction (apply-loop one-pass row scan + register-time field-idx + missing-field reject) — Wave 1
 - [ ] 19.2-02-PLAN.md — D-02a process-static AHasher RandomState + D-02b FxHasher for HLL input — Wave 2
-- [ ] 19.2-03-PLAN.md — D-03 EntityKeyShape hybrid (SingleU64/SingleStr/Multi) + D-04 cluster signature dispatch + register-time NaN-float reject — Wave 2
-- [ ] 19.2-04-PLAN.md — D-04a UDDSketch BTreeMap → flat sorted Vec with binary-search insert — Wave 1
+- [x] 19.2-03-PLAN.md — D-03 EntityKeyShape hybrid (SingleU64/SingleStr/Multi) + D-04 cluster signature dispatch + register-time NaN-float reject — Wave 2
+- [x] 19.2-04-PLAN.md — D-04a UDDSketch BTreeMap → flat sorted Vec with binary-search insert — Wave 1
 - [ ] 19.2-05-PLAN.md — D-04b EventTypeMix AHashSet allowlist + str_from_row/value_to_key_string Cow refactor (Bloom/Entropy/EventTypeMix consumers) — Wave 3
 - [ ] 19.2-06-PLAN.md — D-05 remove unique_cells/geo_entropy from catalogue (55 → 53) + add quadkey() builtin + D-05a bv.entropy max_categories cap + Prometheus counter — Wave 4
 - [ ] 19.2-07-PLAN.md — D-06 cost-class catalogue at docs/operators/cost-class.md + D-07 /debug/op-cost endpoint feature-gated by BEAVA_DEV_ENDPOINTS=1 — Wave 5
