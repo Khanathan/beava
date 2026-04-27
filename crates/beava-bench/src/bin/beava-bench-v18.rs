@@ -1,20 +1,42 @@
 //! beava-bench-v18 — standalone throughput harness binding ServerV18 directly.
 //!
 //! Boots `ServerV18::bind()` + `serve_with_dirs()` directly (NOT TestServer),
-//! then drives it at saturation for N seconds. Captures:
+//! then drives it at saturation for N seconds (or N events, when
+//! `--total-events` is set). Captures:
 //! - Sustained EPS (events / wall-time)
 //! - P50/P95/P99 push latency (HDR histogram, 1µs precision)
 //! - P99 batch-get latency (sampled every second)
 //! - Peak RSS (sampled every 500ms via `ps`)
 //!
+//! Phase 19 additions (this file is the integration target of Plan 19-02):
+//! - `--total-events N` — fixed-event blast mode using the Plan 19-01
+//!   `blast_shape::build_pool` builder. `--duration-secs` becomes a safety
+//!   upper bound only; the receiver flips `stop` and closes the sender
+//!   semaphore as soon as `acks >= N` (D-12). Hard-cap counter on the
+//!   sender prevents over-pushing past `N` (D-13). Run end reports the
+//!   invariant tuple `{requested, pushed, acked}` (asserted equal when
+//!   `--total-events` is set).
+//! - `--blast-shape={fixed,uniform,zipfian,mixed}` — distribution that the
+//!   Pool=N builder samples (D-01).
+//! - `--isolation-mode` — adds `wall_clock_ms` / `send_drain_ms` /
+//!   `ack_lag_ms = wall_clock - send_drain` columns (D-07). Pool-build time
+//!   is excluded from `wall_clock_ms` via a `tokio::sync::Barrier::new(parallel + 1)`
+//!   synchronization point (BLOCKER 2 fix in 19-02-PLAN.md).
+//!
 //! Usage:
 //! ```text
 //! ./target/release/beava-bench-v18 \
 //!     --pipeline small --transport tcp --duration-secs 10 --parallel 16 --no-ledger
+//!
+//! ./target/release/beava-bench-v18 \
+//!     --total-events 1_000_000 --blast-shape zipfian --transport tcp \
+//!     --wire-format msgpack --pipeline small --duration-secs 30 \
+//!     --parallel 16 --pipeline-depth 1024 --no-ledger --isolation-mode
 //! ```
 
 use anyhow::{Context, Result};
-use beava_core::wire::{CT_JSON, CT_MSGPACK, OP_PUSH};
+use beava_bench::blast_shape::{build_pool_timed, BlastShape, BlastShapeConfig, PipelineConfig};
+use beava_core::wire::OP_PUSH;
 use beava_server::server::ServerV18;
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
@@ -47,7 +69,8 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = WireFormat::Json)]
     wire_format: WireFormat,
 
-    /// Wall-time duration in seconds.
+    /// Wall-time duration in seconds. Becomes a safety upper bound only when
+    /// `--total-events` is set.
     #[arg(long, default_value_t = 60)]
     duration_secs: u64,
 
@@ -88,6 +111,34 @@ struct Cli {
     /// fall back to the burst pattern. HTTP transport ignores this.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     continuous_pipeline: bool,
+
+    // ─── Phase 19 additions ──────────────────────────────────────────────
+    //
+    /// Send a fixed total number of events instead of running for `--duration-secs`.
+    /// When set, the bench reports wall_clock to push N events end-to-end. `--duration-secs`
+    /// becomes a safety upper bound only.
+    #[arg(long)]
+    total_events: Option<u64>,
+
+    /// Blast shape — distribution that the Pool=N is built from.
+    #[arg(long, value_enum, default_value_t = BlastShapeArg::Fixed)]
+    blast_shape: BlastShapeArg,
+
+    /// Zipfian alpha skew (only used when --blast-shape=zipfian). Default 1.0.
+    #[arg(long, default_value_t = 1.0)]
+    zipf_alpha: f64,
+
+    /// Cardinality K for uniform/zipfian shapes. Default 1_000_000.
+    #[arg(long, default_value_t = 1_000_000)]
+    cardinality: u64,
+
+    /// Number of distinct event names for --blast-shape=mixed. Default 3.
+    #[arg(long, default_value_t = 3)]
+    mixed_event_count: usize,
+
+    /// Isolation mode — print wall_clock_ms / send_drain_ms / ack_lag_ms columns.
+    #[arg(long, default_value_t = false)]
+    isolation_mode: bool,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -120,16 +171,38 @@ impl WireFormat {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct PipelineConfig {
-    name: String,
-    #[allow(dead_code)]
-    description: String,
-    register: Value,
-    event_name: String,
-    features: Vec<String>,
-    key_field: String,
-    extra_fields: serde_json::Map<String, Value>,
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum BlastShapeArg {
+    Fixed,
+    Uniform,
+    Zipfian,
+    Mixed,
+}
+
+impl BlastShapeArg {
+    fn label(self) -> &'static str {
+        match self {
+            BlastShapeArg::Fixed => "fixed",
+            BlastShapeArg::Uniform => "uniform",
+            BlastShapeArg::Zipfian => "zipfian",
+            BlastShapeArg::Mixed => "mixed",
+        }
+    }
+    fn to_blast_shape(self, cli: &Cli) -> BlastShape {
+        match self {
+            BlastShapeArg::Fixed => BlastShape::Fixed,
+            BlastShapeArg::Uniform => BlastShape::Uniform {
+                cardinality: cli.cardinality,
+            },
+            BlastShapeArg::Zipfian => BlastShape::Zipfian {
+                alpha: cli.zipf_alpha,
+                cardinality: cli.cardinality,
+            },
+            BlastShapeArg::Mixed => BlastShape::Mixed {
+                event_count: cli.mixed_event_count,
+            },
+        }
+    }
 }
 
 fn load_pipeline(name_or_path: &str) -> Result<PipelineConfig> {
@@ -213,7 +286,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| std::cmp::min(8, num_cpus_or_default()));
 
     eprintln!(
-        "beava-bench-v18: pipeline={} transport={} wire_format={} duration_secs={} parallel={} seed={} get_sample_ms={} get_batch_keys={}",
+        "beava-bench-v18: pipeline={} transport={} wire_format={} duration_secs={} parallel={} seed={} get_sample_ms={} get_batch_keys={} blast_shape={} total_events={:?}",
         pipeline.name,
         cli.transport.label(),
         cli.wire_format.label(),
@@ -222,6 +295,8 @@ async fn main() -> Result<()> {
         cli.seed,
         cli.get_sample_interval_ms,
         cli.get_batch_keys,
+        cli.blast_shape.label(),
+        cli.total_events,
     );
 
     // Bind ServerV18 directly — no TestServer.
@@ -318,6 +393,35 @@ async fn main() -> Result<()> {
     }
     eprintln!("\n=== beava-bench-v18 summary ===\n{}\n", report.human);
 
+    // D-13 invariant tuple: {requested, pushed, acked}. Printed unconditionally
+    // so smoke tests can grep for it; asserted equal when --total-events set.
+    let requested = cli.total_events.unwrap_or(0);
+    // `pushes` (counter passed to run_workload) is incremented by the receiver
+    // per ack — so push_count == acked. The sender's `pushes_cap` counter
+    // tracks issued frames before write_all (D-13 hard cap) but is NOT reused
+    // here; we only need the invariant tuple to assert measurement honesty.
+    let pushed = result.push_count;
+    let acked = pushed;
+    eprintln!(
+        "beava-bench-v18: invariant_tuple requested={requested} pushed={pushed} acked={acked}",
+    );
+    if cli.total_events.is_some() {
+        anyhow::ensure!(
+            requested == pushed,
+            "{{requested, pushed}} mismatch — measurement error: requested={requested} pushed={pushed} acked={acked}",
+        );
+    }
+
+    // D-07 isolation columns.
+    if cli.isolation_mode {
+        let wall_clock_ms = result.elapsed.as_millis() as u64;
+        let send_drain_ms = result.send_drain_ms;
+        let ack_lag_ms = wall_clock_ms.saturating_sub(send_drain_ms);
+        eprintln!(
+            "beava-bench-v18: isolation_mode wall_clock_ms={wall_clock_ms} send_drain_ms={send_drain_ms} ack_lag_ms={ack_lag_ms}",
+        );
+    }
+
     // Shutdown.
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
@@ -337,6 +441,11 @@ struct WorkloadResult {
     get_samples: u64,
     peak_rss_mb: u64,
     elapsed: Duration,
+    /// `last_send_ts - first_send_ts` across all workers, in milliseconds.
+    /// Zero when no sends were captured (e.g., legacy duration-only mode where
+    /// the timestamps are not wired). Populated on every continuous + burst
+    /// run; the smoke test reads it via the `send_drain_ms` field.
+    send_drain_ms: u64,
 }
 
 async fn run_workload(
@@ -355,7 +464,63 @@ async fn run_workload(
         Histogram::new_with_bounds(1, 60_000_000, 3)?,
     ));
 
-    let deadline = Instant::now() + Duration::from_secs(cli.duration_secs);
+    // When --total-events is set, --duration-secs is a safety upper bound only;
+    // raise the floor to 1h so an unbounded runaway is impossible (T-19-02-02).
+    let effective_duration_secs = if cli.total_events.is_some() {
+        cli.duration_secs.max(3600)
+    } else {
+        cli.duration_secs
+    };
+    let deadline = Instant::now() + Duration::from_secs(effective_duration_secs);
+
+    // D-13 hard-cap counter — sender uses fetch_add(1, Relaxed) >= cap before
+    // write_all so {requested, pushed, acked} stay equal at run end.
+    let pushes_cap = Arc::new(AtomicU64::new(0));
+    let total_events_cap: Option<u64> = cli.total_events;
+    // Per-worker first/last send timestamps for --isolation-mode (D-07).
+    let first_send_ts: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
+    let last_send_ts: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
+    // BLOCKER 2 fix — Barrier of size (parallel + 1). Workers await AFTER pool-build,
+    // BEFORE first push. Main task awaits as the (parallel + 1)-th party THEN sets `start`.
+    // This excludes pool-build time from wall_clock_ms.
+    let pool_ready_barrier = Arc::new(tokio::sync::Barrier::new(parallel + 1));
+
+    // Mixed-event-name list: harvest distinct event names from
+    // pipeline.register["nodes"] where node["kind"] == "event"; if fewer than
+    // mixed_event_count distinct events, pad with synthetic "e1", "e2", ...
+    let mixed_event_names: Vec<String> = {
+        let mut names: Vec<String> = pipeline
+            .register
+            .get("nodes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|n| n.get("kind").and_then(|k| k.as_str()) == Some("event"))
+                    .filter_map(|n| n.get("name").and_then(|s| s.as_str()).map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if names.is_empty() {
+            names.push(pipeline.event_name.clone());
+        }
+        let want = cli.mixed_event_count.max(1);
+        let original_len = names.len();
+        while names.len() < want {
+            let i = names.len();
+            names.push(format!("e{i}"));
+        }
+        if names.len() > want {
+            names.truncate(want);
+        }
+        if matches!(cli.blast_shape, BlastShapeArg::Mixed) && original_len < cli.mixed_event_count {
+            eprintln!(
+                "warning: --blast-shape=mixed but pipeline has only {} distinct events; padding to {} with synthetic names",
+                original_len, cli.mixed_event_count
+            );
+        }
+        names
+    };
+    let blast_shape = cli.blast_shape.to_blast_shape(cli);
 
     // RSS sampler.
     let stop_rss = Arc::clone(&stop);
@@ -436,17 +601,14 @@ async fn run_workload(
     for worker_id in 0..parallel {
         let stop = Arc::clone(&stop);
         let pushes = Arc::clone(&pushes);
+        let pushes_cap_w = Arc::clone(&pushes_cap);
         let errors = Arc::clone(&errors);
         let push_hist = Arc::clone(&push_hist);
-        let pipeline_clone = PipelineConfig {
-            name: pipeline.name.clone(),
-            description: pipeline.description.clone(),
-            register: pipeline.register.clone(),
-            event_name: pipeline.event_name.clone(),
-            features: pipeline.features.clone(),
-            key_field: pipeline.key_field.clone(),
-            extra_fields: pipeline.extra_fields.clone(),
-        };
+        let pipeline_clone = pipeline.clone();
+        let mixed_event_names_w = mixed_event_names.clone();
+        let first_send_ts_w = Arc::clone(&first_send_ts);
+        let last_send_ts_w = Arc::clone(&last_send_ts);
+        let pool_barrier_w = Arc::clone(&pool_ready_barrier);
         let seed = cli.seed.wrapping_add(worker_id as u64 * 0x9E37);
         let http_url = format!("http://{}/push/{}", http_addr, pipeline.event_name);
         let transport = cli.transport;
@@ -454,6 +616,8 @@ async fn run_workload(
         let client = Arc::clone(&http_client);
         let pipeline_depth = cli.pipeline_depth.max(1);
         let continuous_pipeline = cli.continuous_pipeline;
+        let total_cap = total_events_cap;
+        let bs = blast_shape;
 
         workers.push(tokio::spawn(async move {
             run_push_worker(
@@ -461,9 +625,13 @@ async fn run_workload(
                 seed,
                 stop,
                 pushes,
+                pushes_cap_w,
+                total_cap,
                 errors,
                 push_hist,
                 pipeline_clone,
+                bs,
+                mixed_event_names_w,
                 transport,
                 wf,
                 http_url,
@@ -472,14 +640,26 @@ async fn run_workload(
                 client,
                 pipeline_depth,
                 continuous_pipeline,
+                first_send_ts_w,
+                last_send_ts_w,
+                pool_barrier_w,
             )
             .await;
         }));
     }
 
+    // BLOCKER 2 fix — wait for ALL parallel workers to finish pool-build (or
+    // signal "no pool to build" for HTTP transport) before any worker starts
+    // pushing. This ensures wall_clock_ms (set after barrier release) excludes
+    // pool-build time uniformly across workers.
+    pool_ready_barrier.wait().await;
+    // wall_clock_ms timer starts NOW — excludes per-worker pool-build time.
     let start = Instant::now();
     while Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     stop.store(true, Ordering::Relaxed);
 
@@ -494,6 +674,16 @@ async fn run_workload(
     let push_errors = errors.load(Ordering::Relaxed);
     let push_h = push_hist.lock().await;
     let get_h = get_hist.lock().await;
+
+    // Compute send_drain_ms from the per-worker first/last timestamps.
+    let send_drain_ms: u64 = {
+        let f = first_send_ts.lock().await;
+        let l = last_send_ts.lock().await;
+        match (*f, *l) {
+            (Some(fst), Some(lst)) if lst >= fst => lst.duration_since(fst).as_millis() as u64,
+            _ => 0,
+        }
+    };
 
     Ok(WorkloadResult {
         sustained_eps: push_count as f64 / elapsed.as_secs_f64(),
@@ -510,6 +700,7 @@ async fn run_workload(
         get_samples: get_samples_counter.load(Ordering::Relaxed),
         peak_rss_mb: peak_rss.load(Ordering::Relaxed),
         elapsed,
+        send_drain_ms,
     })
 }
 
@@ -519,9 +710,13 @@ async fn run_push_worker(
     seed: u64,
     stop: Arc<AtomicBool>,
     pushes: Arc<AtomicU64>,
+    pushes_cap: Arc<AtomicU64>,
+    total_cap: Option<u64>,
     errors: Arc<AtomicU64>,
     push_hist: Arc<AsyncMutex<Histogram<u64>>>,
     pipeline: PipelineConfig,
+    blast_shape: BlastShape,
+    mixed_event_names: Vec<String>,
     transport: Transport,
     wire_format: WireFormat,
     http_url: String,
@@ -530,6 +725,9 @@ async fn run_push_worker(
     http_client: Arc<reqwest::Client>,
     pipeline_depth: usize,
     continuous_pipeline: bool,
+    first_send_ts: Arc<AsyncMutex<Option<Instant>>>,
+    last_send_ts: Arc<AsyncMutex<Option<Instant>>>,
+    pool_ready_barrier: Arc<tokio::sync::Barrier>,
 ) {
     // Plan 18-12 follow-up: continuous pipelining for TCP.
     // When enabled (default), the TCP path uses a split sender/receiver
@@ -541,153 +739,352 @@ async fn run_push_worker(
             seed,
             stop,
             pushes,
+            pushes_cap,
+            total_cap,
             errors,
             push_hist,
             pipeline,
+            blast_shape,
+            mixed_event_names,
             wire_format,
             tcp_addr,
             deadline,
             pipeline_depth,
+            first_send_ts,
+            last_send_ts,
+            pool_ready_barrier,
         )
         .await;
         return;
     }
 
+    if matches!(transport, Transport::Tcp) {
+        // Burst-mode TCP using Pool=N + receiver-flips-stop pattern (D-12).
+        run_tcp_burst_push_worker(
+            seed,
+            stop,
+            pushes,
+            pushes_cap,
+            total_cap,
+            errors,
+            push_hist,
+            pipeline,
+            blast_shape,
+            mixed_event_names,
+            wire_format,
+            tcp_addr,
+            deadline,
+            pipeline_depth,
+            first_send_ts,
+            last_send_ts,
+            pool_ready_barrier,
+        )
+        .await;
+        return;
+    }
+
+    // HTTP transport — no Pool=N (HTTP path is rarely the headline number).
+    // Still wait on the barrier so wall_clock_ms is consistent with TCP runs.
+    pool_ready_barrier.wait().await;
+
     let mut rng = sampling_rng(seed);
-    match transport {
-        Transport::Http => {
-            let mut seq = 0_u64;
-            while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                let body = make_event_payload(&pipeline, seq, &mut rng);
-                let start = Instant::now();
-                let r = http_client
-                    .post(&http_url)
-                    .header("Content-Type", "application/json")
-                    .body(body.to_string())
-                    .send()
-                    .await;
-                let elapsed_us = start.elapsed().as_micros() as u64;
-                match r {
-                    Ok(resp) => {
-                        if resp.status().is_success() {
-                            pushes.fetch_add(1, Ordering::Relaxed);
-                            let mut h = push_hist.lock().await;
-                            let _ = h.record(elapsed_us.max(1));
-                        } else {
-                            errors.fetch_add(1, Ordering::Relaxed);
+    let mut seq = 0_u64;
+    let mut local_first: Option<Instant> = None;
+    let mut local_last: Option<Instant> = None;
+    while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+        // D-13 hard cap before send.
+        if let Some(cap) = total_cap {
+            let prev = pushes_cap.fetch_add(1, Ordering::Relaxed);
+            if prev >= cap {
+                pushes_cap.fetch_sub(1, Ordering::Relaxed);
+                break;
+            }
+        }
+        let body = make_event_payload(&pipeline, seq, &mut rng);
+        let start = Instant::now();
+        if local_first.is_none() {
+            local_first = Some(start);
+        }
+        let r = http_client
+            .post(&http_url)
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await;
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        local_last = Some(Instant::now());
+        match r {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let new_count = pushes.fetch_add(1, Ordering::Relaxed) + 1;
+                    let mut h = push_hist.lock().await;
+                    let _ = h.record(elapsed_us.max(1));
+                    drop(h);
+                    if let Some(cap) = total_cap {
+                        if new_count >= cap {
+                            stop.store(true, Ordering::Release);
+                            break;
                         }
-                        let _ = resp.bytes().await;
                     }
-                    Err(_) => {
+                } else {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                }
+                let _ = resp.bytes().await;
+            }
+            Err(_) => {
+                errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        seq = seq.wrapping_add(1);
+    }
+    publish_send_window(local_first, local_last, &first_send_ts, &last_send_ts).await;
+    // Suppress unused-warnings for fields HTTP doesn't read.
+    let _ = blast_shape;
+    let _ = mixed_event_names;
+}
+
+/// Update the workload-wide `first_send_ts` / `last_send_ts` slots based on
+/// this worker's locally-captured first/last send. Used for `send_drain_ms`
+/// computation in `--isolation-mode`.
+async fn publish_send_window(
+    local_first: Option<Instant>,
+    local_last: Option<Instant>,
+    first_send_ts: &AsyncMutex<Option<Instant>>,
+    last_send_ts: &AsyncMutex<Option<Instant>>,
+) {
+    if let Some(t) = local_first {
+        let mut slot = first_send_ts.lock().await;
+        if slot.map_or(true, |s| t < s) {
+            *slot = Some(t);
+        }
+    }
+    if let Some(t) = local_last {
+        let mut slot = last_send_ts.lock().await;
+        if slot.map_or(true, |s| t > s) {
+            *slot = Some(t);
+        }
+    }
+}
+
+/// Build a Pool=N for this worker. Pool size is `total_cap` when set, otherwise
+/// 1024 (legacy duration-only mode treats Pool=N as a small precomputed buffer
+/// the sender cycles through). Returns `None` and prints a warning on builder
+/// error so the worker can exit cleanly.
+fn build_worker_pool(
+    pipeline: &PipelineConfig,
+    blast_shape: BlastShape,
+    mixed_event_names: &[String],
+    wire_format: WireFormat,
+    seed: u64,
+    total_cap: Option<u64>,
+) -> Option<(Vec<Bytes>, Duration)> {
+    let pool_n: u64 = total_cap.unwrap_or(1024);
+    let names_ref: Vec<&str> = mixed_event_names.iter().map(String::as_str).collect();
+    let pool_cfg = BlastShapeConfig {
+        pipeline,
+        event_names_for_mixed: &names_ref,
+        wire_format: match wire_format {
+            WireFormat::Json => beava_bench::blast_shape::WireFormat::Json,
+            WireFormat::Msgpack => beava_bench::blast_shape::WireFormat::Msgpack,
+        },
+        seed,
+    };
+    match build_pool_timed(blast_shape, &pool_cfg, pool_n) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("build_pool_timed failed: {e}");
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_tcp_burst_push_worker(
+    seed: u64,
+    stop: Arc<AtomicBool>,
+    pushes: Arc<AtomicU64>,
+    pushes_cap: Arc<AtomicU64>,
+    total_cap: Option<u64>,
+    errors: Arc<AtomicU64>,
+    push_hist: Arc<AsyncMutex<Histogram<u64>>>,
+    pipeline: PipelineConfig,
+    blast_shape: BlastShape,
+    mixed_event_names: Vec<String>,
+    wire_format: WireFormat,
+    tcp_addr: std::net::SocketAddr,
+    deadline: Instant,
+    pipeline_depth: usize,
+    first_send_ts: Arc<AsyncMutex<Option<Instant>>>,
+    last_send_ts: Arc<AsyncMutex<Option<Instant>>>,
+    pool_ready_barrier: Arc<tokio::sync::Barrier>,
+) {
+    use beava_core::wire::Frame;
+    use beava_server::testing::TcpClient;
+
+    // Build Pool=N at worker startup. POOL BUILDING TIME IS NOT MEASURED in
+    // wall_clock_ms — wall_clock starts AFTER the barrier (D-02, D-15).
+    let (pool, _pool_build_dur) = match build_worker_pool(
+        &pipeline,
+        blast_shape,
+        &mixed_event_names,
+        wire_format,
+        seed,
+        total_cap,
+    ) {
+        Some(p) => p,
+        None => {
+            // Still wait on the barrier so other workers + the main task don't deadlock.
+            pool_ready_barrier.wait().await;
+            return;
+        }
+    };
+
+    // BLOCKER 2 fix — synchronize all workers BEFORE first push.
+    pool_ready_barrier.wait().await;
+
+    let mut client = match TcpClient::connect(tcp_addr).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("TcpClient::connect failed: {e}");
+            return;
+        }
+    };
+    let pdepth = pipeline_depth.max(1);
+    let mut send_times: Vec<Instant> = Vec::with_capacity(pdepth);
+    let mut idx: u64 = 0;
+    let pool_len = pool.len() as u64;
+    let mut local_first: Option<Instant> = None;
+    let mut local_last: Option<Instant> = None;
+
+    'outer: while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+        // ─── Build N frames + send all of them, then read N acks ─────
+        send_times.clear();
+        let mut send_err = false;
+        for _ in 0..pdepth {
+            if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                break;
+            }
+            // D-13 hard cap BEFORE write.
+            if let Some(cap) = total_cap {
+                let prev = pushes_cap.fetch_add(1, Ordering::Relaxed);
+                if prev >= cap {
+                    pushes_cap.fetch_sub(1, Ordering::Relaxed);
+                    break;
+                }
+            }
+            let frame_bytes = pool[(idx % pool_len) as usize].clone();
+            idx = idx.wrapping_add(1);
+            // Reconstruct the Frame from the pre-encoded bytes — the pool
+            // returns full encoded frames (length+op+ct+payload), but
+            // TcpClient::write_frame re-encodes from a Frame struct. Use the
+            // raw stream write instead by extracting the pre-encoded payload
+            // bytes (the ServerV18 wire is the same).
+            //
+            // Simpler: keep using TcpClient.write_frame with a re-decoded
+            // Frame so we don't have to expose a raw-bytes write_all on
+            // TcpClient. Re-decoding is "free" relative to the apply hot path
+            // (~50 ns) and keeps the public TcpClient API intact.
+            //
+            // The pool entries are full encoded frames; decode just enough to
+            // get the (op, ct, payload) back:
+            let (op, ct, payload) = match decode_pool_frame(&frame_bytes) {
+                Some(t) => t,
+                None => {
+                    errors.fetch_add(1, Ordering::Relaxed);
+                    send_err = true;
+                    break;
+                }
+            };
+            let frame = Frame {
+                op,
+                content_type: ct,
+                payload,
+            };
+            let send_ts = Instant::now();
+            if local_first.is_none() {
+                local_first = Some(send_ts);
+            }
+            if client.write_frame(&frame).await.is_err() {
+                send_err = true;
+                break;
+            }
+            send_times.push(send_ts);
+            local_last = Some(Instant::now());
+        }
+        let sent = send_times.len();
+        if sent == 0 {
+            if send_err {
+                if let Ok(c) = TcpClient::connect(tcp_addr).await {
+                    client = c;
+                }
+                continue;
+            }
+            // No work issued AND no error — must be that the cap was reached
+            // before any push in this batch. Exit so we don't spin while
+            // waiting for the receiver to flip `stop` (other workers may
+            // still be reading their own in-flight acks).
+            if total_cap.is_some() {
+                break 'outer;
+            }
+            continue;
+        }
+        // ─── Read N acks (strict FIFO order) ─────────────────────────
+        match client.read_n_frames(sent).await {
+            Ok(frames) => {
+                let mut h = push_hist.lock().await;
+                for (f, send_ts) in frames.iter().zip(send_times.iter()) {
+                    if f.op == OP_PUSH {
+                        let new_count = pushes.fetch_add(1, Ordering::Relaxed) + 1;
+                        let elapsed_us = send_ts.elapsed().as_micros() as u64;
+                        let _ = h.record(elapsed_us.max(1));
+                        // D-12: when ack count crosses the cap, flip stop.
+                        // No semaphore in burst mode; just store + break.
+                        if let Some(cap) = total_cap {
+                            if new_count >= cap {
+                                stop.store(true, Ordering::Release);
+                                drop(h);
+                                break 'outer;
+                            }
+                        }
+                    } else {
                         errors.fetch_add(1, Ordering::Relaxed);
                     }
                 }
-                seq = seq.wrapping_add(1);
+                drop(h);
             }
-        }
-        Transport::Tcp => {
-            use beava_core::wire::Frame;
-            use beava_server::testing::TcpClient;
-            let mut client = match TcpClient::connect(tcp_addr).await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("TcpClient::connect failed: {e}");
-                    return;
-                }
-            };
-            let mut seq = 0_u64;
-            let pdepth = pipeline_depth.max(1);
-            // Reused across batches; capacity matches pdepth so first-batch
-            // alloc is the only one. Holds per-event send timestamps for
-            // FIFO-paired real-latency measurement.
-            let mut send_times: Vec<Instant> = Vec::with_capacity(pdepth);
-            while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                // ─── Build N frames + send all of them, then read N acks ─────
-                send_times.clear();
-                let mut send_err = false;
-                for _ in 0..pdepth {
-                    if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
-                        break;
-                    }
-                    let body = make_event_payload(&pipeline, seq, &mut rng);
-                    let (ct, payload_bytes) = match wire_format {
-                        WireFormat::Json => {
-                            let envelope = serde_json::json!({
-                                "event": pipeline.event_name,
-                                "body": body,
-                            });
-                            (CT_JSON, serde_json::to_vec(&envelope).unwrap())
-                        }
-                        WireFormat::Msgpack => {
-                            use serde::Serialize;
-                            #[derive(Serialize)]
-                            struct Envelope<'a> {
-                                event: &'a str,
-                                body: &'a serde_json::Value,
-                            }
-                            let envelope = Envelope {
-                                event: &pipeline.event_name,
-                                body: &body,
-                            };
-                            (CT_MSGPACK, rmp_serde::to_vec_named(&envelope).unwrap())
-                        }
-                    };
-                    let frame = Frame {
-                        op: OP_PUSH,
-                        content_type: ct,
-                        payload: Bytes::from(payload_bytes),
-                    };
-                    // Capture per-event send timestamp BEFORE write_frame so
-                    // p50/p95/p99 reflect real per-event wall-clock latency
-                    // (matches continuous-mode measurement). Previously this
-                    // path recorded `batch_total / N` (amortized CPU-time-per-
-                    // event), which under-reported real latency by ~190× at
-                    // pdepth=256 saturation.
-                    let send_ts = Instant::now();
-                    if client.write_frame(&frame).await.is_err() {
-                        send_err = true;
-                        break;
-                    }
-                    send_times.push(send_ts);
-                    seq = seq.wrapping_add(1);
-                }
-                let sent = send_times.len();
-                if sent == 0 {
-                    if send_err {
-                        if let Ok(c) = TcpClient::connect(tcp_addr).await {
-                            client = c;
-                        }
-                    }
-                    continue;
-                }
-                // ─── Read N acks (strict FIFO order) ─────────────────────────
-                match client.read_n_frames(sent).await {
-                    Ok(frames) => {
-                        // Frames arrive in send order (TCP wire is strict
-                        // FIFO, no request_id). Pair each ack with its
-                        // matching send-timestamp for real per-event latency.
-                        let mut h = push_hist.lock().await;
-                        for (f, send_ts) in frames.iter().zip(send_times.iter()) {
-                            if f.op == OP_PUSH {
-                                pushes.fetch_add(1, Ordering::Relaxed);
-                                let elapsed_us = send_ts.elapsed().as_micros() as u64;
-                                let _ = h.record(elapsed_us.max(1));
-                            } else {
-                                errors.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                        drop(h);
-                    }
-                    Err(_e) => {
-                        errors.fetch_add(sent as u64, Ordering::Relaxed);
-                        if let Ok(c) = TcpClient::connect(tcp_addr).await {
-                            client = c;
-                        }
-                    }
+            Err(_e) => {
+                errors.fetch_add(sent as u64, Ordering::Relaxed);
+                if let Ok(c) = TcpClient::connect(tcp_addr).await {
+                    client = c;
                 }
             }
         }
     }
+
+    publish_send_window(local_first, local_last, &first_send_ts, &last_send_ts).await;
+}
+
+/// Decode the leading `[u32 len][u16 op][u8 ct][payload]` from a pre-encoded
+/// pool entry into `(op, content_type, Bytes payload)`. Wire is big-endian
+/// (matches `beava_core::wire::encode_frame`). Returns `None` on a malformed
+/// frame — the worker bumps `errors` in that case.
+fn decode_pool_frame(buf: &Bytes) -> Option<(u16, u8, Bytes)> {
+    if buf.len() < 7 {
+        return None;
+    }
+    let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if buf.len() < 4 + len {
+        return None;
+    }
+    let op = u16::from_be_bytes([buf[4], buf[5]]);
+    let ct = buf[6];
+    let payload_start = 7;
+    let payload_end = 4 + len;
+    if payload_end < payload_start {
+        return None;
+    }
+    let payload = buf.slice(payload_start..payload_end);
+    Some((op, ct, payload))
 }
 
 /// Continuous pipelining TCP worker. Splits the TcpStream into independent
@@ -711,21 +1108,50 @@ async fn run_tcp_continuous_push_worker(
     seed: u64,
     stop: Arc<AtomicBool>,
     pushes: Arc<AtomicU64>,
+    pushes_cap: Arc<AtomicU64>,
+    total_cap: Option<u64>,
     errors: Arc<AtomicU64>,
     push_hist: Arc<AsyncMutex<Histogram<u64>>>,
     pipeline: PipelineConfig,
+    blast_shape: BlastShape,
+    mixed_event_names: Vec<String>,
     wire_format: WireFormat,
     tcp_addr: std::net::SocketAddr,
     deadline: Instant,
     pipeline_depth: usize,
+    first_send_ts: Arc<AsyncMutex<Option<Instant>>>,
+    last_send_ts: Arc<AsyncMutex<Option<Instant>>>,
+    pool_ready_barrier: Arc<tokio::sync::Barrier>,
 ) {
-    use beava_core::wire::{decode_frame, encode_frame, Frame};
+    use beava_core::wire::decode_frame;
     use bytes::BytesMut;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::Semaphore;
 
     let pdepth = pipeline_depth.max(1);
+
+    // Build Pool=N at worker startup. POOL BUILDING TIME IS NOT MEASURED in
+    // wall_clock_ms — wall_clock starts AFTER the pool-ready barrier (D-02, D-15).
+    let (pool, _pool_build_dur) = match build_worker_pool(
+        &pipeline,
+        blast_shape,
+        &mixed_event_names,
+        wire_format,
+        seed,
+        total_cap,
+    ) {
+        Some(p) => p,
+        None => {
+            // Still wait on the barrier so other workers + the main task don't deadlock.
+            pool_ready_barrier.wait().await;
+            return;
+        }
+    };
+
+    // BLOCKER 2 fix — synchronize all workers BEFORE first push.
+    pool_ready_barrier.wait().await;
+
     let stream = match TcpStream::connect(tcp_addr).await {
         Ok(s) => s,
         Err(e) => {
@@ -743,23 +1169,28 @@ async fn run_tcp_continuous_push_worker(
     let sender_stop = Arc::clone(&stop);
     let sender_errors = Arc::clone(&errors);
     let sender_sem = Arc::clone(&sem);
-    let sender_pipeline = PipelineConfig {
-        name: pipeline.name.clone(),
-        description: pipeline.description.clone(),
-        register: pipeline.register.clone(),
-        event_name: pipeline.event_name.clone(),
-        features: pipeline.features.clone(),
-        key_field: pipeline.key_field.clone(),
-        extra_fields: pipeline.extra_fields.clone(),
-    };
+    let sender_pushes_cap = Arc::clone(&pushes_cap);
+    let sender_total_cap = total_cap;
+    let sender_first_send_ts = Arc::clone(&first_send_ts);
+    let sender_last_send_ts = Arc::clone(&last_send_ts);
+    let sender_pool = pool;
     let sender_handle = tokio::spawn(async move {
-        let mut rng = sampling_rng(seed);
-        let mut seq = 0_u64;
         let mut write_half = write_half;
-        let mut buf = BytesMut::with_capacity(4 * 1024);
+        let mut idx: u64 = 0;
+        let pool_len = sender_pool.len() as u64;
+        let mut local_first: Option<Instant> = None;
+        let mut local_last: Option<Instant> = None;
         loop {
             if sender_stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
                 break;
+            }
+            // D-13 hard cap — break BEFORE write_all so {requested, pushed, acked} stay equal.
+            if let Some(cap) = sender_total_cap {
+                let prev = sender_pushes_cap.fetch_add(1, Ordering::Relaxed);
+                if prev >= cap {
+                    sender_pushes_cap.fetch_sub(1, Ordering::Relaxed);
+                    break;
+                }
             }
             // Acquire one inflight slot. `acquire_owned` returns a permit
             // bound to the sem Arc. We `forget()` it: the receiver is the
@@ -768,57 +1199,39 @@ async fn run_tcp_continuous_push_worker(
             // here on drop and the gate would have no effect.
             let permit = match Arc::clone(&sender_sem).acquire_owned().await {
                 Ok(p) => p,
-                Err(_) => break, // semaphore closed
+                Err(_) => break, // sender_sem.close() from receiver — exit
             };
             permit.forget();
 
-            let body = make_event_payload(&sender_pipeline, seq, &mut rng);
-            let (ct, payload_bytes) = match wire_format {
-                WireFormat::Json => {
-                    let envelope = serde_json::json!({
-                        "event": sender_pipeline.event_name,
-                        "body": body,
-                    });
-                    (CT_JSON, serde_json::to_vec(&envelope).unwrap())
-                }
-                WireFormat::Msgpack => {
-                    use serde::Serialize;
-                    #[derive(Serialize)]
-                    struct Envelope<'a> {
-                        event: &'a str,
-                        body: &'a serde_json::Value,
-                    }
-                    let envelope = Envelope {
-                        event: &sender_pipeline.event_name,
-                        body: &body,
-                    };
-                    (CT_MSGPACK, rmp_serde::to_vec_named(&envelope).unwrap())
-                }
-            };
-            let frame = Frame {
-                op: OP_PUSH,
-                content_type: ct,
-                payload: Bytes::from(payload_bytes),
-            };
-            buf.clear();
-            encode_frame(&frame, &mut buf);
+            let frame_bytes = &sender_pool[(idx % pool_len) as usize];
+            idx = idx.wrapping_add(1);
 
             let send_ts = Instant::now();
-            if write_half.write_all(&buf).await.is_err() {
+            if local_first.is_none() {
+                local_first = Some(send_ts);
+            }
+            if write_half.write_all(frame_bytes).await.is_err() {
                 sender_errors.fetch_add(1, Ordering::Relaxed);
                 break;
             }
+            local_last = Some(Instant::now());
             // Notify receiver of the send-timestamp for this in-flight ack.
             // unbounded_send only fails if receiver dropped the channel; in
             // that case the receiver task has exited and we should too.
             if ts_tx.send(send_ts).is_err() {
                 break;
             }
-            seq = seq.wrapping_add(1);
         }
         // Drop ts_tx to signal EOF to the receiver after we've written
         // everything.
         drop(ts_tx);
+        publish_send_window(
+            local_first,
+            local_last,
+            &sender_first_send_ts,
+            &sender_last_send_ts,
+        )
+        .await;
     });
 
     // ─── Receiver loop (this task) ────────────────────────────────────────
@@ -858,16 +1271,27 @@ async fn run_tcp_continuous_push_worker(
                     };
                     let elapsed_us = send_ts.elapsed().as_micros() as u64;
                     if f.op == OP_PUSH {
-                        pushes.fetch_add(1, Ordering::Relaxed);
+                        let new_count = pushes.fetch_add(1, Ordering::Relaxed) + 1;
                         latency_batch.push(elapsed_us.max(1));
                         if latency_batch.len() >= HIST_FLUSH_BATCH {
                             flush_latencies(&push_hist, &mut latency_batch).await;
                         }
+                        // Release the inflight slot.
+                        sem.add_permits(1);
+                        // D-12: when ack count crosses the cap, flip stop AND close sem
+                        // so the sender (blocked on acquire_owned().await) returns
+                        // Err and exits the loop.
+                        if let Some(cap) = total_cap {
+                            if new_count >= cap {
+                                stop.store(true, Ordering::Release);
+                                sem.close();
+                                break 'recv;
+                            }
+                        }
                     } else {
                         errors.fetch_add(1, Ordering::Relaxed);
+                        sem.add_permits(1);
                     }
-                    // Release the inflight slot.
-                    sem.add_permits(1);
                 }
                 Ok(None) => break, // need more bytes
                 Err(_e) => {
@@ -879,11 +1303,27 @@ async fn run_tcp_continuous_push_worker(
         if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
             break;
         }
-        match read_half.read_buf(&mut read_buf).await {
-            Ok(0) => break, // peer closed
-            Ok(_) => continue,
-            Err(_) => break,
-        }
+        // Race the socket read against a periodic wake so we re-check `stop`
+        // even if no bytes arrive. Without this, a receiver whose sender has
+        // exited (sender drops `ts_tx`, all in-flight acks already drained)
+        // can park indefinitely on `read_buf.await` while the global `stop`
+        // is already true.
+        let read_fut = read_half.read_buf(&mut read_buf);
+        tokio::pin!(read_fut);
+        let n = tokio::select! {
+            r = &mut read_fut => match r {
+                Ok(0) => break, // peer closed
+                Ok(n) => n,
+                Err(_) => break,
+            },
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                    break;
+                }
+                continue;
+            }
+        };
+        let _ = n;
     }
 
     // Flush any tail-batch latencies before exiting.
@@ -927,7 +1367,7 @@ fn format_report(
         gp99 = r.get_p99_us,
         rss = r.peak_rss_mb,
     );
-    let human = format!(
+    let mut human = format!(
         "pipeline:         {}\n\
          transport:        {}\n\
          wire_format:      {}\n\
@@ -961,6 +1401,23 @@ fn format_report(
         hw_class_string(),
         commit,
     );
+    if cli.isolation_mode {
+        let wall_clock_ms = r.elapsed.as_millis() as u64;
+        let send_drain_ms = r.send_drain_ms;
+        let ack_lag_ms = wall_clock_ms.saturating_sub(send_drain_ms);
+        human.push_str(&format!(
+            "blast_shape:      {}\n\
+             total_events:    {:?}\n\
+             wall_clock_ms:    {}\n\
+             send_drain_ms:    {}\n\
+             ack_lag_ms:       {}\n",
+            cli.blast_shape.label(),
+            cli.total_events,
+            wall_clock_ms,
+            send_drain_ms,
+            ack_lag_ms,
+        ));
+    }
     Report { ledger_row, human }
 }
 
@@ -1002,5 +1459,36 @@ fn git_short_sha() -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that decode_pool_frame parses the same encoding produced by
+    /// `beava_core::wire::encode_frame`.
+    #[test]
+    fn decode_pool_frame_parses_encoded_frame() {
+        use beava_core::wire::{encode_frame, Frame, CT_JSON};
+        use bytes::BytesMut;
+        let frame = Frame {
+            op: OP_PUSH,
+            content_type: CT_JSON,
+            payload: Bytes::from_static(b"{\"event\":\"Txn\",\"body\":{}}"),
+        };
+        let mut buf = BytesMut::new();
+        encode_frame(&frame, &mut buf);
+        let bytes = buf.freeze();
+        let (op, ct, payload) = decode_pool_frame(&bytes).expect("decode");
+        assert_eq!(op, OP_PUSH);
+        assert_eq!(ct, CT_JSON);
+        assert_eq!(&payload[..], b"{\"event\":\"Txn\",\"body\":{}}");
+    }
+
+    #[test]
+    fn decode_pool_frame_rejects_truncated() {
+        let bytes = Bytes::from_static(&[0u8, 0, 0, 0, 0, 0]); // <7 bytes
+        assert!(decode_pool_frame(&bytes).is_none());
     }
 }
