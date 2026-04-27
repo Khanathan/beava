@@ -28,6 +28,12 @@ rmp-serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# proptest powers Phase 19's blast_shape distribution tests.
+proptest = { workspace = true }
+
+[lib]
+name = "beava_bench"
+path = "src/lib.rs"
 
 [[bin]]
 name = "beava-bench"

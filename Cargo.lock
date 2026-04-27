@@ -185,6 +185,7 @@ dependencies = [
  "clap",
  "futures",
  "hdrhistogram",
+ "proptest",
  "rand 0.8.6",
  "reqwest",
  "rmp-serde",
