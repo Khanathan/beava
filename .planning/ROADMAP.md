@@ -744,11 +744,23 @@ Tier classification post-fix per uniformity audit:
 - Cost-class doc surface: source attribute (`#[doc(cost = "tier1")]`) vs separate markdown table in operator catalogue docs site.
 - Observability endpoint: `/debug/op-cost` always-on vs feature-gated behind `BEAVA_DEV_ENDPOINTS=1`.
 
-**Plans:** TBD during `/gsd-plan-phase 19.2` — likely 6-8 plans across 3-4 waves:
-- Wave 1: Sub-goals 1+2 (wrapping; independent files; can run parallel)
-- Wave 2: Sub-goal 3 (EntityKey cluster + single-u64 fast path; touches register-time analysis + apply-loop)
-- Wave 3: Sub-goals 4+5 (UDDSketch + EventTypeMix; independent op-specific files)
-- Wave 4: Sub-goals 6+7 (UniqueCells cap + observability) + criterion microbench + rebaseline + verification
+**Plans:** 8 plans across 6 waves (planned 2026-04-27 via `/gsd-plan-phase 19.2`):
+- [ ] 19.2-01-PLAN.md — D-01 field pre-extraction (apply-loop one-pass row scan + register-time field-idx + missing-field reject) — Wave 1
+- [ ] 19.2-02-PLAN.md — D-02a process-static AHasher RandomState + D-02b FxHasher for HLL input — Wave 2
+- [ ] 19.2-03-PLAN.md — D-03 EntityKeyShape hybrid (SingleU64/SingleStr/Multi) + D-04 cluster signature dispatch + register-time NaN-float reject — Wave 2
+- [ ] 19.2-04-PLAN.md — D-04a UDDSketch BTreeMap → flat sorted Vec with binary-search insert — Wave 1
+- [ ] 19.2-05-PLAN.md — D-04b EventTypeMix AHashSet allowlist + str_from_row/value_to_key_string Cow refactor (Bloom/Entropy/EventTypeMix consumers) — Wave 3
+- [ ] 19.2-06-PLAN.md — D-05 remove unique_cells/geo_entropy from catalogue (55 → 53) + add quadkey() builtin + D-05a bv.entropy max_categories cap + Prometheus counter — Wave 4
+- [ ] 19.2-07-PLAN.md — D-06 cost-class catalogue at docs/operators/cost-class.md + D-07 /debug/op-cost endpoint feature-gated by BEAVA_DEV_ENDPOINTS=1 — Wave 5
+- [ ] 19.2-08-PLAN.md — D-08 criterion microbench (apply_path_bench.rs, 4 groups) + Phase 19.2 throughput rebaseline matrix + verification verdict — Wave 6
+
+Wave structure:
+- Wave 1: 19.2-01 (foundation), 19.2-04 (independent UDDSketch)
+- Wave 2: 19.2-02 (hashers, depends on 01 — agg_state.rs file overlap), 19.2-03 (cluster dispatch, depends on 01)
+- Wave 3: 19.2-05 (EventTypeMix Set+Cow, depends on 01+02 — agg_state.rs file overlap)
+- Wave 4: 19.2-06 (op removal + entropy cap, depends on 01+03+05 — many file overlaps)
+- Wave 5: 19.2-07 (cost-class + /debug/op-cost, depends on 06)
+- Wave 6: 19.2-08 (microbench + rebaseline + verification, depends on all)
 
 **Anti-pattern preserved (per Phase 19.3 design notes):**
 - Same-key sketch batching is FORBIDDEN per memory `project_no_same_key_batching` — read-after-write semantic risk + Redis-shaped positioning. Do NOT propose batching as a sub-goal during discuss-phase.
