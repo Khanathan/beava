@@ -587,11 +587,11 @@ Plans:
 - Histogram windowed semantics: add `windowed_histogram` op family vs document `percentile (UDDSketch)` as the windowed-distribution path.
 - Stretch scope: cap at lazy buckets, OR also include same-key batching, OR also include OP_PUSH_MANY adoption.
 
-**Plans:** 5 plans across 3 waves (planned 2026-04-27)
+**Plans:** 2/5 plans executed
 
 Plans:
-- [ ] 19.1-01-PLAN.md — bench wall_clock measurement fix (Wave 1; verdict-flip pre-condition)
-- [ ] 19.1-02-PLAN.md — fraud-team.json validation + catalogue commit (Wave 1; primary tuning bench)
+- [x] 19.1-01-PLAN.md — bench wall_clock measurement fix (Wave 1; verdict-flip pre-condition)
+- [x] 19.1-02-PLAN.md — fraud-team.json validation + catalogue commit (Wave 1; primary tuning bench)
 - [ ] 19.1-03-PLAN.md — WAL config bump 4×32 MiB tick=20ms + env-tunables (Wave 2; depends on 01)
 - [ ] 19.1-04-PLAN.md — WindowedOp lazy buckets via SmallVec (Wave 2; depends on 01)
 - [ ] 19.1-05-PLAN.md — re-baseline matrix + Phase 19 verdict-flip + Phase 19.1 verification (Wave 3; depends on 01-04)
