@@ -831,6 +831,11 @@ impl AggOp {
     ///
     /// `where_expr` still evaluates against `row` — expression predicates may
     /// reference multiple fields and cannot be pre-extracted in the same way.
+    ///
+    /// Plan 19.2-05 (D-04b): `field_idx` and `extracted` are passed through so
+    /// `EventTypeMix` can call its `update_at` fast-path (consuming the pre-extracted
+    /// Value directly, avoiding the `row.get(fname)` scan that `update()` pays).
+    #[allow(clippy::too_many_arguments)]
     pub fn update_with_extracted(
         &mut self,
         pre_val: Option<&Value>,
@@ -838,6 +843,8 @@ impl AggOp {
         where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
         row: &Row,
         field: Option<&str>,
+        field_idx: u8,
+        extracted: &ExtractedFields<'_>,
     ) {
         let where_matched = match where_expr {
             Some(e) => crate::agg_where::evaluate_where_predicate(e, row),
@@ -913,7 +920,11 @@ impl AggOp {
             AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
             // Phase 11 structural outputs using row-based field access — fall back.
             AggOp::Histogram(s) => s.update(row, field, where_matched),
-            AggOp::EventTypeMix(s) => s.update(row, field, where_matched),
+            // Plan 19.2-05 (D-04b): EventTypeMix migrated to update_at, consuming
+            // the pre-extracted Value from the ExtractedFields array. No row.get scan.
+            AggOp::EventTypeMix(s) => {
+                s.update_at(extracted, field_idx, event_time_ms, where_matched)
+            }
             AggOp::MostRecentN(s) => s.update(row, field, where_matched),
             AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
             // Field-bearing ops with update_pre — hot path.

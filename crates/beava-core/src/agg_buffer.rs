@@ -13,8 +13,10 @@
 //! deterministic xorshift seeded from `items_seen`).
 //! D-08 (Phase 11 CONTEXT): all operators are lifetime / windowless in v0.
 
+use crate::agg_op::{ExtractedFields, FIELD_IDX_NONE};
 use crate::row::{Row, Value};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -27,11 +29,17 @@ fn numeric_from_row(row: &Row, field: &str) -> Option<f64> {
     }
 }
 
-fn str_from_row(row: &Row, field: &str) -> Option<String> {
+/// Plan 19.2-05 (D-04b): Extract a string key from a Row field, borrowing from
+/// `Value::Str(CompactString)` without allocating when possible. Allocates only
+/// for derived-string types (I64, Bool). Returns `None` for non-string-key types.
+///
+/// Lifetime `'a` ties the `Cow::Borrowed` variant to the row's borrow scope,
+/// which is the apply-event call scope — no lifetime escape.
+pub fn str_from_row<'a>(row: &'a Row, field: &str) -> Option<Cow<'a, str>> {
     match row.get(field)? {
-        Value::Str(s) => Some(s.to_string()),
-        Value::I64(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
+        Value::Str(s) => Some(Cow::Borrowed(s.as_str())), // zero alloc
+        Value::I64(n) => Some(Cow::Owned(n.to_string())),
+        Value::Bool(b) => Some(Cow::Owned(b.to_string())),
         _ => None,
     }
 }
@@ -280,23 +288,66 @@ impl SeasonalDeviationState {
 ///
 /// Categories are pre-declared at register time via the `categories=[...]` kwarg
 /// when present; if not specified, we accept any category up to `max_categories`.
+///
+/// Plan 19.2-05 (D-04b): `allowed_set` is the O(1) in-memory companion to
+/// `allowed`. Built at `new()` time from `allowed`, and lazily rebuilt on the
+/// first update after snapshot deserialization (via `#[serde(skip)]`). The
+/// serde-stable field `allowed: Option<Vec<String>>` is kept for snapshot
+/// back-compat; production hot-path uses `allowed_set` exclusively.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventTypeMixState {
     pub counts: BTreeMap<String, u64>,
     pub total: u64,
     pub max_categories: usize,
-    /// If non-empty, restrict updates to these categories (reject others into
-    /// `total` only — they still affect the denominator).
+    /// Kept as `Vec<String>` for serde stability (snapshot back-compat).
+    /// In-memory access uses `allowed_set` for O(1) contains. Built at
+    /// `new()` time and rebuilt lazily on first update post-snapshot load.
     pub allowed: Option<Vec<String>>,
+    /// Plan 19.2-05 (D-04b): O(1) AHashSet companion to `allowed`.
+    /// Skipped during serde; rebuilt from `allowed` at `new()` or lazily
+    /// on first update after deserialization. Default = None.
+    #[serde(skip, default)]
+    pub allowed_set: Option<ahash::AHashSet<String>>,
 }
 
 impl EventTypeMixState {
     pub fn new(max_categories: usize, allowed: Option<Vec<String>>) -> Self {
+        let allowed_set = allowed.as_ref().map(|v| {
+            let mut set = ahash::AHashSet::with_capacity(v.len());
+            for s in v {
+                set.insert(s.clone());
+            }
+            set
+        });
         Self {
             counts: BTreeMap::new(),
             total: 0,
             max_categories,
             allowed,
+            allowed_set,
+        }
+    }
+
+    /// Plan 19.2-05 (D-04b): test accessor for `allowed_set`.
+    /// Allows integration tests to verify the AHashSet is built without
+    /// accessing the private field directly.
+    pub fn allowed_set_for_test(&self) -> Option<&ahash::AHashSet<String>> {
+        self.allowed_set.as_ref()
+    }
+
+    /// Lazy-init `allowed_set` from `allowed`. Called on the hot path when
+    /// `allowed` is Some but `allowed_set` is None (happens after snapshot
+    /// deserialization where `#[serde(skip)]` zeros out the set).
+    /// Pays once per state per process lifetime after a snapshot load.
+    fn ensure_allowed_set(&mut self) {
+        if let Some(allow_vec) = &self.allowed {
+            if self.allowed_set.is_none() {
+                let mut set = ahash::AHashSet::with_capacity(allow_vec.len());
+                for s in allow_vec {
+                    set.insert(s.clone());
+                }
+                self.allowed_set = Some(set);
+            }
         }
     }
 
@@ -305,19 +356,75 @@ impl EventTypeMixState {
             return;
         }
         let Some(fname) = field else { return };
-        let Some(cat) = str_from_row(row, fname) else {
+        let Some(cat_cow) = str_from_row(row, fname) else {
             return;
         };
         self.total = self.total.saturating_add(1);
-        if let Some(allowed) = &self.allowed {
-            if !allowed.contains(&cat) {
+        // Lazy-init the AHashSet (covers serde-rehydrated states).
+        self.ensure_allowed_set();
+        if let Some(allow_set) = &self.allowed_set {
+            if !allow_set.contains(cat_cow.as_ref()) {
+                // O(1) contains check — rejected event counted in total only.
                 return;
             }
-        } else if !self.counts.contains_key(&cat) && self.counts.len() >= self.max_categories {
+        } else if !self.counts.contains_key(cat_cow.as_ref())
+            && self.counts.len() >= self.max_categories
+        {
             // Cardinality cap reached and this is a new category → drop.
             return;
         }
-        let entry = self.counts.entry(cat).or_insert(0);
+        // counts uses String keys for serde; allocate only at the accept path.
+        let cat_string = cat_cow.into_owned();
+        let entry = self.counts.entry(cat_string).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+
+    /// Plan 19.2-05 (D-04b): apply-path fast-path consuming a pre-extracted
+    /// `Option<&Value>` from the apply-loop's `ExtractedFields` array (Plan
+    /// 19.2-01). Avoids the `row.get(field)` linear scan that `update()` pays.
+    ///
+    /// `field_idx` = `FIELD_IDX_NONE` → no-op (fieldless invocation).
+    /// `extracted.get(field_idx)` returning `None` or `Some(None)` → no-op
+    /// (field not present in this event).
+    pub fn update_at(
+        &mut self,
+        extracted: &ExtractedFields,
+        field_idx: u8,
+        _event_time_ms: i64,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        if field_idx == FIELD_IDX_NONE {
+            return;
+        }
+        // Borrow the pre-extracted Value pointer — no row.get scan.
+        let v = match extracted.get(field_idx as usize).copied().flatten() {
+            Some(v) => v,
+            None => return,
+        };
+        // Convert directly from Value to Cow<str> — no intermediate String.
+        let cat_cow: Cow<str> = match v {
+            Value::Str(s) => Cow::Borrowed(s.as_str()), // zero alloc
+            Value::I64(n) => Cow::Owned(n.to_string()),
+            Value::Bool(b) => Cow::Owned(b.to_string()),
+            _ => return,
+        };
+        self.total = self.total.saturating_add(1);
+        // Lazy-init the AHashSet (covers serde-rehydrated states).
+        self.ensure_allowed_set();
+        if let Some(allow_set) = &self.allowed_set {
+            if !allow_set.contains(cat_cow.as_ref()) {
+                return;
+            }
+        } else if !self.counts.contains_key(cat_cow.as_ref())
+            && self.counts.len() >= self.max_categories
+        {
+            return;
+        }
+        let cat_string = cat_cow.into_owned();
+        let entry = self.counts.entry(cat_string).or_insert(0);
         *entry = entry.saturating_add(1);
     }
 

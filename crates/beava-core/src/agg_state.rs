@@ -985,14 +985,21 @@ pub fn hash_value_for_hll(v: &Value) -> u64 {
     h.finish()
 }
 
-/// String view of a `Value` for use as Entropy / Bloom key.
-fn value_to_key_string(v: &Value) -> Option<String> {
+/// Plan 19.2-05 (D-04b): String view of a `Value` for use as Entropy / Bloom key.
+///
+/// Returns `Cow::Borrowed(s.as_str())` for `Value::Str` — zero allocation when
+/// the input is already a `CompactString`. Returns `Cow::Owned(...)` for all
+/// derived-string types (I64, F64, Bool, Datetime). Returns `None` for
+/// non-string-key types (Null, Bytes, Json, List, Map).
+///
+/// Made `pub` for integration tests and for `agg_buffer::str_from_row` parity.
+pub fn value_to_key_string(v: &Value) -> Option<std::borrow::Cow<'_, str>> {
     match v {
-        Value::Str(s) => Some(s.to_string()),
-        Value::I64(n) => Some(n.to_string()),
-        Value::F64(f) => Some(format!("{f:?}")),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::Datetime(ms) => Some(ms.to_string()),
+        Value::Str(s) => Some(std::borrow::Cow::Borrowed(s.as_str())), // zero alloc
+        Value::I64(n) => Some(std::borrow::Cow::Owned(n.to_string())),
+        Value::F64(f) => Some(std::borrow::Cow::Owned(format!("{f:?}"))),
+        Value::Bool(b) => Some(std::borrow::Cow::Owned(b.to_string())),
+        Value::Datetime(ms) => Some(std::borrow::Cow::Owned(ms.to_string())),
         Value::Null => None,
         Value::Bytes(_) => None,
         Value::Json(_) => None,
@@ -1219,7 +1226,8 @@ impl BloomMemberStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        self.inner.insert(&s);
+        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
+        self.inner.insert(s.as_ref());
         self.n_inserts = self.n_inserts.saturating_add(1);
     }
 
@@ -1232,7 +1240,8 @@ impl BloomMemberStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        self.inner.insert(&s);
+        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
+        self.inner.insert(s.as_ref());
         self.n_inserts = self.n_inserts.saturating_add(1);
     }
 
@@ -1271,7 +1280,8 @@ impl EntropyStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        self.inner.insert(&s);
+        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
+        self.inner.insert(s.as_ref());
     }
 
     /// Pre-extraction fast-path.
@@ -1283,7 +1293,8 @@ impl EntropyStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        self.inner.insert(&s);
+        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
+        self.inner.insert(s.as_ref());
     }
 
     pub fn query(&self) -> Value {

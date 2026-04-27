@@ -28,8 +28,14 @@ fn test_event_type_mix_uses_hashset_allowlist() {
         .expect("allowed_set should be Some after new() with allowed categories");
     assert!(set.contains("click"), "click must be in the allowlist set");
     assert!(set.contains("view"), "view must be in the allowlist set");
-    assert!(set.contains("purchase"), "purchase must be in the allowlist set");
-    assert!(!set.contains("scroll"), "scroll must NOT be in the allowlist set");
+    assert!(
+        set.contains("purchase"),
+        "purchase must be in the allowlist set"
+    );
+    assert!(
+        !set.contains("scroll"),
+        "scroll must NOT be in the allowlist set"
+    );
     assert_eq!(set.len(), 3, "set must have exactly 3 entries");
 }
 
@@ -139,7 +145,7 @@ fn test_event_type_mix_update_at_consumes_extracted_value() {
 
     // Build a synthetic ExtractedFields with one slot containing a Value::Str
     let val = Value::Str("click".into());
-    let mut extracted: ExtractedFields = smallvec::smallvec![Some(&val)];
+    let extracted: ExtractedFields = smallvec::smallvec![Some(&val)];
 
     // Call update_at: consumes the pre-extracted Value, not row.get
     // This method doesn't exist yet → RED.
