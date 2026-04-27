@@ -69,7 +69,11 @@ number.
 ### C. Python harness
 
 - **D-08:** Python harness lives at `python/benches/blast.py`. Excluded from the pip wheel via `pyproject.toml` `[tool.hatch.build.targets.wheel]` exclude rules. Importable from a clone, not from `pip install beava`.
-- **D-09:** Uses **public** `bv.App + app.push()` in a tight loop. No SDK bypass / no raw socket. The published Python number reflects what a real user observes — SDK serialization, GIL, transport stack overhead all included. Likely 5-10× slower than the Rust harness; that is the honest "Python from your laptop" baseline.
+- **D-09:** Uses the **public Transport API** in a tight loop (no raw socket bypass). Specifically:
+  - HTTP transport: `transport._client.post(f"/push/{event}", json=body)` (the same path `app.upsert()` already uses internally — public on the Transport object, not yet wrapped by an `app.push()` since `SDK-APP-04` hasn't landed).
+  - TCP transport: `transport.send_push(event_name, body_dict, wire_format="json"|"msgpack")` (public method on `TcpTransport`).
+  - **Revised 2026-04-26:** original draft of D-09 said "public `bv.App + app.push()`" but `app.push()` is gated on `SDK-APP-04` and does not exist yet. The plan-checker caught this; user picked "use `transport.send_push()` until `app.push()` lands" — number reflects what an SDK user observes minus the soon-to-land thin `app.push()` wrapper, so it is still SDK-honest (Python encoder, GIL, httpx overhead). Once `SDK-APP-04` lands, a future Phase 19.1 can switch the harness to `app.push()` and re-baseline.
+  - **Forbidden:** opening a raw `socket.create_connection(...)` and writing pre-encoded frames directly. That is wire-direct bypass and falsifies the published Python number.
 - **D-10:** Concurrency model: `concurrent.futures.ProcessPoolExecutor` with N = `os.cpu_count() - 1` worker processes. Each worker spawns its own `bv.App` and runs an independent tight push loop. Per-worker counters are aggregated via `multiprocessing.Manager` (or atomic-int over `multiprocessing.Value`). Bypasses GIL; closest to "multiple Python service instances pushing concurrently" — the realistic deployment shape.
 - **D-11:** Python rows are added to the same `## 1M-event blast` section in `.planning/throughput-baselines.md`. Schema gets a new `language` column (`rust` | `python`). Direct apples-to-apples comparison in one table.
 
