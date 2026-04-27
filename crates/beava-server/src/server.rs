@@ -572,9 +572,27 @@ impl ServerV18 {
 
         // ── Hand-rolled WAL stack ────────────────────────────────────────────
         let wal_lsn = Arc::new(WalLsn::new());
-        // 3 buffers × 16 MiB each (covers ~50k events per buffer at 300 bytes each).
-        let buf_bytes = 16 * 1024 * 1024;
-        let wal_ring = Arc::new(WalBufferRing::new(3, buf_bytes, Arc::clone(&wal_lsn)));
+        // WAL ring config from env (default 4 × 32 MiB tick=20ms; tunable via
+        // BEAVA_WAL_BUFFERS / BEAVA_WAL_BUFFER_SIZE_MB / BEAVA_WAL_TICK_MS).
+        // Phase 18 invariants UNCHANGED: lock-free apply, single writer+fsync,
+        // O_APPEND, four-watermark discipline. Only buffer count, size, and
+        // tick interval are tuned (Phase 19.1-03 D-01..D-04).
+        let wal_cfg = crate::wal_config::WalConfig::resolve_from_env();
+        tracing::info!(
+            target: "beava.wal",
+            kind = "wal.config.resolved",
+            buffers = wal_cfg.buffers,
+            buffer_size_mb = wal_cfg.buffer_size_mb,
+            tick_ms = wal_cfg.tick_ms,
+            "WAL config resolved (env-tunable: BEAVA_WAL_BUFFERS default=4 range [2,32] / \
+             BEAVA_WAL_BUFFER_SIZE_MB default=32 range [4,256] / BEAVA_WAL_TICK_MS default=20 range [1,1000])"
+        );
+        let buf_bytes = wal_cfg.buffer_size_mb * 1024 * 1024;
+        let wal_ring = Arc::new(WalBufferRing::new(
+            wal_cfg.buffers,
+            buf_bytes,
+            Arc::clone(&wal_lsn),
+        ));
 
         // WAL writer thread: drains sealed buffers, calls write() + fsync().
         let wal_writer_dir = wal_dir.clone();
@@ -582,7 +600,7 @@ impl ServerV18 {
             &wal_writer_dir,
             Arc::clone(&wal_ring),
             Arc::clone(&wal_lsn),
-            2, // tick_ms — match legacy fsync_interval_ms
+            wal_cfg.tick_ms,
         )
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
         let wal_writer_handle = wal_writer.spawn();
