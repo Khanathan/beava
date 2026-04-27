@@ -620,6 +620,47 @@ Plans:
 **Plans:**
 1/1 plans complete
 
+### Phase 19.1.2: geo_spread O(n) → O(1) Welford RMS dispersion — 📋 PLANNED
+
+**Status:** Inserted 2026-04-27 as a second hotfix mini-phase between Phase 19.1 Wave 2 (19.1-03 + 19.1-04, completed) and Wave 3 (19.1-05 rebaseline). Phase 19.1's traced bench on fraud-team.json zipfian K=10k revealed `geo_spread` is O(n) per push (recomputes max-distance-from-running-mean by walking all stored samples on every event), reaching ~5-25 µs/push on hot keys with several thousand event history. The current implementation comment at `crates/beava-core/src/agg_geo.rs:152-154` deliberately deferred this to v0.1. Pulling forward because (a) it dominates fraud-team's hot-key apply path (~50% of features-stage time), (b) the current `max-distance-from-moving-mean` semantic is non-standard and counter-intuitive (a SCATTERED user with two clusters reports a LOWER value than a user with one outlier), and (c) the fix is small.
+
+**Goal:** Replace `GeoSpreadState`'s `samples: Vec<(f64, f64)>` + per-update walk with Welford-style online second-moment accumulators. Returns RMS dispersion (km) instead of max-distance-from-mean (km). O(1) per push (~50 ns vs current 5-25,000 ns on hot keys). v0 spec change: the value `bv.geo_spread` returns has different units/semantics (RMS scatter vs single-point max). v0 is not publicly shipped (per memory `project_beava_product`), so no external consumers exist yet.
+
+**Sub-goals:**
+
+1. **Replace `GeoSpreadState` shape** — drop `samples: Vec<(f64, f64)>` and `max_km: f64`; add `m2_lat: f64`, `m2_lon: f64` (Welford squared-deviation accumulators). Keep `n`, `mean_lat`, `mean_lon`, `lat_field`, `lon_field`. Snapshot format bumps because struct shape changes.
+
+2. **`update()` becomes O(1)** — Welford online algorithm:
+   ```
+   prev_mean_lat = self.mean_lat
+   prev_mean_lon = self.mean_lon
+   self.mean_lat += (lat - prev_mean_lat) * inv_n
+   self.mean_lon += (lon - prev_mean_lon) * inv_n
+   self.m2_lat += (lat - prev_mean_lat) * (lat - self.mean_lat)
+   self.m2_lon += (lon - prev_mean_lon) * (lon - self.mean_lon)
+   ```
+
+3. **`query()` returns RMS-km** — convert variance from degree² to km² using local-mean-latitude cos-correction, then return `sqrt(rms_km_lat² + rms_km_lon²)`. Returns `Null` for `n < 2` (variance undefined).
+
+4. **TDD red-green** — RED test asserts new query returns RMS dispersion (NOT max distance) for known input set; test fails on current code. GREEN: apply the Welford rewrite. Add at least one property test: variance is monotone-increasing as scatter grows; equal across permutations.
+
+5. **Snapshot compat note** — document in SUMMARY.md that v0-internal snapshots taken pre-fix won't restore (struct shape changed); since v0 isn't shipped publicly, no migration path needed. WAL replay is unaffected (WAL stores raw events, agg state is rebuilt by replay).
+
+**Depends on:** None. Orthogonal to Phase 19.1's existing 5 plans. Phase 19.1-04 (lazy buckets) and 19.1-03 (WAL config) don't touch agg_geo.rs.
+
+**Success criteria:**
+- `crates/beava-core/src/agg_geo.rs::GeoSpreadState` has `m2_lat: f64`, `m2_lon: f64` fields; no `samples: Vec<...>`, no `max_km` field
+- `update()` body has no for-loop over samples
+- New unit/property tests pass
+- `cargo test -p beava-core` exits 0 (no regression)
+- Smoke run of `beava-bench-v18 --pipeline fraud-team.json --total-events 100k --blast-shape zipfian --cardinality 10000` shows GeoSpread per-call cost in TRACE_AGG `per_kind=GeoSpread=...` < 200 ns (vs current 5,000-25,000 ns)
+- Phase 19.1.2-01-SUMMARY.md documents the snapshot-format change
+
+**Why this matters:** fraud-team.json's traced zipfian K=10k bench showed `geo_spread` consuming 30-50% of the warm-key features-stage time and contributing the lion's share of the hot-key slowdown observed in the K=10k vs K=1M comparison. Fixing this restores fraud-team's apply throughput on realistic warm-key shapes. Also makes `bv.geo_spread` semantically aligned with what fraud teams expect (spatial dispersion as stddev), instead of the confusing mean-drift-dependent max-distance metric.
+
+**Plans:**
+- [ ] 19.1.2-01-PLAN.md — GeoSpread Welford rewrite + RMS-km query (Wave 1; sole plan)
+
 ### Phase 19.2: Apply-thread optimization — EntityKey cache, cluster-by-group_keys, single-u64 fast path — 📋 PLANNED
 
 **Status:** Planned 2026-04-27 as the next-tier complex-pipeline optimization phase after Phase 19.1. Lifts the apply-bound ceiling on multi-agg complex pipelines (fraud-team-style 14-node configs) by collapsing per-agg redundant work in `apply_event_to_aggregations`.
