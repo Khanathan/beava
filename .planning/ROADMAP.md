@@ -596,6 +596,30 @@ Plans:
 - [ ] 19.1-04-PLAN.md — WindowedOp lazy buckets via SmallVec (Wave 2; depends on 01)
 - [ ] 19.1-05-PLAN.md — re-baseline matrix + Phase 19 verdict-flip + Phase 19.1 verification (Wave 3; depends on 01-04)
 
+### Phase 19.1.1: HTTP buffer-cap hotfix — split MAX_HEADER_BYTES into header-only vs body-via-Content-Length — 📋 PLANNED
+
+**Status:** Inserted 2026-04-27 as a hotfix mini-phase between Phase 19.1 Wave 1 and Wave 2. Phase 19.1 Wave 1 (plans 19.1-01 + 19.1-02) discovered a pre-existing bug in `crates/beava-runtime-core/src/http_listener.rs:69-74` that blocks running fraud-team.json (~15 KiB register body) against the live bench server — 8 KiB `MAX_HEADER_BYTES` check fires on the entire buffer (headers + body), not just headers. Phase 19.1 Wave 2 (lazy buckets + WAL bump) and Wave 3 (rebaseline) need fraud-team.json to actually register, so 19.1.1 unblocks the critical path.
+
+**Goal:** Fix `parse_http_request` so the 8 KiB cap applies only to header bytes (up to `\r\n\r\n` boundary) while bodies up to `MAX_BODY_BYTES` (4 MiB) parse cleanly via `Content-Length` header. Acceptance: a 15 KiB register POST against bench-v18 server completes successfully.
+
+**Sub-goals:**
+
+1. **Fix the buffer-cap split** in `crates/beava-runtime-core/src/http_listener.rs:69-74` — track header-end position, accept up to `MAX_HEADER_BYTES` of header bytes, then read up to `MAX_BODY_BYTES` body bytes via `Content-Length`. Existing line 143 Content-Length check stays; the early-return at line 69-74 stops gating bodies.
+
+2. **TDD red test** asserting that a 15 KiB POST body succeeds. Test fails on current code (`ParseError::TooLarge`); passes after the fix. Lives at `crates/beava-runtime-core/tests/http_body_cap.rs`.
+
+**Depends on:** None (orthogonal hotfix). Phase 19.1's existing 5 plans don't touch `http_listener.rs`.
+
+**Success criteria:**
+- `cargo test --workspace http_body_cap` passes
+- 15 KiB register POST against bench-v18 succeeds (`./target/release/beava-bench-v18 --pipeline crates/beava-bench/configs/fraud-team.json --transport tcp --total-events 50` runs without `connection closed before message completed`)
+- No regression on smaller POSTs (1 KiB, 4 KiB, 8 KiB still work)
+
+**Why this matters:** fraud-team.json is locked as the primary tuning benchmark per memory `project_fraud_team_primary_bench`. Without this fix, Phase 19.1's primary deliverable (re-baseline against fraud-team) cannot run. Fix is small (1-file change) and orthogonal to Phase 19.1's WAL + bench + lazy-bucket work.
+
+**Plans:**
+- [ ] 19.1.1-01-PLAN.md — http_listener buffer-cap split (Wave 1; sole plan)
+
 ### Phase 19.2: Apply-thread optimization — EntityKey cache, cluster-by-group_keys, single-u64 fast path — 📋 PLANNED
 
 **Status:** Planned 2026-04-27 as the next-tier complex-pipeline optimization phase after Phase 19.1. Lifts the apply-bound ceiling on multi-agg complex pipelines (fraud-team-style 14-node configs) by collapsing per-agg redundant work in `apply_event_to_aggregations`.
