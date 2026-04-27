@@ -81,3 +81,8 @@ harness = false
 name = "field_idx_resolution"
 path = "tests/field_idx_resolution.rs"
 required-features = ["test-utils"]
+
+[[test]]
+name = "cluster_dispatch"
+path = "tests/cluster_dispatch.rs"
+required-features = ["test-utils"]

@@ -254,7 +254,7 @@ impl EntityKeyShape {
     /// Returns `None` if any group-key field is absent, null, NaN (for F64),
     /// or carries an unsupported Value variant.
     pub fn from_row(group_keys: &[String], row: &Row) -> Option<Self> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         EKS_BUILDS.with(|c| c.set(c.get() + 1));
 
         if group_keys.len() == 1 {
@@ -355,14 +355,16 @@ impl Hash for EntityKeyShape {
 
 // ─── Test instrument ──────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 thread_local! {
     static EKS_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Plan 19.2-03: take + reset the thread-local EntityKeyShape::from_row call
 /// counter. Used by cluster dispatch tests to verify EntityKey builds per event.
-#[cfg(test)]
+/// Available in unit tests (`#[cfg(test)]`) and integration tests that enable
+/// the `test-utils` feature flag.
+#[cfg(any(test, feature = "test-utils"))]
 pub fn _take_entity_key_build_count() -> usize {
     EKS_BUILDS.with(|c| {
         let n = c.get();
