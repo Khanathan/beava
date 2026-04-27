@@ -130,7 +130,11 @@ pub struct SketchParams {
 
 /// Phase 11: extended params for buffer + geo operators (Plan 11-02).
 /// Default = empty (None-valued); core/sketch ops never consult this struct.
-#[derive(Debug, Clone, Default)]
+///
+/// Plan 19.2-06 (D-01): `lat_idx` + `lon_idx` are register-time-resolved
+/// indices into the apply-loop's `ExtractedFields` array. Sentinel
+/// `FIELD_IDX_NONE` (u8::MAX) means "not resolved yet" or "geo op not present".
+#[derive(Debug, Clone)]
 pub struct AggExtParams {
     pub buckets: Option<Vec<f64>>,
     pub n: Option<usize>,
@@ -141,6 +145,30 @@ pub struct AggExtParams {
     pub samples: Option<usize>,
     pub categories: Option<Vec<String>>,
     pub max_categories: Option<usize>,
+    /// Plan 19.2-06 (D-01): resolved index of the latitude field in
+    /// `ExtractedFields`. `FIELD_IDX_NONE` = not a geo op / not yet resolved.
+    pub lat_idx: u8,
+    /// Plan 19.2-06 (D-01): resolved index of the longitude field in
+    /// `ExtractedFields`. `FIELD_IDX_NONE` = not a geo op / not yet resolved.
+    pub lon_idx: u8,
+}
+
+impl Default for AggExtParams {
+    fn default() -> Self {
+        Self {
+            buckets: None,
+            n: None,
+            k: None,
+            precision: None,
+            lat_field: None,
+            lon_field: None,
+            samples: None,
+            categories: None,
+            max_categories: None,
+            lat_idx: FIELD_IDX_NONE,
+            lon_idx: FIELD_IDX_NONE,
+        }
+    }
 }
 
 #[allow(clippy::derivable_impls)]
@@ -826,6 +854,8 @@ impl AggOp {
         field: Option<&str>,
         field_idx: u8,
         extracted: &ExtractedFields<'_>,
+        lat_idx: u8,
+        lon_idx: u8,
     ) {
         let where_matched = match where_expr {
             Some(e) => crate::agg_where::evaluate_where_predicate(e, row),
@@ -851,11 +881,36 @@ impl AggOp {
             }
             AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
             AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
-            // Geo ops: use multi-field row access — fall back to row-based update.
-            AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
-            AggOp::GeoDistance(s) => s.update(row, where_matched),
-            AggOp::GeoSpread(s) => s.update(row, where_matched),
-            AggOp::DistanceFromHome(s) => s.update(row, where_matched),
+            // Geo ops: Plan 19.2-06 (D-01) — use index-based fast path when lat_idx is
+            // resolved; fall back to row-based update when lat_idx == FIELD_IDX_NONE.
+            AggOp::GeoVelocity(s) => {
+                if lat_idx != FIELD_IDX_NONE {
+                    s.update_at(extracted, lat_idx, lon_idx, event_time_ms, where_matched)
+                } else {
+                    s.update(row, event_time_ms, where_matched)
+                }
+            }
+            AggOp::GeoDistance(s) => {
+                if lat_idx != FIELD_IDX_NONE {
+                    s.update_at(extracted, lat_idx, lon_idx, where_matched)
+                } else {
+                    s.update(row, where_matched)
+                }
+            }
+            AggOp::GeoSpread(s) => {
+                if lat_idx != FIELD_IDX_NONE {
+                    s.update_at(extracted, lat_idx, lon_idx, where_matched)
+                } else {
+                    s.update(row, where_matched)
+                }
+            }
+            AggOp::DistanceFromHome(s) => {
+                if lat_idx != FIELD_IDX_NONE {
+                    s.update_at(extracted, lat_idx, lon_idx, where_matched)
+                } else {
+                    s.update(row, where_matched)
+                }
+            }
             // Histogram ops: no field, time-based.
             AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
             AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),

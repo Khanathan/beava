@@ -850,6 +850,10 @@ pub fn compile_aggregations_from_nodes(
                     samples: params.ext_samples,
                     categories: params.ext_categories,
                     max_categories: params.ext_max_categories,
+                    // Plan 19.2-06 (D-01): resolved at apply_registration time by
+                    // Registry::resolve_field_indices; default to sentinel here.
+                    lat_idx: crate::agg_op::FIELD_IDX_NONE,
+                    lon_idx: crate::agg_op::FIELD_IDX_NONE,
                 };
                 features.push(NamedAggOp {
                     feature_name: feature_name.clone(),

@@ -197,6 +197,8 @@ pub fn apply_event_to_aggregations(
                 feat.descriptor.field.as_deref(),
                 feat.descriptor.field_idx,
                 &extracted,
+                feat.descriptor.ext.lat_idx,
+                feat.descriptor.ext.lon_idx,
             );
             if let Some(t) = op_t0 {
                 let dur = t.elapsed();

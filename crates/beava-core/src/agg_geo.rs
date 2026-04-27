@@ -13,6 +13,7 @@
 //! time) so the apply loop does not need to thread the descriptor params
 //! through every `update` call.
 
+use crate::agg_op::ExtractedFields;
 use crate::row::{Row, Value};
 use haversine::{distance, Location, Units};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,31 @@ fn read_lat_lon(row: &Row, lat_field: &str, lon_field: &str) -> Option<(f64, f64
         _ => return None,
     };
     let lon = match row.get(lon_field)? {
+        Value::F64(v) => *v,
+        Value::I64(v) => *v as f64,
+        _ => return None,
+    };
+    Some((lat, lon))
+}
+
+/// Plan 19.2-06 (D-01): read lat/lon from a pre-extracted field array using
+/// index-based access, avoiding the `row.get(name)` linear scan.
+///
+/// `lat_idx` and `lon_idx` are indices into `extracted` resolved at
+/// registration time. Returns `None` if either slot is absent or non-numeric.
+fn read_lat_lon_from_extracted(
+    extracted: &ExtractedFields<'_>,
+    lat_idx: u8,
+    lon_idx: u8,
+) -> Option<(f64, f64)> {
+    let lat_val = extracted.get(lat_idx as usize)?.as_deref()?;
+    let lon_val = extracted.get(lon_idx as usize)?.as_deref()?;
+    let lat = match lat_val {
+        Value::F64(v) => *v,
+        Value::I64(v) => *v as f64,
+        _ => return None,
+    };
+    let lon = match lon_val {
         Value::F64(v) => *v,
         Value::I64(v) => *v as f64,
         _ => return None,
@@ -76,6 +102,29 @@ impl GeoVelocityState {
         let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
+        self.apply(lat, lon, event_time_ms);
+    }
+
+    /// Plan 19.2-06 (D-01): index-based fast path — reads lat/lon from
+    /// `extracted[lat_idx]` / `extracted[lon_idx]` without a name-keyed scan.
+    pub fn update_at(
+        &mut self,
+        extracted: &ExtractedFields<'_>,
+        lat_idx: u8,
+        lon_idx: u8,
+        event_time_ms: i64,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some((lat, lon)) = read_lat_lon_from_extracted(extracted, lat_idx, lon_idx) else {
+            return;
+        };
+        self.apply(lat, lon, event_time_ms);
+    }
+
+    fn apply(&mut self, lat: f64, lon: f64, event_time_ms: i64) {
         if let Some((plat, plon, pt)) = self.prev {
             let dt_ms = event_time_ms - pt;
             if dt_ms > 0 {
@@ -126,6 +175,27 @@ impl GeoDistanceState {
         let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
+        self.apply(lat, lon);
+    }
+
+    /// Plan 19.2-06 (D-01): index-based fast path.
+    pub fn update_at(
+        &mut self,
+        extracted: &ExtractedFields<'_>,
+        lat_idx: u8,
+        lon_idx: u8,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some((lat, lon)) = read_lat_lon_from_extracted(extracted, lat_idx, lon_idx) else {
+            return;
+        };
+        self.apply(lat, lon);
+    }
+
+    fn apply(&mut self, lat: f64, lon: f64) {
         if let Some(prev) = self.prev {
             self.total_km += haversine_km(prev, (lat, lon));
         }
@@ -182,6 +252,27 @@ impl GeoSpreadState {
         let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
+        self.apply(lat, lon);
+    }
+
+    /// Plan 19.2-06 (D-01): index-based fast path.
+    pub fn update_at(
+        &mut self,
+        extracted: &ExtractedFields<'_>,
+        lat_idx: u8,
+        lon_idx: u8,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some((lat, lon)) = read_lat_lon_from_extracted(extracted, lat_idx, lon_idx) else {
+            return;
+        };
+        self.apply(lat, lon);
+    }
+
+    fn apply(&mut self, lat: f64, lon: f64) {
         self.n += 1;
         let inv_n = 1.0 / self.n as f64;
         let prev_mean_lat = self.mean_lat;
@@ -259,6 +350,27 @@ impl DistanceFromHomeState {
         let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
+        self.apply(lat, lon);
+    }
+
+    /// Plan 19.2-06 (D-01): index-based fast path.
+    pub fn update_at(
+        &mut self,
+        extracted: &ExtractedFields<'_>,
+        lat_idx: u8,
+        lon_idx: u8,
+        where_matched: bool,
+    ) {
+        if !where_matched {
+            return;
+        }
+        let Some((lat, lon)) = read_lat_lon_from_extracted(extracted, lat_idx, lon_idx) else {
+            return;
+        };
+        self.apply(lat, lon);
+    }
+
+    fn apply(&mut self, lat: f64, lon: f64) {
         if !self.filled {
             self.buf.push((lat, lon));
             if self.buf.len() == self.samples {
