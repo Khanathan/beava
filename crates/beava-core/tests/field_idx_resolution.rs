@@ -327,16 +327,20 @@ fn test_apply_uses_pre_extraction_not_per_op_row_get() {
     assert_eq!(mean, Value::F64(42.0), "avg must be 42.0");
 
     // Architectural check: pre-extraction means Row::get is called at most
-    // distinct_fields_referenced times. For our 3 features with 1 distinct field
-    // (amount) + 1 group key (user_id), we expect ≤ 2 calls from the apply path.
-    // Note: EntityKey::from_row also calls row.get for group keys.
-    // Total distinct fields: user_id (group key) + amount = 2.
-    // So we allow up to the number of distinct fields referenced:
-    // exact count is impl-detail but must be ≤ distinct_fields (not 3x for 3 features).
+    // (n_group_keys + n_distinct_feature_fields) times — NOT (n_features * n_distinct_fields).
+    //
+    // For our 3 features with 1 distinct field (amount) + 1 group key (user_id):
+    //   - WITHOUT pre-extraction: EntityKey::from_row(1 call) + Sum(1 call) + Avg(1 call) = 3 calls
+    //   - WITH pre-extraction:    EntityKey::from_row(1 call) + pre-extract(1 call) = 2 calls
+    //
+    // The bound is ≤ n_group_keys + n_distinct_feature_fields = 1 + 1 = 2.
+    // A non-pre-extracting loop WILL exceed this (3 > 2) → test is RED until impl ships.
     let _ = agg_desc; // used above
     assert!(
-        get_calls <= 4, // generous upper bound — implementation uses pre-extraction
-        "apply-loop must use pre-extraction (≤ distinct_fields calls to row.get); got {get_calls} calls for 3 features sharing 1 field",
+        get_calls <= 2,
+        "apply-loop must use pre-extraction (≤ n_group_keys + n_distinct_fields calls to row.get); \
+         expected ≤ 2 (1 group-key + 1 distinct field) but got {get_calls} — \
+         without pre-extraction, Sum and Avg each call row.get(\"amount\") separately",
     );
 }
 
