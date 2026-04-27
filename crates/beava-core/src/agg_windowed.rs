@@ -873,6 +873,43 @@ mod tests {
         );
     }
 
+    // ── Phase 19.1-04 lazy bucket allocation (D-19) ──────────────────────
+
+    /// Cold WindowedOp must not preallocate 64 bucket slots.
+    ///
+    /// Phase 19.1 CONTEXT D-19: replace `[Option<Box<AggOp>>; 64]` + `[i64; 64]`
+    /// preallocation with a lazy SmallVec. A freshly-constructed op has zero
+    /// active buckets; pre-fix, `op.buckets.len()` returns 64 (array length),
+    /// which is the red signal.
+    #[test]
+    fn test_cold_windowed_op_has_no_allocated_buckets() {
+        let op = WindowedOp::new(AggKind::Count, 60_000);
+        assert_eq!(
+            op.buckets.len(),
+            0,
+            "cold WindowedOp must have ZERO active buckets (lazy alloc); got {}",
+            op.buckets.len()
+        );
+    }
+
+    /// First update must lazily allocate exactly one bucket entry.
+    ///
+    /// Phase 19.1 CONTEXT D-19: with the SmallVec layout, `update` on a cold
+    /// op grows `buckets` from 0 → 1 (one push for the current epoch). Pre-fix,
+    /// `op.buckets.len()` is 64 regardless, which is the red signal.
+    #[test]
+    fn test_windowed_op_lazy_allocates_one_bucket_on_first_update() {
+        let mut op = WindowedOp::new(AggKind::Count, 60_000);
+        let row = empty_row();
+        op.update(&row, 1_000, None, true);
+        assert_eq!(
+            op.buckets.len(),
+            1,
+            "single update must lazy-allocate exactly one bucket; got {}",
+            op.buckets.len()
+        );
+    }
+
     // ── Determinism guard ─────────────────────────────────────────────────
 
     #[test]

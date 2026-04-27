@@ -66,3 +66,7 @@ harness = false
 [[bench]]
 name = "phase11_buffer_geo"
 harness = false
+
+[[bench]]
+name = "windowed_op_init"
+harness = false
