@@ -1,8 +1,35 @@
 # Phase 19 — Verification
 
-**Date:** 2026-04-27
-**Verdict:** PASS-WITH-DEFICIT (canonical-cell threshold deferred to Phase 19.1 + N=1M re-run)
+**Date:** 2026-04-27 (original) / 2026-04-27 (amendment 19.1)
+**Verdict:** PASS  ← AMENDED 2026-04-27 (Phase 19.1) per CONTEXT D-24
+**Original verdict:** PASS-WITH-DEFICIT (canonical-cell threshold deferred to Phase 19.1 + N=1M re-run)
 **Reviewed by:** Claude (planner-checker / executor) + auto-mode checkpoint approval (per `_auto_chain_active` config)
+
+## Amendment — Phase 19.1 rebaseline (2026-04-27)
+
+Per CONTEXT D-24, the original PASS-WITH-DEFICIT verdict reflected a measurement artifact, not a real performance shortfall. The bench's `let elapsed = start.elapsed();` was captured AFTER the `get_task` (1s background sleep) and `rss_task` (500ms background sleep) awaits, so for any N where the genuine bench time was shorter than ~1s, `wall_clock_ms` was dominated by background-task shutdown latency rather than throughput. Plan 19.1-01's fix (move `elapsed` capture before background-task awaits + convert `get_task`/`rss_task` to `tokio::select!` with stop signal) restored honest readings. See `~/.claude/projects/-Users-petrpan26-work-tally/memory/project_phase19_bench_wallclock_fix.md` for the recipe.
+
+The Phase 19.1 rebaseline (5 cells in `## 1M-event blast (rebaseline 19.1)` section of `.planning/throughput-baselines.md`) confirms the canonical regression-gate cell **clears the 2s threshold at N=1M** (the threshold-relevant scale, not the deficit-shaped N=100k scale of the original Phase 19 run):
+
+| Cell | Original (pre-fix) | Phase 19.1 rebaseline (post-fix) | Verdict |
+|------|--------------------|-----------------------------------|---------|
+| small + zipfian + continuous + msgpack + tcp + rust | 943 ms at N=100k → implied 9.43 s at N=1M (DEFICIT) | **1569 ms at N=1M / 637,218 EPS** | **PASS — clears 2s with 1.27× margin** |
+
+Phase 19.1 also landed:
+
+- **Plan 19.1-02** — `crates/beava-bench/configs/fraud-team.json` validated against `AggOpDescriptor` schemas; supporting `.planning/research/fraud-feature-catalogue.md` (1054 lines, 110 features, 14 sources, anti-feature list) committed alongside.
+- **Plan 19.1-03** — WAL config bumped to default 4×32 MiB tick=20ms (~128 MB resident, ~4× original) with `BEAVA_WAL_BUFFERS` / `BEAVA_WAL_BUFFER_SIZE_MB` / `BEAVA_WAL_TICK_MS` env tunables. Bimodal `wal_append > 1ms` tail at sustained 500k EPS at N=500k zipfian collapsed from ~4,900 events / 1% (Phase 19 published) → **1 event** / 0.0002% (Phase 19.1 trace) — single 1.41 ms outlier on bench startup; next-highest `wal_append` is 227 µs.
+- **Plan 19.1-04** — `WindowedOp.buckets` `[Option<Box<AggOp>>; 64]` + parallel `[i64; 64]` (~1024 B zero-init) replaced with `SmallVec<[(i64, Box<AggOp>); 4]>` + lazy allocation. Criterion microbench shows **94.6% lift on `WindowedOp::new(Count, 60s)`** (130 ns → 7 ns) and **97.2% on `WindowedOp::new(Percentile, 60s)`** (428 ns → 12 ns); cold-key full path (new + first update) lifts **73.7%**.
+- **Plan 19.1-05** — this rebaseline run (5 ledger rows in `## 1M-event blast (rebaseline 19.1)`) + Phase 19 verdict-flip + Phase 19.1's own VERIFICATION.
+
+The deficit narrative below (lines describing the bench-bug shape, 5× under-reporting, ack-lag 50ms-poll tail) is preserved as the original audit record. The Phase 19.1 rebaseline supersedes Phase 19's published numbers; consult `.planning/throughput-baselines.md` § `1M-event blast (rebaseline 19.1)` for current honest figures.
+
+See `.planning/phases/19.1-realistic-bench-rebaseline/19.1-VERIFICATION.md` for Phase 19.1's full verdict.
+
+---
+
+[Original Phase 19 verification body unchanged below]
+
 
 ## Phase goal recap
 

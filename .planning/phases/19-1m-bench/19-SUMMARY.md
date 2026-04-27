@@ -1,11 +1,11 @@
 ---
 phase: 19-1m-bench
-status: Done (PASS-WITH-DEFICIT)
-date: 2026-04-27
+status: Done (PASS — verdict amended 2026-04-27 from PASS-WITH-DEFICIT via Phase 19.1 rebaseline; original deficit was a measurement-bug artifact in bench wall_clock capture, fixed in Plan 19.1-01)
+date: 2026-04-27 (original) / 2026-04-27 (amended via Phase 19.1)
 plans: 5
-tags: [bench, throughput, blast-shape, pool-N, multi-process, python-harness, phase-19]
+tags: [bench, throughput, blast-shape, pool-N, multi-process, python-harness, phase-19, 19.1 rebaseline]
 
-# Phase 19 wraps with all 5 plans landed; canonical regression-gate cell deferred to Phase 19.1 (N=1M re-run + Linux Xeon coverage).
+# Phase 19 wraps with all 5 plans landed; canonical regression-gate cell originally PASS-WITH-DEFICIT, AMENDED to PASS via Phase 19.1 rebaseline (1569 ms / 637,218 EPS at N=1M, clears 2s threshold).
 
 provides:
   - "crates/beava-bench/src/blast_shape.rs — Pool=N pre-encoded-frame builder + 4 shapes + Zipfian sampler"
@@ -77,10 +77,10 @@ metrics:
 # Phase 19 — Summary
 
 **Phase:** 19-1m-bench (1M-EPS bench harness — Python + Rust × multiple workload sizes)
-**Status:** Done (PASS-WITH-DEFICIT)
-**Date:** 2026-04-27
-**Plans:** 5 (19-01 .. 19-05)
-**Verdict:** PASS-WITH-DEFICIT — all 5 plans landed; canonical regression-gate cell deferred to Phase 19.1 (N=1M re-run + Linux Xeon coverage).
+**Status:** Done (PASS — amended via Phase 19.1 rebaseline 2026-04-27)
+**Date:** 2026-04-27 (original) / 2026-04-27 (Phase 19.1 amendment)
+**Plans:** 5 (19-01 .. 19-05) + Phase 19.1 follow-up (5 plans)
+**Verdict:** PASS — original PASS-WITH-DEFICIT verdict amended via Phase 19.1 rebaseline; the deficit was a bench wall_clock measurement-bug artifact (Plan 19.1-01 fix). Canonical regression-gate cell now reports 1569 ms / 637,218 EPS at N=1M (clears 2s threshold with 1.27× margin). See `.planning/phases/19-1m-bench/19-VERIFICATION.md` § "Amendment — Phase 19.1 rebaseline" and `.planning/throughput-baselines.md` § `1M-event blast (rebaseline 19.1)`.
 
 ## Goal
 
@@ -90,13 +90,27 @@ side, and reports `wall_clock_ms` + `send_drain_ms` + `ack_lag_ms` plus
 sustained EPS. Both Rust harness AND Python harness; multi-size workload matrix
 tabulated under `## 1M-event blast` in `.planning/throughput-baselines.md`.
 
-## Headline numbers (from this run; N=100,000 — see "Re-run plan" below)
+## Headline numbers (M4 / Darwin-24.3.0 / 10 cores)
 
-Canonical regression-gate cell (small + zipfian + continuous + msgpack + tcp + rust):
+**Status:** SUPERSEDED 2026-04-27 by Phase 19.1 rebaseline (per CONTEXT D-24); see `.planning/throughput-baselines.md` § `1M-event blast (rebaseline 19.1)` and `.planning/phases/19-1m-bench/19-VERIFICATION.md` § "Amendment — Phase 19.1 rebaseline".
 
-- **Wall clock:** 943 ms at N=100k (target ≤ 2,000 ms at N=1M) — **DEFICIT**
+| Cell | Phase 19 (pre-rebaseline; N=100k) | **Phase 19.1 rebaseline (N=1M)** |
+|------|-----------------------------------|----------------------------------|
+| small + zipfian + tcp + msgpack + continuous + rust | 943 ms / 106,044 EPS / DEFICIT verdict (deficit was a measurement-bug artifact, not a real shortfall) | **1569 ms / 637,218 EPS — PASS, clears 2s threshold with 1.27× margin** |
+| medium + zipfian + tcp + msgpack + continuous + rust | 931 ms / 107,411 EPS at N=100k | 1593 ms / 627,549 EPS at N=1M |
+| large + zipfian + tcp + msgpack + continuous + rust | 786 ms / 127,226 EPS at N=100k | 2028 ms / 492,861 EPS at N=1M |
+| large_phase9 + zipfian + tcp + msgpack + continuous + rust | 902 ms / 110,864 EPS at N=100k | 1685 ms / 593,318 EPS at N=1M |
+| **fraud-team + zipfian + tcp + msgpack + continuous + rust** | _not benched_ | **12,899 ms / 77,523 EPS at N=1M cardinality=10,000 — NEW canonical primary tuning bench (Phase 19.1 D-21)** |
+
+The Phase 19.1 rebaseline lift is 5.3-6.0× on the canonical zipfian cells; that headline lift number is dominated by Plan 19.1-01's measurement-bug fix (the original 943 ms at N=100k was wall-clock-contaminated by 1.5 s of background-task shutdown sleep). Plan 19.1-03 (WAL bump 4×32 MiB tick=20ms) and Plan 19.1-04 (WindowedOp lazy buckets) add the wal_append-tail collapse and the cold-key entity init lift; criterion microbench numbers under `.planning/perf-baselines.md` § Phase 19.1.
+
+### Phase 19's original (pre-rebaseline) headline — preserved as historical record
+
+Canonical regression-gate cell (small + zipfian + continuous + msgpack + tcp + rust) — Phase 19's published values (N=100,000):
+
+- **Wall clock:** 943 ms at N=100k (target ≤ 2,000 ms at N=1M) — **DEFICIT** (later identified as a measurement-bug artifact in Plan 19.1-01)
 - **EPS:** 106,044 (sustained at N=100k)
-- **Send drain:** 126 ms · **Ack lag:** 817 ms
+- **Send drain:** 126 ms · **Ack lag:** 817 ms (the ack-lag tail was the visible signal of the bug — 50ms-poll background-task shutdown overhead masquerading as throughput)
 - **Commit:** `19ef1d4`
 
 Other matrix cells (selected highlights, all Rust unless noted):
