@@ -26,6 +26,20 @@ use crate::agg_state_table::{EntityKeyShape, StateTables};
 use crate::registry::Registry;
 use crate::row::Row;
 
+// ─── Plan 19.4-04 (D-02) Task 4.3 — ExtractedFields build instrumentation ───
+//
+// `EXTRACTED_BUILD_COUNT` counts the number of times `ExtractedFields` is
+// populated for the apply path. Pre-Task-4.3.b: incremented INSIDE the
+// per-descriptor loop, so the count is D × event_count (one rebuild per
+// descriptor on each event). Post-Task-4.3.b (the hoist): incremented ONCE
+// per event ABOVE the per-descriptor loop, so the count == event_count.
+//
+// Test-only: `#[cfg(test)]` gates the static so production builds incur
+// zero overhead and the apply path stays branch-free in release builds.
+#[cfg(test)]
+pub(crate) static EXTRACTED_BUILD_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 // ─── Plan 19.2-07 (D-07): per-kind snapshot for /debug/op-cost ──────────────
 
 /// Process-static snapshot of the latest TRACE_AGG per-kind output.
@@ -203,6 +217,13 @@ pub fn apply_event_to_aggregations(
             .iter()
             .map(|f| row.get(f.as_str()))
             .collect();
+        // Plan 19.4-04 (D-02) Task 4.3.a: instrumentation site. Pre-hoist this
+        // increment fires once per descriptor (so total count = D × event_count
+        // for D descriptors on the source). Task 4.3.b's hoist removes this
+        // site and replaces it with a single per-event increment ABOVE the
+        // descriptor loop — flipping the count to event_count exactly.
+        #[cfg(test)]
+        EXTRACTED_BUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         for (i, feat) in desc.features.iter().enumerate() {
             let op_t0 = if trace {
@@ -797,11 +818,24 @@ mod tests {
 mod registry_source_tests {
     use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
     use crate::agg_op::{AggKind, AggOpDescriptor};
+    use crate::agg_state_table::StateTables;
     use crate::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
     use crate::registry_diff::PayloadNode;
+    use crate::row::{Row, Value};
     use crate::schema::{DerivedSchema, EventSchema, FieldType};
     use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    fn simple_event_schema() -> EventSchema {
+        let mut fields = BTreeMap::new();
+        fields.insert("user_id".to_string(), FieldType::Str);
+        fields.insert("amount".to_string(), FieldType::F64);
+        fields.insert("status".to_string(), FieldType::Str);
+        EventSchema {
+            fields,
+            optional_fields: vec![],
+        }
+    }
 
     fn make_event(name: &str) -> EventDescriptor {
         let mut fields = BTreeMap::new();
@@ -908,6 +942,122 @@ mod registry_source_tests {
             result.is_empty(),
             "unknown source must return empty Vec, got {} entries",
             result.len()
+        );
+    }
+
+    // ── Plan 19.4-04 (D-02) Task 4.3.a — ExtractedFields per-event-build test ──
+
+    /// Plan 19.4-04 (D-02) Task 4.3.a RED: ExtractedFields must be built once
+    /// per event, not D-times per descriptor. With D=2 derivations on the Txn
+    /// source the pre-hoist count is 2*N (per-desc rebuild fires twice per
+    /// event); the post-hoist count is N (single per-event hoist).
+    ///
+    /// To force a meaningful RED state (not a tautology with D=1), this test
+    /// registers TWO derivations on the same Txn source. RED state: count == 2N.
+    /// GREEN state (Task 4.3.b after the hoist lands): count == N.
+    #[test]
+    fn extracted_fields_built_once_per_event_not_per_desc() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor, FIELD_IDX_NONE};
+
+        let registry = Arc::new(Registry::new());
+        // Build the Txn event + 2 derivations + 2 compiled aggs (D=2 descriptors on Txn).
+        let event_txn = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: simple_event_schema(),
+            event_time_field: None,
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+            name_arc: Arc::from(""),
+            apply_field_names: vec![],
+        };
+        let mk_agg = |node: &str, feat: &str| {
+            Arc::new(AggregationDescriptor {
+                node_name: node.to_string(),
+                source_node_name: "Txn".to_string(),
+                group_keys: vec!["user_id".to_string()],
+                features: vec![NamedAggOp {
+                    feature_name: feat.to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Count,
+                        field: None,
+                        window_ms: None,
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                        field_idx: FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
+                    },
+                }],
+                agg_id: 0,
+                field_names: vec![],
+                cluster_id: 0,
+            })
+        };
+        let mk_deriv = |node: &str, feat: &str| DerivationDescriptor {
+            name: node.to_string(),
+            output_kind: OutputKind::Table,
+            upstreams: vec!["Txn".to_string()],
+            ops: vec![],
+            schema: DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("user_id".to_string(), FieldType::Str);
+                    m.insert(feat.to_string(), FieldType::I64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: None,
+            registered_at_version: 0,
+        };
+        registry.apply_registration(
+            vec![
+                PayloadNode::Event(event_txn),
+                PayloadNode::Derivation(mk_deriv("AggA", "ca")),
+                PayloadNode::Derivation(mk_deriv("AggB", "cb")),
+            ],
+            vec![],
+            vec![],
+            vec![
+                ("AggA".to_string(), mk_agg("AggA", "ca")),
+                ("AggB".to_string(), mk_agg("AggB", "cb")),
+            ],
+        );
+
+        let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
+
+        // Drive N events through the apply path.
+        let n_events: u64 = 50;
+        super::EXTRACTED_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..n_events {
+            let row = Row::new()
+                .with_field("user_id", Value::Str(format!("u{}", i % 5).into()))
+                .with_field("amount", Value::F64(10.0 + i as f64))
+                .with_field("status", Value::Str("ok".into()));
+            super::apply_event_to_aggregations(
+                "Txn",
+                &row,
+                i as i64 * 1000,
+                i,
+                &registry,
+                &mut state_tables,
+            );
+        }
+        let count = super::EXTRACTED_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            count, n_events,
+            "EXTRACTED_BUILD_COUNT should equal n_events ({}) — once per event. Got {} (D=2 derivs * N=50 = {} means per-desc rebuild still happens — Task 4.3.b hoist not yet landed).",
+            n_events,
+            count,
+            n_events * 2
         );
     }
 }
