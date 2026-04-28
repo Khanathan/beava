@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Ready to plan
-last_updated: "2026-04-28T00:00:00.000Z"
+last_updated: "2026-04-28T05:00:00.000Z"
 progress:
-  total_phases: 37
-  completed_phases: 22
-  total_plans: 147
-  completed_plans: 113
-  percent: 76
+  total_phases: 38
+  completed_phases: 23
+  total_plans: 149
+  completed_plans: 115
+  percent: 77
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -39,16 +39,21 @@ progress:
 
 ---
 
-**Phase 19.3 OPENED 2026-04-28** at `.planning/phases/19.3-windowed-pre-extraction/` — direct follow-up to Phase 19.2's PASS-WITH-DEFICIT verdict. Live-trace investigation (`19.2-INVESTIGATION.md`) identified that 60 of 88 fraud-team feature updates pay a ~100 ns wrapping tax in `WindowedOp::update_with_row` that bypasses Plan 19.2-01's pre-extraction. Phase 19.3 extends the `update_at(extracted, field_idx, …)` protocol across the WindowedOp wrapper layer.
+**Phase 19.3 CLOSED 2026-04-28 at PASS-WITH-DEFICIT.** D-04 architectural fix landed (Plan 19.3-02: `WindowedOp::update_at`). Wrapper-bypass anti-pattern resolved. Performance lift +4.4% EPS / -1,526 ns agg-stage (within run-to-run noise band). Predicted lift was 60% overestimated due to cost-model conjecture in `19.2-INVESTIGATION.md §4`; flamegraph + cost-model investigation (`19.3-COST-MODEL.md`, `19.3-FLAMEGRAPH.md`) identified 5 NEW levers and superseded Plans 19.3-03/04/05. Memory `feedback_cost_model_from_flamegraph` saved.
 
-**Phase 19.3 sub-goals (stacked, predicted 70k → 125k EPS on fraud-team K=10k zipfian):**
+**Phase 19.4 OPENED 2026-04-28** at `.planning/phases/19.4-final-100k-push/` — final v0 ship-gate optimization, flamegraph-derived scope. Goal: lift fraud-team K=10k zipfian from 73,743 EPS (post-19.3-A) to ≥100,000 EPS (PASS gate).
 
-1. **19.3-A** WindowedOp::update_at fast-path → ~95k EPS (-3,900 ns/event)
-2. **19.3-B** Specialize windowed Count/Sum dispatch → ~107k EPS (-1,100 ns/event)
-3. **19.3-C** Hoist event-level ExtractedFields above descriptor loop → ~115-125k EPS (-600 ns/event)
-4. New `apply_path/warm_key/14_aggs_windowed` criterion group + live trace in verification (mandatory — Phase 19.2 verifier conjecture without measurement was the source of the misdiagnosis).
+**Phase 19.4 sub-goals (stacked, predicted ~74k → ~105k EPS):**
 
-**Next:** `/gsd-discuss-phase 19.3` to capture context decisions (WindowedOp::update_at signature shape, specialized arms scope, ExtractedFields hoist storage, sequential vs parallel landing, criterion bench cold-key sibling).
+1. **19.4-A** CountDistinct identity-hasher fix (`std::HashSet<u64>` rehashes via SipHash) → ~85k EPS (-1,180 ns/event, ~3h work)
+2. **19.4-B** ExtractedFields SmallVec inline-cap 8→16 (TxnByUser cluster spills) → ~91k EPS (-530 ns/event, 1-line)
+3. **19.4-C** Geo lat/lon pre-extraction (D-01 missed geo path) → ~94k EPS (-360 ns/event, ~4h)
+4. **19.4-D** ExtractedFields hoist above descriptor loop (carried from 19.3-04) → ~105k EPS (-1,200 ns/event, ~1 week)
+5. **19.4-E** Throughput rebaseline + dual-measurement verification → Phase 19 closure at PASS
+
+**After Phase 19.4:** vertical optimization stops; Phase 19.5+ shifts to scale-out story (sharding deployment patterns + multi-instance benchmarks).
+
+**Next:** `/gsd-discuss-phase 19.4` to capture context decisions (CountDistinct storage shape, hoist buffer location, field-union scope, sequential vs compressed landing, sanity flamegraph after 19.4-D).
 
 **Phase 19.1 OPENED 2026-04-27** as the consolidated umbrella for the post-Phase-19 follow-up work (rolls together what was originally proposed as 19.0.1 / 19.0.2 / 19.0.3 mini-phases). See ROADMAP.md → "Phase 19.1: Realistic-shape benchmark + bench/WAL fixes + complex-pipeline optimization" for the full goal/sub-goal/success-criteria block.
 

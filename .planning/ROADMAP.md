@@ -822,6 +822,82 @@ Wave structure:
 - Cross-event aggregation reordering is FORBIDDEN — preserves arrival-order semantics.
 - Multi-thread apply parallelism is FORBIDDEN per memory `project_no_sharded_apply`.
 
+### Phase 19.4: Final 100k EPS push — flamegraph-derived levers — 📋 PLANNED
+
+**Status:** Planned 2026-04-28 as the closure phase for the v0 Phase-19 100k EPS ship gate. Phase 19.3 closed at PASS-WITH-DEFICIT — D-04 architectural fix landed (WindowedOp::update_at) and is shippable, but predicted lift was 60% overestimated by cost-model conjecture. samply flamegraph + per-AggKind drill-down on the post-19.3-A binary identified 5 NEW optimization levers the original investigation missed; this phase picks up the top-3 cheapest + carries forward the deferred 19.3-D ExtractedFields hoist. All cost-model predictions cite `19.3-FLAMEGRAPH.md` directly (per memory `feedback_cost_model_from_flamegraph`).
+
+**Goal:** Lift fraud-team K=10k zipfian from 73,743 EPS (post-19.3-A) to **≥100k EPS** (PASS gate; 75% floor 75k EPS PASS-WITH-DEFICIT). Apply-thread agg-stage drops from 12,533 ns → ≤9,200 ns via 4 surgical optimizations + dual-measurement verification. After Phase 19.4 closes, optimization shifts from per-instance throughput to scale-out (Phase 19.5: sharding deployment patterns + multi-instance benchmarks).
+
+**Sub-goals (in flamegraph-priority order):**
+
+1. **19.4-A — CountDistinct identity-hasher fix** (HIGHEST single-lever — predicted ~1,180 ns/event, ~+13k EPS) — `crates/beava-core/src/sketches/count_distinct.rs:24-27` defines `CountDistinctState::HashSet { hashes: std::collections::HashSet<u64> }`. `std::HashSet` runs SipHash on every probe — but the values are ALREADY 64-bit cryptographic hashes from the upstream HLL preprocessing. Replace with `hashbrown::HashSet<u64, BuildHasherDefault<NoOpHasher>>` (or flat sorted `Vec<u64>` until promote-to-HLL threshold). Snapshot wire-format unchanged (the hash values themselves serialize the same); replay code may need a small adjustment to instantiate the new collection type. Per `19.3-FLAMEGRAPH.md` §2: this is 9.36% of apply-thread CPU (1,234 ns/event). Effort: ~3 hours. Risk: snapshot replay format compat.
+
+2. **19.4-B — ExtractedFields SmallVec inline-cap 8→16** (predicted ~530 ns/event, ~+5k EPS) — `crates/beava-core/src/agg_op.rs:232` defines `pub type ExtractedFields = SmallVec<[Option<&'static Value>; 8]>`. fraud-team's TxnByUser cluster has **10 distinct fields**, so SmallVec spills to heap on every Txn event — `RawVecInner::reserve` + `RawVec::with_capacity_in` together appear at 4.0% inclusive in the flamegraph. Widening inline cap to 16 covers all known v0 cluster shapes. **One-line change.** Effort: 1 hour incl. test. Risk: none.
+
+3. **19.4-C — Geo lat/lon pre-extraction** (predicted ~360 ns/event, ~+3-5k EPS) — `crates/beava-core/src/agg_geo.rs:24-35` (`read_lat_lon`) does linear `row.get(lat_field)` + `row.get(lon_field)` on every geo feature update. Phase 19.2-01's D-01 protocol missed the geo path (per `19.3-FLAMEGRAPH.md` §2 row #8: 2.86% self-time). Extend `extracted: &ExtractedFields` indexing to geo ops; resolve `lat_idx`/`lon_idx` at register time (already partially scoped in RESEARCH.md but unimplemented). Effort: ~4 hours. Risk: low — matches Phase 19.2 D-01 pattern.
+
+4. **19.4-D — ExtractedFields hoist above descriptor loop** (predicted ~900-1,500 ns/event, ~+10-15k EPS — flamegraph realistic, was Phase 19.3's superseded Plan 19.3-04) — Currently `extracted` rebuilds per-descriptor at `agg_apply.rs:201-205` (5 descs × ~500 ns = ~2,500 ns/event scaffolding tax per `19.3-COST-MODEL.md` §2). Hoist to per-event: build one `ExtractedFields` keyed by `(source_event_schema, field_idx_union)`; aggs index via per-agg `field_idx` arrays. Sub-tasks (per `19.3-RESEARCH.md` amendment R5/R6, carried forward):
+   - **D.1:** Populate `EventDescriptor.apply_field_names` at registration time (currently `vec![]` at 15+ construction sites in `registry.rs`).
+   - **D.2:** Re-resolve `field_idx` against the per-event union after the apply-loop hoist.
+   - **D.3:** Hoist `ExtractedFields` build above the descriptor loop in `apply_event_to_aggregations` — single `Vec<Option<&Value>>` local variable alongside `shape_cache` at `agg_apply.rs:152` (per RESEARCH.md Q1).
+   - **D.4:** SmallVec inline-cap widening already done in 19.4-B (verify still correct under hoist).
+   Effort: ~1 week. Risk: cross-cutting through registry + apply.
+
+5. **19.4-E — Throughput rebaseline + dual-measurement verification + Phase 19 closure** — Append `## 1M-event blast (rebaseline 19.4)` to `.planning/throughput-baselines.md`. Run BOTH criterion bench AND live `BEAVA_TRACE_APPLY_TIMING=1 BEAVA_TRACE_AGG_TIMING=1` trace per `19.3-FLAMEGRAPH.md` reproduction commands. Side-by-side per-AggKind table comparing post-19.3-A vs post-19.4. Update Phase 19 SUMMARY/VERIFICATION via amendment if 100k EPS is achieved. PASS gate: ≥100k EPS on fraud-team K=10k zipfian (75% floor: ≥75k EPS PASS-WITH-DEFICIT).
+
+**Sequential measurement gates carried forward from Phase 19.3:** Each plan has an explicit measurement gate. If measured lift < 75% of predicted, HALT — write DEVIATION.md and re-evaluate before proceeding to next sub-goal. Cost model is now flamegraph-derived (not arithmetic on microbench numbers); 75% floor is honest. If 19.4-A hits ≥75% of predicted, proceed to 19.4-B; if not, halt and re-investigate.
+
+**Stacked predicted lift on fraud-team K=10k zipfian (post-19.3-A baseline: 73,743 EPS, 12,533 ns agg-stage):**
+
+| Step | Saved ns/event (predicted) | Cumulative agg-stage | Cumulative EPS |
+|---|---:|---:|---:|
+| Post-19.3-A baseline | — | 12,533 | 73,743 |
+| + 19.4-A (CountDistinct identity hasher) | -1,180 | ~11,353 | ~85,000 |
+| + 19.4-B (SmallVec cap 8→16) | -530 | ~10,823 | ~91,000 |
+| + 19.4-C (geo lat_idx pre-extract) | -360 | ~10,463 | ~94,000 |
+| + 19.4-D (ExtractedFields hoist) | -1,200 (realistic per cost-model) | ~9,263 | **~105,000** |
+
+**Predicted realistic ceiling: ~100-110k EPS.** Hits the original ship gate. Stop here for vertical optimization; pivot to sharding deployment story for further scale.
+
+**Depends on:** Phase 19.3 (closed at PASS-WITH-DEFICIT — `WindowedOp::update_at` exists and is shippable; 19.3-CONTEXT.md decisions D-01..D-04 still valid). Reads `19.3-FLAMEGRAPH.md`, `19.3-COST-MODEL.md`, and source files: `crates/beava-core/src/{agg_apply.rs, agg_op.rs, agg_geo.rs, agg_state.rs, registry.rs, sketches/count_distinct.rs}` + `crates/beava-core/benches/apply_path_bench.rs`.
+
+**Success criteria:**
+- CountDistinct HashSet mode uses identity hasher; criterion bench shows CountDistinct windowed cost ≤200 ns/call (was 457 ns post-19.3-A)
+- ExtractedFields inline cap = 16; instrumentation shows zero per-event SmallVec spill on fraud-team apply
+- Geo features dispatch via `extracted` indexing; `grep -c 'row.get(' crates/beava-core/src/agg_geo.rs` ≤ 2 (was 6+)
+- ExtractedFields rebuilt 1× per event (not 5×); instrumentation `EXTRACTED_BUILD_COUNT == event_count`
+- Live `BEAVA_TRACE_APPLY_TIMING` agg-stage mean ≤ 9,500 ns (was 12,533 ns post-19.3-A)
+- fraud-team K=10k zipfian N=1M shows **≥ 100,000 EPS** (PASS gate) — flips Phase 19 verdict from PASS-WITH-DEFICIT → PASS
+- No regression > 10% on small/medium/large/large_phase9 ladder cells
+- Verification includes BOTH criterion microbench AND live BEAVA_TRACE_AGG_TIMING trace
+- All sub-goals' threat models are minimal (apply-path internals; no API surface change)
+
+**Why this matters:** Closes the v0 ship-gate set in Phase 19's CONTEXT (≥100k EPS on fraud-team K=10k zipfian). Beyond 19.4, optimization shifts from per-instance throughput (vertical) to scale-out (Phase 19.5+: sharding deployment patterns + multi-instance benchmarks). For workloads needing >130k EPS single-instance, customers run multiple Beava processes per memory `project_no_sharded_apply`. The 100k milestone is the marketing/positioning number — credible "Beava: 100k+ EPS per core, single-binary, sub-ms latency" alongside "linear scaling via Redis-cluster pattern."
+
+**Key decisions to lock in `19.4-CONTEXT.md` during discuss:**
+- 19.4-A storage: `hashbrown::HashSet<u64, BuildHasherDefault<NoOpHasher>>` vs flat sorted `Vec<u64>` for the < 1024-entries Exact mode. Vec wins on memory + binary search cost; HashSet wins on insert simplicity. Snapshot replay implications differ.
+- 19.4-D buffer location: per-thread local var in `apply_event_to_aggregations` (RESEARCH Q1 recommendation, alongside `shape_cache` at `agg_apply.rs:152`) vs new struct field on apply context. RESEARCH.md already recommends local-var; confirm during discuss.
+- 19.4-D field-union scope: union across ALL descriptors at register-time (one ExtractedFields per event, 88 fields max) vs per-source-schema union (separate ExtractedFields per source). Larger union = fewer branches but more wasted slots; cost-model needs to pick.
+- Sequential vs parallel landing (carried from D-02): A → measure → B → measure → C → measure → D → measure → E. Or compress B (one-line) and C (4-hour) into a single wave after A's measurement gate.
+- Whether to add a flamegraph re-run after D as a sanity check (similar to 19.3's investigation flow) or trust the cumulative trace measurements.
+
+**Anti-patterns preserved (mandatory plan-checker rules):**
+- **Cost-model predictions must cite `19.3-FLAMEGRAPH.md` file:line** (memory `feedback_cost_model_from_flamegraph`). No `per_call_ns × call_count` arithmetic without flamegraph reference.
+- **Verifier MUST run live trace** (memory `feedback_verify_plan_decisions` + Phase 19.2 lesson). Criterion bench alone is insufficient.
+- **Wrapper-bypass enumeration** (memory `feedback_dispatch_refactor_enumerate_wrappers`) — geo/19.4-C extends D-01 protocol; verify ALL geo callsites covered.
+- **Same-key sketch batching FORBIDDEN** (memory `project_no_same_key_batching`).
+- **Cross-event aggregation reordering FORBIDDEN.**
+- **Multi-thread apply parallelism FORBIDDEN** (memory `project_no_sharded_apply`).
+- **No `todo!()` / "deferred" / "if absent"** language in plans or commits.
+
+**Out of scope / Deferred ideas (do not propose during discuss):**
+- TopK Exact-mode BTreeMap → Vec (~500 ns/event, 6h, snapshot break) — Phase 19.5 candidate.
+- EventTypeMix double-HashMap-lookup fix (~150 ns/event, 1h) — Phase 19.5 candidate.
+- HLL Dense register-pack SIMD (AVX2/NEON) (~300-500 ns/event, 1 week + portable_simd) — Phase 19.5 candidate, only if customer demand pushes past 130k EPS single-instance.
+- Codegen op-fusion at register-time (devex risk) — Phase 21+ if ever.
+- Tier-1 windowed specialize (Count/Sum/Min/Max/Avg/Variance inline arms) — explicitly DROPPED per `19.3-FLAMEGRAPH.md`: Tier-1 ops are only ~10% of agg-stage; ROI is poor vs the four levers above.
+- WAL group-commit batching — was Phase 19.2's wrong-but-still-real conjecture; per `19.3-FLAMEGRAPH.md` WAL is ~85 ns (0.6% of apply CPU), not the bottleneck. Phase 19.5+ candidate if 19.4 leaves a gap.
+
 ### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
 **Status:** Planned post Phase 19 (added 2026-04-26; push/get API audit scope folded in 2026-04-26).
