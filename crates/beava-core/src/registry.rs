@@ -491,12 +491,27 @@ impl Registry {
                             // (register_validate enforces ordering before we reach here).
                             if let Some(src_event) = w.events.get(&agg_owned.source_node_name) {
                                 let schema = src_event.schema.clone();
+                                // Plan 19.4-04 (D-02): pass the per-source
+                                // apply_field_names union so the resolver can
+                                // populate `field_idx_into_event_extracted`.
+                                // For new events in this batch the union was
+                                // seeded by the Event branch above; for
+                                // cross-batch additions to existing events
+                                // the union may be a subset of what THIS
+                                // agg's fields ultimately need — the post-loop
+                                // `apply_field_names_post_pass` then refreshes
+                                // `apply_field_names` (super-set) and
+                                // re-resolves the indices via the second-pass
+                                // `field_idx_into_event_extracted_post_pass`
+                                // below.
+                                let source_union = src_event.apply_field_names.clone();
                                 // Ignore errors: register_validate already checked field refs.
                                 // Any remaining mismatch is a latent inconsistency — don't
                                 // panic in the write path.
                                 let _ = Self::resolve_field_indices_for_agg_mut_inner(
                                     &mut agg_owned,
                                     &schema,
+                                    &source_union,
                                 );
                             }
 
@@ -561,8 +576,51 @@ impl Registry {
             if let Some(existing_arc) = w.events.get(&source_name) {
                 if existing_arc.apply_field_names != new_fields {
                     let mut updated = (**existing_arc).clone();
-                    updated.apply_field_names = new_fields;
-                    w.events.insert(source_name, Arc::new(updated));
+                    updated.apply_field_names = new_fields.clone();
+                    w.events.insert(source_name.clone(), Arc::new(updated));
+                }
+            }
+
+            // Plan 19.4-04 (D-02) post-loop field_idx_into_event_extracted_post_pass:
+            // for every agg targeting `source_name`, re-resolve the per-feature
+            // mapping against the (possibly extended) `new_fields` union. The
+            // inline resolver call inside the per-derivation block above ran
+            // with whatever `apply_field_names` was on the EventDescriptor at
+            // that moment — which may have been a subset if the source event
+            // was registered in a prior batch and this batch only contributes
+            // new aggs. The post-pass walks every Arc in
+            // `aggregations_by_source[source]`, clones it, re-runs
+            // `resolve_field_indices_for_agg_mut_inner` against the final
+            // union, and re-Arcs it. Both `aggregations_by_source` and
+            // `compiled_aggregations` hold Arc<AggregationDescriptor> so we
+            // must replace the Arc in BOTH maps to keep them consistent.
+            let agg_clones: Vec<Arc<AggregationDescriptor>> = w
+                .aggregations_by_source
+                .get(&source_name)
+                .map(|aggs| aggs.iter().map(Arc::clone).collect())
+                .unwrap_or_default();
+            let schema = w.events.get(&source_name).map(|e| e.schema.clone());
+            if let Some(schema) = schema {
+                let mut new_aggs: Vec<Arc<AggregationDescriptor>> =
+                    Vec::with_capacity(agg_clones.len());
+                for old_agg in agg_clones.iter() {
+                    let mut owned = (**old_agg).clone();
+                    let _ = Self::resolve_field_indices_for_agg_mut_inner(
+                        &mut owned,
+                        &schema,
+                        &new_fields,
+                    );
+                    new_aggs.push(Arc::new(owned));
+                }
+                // Replace the Arcs in both maps to keep them consistent.
+                if let Some(slot) = w.aggregations_by_source.get_mut(&source_name) {
+                    *slot = new_aggs.clone();
+                }
+                for new_agg in new_aggs {
+                    if let Some(slot) = w.compiled_aggregations.get_mut(new_agg.node_name.as_str())
+                    {
+                        *slot = new_agg;
+                    }
                 }
             }
         }
@@ -654,11 +712,26 @@ impl Registry {
     /// feature whose lat/lon fields exist in schema. This completes the
     /// register-time index assignment that Plan 19.2-06 Task 3 left unfinished.
     ///
+    /// Plan 19.4-04 (D-02): also writes `field_idx_into_event_extracted` on
+    /// each feature — a `Vec<u8>` mapping the agg's local field positions
+    /// (i.e. `agg.field_names` indices) to the per-source-event
+    /// `apply_field_names` union indices. The apply-loop hoist (Task 4.3)
+    /// uses this mapping to remap `field_idx` lookups against the per-event
+    /// union slice without per-descriptor rebuild scaffolding. When
+    /// `source_union` is empty (e.g. test fixtures or Plan 19.2-01 callers
+    /// that haven't migrated to the union form yet), this resolver leaves
+    /// `field_idx_into_event_extracted` empty and Sum/Min/Max etc.
+    /// fall back to the per-agg `field_idx` against `agg.field_names` —
+    /// preserves backward compatibility with the pre-19.4-04 dispatch path
+    /// in `update_with_extracted` until Task 4.3.b switches the apply-loop
+    /// over.
+    ///
     /// Populates `agg.field_names` with the distinct field list in resolution order.
     pub fn resolve_field_indices_for_agg_mut(
         &self,
         agg: &mut crate::agg_descriptor::AggregationDescriptor,
         schema: &crate::schema::EventSchema,
+        source_union: &[String],
     ) -> Result<(), String> {
         use crate::agg_op::FIELD_IDX_NONE;
 
@@ -671,7 +744,21 @@ impl Registry {
         // apply-loop pre-extraction populates one slot per `field_names` entry.
         let mut field_names: Vec<String> = Vec::new();
 
+        // Plan 19.4-04 (D-02): build a O(1) lookup from union field name to
+        // its position in source_union (the per-event-source apply_field_names
+        // union, alphabetically sorted). Empty when source_union is empty —
+        // signals that the apply path is still on the per-desc rebuild
+        // codepath and the `field_idx_into_event_extracted` mapping is unused.
+        let union_lookup: std::collections::HashMap<&str, u8> = source_union
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i as u8))
+            .collect();
+
         for feat in &mut agg.features {
+            // Reset the union mapping; rebuilt below from the agg's local fields.
+            feat.descriptor.field_idx_into_event_extracted.clear();
+
             if let Some(fname) = &feat.descriptor.field {
                 let idx = if let Some(pos) = field_names.iter().position(|f| f == fname) {
                     pos
@@ -725,6 +812,52 @@ impl Registry {
         }
 
         agg.field_names = field_names;
+
+        // Plan 19.4-04 (D-02): populate `field_idx_into_event_extracted` AFTER
+        // `agg.field_names` is finalized. The mapping is per-feature:
+        //   - For features WITH a declared `field` or geo `lat_field`/
+        //     `lon_field`: the mapping has length = `agg.field_names.len()`,
+        //     with entry `i` = union position of `agg.field_names[i]`. The
+        //     apply-path consumer indexes via
+        //     `field_idx_into_event_extracted[feat.descriptor.field_idx as usize]`
+        //     (single-field ops) or
+        //     `field_idx_into_event_extracted[feat.descriptor.ext.lat_idx as usize]`
+        //     (geo ops).
+        //   - For features WITHOUT a declared field (e.g. AggKind::Count): the
+        //     mapping stays empty (length 0). The apply-path
+        //     `if feat.descriptor.field_idx != FIELD_IDX_NONE` check
+        //     short-circuits before indexing into the empty mapping.
+        // When `source_union` is empty (legacy test path that hasn't migrated
+        // to the union form), all mappings stay empty regardless of feature
+        // shape; apply-loop dispatch falls back to the per-agg `field_idx`
+        // codepath against `desc.field_names` and `extracted` from a per-desc
+        // rebuild.
+        if !source_union.is_empty() {
+            for feat in &mut agg.features {
+                let has_field = feat.descriptor.field.is_some()
+                    || feat.descriptor.ext.lat_field.is_some()
+                    || feat.descriptor.ext.lon_field.is_some();
+                if !has_field {
+                    continue;
+                }
+                for fname in agg.field_names.iter() {
+                    if let Some(&u) = union_lookup.get(fname.as_str()) {
+                        feat.descriptor.field_idx_into_event_extracted.push(u);
+                    } else {
+                        // Defensive: per Task 4.1.b's union-build, every
+                        // declared field IS in the union. If a field is
+                        // missing the cross-batch post-pass hasn't yet
+                        // refreshed the EventDescriptor — fall back to the
+                        // FIELD_IDX_NONE sentinel so apply-path recognizes
+                        // the absent slot and routes to the slow path.
+                        feat.descriptor
+                            .field_idx_into_event_extracted
+                            .push(FIELD_IDX_NONE);
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -740,10 +873,15 @@ impl Registry {
     ///     path at agg_op.rs:933-960. Runtime apply path (registry.rs:458 →
     ///     `apply_registration` write-lock closure) calls THIS function, so the
     ///     lat_idx/lon_idx resolution must mirror the public version exactly.
+    ///   - Plan 19.4-04 (D-02): also writes per-feature
+    ///     `field_idx_into_event_extracted: Vec<u8>` mapping the agg-local
+    ///     field positions to the per-source-event `apply_field_names` union
+    ///     indices. See public version's doc-comment for shape semantics.
     ///   - Populates `agg.field_names` with the distinct ordered field list.
     fn resolve_field_indices_for_agg_mut_inner(
         agg: &mut crate::agg_descriptor::AggregationDescriptor,
         schema: &crate::schema::EventSchema,
+        source_union: &[String],
     ) -> Result<(), String> {
         use crate::agg_op::FIELD_IDX_NONE;
 
@@ -779,7 +917,19 @@ impl Registry {
         // IDENTICAL logic to `resolve_field_indices_for_agg_mut`; both functions
         // produce the same field_names ordering for the same input agg/schema.
         let mut field_names: Vec<String> = Vec::new();
+
+        // Plan 19.4-04 (D-02): O(1) lookup from union field name to its
+        // position in source_union (same shape as the public sibling).
+        let union_lookup: std::collections::HashMap<&str, u8> = source_union
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i as u8))
+            .collect();
+
         for feat in &mut agg.features {
+            // Plan 19.4-04 (D-02): clear the mapping; rebuilt below.
+            feat.descriptor.field_idx_into_event_extracted.clear();
+
             if let Some(fname) = &feat.descriptor.field {
                 let idx = if let Some(pos) = field_names.iter().position(|f| f == fname) {
                     pos
@@ -828,6 +978,31 @@ impl Registry {
             }
         }
         agg.field_names = field_names;
+
+        // Plan 19.4-04 (D-02): populate `field_idx_into_event_extracted` per
+        // feature against the per-source apply_field_names union. Matches the
+        // public sibling's logic exactly so both resolvers produce identical
+        // mappings (snapshot replay invariance). Empty mapping for features
+        // without a declared field.
+        if !source_union.is_empty() {
+            for feat in &mut agg.features {
+                let has_field = feat.descriptor.field.is_some()
+                    || feat.descriptor.ext.lat_field.is_some()
+                    || feat.descriptor.ext.lon_field.is_some();
+                if !has_field {
+                    continue;
+                }
+                for fname in agg.field_names.iter() {
+                    if let Some(&u) = union_lookup.get(fname.as_str()) {
+                        feat.descriptor.field_idx_into_event_extracted.push(u);
+                    } else {
+                        feat.descriptor
+                            .field_idx_into_event_extracted
+                            .push(FIELD_IDX_NONE);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1441,6 +1616,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: crate::agg_op::FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 },
                 NamedAggOp {
@@ -1457,6 +1633,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: crate::agg_op::FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 },
             ],
@@ -1552,6 +1729,7 @@ mod tests {
                     sketch_params: None,
                     ext: Default::default(),
                     field_idx: crate::agg_op::FIELD_IDX_NONE,
+                    field_idx_into_event_extracted: Vec::new(),
                 },
             }],
             agg_id: 0,
@@ -1620,6 +1798,7 @@ mod tests {
                     sketch_params: None,
                     ext: Default::default(),
                     field_idx: crate::agg_op::FIELD_IDX_NONE,
+                    field_idx_into_event_extracted: Vec::new(),
                 },
             }],
             agg_id: 0,
@@ -1707,6 +1886,7 @@ mod tests {
                     sketch_params: None,
                     ext: Default::default(),
                     field_idx: crate::agg_op::FIELD_IDX_NONE,
+                    field_idx_into_event_extracted: Vec::new(),
                 },
             }],
             agg_id: 0, // placeholder; registry overwrites at apply_registration
@@ -1879,6 +2059,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: crate::agg_op::FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 }],
                 agg_id: 0, // placeholder; registry overwrites at registration time
@@ -2025,6 +2206,7 @@ mod tests {
                         ..Default::default()
                     },
                     field_idx: FIELD_IDX_NONE,
+                    field_idx_into_event_extracted: Vec::new(),
                 },
             }],
             agg_id: 0,
@@ -2032,7 +2214,7 @@ mod tests {
             cluster_id: 0,
         };
 
-        r.resolve_field_indices_for_agg_mut(&mut agg, &schema)
+        r.resolve_field_indices_for_agg_mut(&mut agg, &schema, &[])
             .expect("registration must succeed for valid geo schema");
 
         let feat = &agg.features[0];
@@ -2108,6 +2290,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 },
                 NamedAggOp {
@@ -2124,6 +2307,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 },
             ],
@@ -2229,6 +2413,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 },
                 NamedAggOp {
@@ -2245,6 +2430,7 @@ mod tests {
                         sketch_params: None,
                         ext: Default::default(),
                         field_idx: FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 },
             ],

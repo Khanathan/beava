@@ -282,6 +282,29 @@ pub struct AggOpDescriptor {
     /// Not serialized: `AggOpDescriptor` is not a serde type; `field_idx` is
     /// computed server-side at registration and never transported over the wire.
     pub field_idx: u8,
+    /// Plan 19.4-04 (D-02): per-agg-feature mapping from the agg's local field
+    /// positions (i.e. `field_idx`, also `agg.field_names` index) to the
+    /// per-source-event `apply_field_names` union indices.
+    ///
+    /// Populated by `Registry::resolve_field_indices_for_agg_mut*` at register
+    /// time (alongside `field_idx`). Empty for features with no declared field
+    /// (e.g. `AggKind::Count`).
+    ///
+    /// Indexed by the agg's local field position: for a feature that declares
+    /// `field: Some("amount")`, when "amount" is at position `i` in
+    /// `agg.field_names` and at position `j` in
+    /// `EventDescriptor.apply_field_names`, then
+    /// `field_idx_into_event_extracted[i] == j`.
+    ///
+    /// Used by the apply-loop hoist (Task 4.3) to remap `field_idx`-style
+    /// lookups against the per-event union slice without per-descriptor
+    /// rebuild scaffolding.
+    ///
+    /// `AggOpDescriptor` is not a serde type; this field is computed
+    /// server-side at registration and never transported over the wire
+    /// (snapshot replay re-runs the resolver against the same alphabetical
+    /// `apply_field_names` ordering).
+    pub field_idx_into_event_extracted: Vec<u8>,
 }
 
 impl Default for AggOpDescriptor {
@@ -299,6 +322,7 @@ impl Default for AggOpDescriptor {
             sketch_params: None,
             ext: AggExtParams::default(),
             field_idx: FIELD_IDX_NONE,
+            field_idx_into_event_extracted: Vec::new(),
         }
     }
 }

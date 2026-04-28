@@ -208,6 +208,7 @@ mod tests {
             sketch_params: None,
             ext: Default::default(),
             field_idx: crate::agg_op::FIELD_IDX_NONE,
+            field_idx_into_event_extracted: Vec::new(),
         }
     }
 

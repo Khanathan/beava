@@ -247,6 +247,7 @@ fn test_register_time_rejects_nan_capable_float_group_key() {
                 sketch_params: None,
                 ext: Default::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         }],
         agg_id: 0,

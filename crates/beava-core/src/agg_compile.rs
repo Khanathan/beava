@@ -872,6 +872,9 @@ pub fn compile_aggregations_from_nodes(
                         // Plan 19.2-01: placeholder; registry overwrites at apply_registration
                         // via resolve_field_indices_for_agg_mut.
                         field_idx: crate::agg_op::FIELD_IDX_NONE,
+                        // Plan 19.4-04 (D-02): placeholder; resolver writes at
+                        // apply_registration via resolve_field_indices_for_agg_mut*.
+                        field_idx_into_event_extracted: Vec::new(),
                     },
                 });
             }

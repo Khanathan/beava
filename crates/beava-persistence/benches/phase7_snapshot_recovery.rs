@@ -115,6 +115,7 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
         sketch_params: None,
         ext: Default::default(),
         field_idx: beava_core::agg_op::FIELD_IDX_NONE,
+        field_idx_into_event_extracted: Vec::new(),
     };
     let mut tbl = AggStateTable::new();
     for i in 0..n {

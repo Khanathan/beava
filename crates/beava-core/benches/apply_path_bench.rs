@@ -105,6 +105,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -121,6 +122,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -142,6 +144,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 }),
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -159,6 +162,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -180,6 +184,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 }),
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -199,6 +204,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                     ..AggExtParams::default()
                 },
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -216,6 +222,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
     ];
@@ -252,6 +259,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -268,6 +276,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -284,6 +293,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -300,6 +310,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
     ];
@@ -336,6 +347,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -352,6 +364,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
         (
@@ -369,6 +382,7 @@ fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Regi
                 sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
+                field_idx_into_event_extracted: Vec::new(),
             },
         ),
     ];

@@ -194,7 +194,7 @@ fn test_field_idx_resolved_at_register_time() {
     // Plan 19.2-01: resolve field indices in-place on the agg descriptor.
     let registry = Registry::new();
     registry
-        .resolve_field_indices_for_agg_mut(&mut agg, &schema)
+        .resolve_field_indices_for_agg_mut(&mut agg, &schema, &[])
         .expect("resolve_field_indices must succeed when fields exist");
 
     // Count has no field → field_idx must be FIELD_IDX_NONE.
@@ -236,7 +236,7 @@ fn test_field_idx_stable_across_features_sharing_field() {
 
     let registry = Registry::new();
     registry
-        .resolve_field_indices_for_agg_mut(&mut agg, &schema)
+        .resolve_field_indices_for_agg_mut(&mut agg, &schema, &[])
         .expect("resolve_field_indices must succeed");
 
     let sum_idx = agg
