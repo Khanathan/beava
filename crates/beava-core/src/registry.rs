@@ -2184,4 +2184,144 @@ mod tests {
             );
         }
     }
+
+    // Plan 19.4-04 (D-02) Task 4.2.a RED: each agg feature has
+    // field_idx_into_event_extracted mapping its declared fields to per-event
+    // union indices. RED state: AggOpDescriptor does not yet carry the field
+    // (compile error E0609 — added in Task 4.2.b).
+    #[test]
+    fn agg_field_idx_into_event_extracted_resolved_against_union() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor, FIELD_IDX_NONE};
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+
+        let event_txn = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: make_event_schema(),
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+            name_arc: Arc::from(""),
+            apply_field_names: vec![],
+        };
+
+        let agg_desc = AggregationDescriptor {
+            node_name: "AggTable2".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["card_id".to_string()],
+            features: vec![
+                NamedAggOp {
+                    feature_name: "txn_cnt".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Count,
+                        field: None,
+                        window_ms: Some(300_000),
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                        field_idx: FIELD_IDX_NONE,
+                    },
+                },
+                NamedAggOp {
+                    feature_name: "amount_sum".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Sum,
+                        field: Some("amount".to_string()),
+                        window_ms: Some(300_000),
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                        field_idx: FIELD_IDX_NONE,
+                    },
+                },
+            ],
+            agg_id: 0,
+            field_names: vec![],
+            cluster_id: 0,
+        };
+        let agg_arc = Arc::new(agg_desc);
+
+        let deriv = crate::registry::DerivationDescriptor {
+            name: "AggTable2".to_string(),
+            output_kind: crate::registry::OutputKind::Table,
+            upstreams: vec!["Txn".to_string()],
+            ops: vec![],
+            schema: crate::schema::DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("card_id".to_string(), crate::schema::FieldType::Str);
+                    m.insert("txn_cnt".to_string(), crate::schema::FieldType::I64);
+                    m.insert("amount_sum".to_string(), crate::schema::FieldType::F64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["card_id".to_string()]),
+            registered_at_version: 0,
+        };
+
+        r.apply_registration(
+            vec![
+                PayloadNode::Event(event_txn),
+                PayloadNode::Derivation(deriv),
+            ],
+            vec![],
+            vec![],
+            vec![("AggTable2".to_string(), agg_arc)],
+        );
+
+        let cached = r.compiled_aggregation("AggTable2").expect("agg present");
+        let txn_desc = r.get_event_descriptor("Txn").expect("event present");
+
+        // Locate the index of "amount" in the alphabetical union.
+        let union_amount_idx = txn_desc
+            .apply_field_names
+            .iter()
+            .position(|n| n == "amount")
+            .expect("amount must be in the union after Task 4.1.b")
+            as u8;
+
+        // Find features by name and assert mapping shape.
+        let count_feat = cached
+            .features
+            .iter()
+            .find(|f| f.feature_name == "txn_cnt")
+            .expect("txn_cnt feature");
+        let sum_feat = cached
+            .features
+            .iter()
+            .find(|f| f.feature_name == "amount_sum")
+            .expect("amount_sum feature");
+
+        // RED: field_idx_into_event_extracted does not exist as a field; E0609.
+        assert!(
+            count_feat
+                .descriptor
+                .field_idx_into_event_extracted
+                .is_empty(),
+            "Count agg has no field; field_idx_into_event_extracted must be empty"
+        );
+        assert_eq!(
+            sum_feat.descriptor.field_idx_into_event_extracted.len(),
+            1,
+            "Sum agg has 1 declared field; mapping len must be 1"
+        );
+        assert_eq!(
+            sum_feat.descriptor.field_idx_into_event_extracted[0], union_amount_idx,
+            "Sum's mapping[0] must equal 'amount'-position in the union"
+        );
+    }
 }
