@@ -1803,4 +1803,85 @@ mod tests {
             "re-registration must not change agg_id (additive idempotence)"
         );
     }
+
+    // Plan 19.4-03 (D-01) Task 3.a RED: lat_idx/lon_idx must be resolved at register
+    // time so the existing geo update_at fast path (agg_op.rs:933-960) engages on the
+    // apply hot path. Today they default to FIELD_IDX_NONE (agg_compile.rs:855-856)
+    // and registry.rs:561 admits "does NOT assign lat_idx/lon_idx — that's Plan 19.2-06
+    // Task 3" — Task 3 was never landed; this plan closes it.
+    #[test]
+    fn geo_feature_resolves_lat_idx_and_lon_idx_at_register_time() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggExtParams, AggKind, AggOpDescriptor, FIELD_IDX_NONE};
+        use crate::schema::{EventSchema, FieldType};
+
+        let r = Registry::new();
+
+        // Geo schema: lat, lon, plus a non-geo field for the union sanity check.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("lat".to_string(), FieldType::F64);
+        fields.insert("lon".to_string(), FieldType::F64);
+        fields.insert("user_id".to_string(), FieldType::Str);
+        let schema = EventSchema {
+            fields,
+            optional_fields: vec![],
+        };
+
+        let mut agg = AggregationDescriptor {
+            node_name: "geo_test".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["user_id".to_string()],
+            features: vec![NamedAggOp {
+                feature_name: "max_kmh".to_string(),
+                descriptor: AggOpDescriptor {
+                    kind: AggKind::GeoVelocity,
+                    field: None,
+                    window_ms: None,
+                    where_expr: None,
+                    n: None,
+                    half_life_ms: None,
+                    sub_window_ms: None,
+                    sigma: None,
+                    sketch_params: None,
+                    ext: AggExtParams {
+                        lat_field: Some("lat".to_string()),
+                        lon_field: Some("lon".to_string()),
+                        ..Default::default()
+                    },
+                    field_idx: FIELD_IDX_NONE,
+                },
+            }],
+            agg_id: 0,
+            field_names: vec![],
+            cluster_id: 0,
+        };
+
+        r.resolve_field_indices_for_agg_mut(&mut agg, &schema)
+            .expect("registration must succeed for valid geo schema");
+
+        let feat = &agg.features[0];
+        assert_ne!(
+            feat.descriptor.ext.lat_idx, FIELD_IDX_NONE,
+            "lat_idx must be resolved at register time (was FIELD_IDX_NONE — Plan 19.2-06 Task 3 never landed; \
+             agg_geo::read_lat_lon slow path stays engaged on hot path; see 19.3-FLAMEGRAPH §2 row #8)"
+        );
+        assert_ne!(
+            feat.descriptor.ext.lon_idx, FIELD_IDX_NONE,
+            "lon_idx must be resolved at register time (was FIELD_IDX_NONE)"
+        );
+        assert_ne!(
+            feat.descriptor.ext.lat_idx, feat.descriptor.ext.lon_idx,
+            "lat_idx and lon_idx must point at distinct ExtractedFields slots"
+        );
+        assert!(
+            agg.field_names.iter().any(|n| n == "lat"),
+            "lat must be in agg.field_names so apply-loop pre-extraction populates extracted[lat_idx]; got {:?}",
+            agg.field_names
+        );
+        assert!(
+            agg.field_names.iter().any(|n| n == "lon"),
+            "lon must be in agg.field_names so apply-loop pre-extraction populates extracted[lon_idx]; got {:?}",
+            agg.field_names
+        );
+    }
 }
