@@ -309,3 +309,21 @@ Synthetic registry shape: 14 features (7 user-keyed, 4 user×merchant-keyed, 3 d
 - UDDSketch insert_warm: 71.8 ns — target was ~75 ns (algo floor); **within target band.**
 - EventTypeMix allowed_hit: 25.0 ns — target was ~50-100 ns; **better than target (45× vs 10-20× predicted).**
 - Cold-key 14-agg: 1.424 µs — predicted was 6-8 µs/event (post stacking); bench measures a simpler synthetic subset but shows the apply-loop overhead itself is well under 2 µs for cold paths. The 6-8 µs prediction included all WAL/bookkeeping/IO overhead in the full server path; this bench isolates the apply-loop-only cost.
+
+### Phase 19.3 — pre-19.3 windowed baseline (criterion microbench)
+
+Captured: 2026-04-28 (Phase 19.3-01). hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Bench: `crates/beava-core/benches/apply_path_bench.rs`.
+
+Pre-19.3 baseline for the slow `WindowedOp::update_with_row` fallback path that Plan 19.3-02 will optimize via `WindowedOp::update_at`. Same 14-feature shape as the non-windowed `apply_path/warm_key/14_aggs` bench, but every feature is wrapped in `WindowedOp(window_ms = 86_400_000)` (24h). Three non-windowable features (Ewma, EventTypeMix, BloomMember) were swapped for windowable Tier-1 substitutes (StdDev, Min, Max) per RESEARCH §2 Q3 — see plan 19.3-01 commit `172ce65` for the substitution rationale.
+
+The non-windowed `14_aggs` row is re-measured here for direct side-by-side comparison (the 2026-04-27 number above moved -13% to 316.95 ns due to subsequent toolchain/state-table micro-changes; we capture it again to anchor the windowed delta against a same-day reference).
+
+| Bench | Median | Date | Phase | Notes |
+|---|---|---|---|---|
+| apply_path/warm_key/14_aggs (re-measured)  | 316.95 ns | 2026-04-28 | 19.3 | Same-day reference for the windowed-delta comparison; structurally identical to the 19.2 row above. |
+| apply_path/warm_key/14_aggs_windowed | 463.82 ns | 2026-04-28 | 19.3 | pre-19.3 baseline (slow WindowedOp::update_with_row fallback path via agg_op.rs:868); Plan 19.3-02 must drop this ≥ 4× (target ≤ 116 ns) on Apple-M4 hw-class; commit 172ce65. |
+
+**Predicted-vs-measured ratio note:** the plan acceptance criterion expected the windowed group to be ≥ 3× the non-windowed group, anchored on the 88-feature fraud-team.json investigation cost-model. The actual 14-feature synthetic ratio is 1.46× (463.82 / 316.95) because much of the per-event cost on this synthetic is sketch-bound (Percentile UDDSketch, TopK, Entropy CountDistinct) where the WindowedOp dispatch tax is proportionally smaller than the inner-state update cost. The bench correctly engages the slow `update_with_row` fallback path (verified by reading `agg_op.rs:865-869` Windowed arm); Plan 19.3-02's verification gate uses **the absolute baseline value (463.82 ns)** with a ≥ 4× speedup target, not the windowed-vs-non-windowed ratio.
+
+**Targets per Plan 19.3-02 acceptance:** windowed group must drop ≥ 4× → ≤ 116 ns at next measurement.
