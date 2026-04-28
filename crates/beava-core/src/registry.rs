@@ -557,8 +557,11 @@ impl Registry {
     ///
     /// Features with `field: None` keep `field_idx = FIELD_IDX_NONE`.
     ///
-    /// Also validates geo `ext.lat_field` + `ext.lon_field` for existence
-    /// (but does NOT assign lat_idx/lon_idx — that's Plan 19.2-06 Task 3).
+    /// Plan 19.4-03 (D-01): also resolves geo `ext.lat_idx`/`ext.lon_idx` from
+    /// `ext.lat_field`/`ext.lon_field` against the same `field_names` list —
+    /// engages the `update_at` fast path at agg_op.rs:933-960 for every geo
+    /// feature whose lat/lon fields exist in schema. This completes the
+    /// register-time index assignment that Plan 19.2-06 Task 3 left unfinished.
     ///
     /// Populates `agg.field_names` with the distinct field list in resolution order.
     pub fn resolve_field_indices_for_agg_mut(
@@ -571,7 +574,10 @@ impl Registry {
         // First pass: validate all field references exist.
         self.resolve_field_indices_for_agg(agg, schema)?;
 
-        // Second pass: build field_names and assign field_idx to each feature.
+        // Second pass: build field_names and assign field_idx + lat_idx/lon_idx
+        // to each feature. The same `field_names` list is referenced by
+        // `field_idx` (single-field ops) and `lat_idx`/`lon_idx` (geo ops);
+        // apply-loop pre-extraction populates one slot per `field_names` entry.
         let mut field_names: Vec<String> = Vec::new();
 
         for feat in &mut agg.features {
@@ -587,6 +593,44 @@ impl Registry {
             } else {
                 feat.descriptor.field_idx = FIELD_IDX_NONE;
             }
+
+            // Plan 19.4-03 (D-01): resolve geo lat_idx/lon_idx alongside field_idx.
+            // Engages the geo update_at fast path at agg_op.rs:933-960 — the
+            // dispatch arms branch on `if lat_idx != FIELD_IDX_NONE`, falling
+            // through to the slow `update()` row.get path when unresolved.
+            match (
+                &feat.descriptor.ext.lat_field,
+                &feat.descriptor.ext.lon_field,
+            ) {
+                (Some(lat_name), Some(lon_name)) => {
+                    let lat_idx = if let Some(pos) = field_names.iter().position(|f| f == lat_name)
+                    {
+                        pos
+                    } else {
+                        let pos = field_names.len();
+                        field_names.push(lat_name.clone());
+                        pos
+                    };
+                    let lon_idx = if let Some(pos) = field_names.iter().position(|f| f == lon_name)
+                    {
+                        pos
+                    } else {
+                        let pos = field_names.len();
+                        field_names.push(lon_name.clone());
+                        pos
+                    };
+                    feat.descriptor.ext.lat_idx = lat_idx as u8;
+                    feat.descriptor.ext.lon_idx = lon_idx as u8;
+                }
+                _ => {
+                    // Partial or absent geo declaration — keep sentinel; dispatch
+                    // falls through to the slow update() path which reads by
+                    // field-name (agg_op.rs:937-959). Partial resolution would
+                    // be a bug because the dispatch only checks lat_idx.
+                    feat.descriptor.ext.lat_idx = FIELD_IDX_NONE;
+                    feat.descriptor.ext.lon_idx = FIELD_IDX_NONE;
+                }
+            }
         }
 
         agg.field_names = field_names;
@@ -600,6 +644,11 @@ impl Registry {
     /// Same contract as `resolve_field_indices_for_agg_mut`:
     ///   - Validates field refs against `schema`. Returns `Err` on first missing field.
     ///   - Assigns `field_idx` (index into the per-agg `agg.field_names` list).
+    ///   - Plan 19.4-03 (D-01): also resolves geo `ext.lat_idx`/`ext.lon_idx`
+    ///     against the same `field_names` list — engages the `update_at` fast
+    ///     path at agg_op.rs:933-960. Runtime apply path (registry.rs:458 →
+    ///     `apply_registration` write-lock closure) calls THIS function, so the
+    ///     lat_idx/lon_idx resolution must mirror the public version exactly.
     ///   - Populates `agg.field_names` with the distinct ordered field list.
     fn resolve_field_indices_for_agg_mut_inner(
         agg: &mut crate::agg_descriptor::AggregationDescriptor,
@@ -635,7 +684,9 @@ impl Registry {
             }
         }
 
-        // Build field_names and assign field_idx.
+        // Build field_names and assign field_idx + lat_idx/lon_idx.
+        // IDENTICAL logic to `resolve_field_indices_for_agg_mut`; both functions
+        // produce the same field_names ordering for the same input agg/schema.
         let mut field_names: Vec<String> = Vec::new();
         for feat in &mut agg.features {
             if let Some(fname) = &feat.descriptor.field {
@@ -649,6 +700,40 @@ impl Registry {
                 feat.descriptor.field_idx = idx as u8;
             } else {
                 feat.descriptor.field_idx = FIELD_IDX_NONE;
+            }
+
+            // Plan 19.4-03 (D-01): geo lat_idx/lon_idx resolution. This is the
+            // runtime-critical path: `apply_registration` invokes _inner from
+            // its write-lock closure (registry.rs:458). Without this block
+            // fraud-team's geo features stay on the slow `update()` arm.
+            match (
+                &feat.descriptor.ext.lat_field,
+                &feat.descriptor.ext.lon_field,
+            ) {
+                (Some(lat_name), Some(lon_name)) => {
+                    let lat_idx = if let Some(pos) = field_names.iter().position(|f| f == lat_name)
+                    {
+                        pos
+                    } else {
+                        let pos = field_names.len();
+                        field_names.push(lat_name.clone());
+                        pos
+                    };
+                    let lon_idx = if let Some(pos) = field_names.iter().position(|f| f == lon_name)
+                    {
+                        pos
+                    } else {
+                        let pos = field_names.len();
+                        field_names.push(lon_name.clone());
+                        pos
+                    };
+                    feat.descriptor.ext.lat_idx = lat_idx as u8;
+                    feat.descriptor.ext.lon_idx = lon_idx as u8;
+                }
+                _ => {
+                    feat.descriptor.ext.lat_idx = FIELD_IDX_NONE;
+                    feat.descriptor.ext.lon_idx = FIELD_IDX_NONE;
+                }
             }
         }
         agg.field_names = field_names;
@@ -1804,11 +1889,11 @@ mod tests {
         );
     }
 
-    // Plan 19.4-03 (D-01) Task 3.a RED: lat_idx/lon_idx must be resolved at register
-    // time so the existing geo update_at fast path (agg_op.rs:933-960) engages on the
-    // apply hot path. Today they default to FIELD_IDX_NONE (agg_compile.rs:855-856)
-    // and registry.rs:561 admits "does NOT assign lat_idx/lon_idx — that's Plan 19.2-06
-    // Task 3" — Task 3 was never landed; this plan closes it.
+    // Plan 19.4-03 (D-01) Task 3.a RED → 3.b GREEN: lat_idx/lon_idx must be resolved
+    // at register time so the existing geo update_at fast path (agg_op.rs:933-960)
+    // engages on the apply hot path. Pre-19.4-03 they defaulted to FIELD_IDX_NONE
+    // (agg_compile.rs:855-856) and the resolver was a no-op for those fields — see
+    // 19.3-FLAMEGRAPH.md §2 row #8 (agg_geo::read_lat_lon = 2.86% self-time).
     #[test]
     fn geo_feature_resolves_lat_idx_and_lon_idx_at_register_time() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
