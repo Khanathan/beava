@@ -861,3 +861,44 @@ Plan 04 closure measurement (under quieter system load 2.31-6.31, see `.planning
 **Note on the load skew:** today's rebaseline was captured during higher background system load (Arc + Cursor + miscellaneous dev processes). The runs were not isolated from system noise. Plan 04 closure run was earlier in the day at quieter load. The throughput-baselines.md ledger now contains both numbers — today's rebaseline is the regression-gate baseline going forward; Plan 04's number is the closure verdict for Phase 19.4 PASS.
 
 > Regression thresholds: +10% slow vs Phase 19.2 baseline = WARNING; +25% slow = BLOCKER per CLAUDE.md §Performance Discipline.
+
+### rebaseline 19.4 — extended pipelines (geo / large-with-sketches / medium-with-sketches / medium_phase9 / phase8)
+
+Captured: 2026-04-28 (post Phase 19.4-05 closure, load 4.43 1-min at start, drifted into 8-17 range during the bench session). hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores. Binary: post-19.4-04 (commit `075284a`).
+
+These 5 pipelines were NOT in the Plan 05 rebaseline (which covered small / medium / large / large_phase9 / fraud-team only). Filling them in to give Phase 19.5+ regression-gate coverage across the full bench config set.
+
+**Pre-19.4 reference availability:** None of these 5 pipelines have a Phase 19.2 baseline — Phase 19.2's rebaseline (the canonical post-stacked-fix reference) only covered the 5-pipeline ladder + fraud-team. Older Phase 8/9/10/11 baselines exist (HTTP transport, fsync-bound async-WAL path, 514–982 EPS range) but are NOT directly comparable to the post-Phase-18 mio + sync-WAL apply path used here (TCP/msgpack), so we mark "Pre-19.4 EPS" as `—` for all 5 rows. **The post-19.4 EPS numbers below ARE the first 19.4-era reference for these pipelines and become the regression-gate baseline for Phase 19.5+ comparison.**
+
+**Methodology:** Same as Plan 05 rebaseline above — 7 runs per pipeline, capture 1m load before each, sort by load asc, drop the 2 highest-load runs, median of remaining 5.
+
+**Invocation:** `./target/release/beava-bench-v18 --pipeline crates/beava-bench/configs/<cfg>.json --transport tcp --wire-format msgpack --blast-shape zipfian --zipf-alpha 1.0 --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --continuous-pipeline true --isolation-mode --no-ledger`
+
+| Pipeline | Transport | Wire | Pre-19.4 EPS (19.2 if available) | Post-19.4 EPS (this run) | Δ % | Flag | Notes |
+|---|---|---|---:|---:|---:|---|---|
+| geo | tcp | msgpack | — | 614,136 | — | none (first 19.4 reference) | wall_ms=1628 p50=22.2ms p95=34.9ms p99=63.9ms rss=2307MB; load 3.62-5.54 (cleanest cohort of the 5) |
+| large-with-sketches | tcp | msgpack | — | 300,066 | — | none (first 19.4 reference) | wall_ms=3332 p50=46.6ms p95=84.4ms p99=113.8ms rss=3551MB; load 6.99-15.69 (load drifted upward mid-cohort; median over the 5 lowest-load runs spans 6.99-15.69 — wide span, cell is noisy) |
+| medium-with-sketches | tcp | msgpack | — | 565,046 | — | none (first 19.4 reference) | wall_ms=1769 p50=24.6ms p95=39.1ms p99=62.9ms rss=2407MB; load 13.18-15.09 |
+| medium_phase9 | tcp | msgpack | — | 701,030 | — | none (first 19.4 reference) | wall_ms=1426 p50=16.4ms p95=28.0ms p99=44.6ms rss=1965MB; load 12.77-14.26 |
+| phase8 | tcp | msgpack | — | 704,375 | — | none (first 19.4 reference) | wall_ms=1419 p50=17.3ms p95=25.7ms p99=33.7ms rss=1867MB; load 12.46-15.72 |
+
+**WARN rows:** None — no comparison baseline (first 19.4-era reference for all 5).
+**BLOCK rows:** None — no comparison baseline (first 19.4-era reference for all 5).
+
+**Notes per pipeline:**
+- **geo (614,136 EPS):** The geo pipeline (geo_velocity + count_distinct(quadkey) + entropy(quadkey) + most_recent_n) was captured at the cleanest load cohort (3.62-5.54), so this number is the most representative of the 5. The geo cluster benefits from Phase 19.4-03's lat/lon pre-extraction (register-time `lat_idx`/`lon_idx` resolution into the source-union extracted vector). p99 push latency 63.9ms reflects the per-event geo dispatch cost (quadkey + HLL + entropy) under contended fsync. RSS 2.3 GB is consistent with ~10k entities × geo state.
+- **large-with-sketches (300,066 EPS):** The most expensive non-fraud-team pipeline — 20 features (large's 15 core + 5 sketches: HLL count_distinct, UDDSketch percentile, etc.). EPS is roughly half of the small/medium cells, consistent with sketch ops adding ~80-160 ns/event on top of Tier 1 baseline. Load span 6.99-15.69 across the kept set is wide; treat this number as a soft baseline pending a quieter rerun. RSS 3.5 GB is the second-highest of the 5 (only fraud-team's 7.1 GB is larger).
+- **medium-with-sketches (565,046 EPS):** Medium pipeline (5 core features) + count_distinct + percentile (7 features total). Sits between small/medium (~640k) and large-with-sketches (~300k) — sketch ops cost rises sub-linearly with the core feature count.
+- **medium_phase9 (701,030 EPS):** Medium pipeline + decay/velocity ops (count/sum + ewma + decayed_sum + rate_of_change, 5 features total). Faster than medium-with-sketches because decay/velocity ops are Tier 1 (~10-30 ns/call) vs sketch ops Tier 2/3. Notably, this is **higher than the small pipeline's Plan 05 rebaseline median (642,760 EPS)** — likely because medium_phase9 has fewer total features (5 vs small's 6) and the decay ops have very tight inner loops.
+- **phase8 (704,375 EPS):** 10-feature shape (Phase 5 core + Phase 8 point/recency: most_recent, top_k_recent, etc.). Highest EPS of the 5 — point/recency ops are even cheaper per-call than decay/velocity (just timestamp comparison + small-set update). p99 33.7ms is the tightest of the 5 cells.
+
+**Cohort-level EPS ranking (median across kept set):**
+1. phase8: 704,375 EPS
+2. medium_phase9: 701,030 EPS
+3. geo: 614,136 EPS
+4. medium-with-sketches: 565,046 EPS
+5. large-with-sketches: 300,066 EPS
+
+**Note on load skew:** The first cohort (geo, 3.62-5.54) ran during a quieter window; subsequent cohorts hit 13-17 load as more dev processes spun up. The load-filter (drop 2 highest, median of 5) keeps the variance bounded but the cross-cohort comparison should be read with the load-band caveat in mind. For Phase 19.5+ regression-gate purposes: any cell that drops by ≥10% (warn) or ≥25% (block) versus these numbers should trigger a quiet-load rerun before declaring a regression.
+
+> Regression thresholds: +10% slow vs Post-19.4 EPS = WARNING; +25% slow = BLOCKER per CLAUDE.md §Performance Discipline.
