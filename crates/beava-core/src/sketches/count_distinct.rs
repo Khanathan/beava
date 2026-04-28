@@ -10,6 +10,37 @@ use serde::{Deserialize, Serialize};
 const EXACT_THRESHOLD: usize = 16;
 const HASH_THRESHOLD: usize = 1024;
 
+// Plan 19.4-01 (D-01): identity hasher for the already-FxHashed u64 input.
+// The HashSet's u64 keys are FxHasher outputs (see agg_state::hash_value_for_hll);
+// re-hashing them with SipHash burns ~1,180 ns/event of apply CPU per the
+// 19.3-FLAMEGRAPH §2 row #3 measurement. The identity hasher stores the input
+// u64 verbatim as the slot index, with hashbrown's SIMD probing handling
+// any clustering. The byte-slice arm is unreachable because the only
+// consumer is `HashSet<u64>` whose Hash impl calls `Hasher::write_u64`.
+#[derive(Default)]
+pub(super) struct NoOpHasher {
+    state: u64,
+}
+
+impl std::hash::Hasher for NoOpHasher {
+    #[inline]
+    fn write_u64(&mut self, x: u64) {
+        self.state = x;
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.state
+    }
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!(
+            "NoOpHasher::write(&[u8]) is unreachable — CountDistinctState::HashSet \
+             is u64-keyed and Hash for u64 calls write_u64 only"
+        );
+    }
+}
+
+type HashSetU64 = hashbrown::HashSet<u64, std::hash::BuildHasherDefault<NoOpHasher>>;
+
 /// Three-mode adaptive distinct-count state. Promotes from `ExactArray` →
 /// `HashSet` → `Hll` automatically on insert. Serde tags are stable v0
 /// snapshot identifiers (`v0_count_distinct_*`).
@@ -17,14 +48,21 @@ const HASH_THRESHOLD: usize = 1024;
 // tagged enums (those use `deserialize_any` which bincode lacks). External
 // tags still satisfy v0 snapshot stability — the variant rename strings are
 // the tag strings emitted in JSON / consumed by bincode's variant index.
+//
+// Plan 19.4-01 (D-01): the `HashSet` variant's `HashSetU64` alias references
+// the module-private `NoOpHasher`. Per `project_v2_devex_first` memory the
+// hasher type MUST stay module-internal (no API surface change), but rust's
+// `private_interfaces` lint warns because `NoOpHasher` is reachable via the
+// public variant's field type. External callers can still construct the
+// variant via `CountDistinctState::new(...)` + `add_hash(...)` (the only
+// supported APIs); they cannot name `NoOpHasher` or `HashSetU64` directly.
+#[allow(private_interfaces)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CountDistinctState {
     #[serde(rename = "v0_count_distinct_exact_array")]
     ExactArray { values: Vec<u64> },
     #[serde(rename = "v0_count_distinct_hash_set")]
-    HashSet {
-        hashes: std::collections::HashSet<u64>,
-    },
+    HashSet { hashes: HashSetU64 },
     #[serde(rename = "v0_count_distinct_hll")]
     Hll { sketch: Hll },
 }
@@ -59,8 +97,13 @@ impl CountDistinctState {
                     values.insert(pos, hash);
                     if values.len() > EXACT_THRESHOLD {
                         // Promote to HashSet, preserving every value seen.
-                        let mut set: std::collections::HashSet<u64> =
-                            std::collections::HashSet::with_capacity(HASH_THRESHOLD);
+                        // Plan 19.4-01 (D-01): HashSetU64 uses NoOpHasher so the
+                        // already-FxHashed u64 is stored as the slot index without
+                        // a redundant SipHash second-hash.
+                        let mut set = HashSetU64::with_capacity_and_hasher(
+                            HASH_THRESHOLD,
+                            std::hash::BuildHasherDefault::<NoOpHasher>::default(),
+                        );
                         for &h in values.iter() {
                             set.insert(h);
                         }
@@ -245,6 +288,11 @@ mod tests {
         assert_eq!(s.mode_name(), "v0_count_distinct_hll");
         let est = s.estimate();
         let err = (est as i64 - 2048).abs() as f64 / 2048.0;
-        assert!(err < 0.05, "promote err {} (est={}, expected ~2048)", err, est);
+        assert!(
+            err < 0.05,
+            "promote err {} (est={}, expected ~2048)",
+            err,
+            est
+        );
     }
 }
