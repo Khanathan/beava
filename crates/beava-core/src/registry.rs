@@ -855,6 +855,30 @@ impl Registry {
                             .push(FIELD_IDX_NONE);
                     }
                 }
+
+                // Plan 19.4-04 (D-02) Task 4.3.b: under the apply-loop hoist,
+                // `update_with_extracted` consumes the per-event union slice
+                // (event_extracted) and indexes it via lat_idx/lon_idx
+                // directly. Re-point lat_idx/lon_idx from per-agg
+                // `agg.field_names` positions to per-source apply_field_names
+                // union positions so the geo dispatch arm
+                // (agg_op.rs:933-960) reads from the hoisted slice correctly.
+                if let (Some(lat), Some(lon)) = (
+                    &feat.descriptor.ext.lat_field,
+                    &feat.descriptor.ext.lon_field,
+                ) {
+                    if let (Some(&lat_u), Some(&lon_u)) = (
+                        union_lookup.get(lat.as_str()),
+                        union_lookup.get(lon.as_str()),
+                    ) {
+                        feat.descriptor.ext.lat_idx = lat_u;
+                        feat.descriptor.ext.lon_idx = lon_u;
+                    }
+                    // If union_lookup is missing lat/lon, the prior assignment
+                    // (per-agg field_names index) stays — but this never
+                    // happens in production since apply_field_names_post_pass
+                    // ensures every declared field is in the union.
+                }
             }
         }
 
@@ -983,7 +1007,8 @@ impl Registry {
         // feature against the per-source apply_field_names union. Matches the
         // public sibling's logic exactly so both resolvers produce identical
         // mappings (snapshot replay invariance). Empty mapping for features
-        // without a declared field.
+        // without a declared field. Also re-points lat_idx/lon_idx into the
+        // union when present (Task 4.3.b apply-loop hoist requirement).
         if !source_union.is_empty() {
             for feat in &mut agg.features {
                 let has_field = feat.descriptor.field.is_some()
@@ -999,6 +1024,20 @@ impl Registry {
                         feat.descriptor
                             .field_idx_into_event_extracted
                             .push(FIELD_IDX_NONE);
+                    }
+                }
+
+                // Re-point lat_idx/lon_idx into the per-source union (Task 4.3.b).
+                if let (Some(lat), Some(lon)) = (
+                    &feat.descriptor.ext.lat_field,
+                    &feat.descriptor.ext.lon_field,
+                ) {
+                    if let (Some(&lat_u), Some(&lon_u)) = (
+                        union_lookup.get(lat.as_str()),
+                        union_lookup.get(lon.as_str()),
+                    ) {
+                        feat.descriptor.ext.lat_idx = lat_u;
+                        feat.descriptor.ext.lon_idx = lon_u;
                     }
                 }
             }

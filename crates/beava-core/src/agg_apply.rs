@@ -36,9 +36,38 @@ use crate::row::Row;
 //
 // Test-only: `#[cfg(test)]` gates the static so production builds incur
 // zero overhead and the apply path stays branch-free in release builds.
+//
+// Per-thread counter (Cell<u64>) rather than process-wide AtomicU64: cargo's
+// default test runner runs tests in parallel across worker threads; a global
+// AtomicU64 would let concurrent apply calls in unrelated tests pollute this
+// test's delta. The hot apply path is single-threaded per the project's
+// `project_no_sharded_apply` invariant, so per-thread storage is correct
+// (each test thread has its own counter; the production data plane only ever
+// uses one thread). The companion test-only accessors below
+// (extracted_build_count_load / _store) exist so the assertion site can
+// read/write its own thread-local counter.
 #[cfg(test)]
-pub(crate) static EXTRACTED_BUILD_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    pub(crate) static EXTRACTED_BUILD_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+#[inline(always)]
+pub(crate) fn extracted_build_count_increment() {
+    EXTRACTED_BUILD_COUNT.with(|c| c.set(c.get() + 1));
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn extracted_build_count_load() -> u64 {
+    EXTRACTED_BUILD_COUNT.with(|c| c.get())
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn extracted_build_count_store(v: u64) {
+    EXTRACTED_BUILD_COUNT.with(|c| c.set(v));
+}
 
 // ─── Plan 19.2-07 (D-07): per-kind snapshot for /debug/op-cost ──────────────
 
@@ -129,6 +158,51 @@ pub fn apply_event_to_aggregations(
     let descs = registry.compiled_aggregations_for_source(source_name);
     let t_registry = t0.map(|t| t.elapsed());
 
+    // Plan 19.4-04 (D-02) Task 4.3.b: hoist ExtractedFields build above the
+    // descriptor loop. The per-event field-union (apply_field_names) is
+    // populated at register-time by apply_registration; the apply loop
+    // pre-extracts ONCE per event (instead of D times for D descriptors as in
+    // the pre-19.4-04 per-desc rebuild scaffolding from
+    // `19.3-COST-MODEL.md §4`).
+    //
+    // The `'a` lifetime of `ExtractedFields<'a>` is bound to `&row`'s lifetime,
+    // which lives for the duration of this function — so a stack-allocated
+    // SmallVec works without thread_local or unsafe re-borrow tricks. When
+    // there are no aggs on this source (descs is empty) OR when no agg declares
+    // a field (apply_field_names is empty), the hoisted slice is empty and
+    // each feature's pre_val branch falls through to None.
+    //
+    // SmallVec inline cap = 16 from Plan 19.4-02 — covers fraud-team's
+    // ~12-field union without spilling on the warm path.
+    let event_extracted: ExtractedFields = if descs.is_empty() {
+        // Fast path: no aggs on this source. Source EventDescriptor lookup
+        // would be wasted; skip the build (the descriptor loop body never
+        // runs).
+        ExtractedFields::new()
+    } else {
+        match registry.get_event_descriptor(source_name) {
+            Some(src_event) => src_event
+                .apply_field_names
+                .iter()
+                .map(|f| row.get(f.as_str()))
+                .collect(),
+            None => {
+                // Source isn't registered as an event — shouldn't happen on
+                // the hot path (descs is non-empty so an agg targets this
+                // source, and apply_registration enforces source registration
+                // ordering). Defensive: fall back to empty so per-feature
+                // pre_val resolves to None and op falls through to the slow
+                // row.get-by-name path inside update_with_extracted.
+                ExtractedFields::new()
+            }
+        }
+    };
+    // Plan 19.4-04 (D-02) Task 4.3: instrumentation site moved here from
+    // the per-desc loop body. Increment counts once per event (not D times),
+    // verifying the hoist eliminates per-desc rebuild scaffolding.
+    #[cfg(test)]
+    extracted_build_count_increment();
+
     let mut t_entity_key_total = std::time::Duration::ZERO;
     let mut t_table_lookup_total = std::time::Duration::ZERO;
     let mut t_entity_row_total = std::time::Duration::ZERO;
@@ -207,39 +281,45 @@ pub fn apply_event_to_aggregations(
         let entity_row = table.get_or_init_by_shape(shape, &desc);
         let t_d = t0.map(|t| t.elapsed());
 
-        // Plan 19.2-01 (D-01): pre-extract distinct field values once per agg.
-        // `desc.field_names` is the per-agg distinct-field list populated at
-        // register-time by `resolve_field_indices_for_agg_mut`. Each
-        // `feat.descriptor.field_idx` indexes into this array so every feature
-        // sharing the same field reuses the same pre-fetched `Option<&Value>`.
-        let extracted: ExtractedFields = desc
-            .field_names
-            .iter()
-            .map(|f| row.get(f.as_str()))
-            .collect();
-        // Plan 19.4-04 (D-02) Task 4.3.a: instrumentation site. Pre-hoist this
-        // increment fires once per descriptor (so total count = D × event_count
-        // for D descriptors on the source). Task 4.3.b's hoist removes this
-        // site and replaces it with a single per-event increment ABOVE the
-        // descriptor loop — flipping the count to event_count exactly.
-        #[cfg(test)]
-        EXTRACTED_BUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
+        // Plan 19.4-04 (D-02) Task 4.3.b: ExtractedFields hoisted above this
+        // loop. We still need to remap each feature's `field_idx` (which
+        // indexes into `agg.field_names`, the per-agg list) into the per-event
+        // `event_extracted` slice (indexed by the per-source
+        // `apply_field_names` union). The remap mapping is
+        // `feat.descriptor.field_idx_into_event_extracted` — populated at
+        // register-time by `resolve_field_indices_for_agg_mut*`.
         for (i, feat) in desc.features.iter().enumerate() {
             let op_t0 = if trace {
                 Some(std::time::Instant::now())
             } else {
                 None
             };
-            // Look up the pre-extracted value for this feature's field.
-            // FIELD_IDX_NONE (u8::MAX) means the op is fieldless (Count, Ratio, etc.)
-            // and pre_val will be None — the op ignores it.
+            // Look up the pre-extracted value for this feature's field via
+            // the union remap. FIELD_IDX_NONE on field_idx means the op is
+            // fieldless (Count, Ratio, etc.) and pre_val resolves to None —
+            // the op ignores it.
             let pre_val: Option<&crate::row::Value> = if feat.descriptor.field_idx != FIELD_IDX_NONE
             {
-                extracted
-                    .get(feat.descriptor.field_idx as usize)
-                    .copied()
-                    .flatten()
+                let agg_local_idx = feat.descriptor.field_idx as usize;
+                match feat
+                    .descriptor
+                    .field_idx_into_event_extracted
+                    .get(agg_local_idx)
+                {
+                    Some(&union_idx) if union_idx != FIELD_IDX_NONE => {
+                        event_extracted.get(union_idx as usize).copied().flatten()
+                    }
+                    _ => {
+                        // Mapping absent or sentinel — fall back to per-row
+                        // lookup by name (slow path; reachable only when
+                        // apply_field_names was empty at resolver time, e.g.
+                        // some test paths that don't go through
+                        // apply_registration). update_with_extracted uses
+                        // `field` directly via `row.get(field)` when this is
+                        // the case.
+                        feat.descriptor.field.as_deref().and_then(|n| row.get(n))
+                    }
+                }
             } else {
                 None
             };
@@ -250,7 +330,7 @@ pub fn apply_event_to_aggregations(
                 row,
                 feat.descriptor.field.as_deref(),
                 feat.descriptor.field_idx,
-                &extracted,
+                &event_extracted,
                 feat.descriptor.ext.lat_idx,
                 feat.descriptor.ext.lon_idx,
             );
@@ -1034,9 +1114,12 @@ mod registry_source_tests {
 
         let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
 
-        // Drive N events through the apply path.
+        // Drive N events through the apply path. The instrumentation
+        // counter is thread_local (per the EXTRACTED_BUILD_COUNT declaration
+        // above), so other parallel cargo-test threads don't pollute this
+        // test's count. Reset to 0 at the start of THIS thread's run.
         let n_events: u64 = 50;
-        super::EXTRACTED_BUILD_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        super::extracted_build_count_store(0);
         for i in 0..n_events {
             let row = Row::new()
                 .with_field("user_id", Value::Str(format!("u{}", i % 5).into()))
@@ -1051,7 +1134,7 @@ mod registry_source_tests {
                 &mut state_tables,
             );
         }
-        let count = super::EXTRACTED_BUILD_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        let count = super::extracted_build_count_load();
         assert_eq!(
             count, n_events,
             "EXTRACTED_BUILD_COUNT should equal n_events ({}) — once per event. Got {} (D=2 derivs * N=50 = {} means per-desc rebuild still happens — Task 4.3.b hoist not yet landed).",
