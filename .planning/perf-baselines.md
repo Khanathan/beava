@@ -365,3 +365,19 @@ Plan 19.4-02 widened `ExtractedFields<'a> = SmallVec<[Option<&'a crate::row::Val
 **Targets per Plan 19.4-02 acceptance:** windowed group must drop ≥ 5% from post-19.4-01 baseline (75% floor: ≥ 4% drop) per `19.4-CONTEXT.md` D-01 + D-03. **Floor not met** on criterion — observed +5.1% on median (regression direction). However, the criterion bench has 7-field rows that never spilled at cap=8, so the optimization cannot manifest on this bench. Per CONTEXT D-04 dual-measurement, the live-trace + EPS run on fraud-team.json (10-field TxnByUser cluster) is the primary verdict — see `19.4-02-MEASUREMENT.md`.
 
 **Driver:** SmallVec inline-cap widening eliminates per-event heap spill on fraud-team's 10-field Txn source. The criterion bench cannot observe this fix because its synthetic row has only 7 fields. The 14-feature synthetic bench is **structurally insensitive** to the optimization — same shape of insensitivity as Plan 19.4-01 (where only 2/14 features were CountDistinct, the lever's target).
+
+### Phase 19.4 — 19.4-C Geo lat_idx/lon_idx register-time resolution (criterion microbench)
+
+Captured: 2026-04-28 (Phase 19.4-03). hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Bench: `crates/beava-core/benches/apply_path_bench.rs`.
+
+Plan 19.4-03 completed Phase 19.2-06's missing Task 3: `Registry::resolve_field_indices_for_agg_mut` and `resolve_field_indices_for_agg_mut_inner` now populate `AggOpDescriptor.ext.lat_idx`/`.ext.lon_idx` at register time so the existing `update_at` fast path (agg_geo.rs:110/182/259/357 + agg_op.rs:933-960 dispatch arms) engages on the apply hot path. Per `19.3-FLAMEGRAPH.md §2 row #8` `agg_geo::read_lat_lon` self-time was 2.86% of apply CPU = ~357 ns/event because `lat_idx == FIELD_IDX_NONE` for fraud-team's 4 geo features routed dispatch to the slow `update()` arm (agg_op.rs:937).
+
+| Bench | Pre (post-19.4-02) | Post-19.4-03 | Δ ns | Δ % | Date | Phase | Notes |
+|---|---|---|---|---|---|---|---|
+| apply_path/warm_key/14_aggs_windowed | 425.40 ns (median) | 462.33 ns (median) | +36.93 | +8.7% | 2026-04-28 | 19.4 | Synthetic registry has no geo features; bench delta is variance (same direction Plan 02 saw at +5.1% on the cap widening). |
+| apply_path/warm_key/14_aggs            | 346.78 ns (median) | 352.65 ns (median) | +5.87  | +1.7% | 2026-04-28 | 19.4 | Reference cell. Within criterion variance band. |
+
+**Note:** Primary lift for 19.4-C is on fraud-team live-trace (4 of 14 fraud-team features are geo, 0 of 14 synthetic features are geo); criterion-bench delta is structurally absent here — the synthetic registry exercises only non-geo apply paths, so the resolver patch produces identical bytecode for these benches modulo register pressure variance.
+
+**Driver:** Geo dispatch now routes through `update_at` (indexed `extracted` access) instead of `update` (row.get linear scan). Criterion bench is structurally insensitive because the synthetic registry has zero geo features (per `apply_path_bench.rs:33-46` — Cluster A is count/sum/percentile/stddev/topk/entropy/min, Cluster B is count/sum/count_distinct, Cluster C is count/sum/max). Live trace + EPS on fraud-team is the primary verdict (see `19.4-03-MEASUREMENT.md`); the post-19.4-03 samply flamegraph confirms `agg_geo::read_lat_lon` self-time = 0.000% (was 2.86%) on the `beava-apply` thread.
