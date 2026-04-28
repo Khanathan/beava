@@ -227,9 +227,14 @@ pub const FIELD_IDX_NONE: u8 = u8::MAX;
 /// `AggregationDescriptor.field_names`. Built ONCE per event at apply-loop
 /// entry; consumed by every per-feature update call.
 ///
-/// SmallVec inline capacity = 8 — covers the common case (≤8 distinct fields)
-/// with zero heap allocation. Falls back to heap for exotic pipelines.
-pub type ExtractedFields<'a> = smallvec::SmallVec<[Option<&'a crate::row::Value>; 8]>;
+/// SmallVec inline capacity = 16 (Plan 19.4-02): covers fraud-team's per-source
+/// union (~12 fields max for the TxnByUser cluster) without spilling. Pre-19.4-02
+/// cap was 8; per `19.3-FLAMEGRAPH.md §2` the rows labelled
+/// `RawVec::with_capacity_in` + `RawVecInner::reserve` together at ~4.0% inclusive
+/// on the apply hot path were 99% from this SmallVec spilling on every Txn event
+/// (~530 ns/event of allocator traffic). Cap widening eliminates the heap spill;
+/// the apply path stays inline-only for fraud-team's per-source field union.
+pub type ExtractedFields<'a> = smallvec::SmallVec<[Option<&'a crate::row::Value>; 16]>;
 
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
 
