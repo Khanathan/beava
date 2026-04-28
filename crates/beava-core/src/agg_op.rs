@@ -861,11 +861,58 @@ impl AggOp {
             Some(e) => crate::agg_where::evaluate_where_predicate(e, row),
             None => true,
         };
+        self.update_with_extracted_no_where(
+            pre_val,
+            event_time_ms,
+            row,
+            field,
+            field_idx,
+            extracted,
+            lat_idx,
+            lon_idx,
+            where_matched,
+        );
+    }
 
+    /// Plan 19.3-02 (D-04): pre-where-evaluated sibling of `update_with_extracted`.
+    ///
+    /// Body is identical to `update_with_extracted` minus the `where_expr`
+    /// evaluation block — the caller has already computed `where_matched`
+    /// and threads it down. Used by:
+    ///   1. `update_with_extracted` (after evaluating `where_expr` once at the
+    ///      outer dispatcher).
+    ///   2. `WindowedOp::update_at` (per-bucket dispatch — `where_matched` was
+    ///      computed once at the outer level; per-bucket re-evaluation is
+    ///      forbidden per Plan 19.3-02 R4 mitigation).
+    ///
+    /// The Windowed arm here calls `WindowedOp::update_at`, NOT `update_with_row`,
+    /// so the pre-extraction protocol crosses the WindowedOp wrapper boundary
+    /// (Phase 19.3-A core deliverable).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn update_with_extracted_no_where(
+        &mut self,
+        pre_val: Option<&Value>,
+        event_time_ms: i64,
+        row: &Row,
+        field: Option<&str>,
+        field_idx: u8,
+        extracted: &ExtractedFields<'_>,
+        lat_idx: u8,
+        lon_idx: u8,
+        where_matched: bool,
+    ) {
         match self {
-            // Windowed: still needs (row, field) for bucket routing — fall back.
+            // Phase 19.3-A: Windowed dispatches to update_at (NOT update_with_row).
+            // The pre-extraction protocol crosses the WindowedOp wrapper boundary.
             AggOp::Windowed(w) => {
-                w.update_with_row(row, event_time_ms, field, where_expr);
+                w.update_at(
+                    extracted,
+                    field_idx,
+                    lat_idx,
+                    lon_idx,
+                    event_time_ms,
+                    where_matched,
+                );
             }
             // Fieldless ops: pre_val is None, where_matched gates the update.
             AggOp::Count(s) => s.update(row, event_time_ms, field, where_matched),

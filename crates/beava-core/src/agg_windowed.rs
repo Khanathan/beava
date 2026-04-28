@@ -210,6 +210,86 @@ impl WindowedOp {
         self.buckets.push((epoch, new_op));
     }
 
+    /// Plan 19.3-02 (D-04): pre-extracted fast-path mirroring
+    /// `AggOp::update_with_extracted_no_where` across the WindowedOp wrapper.
+    ///
+    /// Per-bucket inner op dispatches via
+    /// `AggOp::update_with_extracted_no_where` (NOT `update_with_row`),
+    /// preserving Plan 19.2-01's pre-extraction protocol across the wrapper
+    /// boundary. Eliminates inner `row.get(fname)` linear scan + per-bucket
+    /// `evaluate_where_predicate` re-evaluation.
+    ///
+    /// `where_matched` is computed once by the outer dispatcher
+    /// (`AggOp::update_with_extracted`) and threaded down — no per-bucket
+    /// re-evaluation (R4 mitigation).
+    ///
+    /// `field_idx`/`lat_idx`/`lon_idx` use `FIELD_IDX_NONE` (u8::MAX) as the
+    /// "no field" sentinel, matching the existing protocol.
+    ///
+    /// Inner ops are restricted to `AggKind::supports_windowed_wrap()` kinds:
+    /// Count, Sum, Avg, Min, Max, Variance, StdDev, Ratio, CountDistinct,
+    /// Percentile, TopK, Entropy. None of these consult `&Row` content
+    /// directly on the apply hot path; they either use `pre_val` (Sum/Avg/
+    /// Min/Max/Variance/StdDev/CountDistinct/Percentile/TopK/Entropy via
+    /// `update_pre`) or are fieldless (Count/Ratio). Passing an empty `Row`
+    /// + `None` field down through the bucket dispatch is therefore safe.
+    ///
+    /// Phase 19.3-A.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_at(
+        &mut self,
+        extracted: &crate::agg_op::ExtractedFields<'_>,
+        field_idx: u8,
+        lat_idx: u8,
+        lon_idx: u8,
+        event_time_ms: i64,
+        where_matched: bool,
+    ) {
+        // Pull pre-extracted Value once at the outer level (no per-bucket
+        // recompute). FIELD_IDX_NONE sentinel = fieldless inner op.
+        let pre_val: Option<&crate::row::Value> = if field_idx != crate::agg_op::FIELD_IDX_NONE {
+            extracted.get(field_idx as usize).copied().flatten()
+        } else {
+            None
+        };
+        // Synthetic empty row for arms that take `&Row` for type-signature
+        // reasons but ignore content for windowable kinds (Count/Ratio etc.).
+        let empty_row = crate::row::Row::new();
+
+        let epoch = self.bucket_epoch(event_time_ms);
+        if let Some(pos) = self.position_for_epoch(epoch) {
+            self.buckets[pos].1.update_with_extracted_no_where(
+                pre_val,
+                event_time_ms,
+                &empty_row,
+                None,
+                field_idx,
+                extracted,
+                lat_idx,
+                lon_idx,
+                where_matched,
+            );
+            return;
+        }
+        // New epoch — evict-then-push if at cap.
+        if self.buckets.len() >= self.max_buckets {
+            self.evict_oldest_bucket();
+        }
+        let mut new_op = Box::new(fresh_op(self.inner_kind, &self.sketch_params));
+        new_op.update_with_extracted_no_where(
+            pre_val,
+            event_time_ms,
+            &empty_row,
+            None,
+            field_idx,
+            extracted,
+            lat_idx,
+            lon_idx,
+            where_matched,
+        );
+        self.buckets.push((epoch, new_op));
+    }
+
     /// Query the windowed aggregation value at `query_time_ms`.
     ///
     /// Active buckets: those where `query_time_ms - bucket_epoch >= 0`
@@ -912,13 +992,48 @@ mod tests {
         let mut op = WindowedOp::new(AggKind::Count, window_ms);
         let extracted: crate::agg_op::ExtractedFields<'_> = smallvec::smallvec![None];
         // 2 events in epoch 0
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 100, true);
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 200, true);
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            100,
+            true,
+        );
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            200,
+            true,
+        );
         // 2 events in epoch 1
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 1_100, true);
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 1_900, true);
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            1_100,
+            true,
+        );
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            1_900,
+            true,
+        );
         // 1 event in epoch 2
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 2_500, true);
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            2_500,
+            true,
+        );
         assert_eq!(op.buckets.len(), 3, "expected 3 distinct buckets");
         // Query at t=2999 — all three buckets active in 64s window.
         let result = op.query(2_999);
@@ -935,7 +1050,14 @@ mod tests {
         // pre-extracted carries 42.0 at index 0
         let pre = Value::F64(42.0);
         let extracted: crate::agg_op::ExtractedFields<'_> = smallvec::smallvec![Some(&pre)];
-        op.update_at(&extracted, 0_u8, crate::agg_op::FIELD_IDX_NONE, crate::agg_op::FIELD_IDX_NONE, 100, true);
+        op.update_at(
+            &extracted,
+            0_u8,
+            crate::agg_op::FIELD_IDX_NONE,
+            crate::agg_op::FIELD_IDX_NONE,
+            100,
+            true,
+        );
         let result = op.query(999);
         match result {
             Value::F64(v) => assert!(
@@ -956,8 +1078,22 @@ mod tests {
         let mut op = WindowedOp::new(AggKind::Count, window_ms);
         let extracted: crate::agg_op::ExtractedFields<'_> = smallvec::smallvec![None];
         // where_matched = false: bucket may be created but count must remain 0.
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 100, false);
-        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 200, false);
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            100,
+            false,
+        );
+        op.update_at(
+            &extracted,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            FIELD_IDX_NONE,
+            200,
+            false,
+        );
         let result = op.query(999);
         assert_eq!(
             result,
