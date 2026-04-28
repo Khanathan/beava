@@ -1,0 +1,62 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-04-28T03:58:51Z",
+  "phase": "19.2",
+  "phase_name": "big-apply-path-optimization",
+  "phase_dir": ".planning/phases/19.2-big-apply-path-optimization",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused-phase-complete-awaiting-decisions",
+  "context_summary": "Phase 19.2 verified PASS-WITH-DEFICIT (8/8 plans complete). Live trace investigation identified the deficit's root cause: WindowedOp bypass of Plan 19.2-01's pre-extraction. 60 of 88 fraud-team feature updates pay ~100 ns wrapping tax = ~9000 ns/event of the 14 µs agg-stage budget. Three Phase 19.3 sub-goals proposed (95k → 107k → 125k EPS stacked). GSD upgraded 1.34.2 → 1.38.5 + model_profile switched to quality + system table customized so all 18 GSD agents resolve to opus. Next: open Phase 19.3, decide whether to update 19.2-VERIFICATION.md correction, save WindowedOp bypass memory.",
+  "completed_this_session": [
+    {"item": "Phase 19.2 fully executed", "result": "8/8 plans land; verdict PASS-WITH-DEFICIT (commit 2f4cbe6); criterion microbench shows real wins (UDDSketch 1.55x, EventTypeMix 45x, warm-key 14-agg apply 362ns)"},
+    {"item": "Live BEAVA_TRACE_APPLY_TIMING run on fraud-team K=10k zipfian", "result": "100,100 events traced; per-stage breakdown: agg=14,059ns (92.6%), wal_append=85ns (0.6% — NOT bottleneck), bookkeeping=337ns. Trace data preserved at /tmp/beava-trace-19.2.RJXKls"},
+    {"item": "Opus investigation agent identified root cause", "result": ".planning/phases/19.2-big-apply-path-optimization/19.2-INVESTIGATION.md (2,374 words). WindowedOp bypass — 60 of 88 fraud-team feature updates pay ~100 ns wrapping tax. Proposed 3 Phase 19.3 sub-goals stacking to 125k EPS."},
+    {"item": "GSD upgrade 1.34.2 → 1.38.5", "result": "New commands: /gsd-spike, /gsd-sketch, /gsd-spec-phase, /gsd-ingest-docs, /gsd-plan-review-convergence. SDK Phase 2/3 migration. Many runtime fixes."},
+    {"item": "Model profile change", "result": "model_profile=quality + system-level model-profiles.cjs customized so ALL 18 GSD agents resolve to opus (was: 7 of 17 on opus under quality default; rest sonnet). Memory saved at feedback_executor_quality_profile.md. Reapplied post-update via /gsd-reapply-patches."}
+  ],
+  "open_decisions_for_resume": [
+    "Open Phase 19.3 in roadmap with 3 sub-goals (19.3-A WindowedOp::update_at fast-path, 19.3-B specialize windowed Count/Sum, 19.3-C hoist ExtractedFields above descriptor loop). Predicted stacked: 70k → 125k EPS on fraud-team K=10k zipfian.",
+    "Update 19.2-VERIFICATION.md to correct the WAL+bookkeeping bottleneck conjecture with pointer to 19.2-INVESTIGATION.md (verifier was wrong — WAL is 85 ns/event, agg is 14 µs).",
+    "Save memory entry about WindowedOp bypass anti-pattern: 'When refactoring a dispatch protocol, enumerate ALL dispatch entry points (top-level + nested wrappers like WindowedOp/RetractableOp). Build acceptance criteria that verify ALL paths use the new protocol.'",
+    "Optional cleanup: rm -rf $HOME/.claude/gsd-local-patches/ (no longer needed since /gsd-reapply-patches succeeded)",
+    "Optional cleanup: archive/remove old worktrees from this phase (agent-a01d5af82ade2c5ff orchestrator worktree, agent-aac1e57e8b1164973, agent-a25208184f0ea4ff2, agent-a6bd8a737a2ffc032, agent-affdcaf2b0ebb6f32, agent-acd350db9b870acd7, agent-a07f574c9ef5e533e). Plus pre-existing worktrees from earlier phases."
+  ],
+  "blockers": [],
+  "human_actions_pending": [
+    {"action": "Restart Claude Code runtime to pick up new commands/skills from GSD 1.38.5", "context": "Skills already refreshed in current session, but full runtime restart loads new command implementations cleanly", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Phase 19.2 verdict accepted as PASS-WITH-DEFICIT", "rationale": "Apply-loop microbench wins are real and confirmed (UDDSketch 1.55x, EventTypeMix 45x). End-to-end EPS shortfall on fraud-team explained by WindowedOp bypass + recipe-op cost shift; not a regression in apply-path work."},
+    {"decision": "WindowedOp pre-extraction is THE Phase 19.3 priority", "rationale": "Live trace shows agg=14µs not 362ns; 60 of 88 fraud-team feature updates are windowed and pay row.get() linear scan + double-dispatch tax; predicted -3,900 ns/event from update_at fast path alone."},
+    {"decision": "Verifier WAL+bookkeeping diagnosis was wrong", "rationale": "Verifier conjectured without running BEAVA_TRACE_APPLY_TIMING. Trace shows wal_append=85ns (0.6%), bookkeeping=337ns (2.2%). Real bottleneck is agg=14µs. Future Performance Discipline phases must include live trace, not just criterion bench."},
+    {"decision": "All 18 GSD agents on opus under quality profile", "rationale": "Phase 19.2 surfaced multiple sonnet-executor + sonnet-verifier + sonnet-plan-checker bypass patterns (deferred punts, todo!() placeholders, conjecture without measurement). User upgrade request applied at project + system level."}
+  ],
+  "anti_patterns_discovered": [
+    {"name": "WindowedOp bypass of dispatch-protocol refactor", "severity": "blocking", "description": "Plan 19.2-01 said 'all aggs use field_idx (~5 ns vs ~30-60 ns)' but only migrated non-windowed dispatch arms. WindowedOp::update_with_row receives raw row + re-does row.get(fname) inside each bucket update. 60 of 88 fraud-team feature updates pay ~100 ns wrapping tax = ~9000 ns/event. Caught only by post-execution live trace investigation, not by plan-checker or verifier.", "structural_mitigation": "Dispatch-protocol refactors must enumerate ALL dispatch entry points up-front: top-level + nested wrappers (WindowedOp, RetractableOp, etc.). Plan acceptance criteria use exhaustive grep checks (e.g., grep -c 'row.get(' returns ≤ 5) not 'callsites collapsed'."},
+    {"name": "Verifier conjecture without measurement", "severity": "blocking", "description": "Phase 19.2-08 verifier wrote 'WAL+bookkeeping overhead dominates the per-event budget' as the diagnosis for the EPS deficit, without running BEAVA_TRACE_APPLY_TIMING. Trace later showed WAL is 85 ns/event (0.6%); the diagnosis was wrong. Misdirected Phase 19.3 priority toward WAL/group-commit work that wouldn't have helped.", "structural_mitigation": "Performance Discipline phases must include live trace runs in verification, not just criterion microbench acceptance. CONTEXT.md predicted lift table must be confirmed against actual per-stage measurements."},
+    {"name": "Sonnet executor declares done with deferred punts", "severity": "advisory", "description": "Across Phase 19.2 plans: Plan 19.2-01 deferred geo field_idx to non-existent follow-up; Plan 19.2-05 deferred EventTypeMix migration; Plan 19.2-06 entropy.rs accessors with todo!() placeholder + 'if absent' hedge. Plan-checker caught some; verifier missed the WindowedOp one entirely.", "structural_mitigation": "model_profile=quality with all-18-agents on opus; plan-checker should reject 'deferred / TODO / if absent' language as structural smell."}
+  ],
+  "uncommitted_files": [
+    {"path": ".planning/phases/19.2-big-apply-path-optimization/19.2-INVESTIGATION.md", "status": "untracked", "note": "WindowedOp investigation report — should commit alongside this handoff"},
+    {"path": "beava-website/project/guide/index.html", "status": "modified", "note": "pre-existing, unrelated to Phase 19.2"}
+  ],
+  "infrastructure_state": {
+    "branch": "v2/greenfield",
+    "head": "7a9e673 (chore(config): switch model profile to quality)",
+    "phase_19_2_status": "complete (8/8 plans, verdict PASS-WITH-DEFICIT)",
+    "gsd_version": "1.38.5 (was 1.34.2 at session start)",
+    "model_profile": "quality (all 18 agents on opus per system-table customization)",
+    "active_worktrees": "8 phase worktrees + 6 agent worktrees from this session — needs /gsd-cleanup pass eventually but not blocking",
+    "trace_data": "/tmp/beava-trace-19.2.RJXKls (100,100 events traced; preserved for follow-up analysis)",
+    "background_processes": "none"
+  },
+  "next_action_recommended": "Decide whether to (a) open Phase 19.3 with the 3 sub-goals from 19.2-INVESTIGATION.md, (b) update 19.2-VERIFICATION.md correction, (c) save WindowedOp bypass memory. Recommended order: a → b → c. Then /gsd-add-phase 19.3 → /gsd-discuss-phase 19.3 → /gsd-plan-phase 19.3 → /gsd-execute-phase 19.3.",
+  "next_action_alternatives": [
+    "Skip Phase 19.3 for now and start Phase 20 (traction-demo) per ROADMAP next-phase pointer. Banks Phase 19.2 wins; defers WindowedOp work.",
+    "Run an isolated WindowedOp::update_at proof-of-concept first via /gsd-spike (NEW in 1.38.5) to validate the predicted -3,900 ns/event lift before opening a full Phase 19.3.",
+    "Cleanup-first: /gsd-cleanup to archive accumulated worktrees from Phase 19.2; rm -rf $HOME/.claude/gsd-local-patches/; then proceed with Phase 19.3."
+  ],
+  "context_notes": "The big surprise this session: verifier's WAL bottleneck conjecture was wrong, and the actual cause (WindowedOp bypass of pre-extraction) was identifiable via a 30-second live trace that wasn't in the verification protocol. Phase 19.2 still verified PASS-WITH-DEFICIT (microbench wins are real); but the EPS gap stays open until Phase 19.3 extends Plan 19.2-01's update_at protocol to WindowedOp wrapper layer. The model profile change (all agents on opus) is a structural fix for the broader pattern of bypasses observed across the phase — sonnet executors declare done when explicit acceptance criteria pass, without checking whether the architectural intent extends to wrapper layers the plan didn't enumerate. Opus does broader pattern matching."
+}
