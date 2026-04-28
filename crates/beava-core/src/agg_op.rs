@@ -1514,4 +1514,34 @@ mod tests {
             "agg_op.rs must not use rand crate (D-06 determinism invariant)"
         );
     }
+
+    // Plan 19.4-02 (D-01) Task 2.a RED: ExtractedFields inline cap must hold
+    // fraud-team's per-source union (~12 fields, max 16 with headroom) without
+    // spilling to the heap. Per `19.3-FLAMEGRAPH.md §2` SmallVec[8] currently
+    // spills on every Txn event, costing ~530 ns/event of allocator traffic.
+    #[test]
+    fn extracted_fields_inline_cap_holds_fraud_team_union_size() {
+        let mut e: super::ExtractedFields<'static> = Default::default();
+        for _ in 0..12 {
+            e.push(None);
+        }
+        assert!(
+            !e.spilled(),
+            "ExtractedFields spilled at len=12; inline cap is too small for fraud-team union (need >=12, ideally 16). \
+             See `19.3-FLAMEGRAPH.md §2` and `19.4-CONTEXT.md` D-01."
+        );
+    }
+
+    #[test]
+    fn extracted_fields_inline_cap_at_least_16() {
+        // Stronger invariant: cap is >= 16 (matches CONTEXT D-02 union sizing).
+        let mut e: super::ExtractedFields<'static> = Default::default();
+        for _ in 0..16 {
+            e.push(None);
+        }
+        assert!(
+            !e.spilled(),
+            "ExtractedFields spilled at len=16; inline cap is < 16."
+        );
+    }
 }
