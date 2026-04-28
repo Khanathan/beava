@@ -372,6 +372,35 @@ impl Registry {
             propagated_schemas.into_iter().collect();
         let mut chains_map: std::collections::HashMap<String, Arc<OpChain>> =
             compiled_chains.into_iter().collect();
+
+        // Plan 19.4-04 (D-02): pre-compute the per-source field-union
+        // (alphabetical-sorted distinct fields any incoming agg consumes) so
+        // the EventDescriptor.apply_field_names can be set as the new event is
+        // inserted. The union is the union of declared fields across all aggs
+        // targeting the same `source_node_name`. BTreeSet's iteration order is
+        // alphabetical — required for deterministic `field_idx_into_event_extracted`
+        // resolution at register-time and snapshot replay.
+        let mut new_union_per_source: std::collections::HashMap<
+            String,
+            std::collections::BTreeSet<String>,
+        > = std::collections::HashMap::new();
+        for (_, agg_arc) in compiled_aggregations.iter() {
+            let entry = new_union_per_source
+                .entry(agg_arc.source_node_name.clone())
+                .or_default();
+            for feat in agg_arc.features.iter() {
+                if let Some(f) = &feat.descriptor.field {
+                    entry.insert(f.clone());
+                }
+                if let Some(lat) = &feat.descriptor.ext.lat_field {
+                    entry.insert(lat.clone());
+                }
+                if let Some(lon) = &feat.descriptor.ext.lon_field {
+                    entry.insert(lon.clone());
+                }
+            }
+        }
+
         let mut agg_map: std::collections::HashMap<String, Arc<AggregationDescriptor>> =
             compiled_aggregations.into_iter().collect();
 
@@ -388,6 +417,16 @@ impl Registry {
                         // String alloc). See install_descriptors for the
                         // companion site.
                         e.name_arc = Arc::from(e.name.as_str());
+                        // Plan 19.4-04 (D-02): seed apply_field_names from the
+                        // alphabetical-sorted field union for any aggs in this
+                        // batch targeting this source. If a future
+                        // apply_registration adds aggs targeting an existing
+                        // source, the post-loop union-extend pass below
+                        // re-derives apply_field_names against ALL aggs (new +
+                        // pre-existing) so the union stays consistent.
+                        if let Some(union) = new_union_per_source.get(&e.name) {
+                            e.apply_field_names = union.iter().cloned().collect();
+                        }
                         w.events.insert(e.name.clone(), Arc::new(e));
                     }
                 }
@@ -472,6 +511,58 @@ impl Registry {
                         }
                         w.derivations.insert(d.name.clone(), d);
                     }
+                }
+            }
+        }
+
+        // Plan 19.4-04 (D-02) post-loop apply_field_names_post_pass: walk the
+        // CURRENT registry's `compiled_aggregations` (post-insert) and rebuild
+        // each affected source's `apply_field_names` as the union of declared
+        // fields across ALL aggs targeting that source. This handles the
+        // cross-batch case where an Event was registered in a prior call and
+        // a new agg in this batch declares fields beyond what the prior union
+        // covered. Cost: O(N_aggs × M_features) at register time only —
+        // register-time is cold-path, the apply-loop reads the precomputed
+        // `apply_field_names` slice.
+        //
+        // Determinism: the union is built via BTreeSet → Vec, so iteration
+        // order is alphabetical. `field_idx_into_event_extracted` resolution
+        // (Task 4.2.b) reads this same alphabetical ordering, ensuring
+        // reproducibility across snapshot replay.
+        let affected_sources: std::collections::BTreeSet<String> = newly_inserted_agg_names
+            .iter()
+            .filter_map(|node_name| {
+                w.compiled_aggregations
+                    .get(node_name)
+                    .map(|a| a.source_node_name.clone())
+            })
+            .collect();
+        for source_name in affected_sources {
+            // Recompute the alphabetical-sorted union of declared fields across
+            // every agg that targets this source.
+            let mut union: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            if let Some(aggs) = w.aggregations_by_source.get(&source_name) {
+                for agg in aggs.iter() {
+                    for feat in agg.features.iter() {
+                        if let Some(f) = &feat.descriptor.field {
+                            union.insert(f.clone());
+                        }
+                        if let Some(lat) = &feat.descriptor.ext.lat_field {
+                            union.insert(lat.clone());
+                        }
+                        if let Some(lon) = &feat.descriptor.ext.lon_field {
+                            union.insert(lon.clone());
+                        }
+                    }
+                }
+            }
+            let new_fields: Vec<String> = union.into_iter().collect();
+            // Update only if the union changed; avoids unnecessary Arc clones.
+            if let Some(existing_arc) = w.events.get(&source_name) {
+                if existing_arc.apply_field_names != new_fields {
+                    let mut updated = (**existing_arc).clone();
+                    updated.apply_field_names = new_fields;
+                    w.events.insert(source_name, Arc::new(updated));
                 }
             }
         }
@@ -2062,7 +2153,10 @@ mod tests {
         };
 
         r.apply_registration(
-            vec![PayloadNode::Event(event_txn), PayloadNode::Derivation(deriv)],
+            vec![
+                PayloadNode::Event(event_txn),
+                PayloadNode::Derivation(deriv),
+            ],
             vec![],
             vec![],
             vec![("AggTable".to_string(), agg_arc)],
