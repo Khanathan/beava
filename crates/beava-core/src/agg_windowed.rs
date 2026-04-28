@@ -898,6 +898,74 @@ mod tests {
         assert!(newest_present, "epoch=64 should still be present");
     }
 
+    // ── Phase 19.3-02: WindowedOp::update_at fast-path ───────────────────
+
+    /// Phase 19.3-A red-test #1.
+    ///
+    /// Constructing a WindowedOp(Count) and calling `update_at` 5 times across
+    /// 3 distinct epochs (within `max_buckets`) must produce 3 buckets with
+    /// the correct counts: epoch0=2, epoch1=2, epoch2=1.
+    #[test]
+    fn update_at_routes_to_buckets() {
+        use crate::agg_op::FIELD_IDX_NONE;
+        let window_ms: u64 = 64_000; // bucket_ms = 1000
+        let mut op = WindowedOp::new(AggKind::Count, window_ms);
+        let extracted: crate::agg_op::ExtractedFields<'_> = smallvec::smallvec![None];
+        // 2 events in epoch 0
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 100, true);
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 200, true);
+        // 2 events in epoch 1
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 1_100, true);
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 1_900, true);
+        // 1 event in epoch 2
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 2_500, true);
+        assert_eq!(op.buckets.len(), 3, "expected 3 distinct buckets");
+        // Query at t=2999 — all three buckets active in 64s window.
+        let result = op.query(2_999);
+        assert_eq!(result, Value::I64(5), "count of all 5 events should be 5");
+    }
+
+    /// Phase 19.3-A red-test #2 — bypass: pre-extracted Value is the source
+    /// of truth. The row's field at the same name has a DIFFERENT value;
+    /// `update_at` must use the pre-extracted Value, not consult the row.
+    #[test]
+    fn windowed_update_at_bypasses_row_get() {
+        let window_ms: u64 = 64_000;
+        let mut op = WindowedOp::new(AggKind::Sum, window_ms);
+        // pre-extracted carries 42.0 at index 0
+        let pre = Value::F64(42.0);
+        let extracted: crate::agg_op::ExtractedFields<'_> = smallvec::smallvec![Some(&pre)];
+        op.update_at(&extracted, 0_u8, crate::agg_op::FIELD_IDX_NONE, crate::agg_op::FIELD_IDX_NONE, 100, true);
+        let result = op.query(999);
+        match result {
+            Value::F64(v) => assert!(
+                (v - 42.0).abs() < 1e-10,
+                "sum should equal pre-extracted 42.0, got {v} (would be 0.0 if row.get was consulted)"
+            ),
+            other => panic!("expected F64, got {:?}", other),
+        }
+    }
+
+    /// Phase 19.3-A red-test #3 — `where_matched=false` skips bucket update.
+    /// No state should be mutated when the predicate already evaluated false
+    /// at the outer dispatcher.
+    #[test]
+    fn windowed_update_at_skips_when_where_matched_false() {
+        use crate::agg_op::FIELD_IDX_NONE;
+        let window_ms: u64 = 64_000;
+        let mut op = WindowedOp::new(AggKind::Count, window_ms);
+        let extracted: crate::agg_op::ExtractedFields<'_> = smallvec::smallvec![None];
+        // where_matched = false: bucket may be created but count must remain 0.
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 100, false);
+        op.update_at(&extracted, FIELD_IDX_NONE, FIELD_IDX_NONE, FIELD_IDX_NONE, 200, false);
+        let result = op.query(999);
+        assert_eq!(
+            result,
+            Value::I64(0),
+            "where_matched=false must not increment count"
+        );
+    }
+
     // ── Determinism guard ─────────────────────────────────────────────────
 
     #[test]
