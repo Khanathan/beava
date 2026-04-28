@@ -102,6 +102,115 @@ pub fn per_kind_latest() -> &'static PerKindSnapshot {
     })
 }
 
+/// Plan 19.4-04 (D-02) Task 4.4.b: test-only legacy oracle implementing a
+/// structurally DIFFERENT path from production for the bit-identity
+/// regression test (Task 4.4.a).
+///
+/// Three INDEPENDENT codepath differences from `apply_event_to_aggregations`:
+///   1. Allocates a fresh `ExtractedFields` (`SmallVec::new()`) PER DESCRIPTOR
+///      every event — no thread_local reuse, no event-level hoist.
+///   2. Populates `extracted` from `desc.field_names` (the per-agg distinct
+///      field list) NOT from `apply_field_names` (the per-source union).
+///   3. Computes `pre_val` via `feat.descriptor.field_idx` directly into the
+///      per-desc rebuild — NOT via the
+///      `feat.descriptor.field_idx_into_event_extracted` union remap.
+///
+/// These differences mean the f64::to_bits() comparison in Task 4.4.a
+/// exercises an INDEPENDENT codepath, not the same code with different inputs
+/// — so a passing test verifies the hoist preserves state semantics, not a
+/// tautology.
+///
+/// Reuses the same state surface as production (StateTables, EntityKeyShape,
+/// `update_with_extracted`) so both paths can update the same registry's
+/// state — required for the bit-identity comparison to read from one
+/// snapshot at the end. The test calls this against a SEPARATE registry +
+/// state-tables tuple to keep the two paths' state cleanly separated.
+#[cfg(test)]
+pub(crate) fn legacy_apply_event_to_aggregations(
+    source_name: &str,
+    row: &Row,
+    event_time_ms: i64,
+    _event_id: u64,
+    registry: &Registry,
+    state_tables: &mut StateTables,
+) {
+    let descs = registry.compiled_aggregations_for_source(source_name);
+
+    // Same EntityKey-shape cluster cache as production, since the legacy
+    // codepath difference is in the EXTRACTED build, not the entity-key
+    // dispatch.
+    let mut shape_cache: Vec<Option<Option<EntityKeyShape>>> = Vec::new();
+
+    for desc in descs {
+        // Plan 19.2-03 (D-04): build EntityKeyShape once per cluster_id.
+        let cluster_idx = desc.cluster_id as usize;
+        if shape_cache.len() <= cluster_idx {
+            shape_cache.resize_with(cluster_idx + 1, || None);
+        }
+        let shape_opt: &Option<EntityKeyShape> = match &shape_cache[cluster_idx] {
+            Some(cached) => cached,
+            None => {
+                let computed = EntityKeyShape::from_row(&desc.group_keys, row);
+                shape_cache[cluster_idx] = Some(computed);
+                shape_cache[cluster_idx].as_ref().unwrap()
+            }
+        };
+        let shape = match shape_opt {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let agg_idx = desc.agg_id as usize;
+        if state_tables.len() <= agg_idx {
+            state_tables.resize_with(agg_idx + 1, crate::agg_state_table::AggStateTable::new);
+        }
+        let table = &mut state_tables[agg_idx];
+        let entity_row = table.get_or_init_by_shape(shape, &desc);
+
+        // Independent codepath difference #1 + #2: fresh per-descriptor
+        // SmallVec allocation populated from desc.field_names (per-agg
+        // distinct list), NOT from apply_field_names (per-source union).
+        let extracted: ExtractedFields = desc
+            .field_names
+            .iter()
+            .map(|f| row.get(f.as_str()))
+            .collect();
+
+        for (i, feat) in desc.features.iter().enumerate() {
+            // Independent codepath difference #3: use feat.descriptor.field_idx
+            // DIRECTLY into the per-desc rebuild — NOT via
+            // field_idx_into_event_extracted.
+            let pre_val: Option<&crate::row::Value> = if feat.descriptor.field_idx != FIELD_IDX_NONE
+            {
+                extracted
+                    .get(feat.descriptor.field_idx as usize)
+                    .copied()
+                    .flatten()
+            } else {
+                None
+            };
+            // The legacy path passes the per-agg field_idx into
+            // update_with_extracted (matching the pre-19.4-04 dispatch
+            // protocol). Geo lat_idx/lon_idx in production now refer to the
+            // per-source union; for the legacy oracle, the test pipeline
+            // uses no geo features so lat_idx/lon_idx stay at FIELD_IDX_NONE
+            // and the geo dispatch arm falls through to its slow row.get
+            // path — yielding the same result either way.
+            entity_row[i].update_with_extracted(
+                pre_val,
+                event_time_ms,
+                feat.descriptor.where_expr.as_ref(),
+                row,
+                feat.descriptor.field.as_deref(),
+                feat.descriptor.field_idx,
+                &extracted,
+                feat.descriptor.ext.lat_idx,
+                feat.descriptor.ext.lon_idx,
+            );
+        }
+    }
+}
+
 /// Apply a single event to every aggregation whose `source_node_name` matches
 /// `source_name`.
 ///
