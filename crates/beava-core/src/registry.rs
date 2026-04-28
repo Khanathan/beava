@@ -1969,4 +1969,125 @@ mod tests {
             agg.field_names
         );
     }
+
+    // Plan 19.4-04 (D-02) Task 4.1.a RED: EventDescriptor.apply_field_names must be
+    // populated at register-time as the field-union of all aggs on this source.
+    // Uses the canonical Registry::apply_registration test pattern from line 1580's
+    // compiled_aggregations_cached_after_apply_registration test — no fictional helper.
+    #[test]
+    fn event_descriptor_apply_field_names_is_populated_at_registration() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor, FIELD_IDX_NONE};
+        use crate::registry_diff::PayloadNode;
+
+        let r = Registry::new();
+
+        // Event source with the make_event_schema() schema (card_id, amount,
+        // merchant_id, event_time).
+        let event_txn = EventDescriptor {
+            name: "Txn".to_string(),
+            schema: make_event_schema(),
+            event_time_field: Some("event_time".to_string()),
+            dedupe_key: None,
+            dedupe_window_ms: None,
+            keep_events_for_ms: None,
+            tolerate_delay_ms: None,
+            registered_at_version: 0,
+            name_arc: Arc::from(""),
+            apply_field_names: vec![], // <-- this is what the resolver must populate
+        };
+
+        // 2-feature aggregation on Txn source: Count (no field) + Sum(amount).
+        let agg_desc = AggregationDescriptor {
+            node_name: "AggTable".to_string(),
+            source_node_name: "Txn".to_string(),
+            group_keys: vec!["card_id".to_string()],
+            features: vec![
+                NamedAggOp {
+                    feature_name: "txn_cnt".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Count,
+                        field: None,
+                        window_ms: Some(300_000),
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                        field_idx: FIELD_IDX_NONE,
+                    },
+                },
+                NamedAggOp {
+                    feature_name: "amount_sum".to_string(),
+                    descriptor: AggOpDescriptor {
+                        kind: AggKind::Sum,
+                        field: Some("amount".to_string()),
+                        window_ms: Some(300_000),
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                        field_idx: FIELD_IDX_NONE,
+                    },
+                },
+            ],
+            agg_id: 0,
+            field_names: vec![],
+            cluster_id: 0,
+        };
+        let agg_arc = Arc::new(agg_desc);
+
+        let deriv = crate::registry::DerivationDescriptor {
+            name: "AggTable".to_string(),
+            output_kind: crate::registry::OutputKind::Table,
+            upstreams: vec!["Txn".to_string()],
+            ops: vec![],
+            schema: crate::schema::DerivedSchema {
+                fields: {
+                    let mut m = BTreeMap::new();
+                    m.insert("card_id".to_string(), crate::schema::FieldType::Str);
+                    m.insert("txn_cnt".to_string(), crate::schema::FieldType::I64);
+                    m.insert("amount_sum".to_string(), crate::schema::FieldType::F64);
+                    m
+                },
+                optional_fields: vec![],
+            },
+            table_primary_key: Some(vec!["card_id".to_string()]),
+            registered_at_version: 0,
+        };
+
+        r.apply_registration(
+            vec![PayloadNode::Event(event_txn), PayloadNode::Derivation(deriv)],
+            vec![],
+            vec![],
+            vec![("AggTable".to_string(), agg_arc)],
+        );
+
+        let txn_desc = r
+            .get_event_descriptor("Txn")
+            .expect("Txn must be registered");
+        assert!(
+            !txn_desc.apply_field_names.is_empty(),
+            "EventDescriptor.apply_field_names is still vec![] post-registration; \
+             Plan 19.4-04 D-02 requires register-time population (union of agg-declared fields)"
+        );
+        assert!(
+            txn_desc.apply_field_names.iter().any(|n| n == "amount"),
+            "amount field (consumed by amount_sum agg) must be in the union; got {:?}",
+            txn_desc.apply_field_names
+        );
+        let schema_fields = make_event_schema().fields;
+        for n in txn_desc.apply_field_names.iter() {
+            assert!(
+                schema_fields.contains_key(n.as_str()),
+                "apply_field_names entry '{}' must resolve to a real schema field",
+                n
+            );
+        }
+    }
 }
