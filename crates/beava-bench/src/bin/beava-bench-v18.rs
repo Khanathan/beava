@@ -1522,4 +1522,38 @@ mod tests {
         let bytes = Bytes::from_static(&[0u8, 0, 0, 0, 0, 0]); // <7 bytes
         assert!(decode_pool_frame(&bytes).is_none());
     }
+
+    /// Phase 19.4 followup: `--io-threads N` must parse into `Cli::io_threads
+    /// = Some(N)` so users can override the auto-default IoPool worker count
+    /// without setting `BEAVA_IO_THREADS` env var.
+    ///
+    /// Hetzner sweep (2026-04-28, .planning/phases/19.4-final-100k-push/
+    /// 19.4-LINUX-PERF-TUNING.md) showed the auto-default `iot=4` on a
+    /// 16-vCPU vServer is the worst tested config for fraud-team workloads,
+    /// with 10% lift available at iot=2 or iot=8. CLI knob lets users tune
+    /// without env-var ceremony.
+    #[test]
+    fn cli_parses_io_threads_flag() {
+        let cli = Cli::try_parse_from([
+            "beava-bench-v18",
+            "--io-threads",
+            "7",
+        ])
+        .expect("parses --io-threads 7");
+        assert_eq!(
+            cli.io_threads,
+            Some(7),
+            "--io-threads 7 must parse to Some(7)"
+        );
+    }
+
+    #[test]
+    fn cli_io_threads_defaults_to_none() {
+        let cli =
+            Cli::try_parse_from(["beava-bench-v18"]).expect("parses with no args");
+        assert!(
+            cli.io_threads.is_none(),
+            "no --io-threads flag means auto-default (BEAVA_IO_THREADS env or formula)"
+        );
+    }
 }
