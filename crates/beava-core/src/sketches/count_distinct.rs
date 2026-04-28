@@ -206,4 +206,45 @@ mod tests {
         let j = serde_json::to_string(&s).unwrap();
         assert!(j.contains("v0_count_distinct_exact_array"), "json={}", j);
     }
+
+    // Plan 19.4-01 (D-01) Task 1.a RED: NoOpHasher contract.
+    use std::hash::Hasher as _StdHasher;
+
+    #[test]
+    fn no_op_hasher_returns_input_unchanged() {
+        // Independent contract: write_u64(x) → finish() returns x verbatim.
+        let mut h = super::NoOpHasher::default();
+        h.write_u64(0xDEADBEEFCAFEBABE_u64);
+        assert_eq!(h.finish(), 0xDEADBEEFCAFEBABE_u64);
+    }
+
+    #[test]
+    fn no_op_hasher_panics_on_byte_write() {
+        // The byte-slice arm must be unreachable for u64-keyed sets.
+        let result = std::panic::catch_unwind(|| {
+            let mut h = super::NoOpHasher::default();
+            <super::NoOpHasher as _StdHasher>::write(&mut h, &[0u8, 1u8, 2u8, 3u8]);
+            h.finish()
+        });
+        assert!(
+            result.is_err(),
+            "NoOpHasher::write(&[u8]) must panic; got Ok({:?})",
+            result
+        );
+    }
+
+    #[test]
+    fn hashset_mode_handles_sequential_u64_inputs() {
+        // Identity hashing on sequential u64s is the worst-case probe pattern;
+        // hashbrown's SIMD probe must still resolve correctly.
+        let mut s = CountDistinctState::new(1024);
+        for i in 0u64..2048u64 {
+            s.add_hash(i);
+        }
+        // 2048 inserts > HASH_THRESHOLD (1024) → final mode is HLL.
+        assert_eq!(s.mode_name(), "v0_count_distinct_hll");
+        let est = s.estimate();
+        let err = (est as i64 - 2048).abs() as f64 / 2048.0;
+        assert!(err < 0.05, "promote err {} (est={}, expected ~2048)", err, est);
+    }
 }
