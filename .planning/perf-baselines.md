@@ -347,3 +347,21 @@ The pre-19.4 baseline numbers below are NEW captures with the same 19.4-01 fixtu
 **Targets per Plan 19.4-01 acceptance:** windowed group target was ≤ 200 ns/call (75% floor: ≤ 295 ns/call) per `19.4-CONTEXT.md` D-01 + D-03. **Floor not met** — 408 ns is 113 ns above the 295 ns floor. The lift is real and measurable (-26 ns) but the criterion bench's 14-feature synthetic shape has only 2 CountDistinct features (~10-20% of total apply cost), where the predicted lift of ~118 ns/call × 2 calls = ~240 ns/event would already be at the noise floor of the bench. The fraud-team K=10k zipfian workload has 9 windowed CountDistinct features (~50% higher density), where the live-trace + EPS measurement is the primary verdict per CONTEXT D-04 dual-measurement.
 
 **Driver:** identity hashing eliminates the SipHash double-hash chain on CountDistinct HashSet inserts/lookups; lift confirmed by per-AggKind live trace (CountDistinct 457.5→432.1 ns/call, -25 ns/call) and end-to-end EPS (+5,624 EPS, +7.6%). Both signals agree the optimization works; the absolute target ≤ 200 ns/call was never reachable on the 14-feature synthetic — see `19.4-01-MEASUREMENT.md` for the full live-trace analysis and `19.4-01-DEVIATION.md` for the floor-miss disposition.
+
+### Phase 19.4 — 19.4-B ExtractedFields SmallVec inline-cap 8→16 (criterion microbench)
+
+Captured: 2026-04-28 (Phase 19.4-02). hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Bench: `crates/beava-core/benches/apply_path_bench.rs`.
+
+Plan 19.4-02 widened `ExtractedFields<'a> = SmallVec<[Option<&'a crate::row::Value>; N]>` from N=8 to N=16 to cover fraud-team's per-source field union (~12 fields max for the TxnByUser cluster) without spilling. Per `19.3-FLAMEGRAPH.md §2` `RawVec::with_capacity_in` + `RawVecInner::reserve` at ~4.0% inclusive on the apply hot path was 99% from this SmallVec spilling on every Txn event (~530 ns/event of allocator traffic).
+
+**Bench-fixture note:** the criterion fixture (`build_fraud_team_synthetic_row_varied`) constructs a synthetic row with **only 7 fields** (`user_id, device_id, merchant, amount, status, category, event_type`). With cap=8 the row already fit inline; with cap=16 it also fits inline. The criterion bench therefore **cannot observe the spill-fix** — its `ExtractedFields` length never exceeded the cap-8 threshold to begin with. Numbers below are still recorded for regression tracking; absolute lift is expected to be near-zero (or slightly worse from the larger stack frame).
+
+| Bench | Post-19.4-01 (cap=8) | Post-19.4-02 (cap=16) | Δ ns | Δ % | Date | Phase | Notes |
+|---|---|---|---|---|---|---|---|
+| apply_path/warm_key/14_aggs_windowed | 404.85 ns (median) | 425.40 ns (median) | +20.55 | +5.1% | 2026-04-28 | 19.4 | Within criterion CI band; mean shifts (406.6→529.3 ns) reflect bimodal stack-allocation noise on the larger inline buffer. Bench is structurally insensitive (7-field row never spilled at cap=8). |
+| apply_path/warm_key/14_aggs            | 331.17 ns (median) | 346.78 ns (median) | +15.61 | +4.7% | 2026-04-28 | 19.4 | Reference cell — within ±5% expected variance band. |
+
+**Targets per Plan 19.4-02 acceptance:** windowed group must drop ≥ 5% from post-19.4-01 baseline (75% floor: ≥ 4% drop) per `19.4-CONTEXT.md` D-01 + D-03. **Floor not met** on criterion — observed +5.1% on median (regression direction). However, the criterion bench has 7-field rows that never spilled at cap=8, so the optimization cannot manifest on this bench. Per CONTEXT D-04 dual-measurement, the live-trace + EPS run on fraud-team.json (10-field TxnByUser cluster) is the primary verdict — see `19.4-02-MEASUREMENT.md`.
+
+**Driver:** SmallVec inline-cap widening eliminates per-event heap spill on fraud-team's 10-field Txn source. The criterion bench cannot observe this fix because its synthetic row has only 7 fields. The 14-feature synthetic bench is **structurally insensitive** to the optimization — same shape of insensitivity as Plan 19.4-01 (where only 2/14 features were CountDistinct, the lever's target).
