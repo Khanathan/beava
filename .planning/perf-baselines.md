@@ -381,3 +381,19 @@ Plan 19.4-03 completed Phase 19.2-06's missing Task 3: `Registry::resolve_field_
 **Note:** Primary lift for 19.4-C is on fraud-team live-trace (4 of 14 fraud-team features are geo, 0 of 14 synthetic features are geo); criterion-bench delta is structurally absent here — the synthetic registry exercises only non-geo apply paths, so the resolver patch produces identical bytecode for these benches modulo register pressure variance.
 
 **Driver:** Geo dispatch now routes through `update_at` (indexed `extracted` access) instead of `update` (row.get linear scan). Criterion bench is structurally insensitive because the synthetic registry has zero geo features (per `apply_path_bench.rs:33-46` — Cluster A is count/sum/percentile/stddev/topk/entropy/min, Cluster B is count/sum/count_distinct, Cluster C is count/sum/max). Live trace + EPS on fraud-team is the primary verdict (see `19.4-03-MEASUREMENT.md`); the post-19.4-03 samply flamegraph confirms `agg_geo::read_lat_lon` self-time = 0.000% (was 2.86%) on the `beava-apply` thread.
+
+### Phase 19.4 — 19.4-D ExtractedFields hoist above descriptor loop (criterion microbench)
+
+Captured: 2026-04-28 (Phase 19.4-04). hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores.
+Bench: `crates/beava-core/benches/apply_path_bench.rs`.
+
+Plan 19.4-04 hoisted `ExtractedFields` build out of the per-descriptor loop and up to per-event scope. `EventDescriptor.apply_field_names` is populated at register-time as the alphabetical-sorted union of fields any agg on the source consumes. Each agg has `field_idx_into_event_extracted: Vec<u8>` mapping its declared fields to union indices. Per `19.3-COST-MODEL.md §4` per-desc rebuild was assumed at ~500 ns × 5 descs = 2,500 ns/event scaffolding; in practice (post-19.4-02 cap=16 inline-only) the rebuild is much cheaper (~50 ns each), so the realized lift is smaller than predicted.
+
+| Bench | Pre (post-19.4-03) | Post-19.4-04 | Δ ns | Δ % | Date | Phase | Notes |
+|---|---|---|---|---|---|---|---|
+| apply_path/warm_key/14_aggs_windowed | 462.33 ns (median) | 412.08 ns (median, range 410.37–413.84) | -50.25 | -10.9% | 2026-04-28 | 19.4 | Hoist eliminates per-desc rebuild scaffolding |
+| apply_path/warm_key/14_aggs            | 352.65 ns (median) | 305.44 ns (median, range 303.70–307.60) | -47.21 | -13.4% | 2026-04-28 | 19.4 | Hoist applies to both windowed and non-windowed |
+
+**Targets per Plan 19.4-04 acceptance:** windowed must drop ≥ 10% from post-19.4-03; agg-stage outer drop ≥ 900 ns (75% floor of 1,200 ns predicted lift). Criterion: PASS (windowed -10.9%, both cells drop double-digits). Live-trace agg-stage: FAIL (-100 ns drop vs -900 ns floor) — scaffolding cost was already cheap post-19.4-02 cap-widening; predicted lift was overstated.
+
+**Driver:** Event-level field-union hoist eliminates 5× per-desc ExtractedFields rebuild. Live-trace + EPS verdict on fraud-team is in `19.4-04-MEASUREMENT.md` — EPS hit 102,800 (above 100k Phase 19.4 PASS gate) but agg-stage trace floor failed.
