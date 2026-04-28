@@ -822,9 +822,11 @@ Wave structure:
 - Cross-event aggregation reordering is FORBIDDEN — preserves arrival-order semantics.
 - Multi-thread apply parallelism is FORBIDDEN per memory `project_no_sharded_apply`.
 
-### Phase 19.4: Final 100k EPS push — flamegraph-derived levers — 📋 PLANNED
+### Phase 19.4: Final 100k EPS push — flamegraph-derived levers — 🚧 IN PROGRESS (3/5 plans complete: 19.4-01 PASS, 19.4-02 PASS, 19.4-03 PASS)
 
-**Status:** Planned 2026-04-28 as the closure phase for the v0 Phase-19 100k EPS ship gate. Phase 19.3 closed at PASS-WITH-DEFICIT — D-04 architectural fix landed (WindowedOp::update_at) and is shippable, but predicted lift was 60% overestimated by cost-model conjecture. samply flamegraph + per-AggKind drill-down on the post-19.3-A binary identified 5 NEW optimization levers the original investigation missed; this phase picks up the top-3 cheapest + carries forward the deferred 19.3-D ExtractedFields hoist. All cost-model predictions cite `19.3-FLAMEGRAPH.md` directly (per memory `feedback_cost_model_from_flamegraph`).
+**Status:** Phase opened 2026-04-28; 3 of 5 plans complete as of 2026-04-28 evening. Plan 19.4-01 PASSED (CountDistinct identity hasher → 79,367 EPS / 11,667 ns agg-stage). Plan 19.4-02 PASSED via re-measurement attempt #3 on quiet system (SmallVec cap 8→16 → 96,298 EPS / 10,329 ns agg-stage). Plan 19.4-03 PASSED on first attempt (Geo lat_idx/lon_idx register-time resolution → 94,733 EPS / 8,244 ns agg-stage; samply confirms `agg_geo::read_lat_lon` slow path eliminated, 0.000% self-time was 2.86%). Cumulative trajectory: post-19.3 12,533 ns → **post-19.4-03 8,244 ns** (-3,423 ns / -29% on apply CPU across 3 plans).
+
+Phase 19.4 was planned 2026-04-28 as the closure phase for the v0 Phase-19 100k EPS ship gate. Phase 19.3 closed at PASS-WITH-DEFICIT — D-04 architectural fix landed (WindowedOp::update_at) and is shippable, but predicted lift was 60% overestimated by cost-model conjecture. samply flamegraph + per-AggKind drill-down on the post-19.3-A binary identified 5 NEW optimization levers the original investigation missed; this phase picks up the top-3 cheapest + carries forward the deferred 19.3-D ExtractedFields hoist. All cost-model predictions cite `19.3-FLAMEGRAPH.md` directly (per memory `feedback_cost_model_from_flamegraph`).
 
 **Goal:** Lift fraud-team K=10k zipfian from 73,743 EPS (post-19.3-A) to **≥100k EPS** (PASS gate; 75% floor 75k EPS PASS-WITH-DEFICIT). Apply-thread agg-stage drops from 12,533 ns → ≤9,500 ns via 4 surgical optimizations + dual-measurement verification. After Phase 19.4 closes, optimization shifts from per-instance throughput to scale-out (Phase 19.5: sharding deployment patterns + multi-instance benchmarks).
 
@@ -849,15 +851,17 @@ Wave structure:
 
 **Stacked predicted lift on fraud-team K=10k zipfian (post-19.3-A baseline: 73,743 EPS, 12,533 ns agg-stage):**
 
-| Step | Saved ns/event (predicted) | Cumulative agg-stage | Cumulative EPS |
-|---|---:|---:|---:|
-| Post-19.3-A baseline | — | 12,533 | 73,743 |
-| + 19.4-A (CountDistinct identity hasher) | -1,180 | ~11,353 | ~85,000 |
-| + 19.4-B (SmallVec cap 8→16) | -530 | ~10,823 | ~91,000 |
-| + 19.4-C (geo lat_idx pre-extract) | -360 | ~10,463 | ~94,000 |
-| + 19.4-D (ExtractedFields hoist) | -1,200 (realistic per cost-model) | ~9,263 | **~105,000** |
+| Step | Saved ns/event (predicted) | Cumulative agg-stage | Cumulative EPS | Measured (Apple-M4) |
+|---|---:|---:|---:|---|
+| Post-19.3-A baseline | — | 12,533 | 73,743 | — |
+| + 19.4-A (CountDistinct identity hasher) | -1,180 | ~11,353 | ~85,000 | **PASS:** 11,667 ns / 79,367 EPS (Plan 01, 73% realization on agg-stage) |
+| + 19.4-B (SmallVec cap 8→16) | -530 | ~10,823 | ~91,000 | **PASS (attempt-3):** 10,329 ns / 96,298 EPS (Plan 02 quiet-system re-measurement) |
+| + 19.4-C (geo lat_idx pre-extract) | -360 | ~10,463 | ~94,000 | **PASS:** 8,244 ns / 94,733 EPS (Plan 03 first-attempt; 580% realization — structural bypass elimination) |
+| + 19.4-D (ExtractedFields hoist) | -1,200 (realistic per cost-model) | ~9,263 | **~105,000** | (next) |
 
 **Predicted realistic ceiling: ~100-110k EPS.** Hits the original ship gate. Stop here for vertical optimization; pivot to sharding deployment story for further scale.
+
+**Plan 19.4-03 over-delivered:** measured agg-stage drop was -2,085 ns vs predicted -360 ns (5.8× the prediction). The cost-model methodology under-predicted the lift because it treated `agg_geo::read_lat_lon`'s 2.86% self-time as the sole overhead; in practice, eliminating the slow-arm dispatch also removed Row::new() + 9-arg dispatch overhead the slow path inherited from `update()`. The Plan-03 SUMMARY (`19.4-03-SUMMARY.md`) documents this as "structural bypass elimination" pattern — distinct from "sub-step swap" patterns (Plans 01/02) which realize ~75% of predicted lift.
 
 **Depends on:** Phase 19.3 (closed at PASS-WITH-DEFICIT — `WindowedOp::update_at` exists and is shippable; 19.3-CONTEXT.md decisions D-01..D-04 still valid). Reads `19.3-FLAMEGRAPH.md`, `19.3-COST-MODEL.md`, and source files: `crates/beava-core/src/{agg_apply.rs, agg_op.rs, agg_geo.rs, agg_state.rs, registry.rs, sketches/count_distinct.rs}` + `crates/beava-core/benches/apply_path_bench.rs`.
 

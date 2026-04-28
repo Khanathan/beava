@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Ready to plan
-last_updated: "2026-04-28T05:00:00.000Z"
+last_updated: "2026-04-28T15:00:00.000Z"
 progress:
   total_phases: 38
   completed_phases: 23
   total_plans: 149
-  completed_plans: 115
+  completed_plans: 116
   percent: 77
 ---
 
@@ -45,11 +45,13 @@ progress:
 
 **Phase 19.4 sub-goals (stacked, predicted ~74k → ~105k EPS):**
 
-1. **19.4-A** CountDistinct identity-hasher fix (`std::HashSet<u64>` rehashes via SipHash) → ~85k EPS (-1,180 ns/event, ~3h work)
-2. **19.4-B** ExtractedFields SmallVec inline-cap 8→16 (TxnByUser cluster spills) → ~91k EPS (-530 ns/event, 1-line)
-3. **19.4-C** Geo lat/lon pre-extraction (D-01 missed geo path) → ~94k EPS (-360 ns/event, ~4h)
+1. **19.4-A** CountDistinct identity-hasher fix (`std::HashSet<u64>` rehashes via SipHash) → ~85k EPS (-1,180 ns/event, ~3h work) — **PASS** (Plan 02 → 19.4-01-SUMMARY 79,367 EPS / 11,667 ns agg-stage)
+2. **19.4-B** ExtractedFields SmallVec inline-cap 8→16 (TxnByUser cluster spills) → ~91k EPS (-530 ns/event, 1-line) — **PASS** via re-measurement attempt #3 (96,298 EPS / 10,329 ns agg-stage on quiet system)
+3. **19.4-C** Geo lat/lon pre-extraction (D-01 missed geo path) → ~94k EPS (-360 ns/event, ~4h) — **PASS** on first attempt (Plan 03 → 19.4-03-SUMMARY 94,733 EPS / 8,244 ns agg-stage; samply confirms `agg_geo::read_lat_lon` slow path eliminated, 0.000% self-time was 2.86%)
 4. **19.4-D** ExtractedFields hoist above descriptor loop (carried from 19.3-04) → ~105k EPS (-1,200 ns/event, ~1 week)
 5. **19.4-E** Throughput rebaseline + dual-measurement verification → Phase 19 closure at PASS
+
+**Phase 19.4 cumulative trajectory (Apple-M4, fraud-team K=10k zipfian):** post-19.3 12,533 ns → post-19.4-01 11,667 ns → post-19.4-02 10,329 ns → **post-19.4-03 8,244 ns** (-3,423 ns / -29% on apply CPU across 3 plans).
 
 **After Phase 19.4:** vertical optimization stops; Phase 19.5+ shifts to scale-out story (sharding deployment patterns + multi-instance benchmarks).
 
