@@ -902,3 +902,42 @@ These 5 pipelines were NOT in the Plan 05 rebaseline (which covered small / medi
 **Note on load skew:** The first cohort (geo, 3.62-5.54) ran during a quieter window; subsequent cohorts hit 13-17 load as more dev processes spun up. The load-filter (drop 2 highest, median of 5) keeps the variance bounded but the cross-cohort comparison should be read with the load-band caveat in mind. For Phase 19.5+ regression-gate purposes: any cell that drops by ≥10% (warn) or ≥25% (block) versus these numbers should trigger a quiet-load rerun before declaring a regression.
 
 > Regression thresholds: +10% slow vs Post-19.4 EPS = WARNING; +25% slow = BLOCKER per CLAUDE.md §Performance Discipline.
+
+## 1M-event blast (rebaseline 19.4 — Linux EPYC-Genoa)
+
+Captured: 2026-04-28 (post Phase 19.4-05 closure). hw-class: AMD EPYC-Genoa Zen 4 / Ubuntu 6.8.0-110 / 16 vCPU.
+Binary: post-19.4-04 (rsync from local v2/greenfield HEAD `05a448d` to `/root/tally/`, then rebuilt with same `RUSTFLAGS="-C force-frame-pointers=yes -C debuginfo=2 -C strip=none"`). Toolchain: rustc 1.95.0 stable.
+
+This Linux rebaseline complements the Apple-M4 numbers in the prior section. Per the architectural memory `project_no_sharded_apply`, Linux x86_64 is closer to the production-class target (Linux Xeon-equivalent) that customers will deploy on; Apple-M4 numbers serve as the dev-time regression gate.
+
+**Methodology:** Same as Apple-M4 — 7 runs per pipeline, drop highest-load 2, median of 5.
+
+**Invocation:** `./target/release/beava-bench-v18 --pipeline crates/beava-bench/configs/<cfg>.json --transport tcp --wire-format msgpack --blast-shape zipfian --zipf-alpha 1.0 --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --continuous-pipeline true --isolation-mode --no-ledger`
+
+| Pipeline | Apple-M4 EPS | Linux EPYC EPS | Linux:M4 ratio | Latency p50 / p95 / p99 (ms, Linux) | RSS MB | Notes |
+|---|---:|---:|---:|---|---:|---|
+| small | 642,760 | 691,897 | 1.08× | 19.1 / 34.2 / 94.3 | 1,762 | wall_ms=1445; load span 1.95-4.43; only pipeline where Linux beats M4 |
+| medium | 611,696 | 611,748 | 1.00× | 23.0 / 48.2 / 101.3 | 1,829 | wall_ms=1634; load span 4.87-7.62 |
+| large | 560,611 | 559,702 | 1.00× | 23.8 / 45.9 / 99.4 | 2,257 | wall_ms=1786; load span 7.52-8.48 |
+| large_phase9 | 575,724 | 553,688 | 0.96× | 24.8 / 49.2 / 100.1 | 2,256 | wall_ms=1806; load span 8.20-9.27 |
+| **fraud-team** | **102,800 (clean) / 77,299 (loaded)** | **51,363** | **0.50× / 0.66×** | 312.1 / 385.3 / 427.3 | 6,857 | wall_ms=19,469; **Primary tuning shape per memory `project_fraud_team_primary_bench`.** Tight variance 49,976–54,528 across 7 runs; load span 3.86-6.10. **Below Phase 19 100k PASS gate on Linux x86_64.** |
+| geo | 614,136 | 504,227 | 0.82× | 27.5 / 46.9 / 103.9 | 2,293 | wall_ms=1983; load span 4.93-5.87 |
+| large-with-sketches | 300,066 | 184,564 | 0.62× | 83.6 / 111.7 / 179.7 | 3,424 | wall_ms=5418; load span 5.28-6.34; largest M4→Linux gap |
+| medium-with-sketches | 565,046 | 422,577 | 0.75× | 33.9 / 70.7 / 113.5 | 2,201 | wall_ms=2366; load span 6.02-6.78 |
+| medium_phase9 | 701,030 | 624,269 | 0.89× | 21.7 / 44.5 / 97.2 | 1,764 | wall_ms=1601; load span 6.57-7.55 |
+| phase8 | 704,375 | 587,698 | 0.83× | 22.5 / 46.2 / 99.4 | 1,795 | wall_ms=1701; load span 5.11-5.56 |
+
+**Headline finding — Linux:M4 ratios cluster by pipeline class:**
+- Pure-update (small/medium/large/large_phase9): **0.96–1.08× — parity** with Apple-M4
+- Decay/velocity / point-recency (medium_phase9 / phase8): **0.83–0.89×**
+- Geo: **0.82×**
+- Sketches (medium-with-sketches / large-with-sketches): **0.62–0.75× — largest gap**
+- **fraud-team (full sketch + geo + decay mix): 0.50–0.66× — biggest deficit**
+
+The pattern indicates **EPYC-Genoa loses on cache-pressure-sensitive workloads**: KVM-virtualized 16 vCPU at 2.0 GHz with hypervisor steal time can't match Apple-M4's 4.4 GHz sustained boost + 16 MB shared L2 per cluster. Beava's apply path is scalar; AVX-512 on EPYC is unused. Phase 19.4-A (CountDistinct identity hasher) and 19.4-D (ExtractedFields hoist) remain net wins on Linux for the 5-pipeline ladder, but they don't lift fraud-team's full 110-feature shape enough to clear 100k EPS on EPYC.
+
+**Phase 19 PASS gate on Linux x86_64:** fraud-team K=10k zipfian — **51,363 EPS — MISS** (vs. Apple-M4 closure measurement 102,800 EPS PASS). The Phase 19 verdict (`Phase 19.4 PASS`) was Apple-M4-specific; on Linux x86_64 the workload runs ~50% the EPS. See `.planning/phases/19.4-final-100k-push/19.4-LINUX-VALIDATION.md` for full setup, methodology, per-run data, and Python SDK test results.
+
+**Production deployment implication:** Per memory `project_no_sharded_apply` (Redis-cluster pattern: customers run multiple beava instances rather than sharded apply), an EPYC deployment serving fraud-team-shaped workloads needs ~2× instance count vs the Apple-M4 dev-time number. The 5-pipeline ladder (small/medium/large/large_phase9/medium_phase9) shows Linux EPYC at parity with M4 — non-sketch feature packs see no perf delta.
+
+> Regression thresholds: +10% slow vs Linux EPYC EPS = WARNING; +25% slow = BLOCKER per CLAUDE.md §Performance Discipline. **This Linux x86_64 baseline is the regression gate for Phase 20+ Linux-class runs; the Apple-M4 baseline above is the dev-time gate.**
