@@ -469,30 +469,57 @@ fn bench_apply_cold_key(c: &mut Criterion) {
 
 // ─── Bench group 2: warm-key 14-agg apply ────────────────────────────────────
 
+/// Build a Txn row with parametrized category/status values so CountDistinct
+/// features promote past the EXACT_THRESHOLD (16) → HashSet mode during
+/// pre-warm. Plan 19.4-01 measurement-gate fix (Rule 1 deviation): the prior
+/// pre-warm reused a single row, leaving CountDistinct in ExactArray mode
+/// where the SipHash-vs-identity-hasher difference cannot manifest — so the
+/// criterion bench could not validate the optimization that motivated this
+/// plan. Varying `category`/`status` across pre-warm pushes both
+/// CountDistinct features (lines ~276/292: user_merchant_category_distinct,
+/// user_merchant_status_distinct) into HashSet mode where the identity-hasher
+/// lookup-cost lift IS measurable.
+fn build_fraud_team_synthetic_row_varied(seed: u64) -> Row {
+    let cat_idx = seed % 64; // 64 distinct categories → > HASH_THRESHOLD pre-warm reaches HashSet mode
+    let stat_idx = seed % 32; // 32 distinct status values → also pushes past EXACT_THRESHOLD (16)
+    Row::new()
+        .with_field("user_id", Value::Str("user_42".into()))
+        .with_field("device_id", Value::Str("dev_7".into()))
+        .with_field("merchant", Value::Str("acme_corp".into()))
+        .with_field("amount", Value::F64(123.45))
+        .with_field("status", Value::Str(format!("status_{}", stat_idx).into()))
+        .with_field("category", Value::Str(format!("cat_{}", cat_idx).into()))
+        .with_field("event_type", Value::Str("purchase".into()))
+}
+
 fn bench_apply_warm_key(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_path/warm_key");
     group.sample_size(100);
 
     let registry = build_fraud_team_synthetic_registry();
     let mut state_tables = new_state_tables_for(&registry);
-    let row = build_fraud_team_synthetic_row();
 
-    // Pre-warm: drive 200 events for the same entity so all per-entity
-    // init costs are amortized and the hot-path steady state is isolated.
-    for i in 0..200_i64 {
+    // Pre-warm: drive 1500 varied events so all per-entity init costs are
+    // amortized AND CountDistinct features reach HashSet mode (>16 distinct
+    // values per CountDistinct field). The fixed measurement row is then a
+    // hash-already-present lookup in HashSet mode — the hot path the Plan
+    // 19.4-01 identity hasher optimizes.
+    for i in 0..1500_i64 {
+        let varied = build_fraud_team_synthetic_row_varied(i as u64);
         apply_event_to_aggregations(
             "Txn",
-            &row,
+            &varied,
             1_714_000_000_000 + i,
             i as u64,
             &registry,
             &mut state_tables,
         );
     }
+    let row = build_fraud_team_synthetic_row();
 
     group.bench_function("14_aggs", |b| {
-        let mut ts: i64 = 1_714_000_001_000;
-        let mut eid: u64 = 200;
+        let mut ts: i64 = 1_714_000_001_500;
+        let mut eid: u64 = 1500;
         b.iter(|| {
             apply_event_to_aggregations(
                 black_box("Txn"),
@@ -513,12 +540,17 @@ fn bench_apply_warm_key(c: &mut Criterion) {
     // protocol (per .planning/phases/19.2-big-apply-path-optimization/
     // 19.2-INVESTIGATION.md). Plan 19.3-02's `WindowedOp::update_at` fast-path
     // must drop this baseline ≥ 4×.
+    //
+    // Plan 19.4-01 (Rule 1 deviation): pre-warm now uses varied rows so
+    // CountDistinct features reach HashSet mode where the identity-hasher
+    // optimization is observable.
     let registry_w = build_fraud_team_synthetic_registry_windowed(86_400_000);
     let mut state_tables_w = new_state_tables_for(&registry_w);
-    for i in 0..200_i64 {
+    for i in 0..1500_i64 {
+        let varied = build_fraud_team_synthetic_row_varied(i as u64);
         apply_event_to_aggregations(
             "Txn",
-            &row,
+            &varied,
             1_714_000_000_000 + i,
             i as u64,
             &registry_w,
@@ -526,8 +558,8 @@ fn bench_apply_warm_key(c: &mut Criterion) {
         );
     }
     group.bench_function("14_aggs_windowed", |b| {
-        let mut ts: i64 = 1_714_000_001_000;
-        let mut eid: u64 = 200;
+        let mut ts: i64 = 1_714_000_001_500;
+        let mut eid: u64 = 1500;
         b.iter(|| {
             apply_event_to_aggregations(
                 black_box("Txn"),
