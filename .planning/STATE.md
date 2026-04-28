@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Ready to plan
-last_updated: "2026-04-27T22:43:22.187Z"
+last_updated: "2026-04-28T00:00:00.000Z"
 progress:
-  total_phases: 36
+  total_phases: 37
   completed_phases: 22
   total_plans: 147
   completed_plans: 113
-  percent: 77
+  percent: 76
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -36,6 +36,19 @@ progress:
 - D-08: `apply_path_bench.rs` criterion microbench + Phase 19.2 rebaseline matrix
 
 **Next:** `/gsd-plan-phase 19.2` to break into 6-8 plans across 3-4 waves.
+
+---
+
+**Phase 19.3 OPENED 2026-04-28** at `.planning/phases/19.3-windowed-pre-extraction/` — direct follow-up to Phase 19.2's PASS-WITH-DEFICIT verdict. Live-trace investigation (`19.2-INVESTIGATION.md`) identified that 60 of 88 fraud-team feature updates pay a ~100 ns wrapping tax in `WindowedOp::update_with_row` that bypasses Plan 19.2-01's pre-extraction. Phase 19.3 extends the `update_at(extracted, field_idx, …)` protocol across the WindowedOp wrapper layer.
+
+**Phase 19.3 sub-goals (stacked, predicted 70k → 125k EPS on fraud-team K=10k zipfian):**
+
+1. **19.3-A** WindowedOp::update_at fast-path → ~95k EPS (-3,900 ns/event)
+2. **19.3-B** Specialize windowed Count/Sum dispatch → ~107k EPS (-1,100 ns/event)
+3. **19.3-C** Hoist event-level ExtractedFields above descriptor loop → ~115-125k EPS (-600 ns/event)
+4. New `apply_path/warm_key/14_aggs_windowed` criterion group + live trace in verification (mandatory — Phase 19.2 verifier conjecture without measurement was the source of the misdiagnosis).
+
+**Next:** `/gsd-discuss-phase 19.3` to capture context decisions (WindowedOp::update_at signature shape, specialized arms scope, ExtractedFields hoist storage, sequential vs parallel landing, criterion bench cold-key sibling).
 
 **Phase 19.1 OPENED 2026-04-27** as the consolidated umbrella for the post-Phase-19 follow-up work (rolls together what was originally proposed as 19.0.1 / 19.0.2 / 19.0.3 mini-phases). See ROADMAP.md → "Phase 19.1: Realistic-shape benchmark + bench/WAL fixes + complex-pipeline optimization" for the full goal/sub-goal/success-criteria block.
 

@@ -767,6 +767,61 @@ Wave structure:
 - Cross-event aggregation reordering is FORBIDDEN — preserves arrival-order semantics for ewma/streak/lag.
 - Multi-thread apply parallelism is FORBIDDEN per memory `project_no_sharded_apply` — single-threaded data plane forever; horizontal scaling via multi-instance Redis-cluster pattern only.
 
+### Phase 19.3: Extend pre-extraction across WindowedOp wrapper — close fraud-team apply-stage WindowedOp dispatch tax — 📋 PLANNED
+
+**Status:** Planned 2026-04-28 as the direct follow-up to Phase 19.2's PASS-WITH-DEFICIT. Live-trace investigation (`.planning/phases/19.2-big-apply-path-optimization/19.2-INVESTIGATION.md`) identified that 60 of 88 fraud-team feature updates pay a ~100 ns wrapping tax = ~9000 ns/event of the 14 µs agg-stage budget. WindowedOp dispatch bypasses Plan 19.2-01's field pre-extraction protocol — every windowed op re-does `row.get(fname)` linear scan + double-dispatch inside each bucket update. Phase 19.3 extends D-01's `update_at(extracted, field_idx, …)` protocol across the WindowedOp wrapper layer.
+
+**Goal:** Drop fraud-team K=10k zipfian per-event agg-stage from 14,059 ns → ~8,450 ns across three stacked sub-goals, lifting end-to-end EPS from ~70k → ~125k on the primary tuning bench. Closes the gap to Phase 19.2 CONTEXT's original 100k+ EPS aspiration with the same conceptual model Phase 19.2 already validated for non-windowed ops.
+
+**Sub-goals (in order of measured leverage from `19.2-INVESTIGATION.md` §4):**
+
+1. **19.3-A — `WindowedOp::update_at(extracted, field_idx, lat_idx, lon_idx, event_time_ms, where_matched)` fast-path** (HIGHEST single-lever — ~3,900 ns/event saved) — Mirrors the non-windowed pre-extracted path. Per-bucket inner op dispatches via `AggOp::update_with_extracted` (already exists) instead of `AggOp::update_with_row`. Eliminates the inner `row.get(fname)` linear scan AND the inner `evaluate_where_predicate` re-evaluation. Files: `crates/beava-core/src/agg_windowed.rs:191-211` (new fast-path method), `crates/beava-core/src/agg_op.rs:867` (Windowed arm dispatches new method), `crates/beava-core/src/agg_apply.rs:225-235` (pass through). Predicted lift: 14,059 ns → ~10,150 ns agg → ~95k EPS.
+
+2. **19.3-B — Specialize windowed Count/Sum dispatch** (~1,100 ns/event saved) — Count and Sum are the most-called windowed kinds (11 + 3 = 14 calls/event in fraud-team). Inner state update is trivial (`n += 1` / `total += v`). Bypass the full `AggOp::update_with_row → AggOp::update → CountState::update(row, …)` chain by inlining: `WindowedOp::update_with_row` matches on `inner_kind` for Count/Sum and writes to inner state's `n` / `(total, n)` directly. Saves ~80 ns/call dispatch tax for the highest-frequency kinds. Stacks cleanly on 19.3-A. Files: `crates/beava-core/src/agg_windowed.rs:160-211`. Predicted lift: ~9,050 ns agg → ~107k EPS.
+
+3. **19.3-C — Hoist event-level `ExtractedFields` above the descriptor loop** (~600 ns/event saved) — Currently `extracted` is rebuilt per-desc at `agg_apply.rs:201-205`. Across 5 descs × ~6 distinct fields × ~25 ns/find = ~750 ns wasted on overlapping field reads. Hoist a single per-event ExtractedFields keyed by `(source_event_schema, field)` — registry knows the union of all fields any agg on this source needs, so the apply loop builds one ExtractedFields per event and indexes it via per-agg `field_idx` arrays. Files: `crates/beava-core/src/registry.rs` (precompute per-source `apply_field_names` union — already exists, just unused), `crates/beava-core/src/agg_apply.rs:201-205` (build one extracted per event). Predicted lift: ~8,450 ns agg → ~115-125k EPS.
+
+4. **Per-phase microbench amendment + throughput rebaseline** (CLAUDE.md Phase 6+ rule + Phase 8+ rule):
+   - Add `apply_path/warm_key/14_aggs_windowed` group to `crates/beava-core/benches/apply_path_bench.rs` whose registry has the same 14 features wrapped in `WindowedOp(window_ms = 24h)`. Should currently show ~5 µs (the live trace's per-feature × 14 ratio); after 19.3-A drops to ~1 µs. Without this bench, Phase 19.3 repeats Phase 19.2's measurement gap (microbench improves while live workload stays flat).
+   - Re-run Phase 19.2's targeted matrix (`small/medium/large/large_phase9/fraud-team` × zipfian × tcp × msgpack); append to `.planning/throughput-baselines.md` under `## 1M-event blast (rebaseline 19.3)` section.
+   - Phase 19.3 verification MUST include a live `BEAVA_TRACE_APPLY_TIMING` + `BEAVA_TRACE_AGG_TIMING` run (not just criterion bench) — verifier conjecture without measurement was the root cause of Phase 19.2's misdirected diagnosis. See memory `feedback_dispatch_refactor_enumerate_wrappers`.
+
+**Stacked predicted lift on fraud-team K=10k zipfian (Phase 19.2 baseline: 70,639 EPS, 14,059 ns agg):**
+
+| Sub-goal | Mechanism | Saved ns/event | Cumulative agg-stage | Cumulative EPS |
+|---|---|---:|---:|---:|
+| 19.2 baseline | — | — | 14,059 | 70,639 |
+| + 19.3-A | windowed update_at fast-path | -3,900 | ~10,150 | ~95,000 |
+| + 19.3-B | windowed Count/Sum specialize | -1,100 | ~9,050 | ~107,000 |
+| + 19.3-C | event-level ExtractedFields | -600 | ~8,450 | ~115-125k |
+
+**Depends on:** Phase 19.2 (DONE — D-01 field pre-extraction, D-04 cluster dispatch, D-04a UDDSketch sorted Vec, D-04b EventTypeMix Cow all merged; verdict PASS-WITH-DEFICIT). Reads `crates/beava-core/src/agg_apply.rs` + `agg_op.rs` + `agg_windowed.rs` + `agg_state.rs` + `registry.rs`. Cross-references `19.2-INVESTIGATION.md` (per-AggKind breakdown, 100k traced events) + memory `feedback_dispatch_refactor_enumerate_wrappers` (anti-pattern this phase remediates).
+
+**Success criteria:**
+- `WindowedOp::update_at(extracted, field_idx, …)` exists and is dispatched from `AggOp::update_with_extracted::Windowed(…)` arm
+- `grep -c 'row.get(' crates/beava-core/src/agg_state.rs` ≤ 5 on apply-time hot paths (was ~30 callsites pre-19.3); any remaining call has explicit grandfathering rationale in code comment
+- `apply_path/warm_key/14_aggs_windowed` criterion bench exists and shows ≥ 4× speedup vs pre-19.3 baseline
+- Live `BEAVA_TRACE_AGG_TIMING` run on fraud-team K=10k zipfian shows agg-stage mean ≤ 9,000 ns (vs 14,059 ns post-19.2)
+- Per-AggKind windowed Count/Sum cost drops from ~180 ns/call → ≤ 30 ns/call
+- fraud-team.json K=10k zipfian N=1M shows ≥ 100k EPS in `## 1M-event blast (rebaseline 19.3)` ledger section (vs 70,639 post-19.2) — flips Phase 19.2 PASS-WITH-DEFICIT remediation pointer to closed
+- No regression > 10% on any non-fraud-team ladder cell (small/medium/large/large_phase9)
+- Phase 19.3 verification MUST include both criterion microbench AND live trace measurements (not conjecture)
+- All sub-goals' threat models are minimal (apply-path internals; no new attack surface; no API surface change)
+
+**Why this matters:** Phase 19.2 proved field pre-extraction works for non-windowed ops; Phase 19.3 extends the same architectural pattern across the WindowedOp wrapper that 60% of fraud-team's per-event work flows through. This is the single largest remaining apply-stage lever before WAL group-commit batching (which would be the next phase if 19.3 leaves a gap). Phase 19.3 is also the structural fix for the dispatch-protocol-bypass anti-pattern memorialized in `feedback_dispatch_refactor_enumerate_wrappers` — explicitly enumerating ALL dispatch entry points (top-level + WindowedOp wrapper) up-front.
+
+**Key decisions to lock in `19.3-CONTEXT.md` during discuss:**
+- `WindowedOp::update_at` signature shape: forward `extracted: &ExtractedFields` + per-bucket inner `update_at` (cleanest) vs forward extracted-by-ref + bucket-local `field_idx` recompute (more memory-friendly).
+- Specialized arms scope: just Count/Sum (19.3-B as scoped) vs also include EventTypeMix-windowed (currently non-windowed, but pattern extension may unlock future) vs none (skip 19.3-B, rely on 19.3-A's general path).
+- `ExtractedFields` hoist storage: per-event arena allocation vs reuse a single `Vec<Value>` across events vs per-source-schema cached buffer. Affects allocator pressure on cold-key paths.
+- Whether to land 19.3-A alone first, gate 19.3-B/C on measured 19.3-A lift (sequential proof) vs land all three in one wave (parallel speed at risk of correlated bugs).
+- Whether the new `apply_path/warm_key/14_aggs_windowed` criterion group also gets a cold-key sibling for completeness vs warm-key only (matches the Phase 19.2 bench shape).
+
+**Anti-patterns preserved (carried from Phase 19.2):**
+- Same-key sketch batching is FORBIDDEN per memory `project_no_same_key_batching`.
+- Cross-event aggregation reordering is FORBIDDEN — preserves arrival-order semantics.
+- Multi-thread apply parallelism is FORBIDDEN per memory `project_no_sharded_apply`.
+
 ### Phase 20: Operator catalogue + streaming-semantics + push/get API audit — 📋 PLANNED
 
 **Status:** Planned post Phase 19 (added 2026-04-26; push/get API audit scope folded in 2026-04-26).
