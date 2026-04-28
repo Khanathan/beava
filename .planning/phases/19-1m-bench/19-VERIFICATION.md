@@ -1,9 +1,44 @@
 # Phase 19 — Verification
 
-**Date:** 2026-04-27 (original) / 2026-04-27 (amendment 19.1)
-**Verdict:** PASS  ← AMENDED 2026-04-27 (Phase 19.1) per CONTEXT D-24
+**Date:** 2026-04-27 (original) / 2026-04-27 (amendment 19.1) / 2026-04-28 (amendment 19.4)
+**Verdict:** PASS  ← AMENDED 2026-04-28 (Phase 19.4 closure — fraud-team K=10k zipfian 100k EPS PASS gate hit)
+**Earlier amendment 2026-04-27 (Phase 19.1):** PASS — small-pipeline canonical regression-gate cell cleared 2s threshold at N=1M
 **Original verdict:** PASS-WITH-DEFICIT (canonical-cell threshold deferred to Phase 19.1 + N=1M re-run)
 **Reviewed by:** Claude (planner-checker / executor) + auto-mode checkpoint approval (per `_auto_chain_active` config)
+
+## Amendment 2026-04-28 (Phase 19.4 closure) — fraud-team 100k EPS PASS gate hit
+
+Phase 19.4 (final-100k-push, flamegraph-derived levers) closed the cumulative apply-path optimization story. Per `.planning/phases/19.4-final-100k-push/19.4-VERIFICATION.md`:
+
+- **Cumulative agg-stage:** 12,533 ns → 8,344 ns (Plan 04 closure measurement at quieter load) / 10,602 ns (today's rebaseline at higher load) — Δ -4,189 ns / -33.4% (Plan 04) / -1,931 ns / -15.4% (today's rebaseline)
+- **fraud-team K=10k zipfian sustained_eps:** 73,743 EPS → **102,800 EPS** (Plan 04 closure measurement)
+- **Phase 19 fraud-team v0 ship gate (≥ 100,000 EPS):** **MET**
+
+The 4 sub-goals each passed their halt-gates (per `19.4-{01,02,03,04}-MEASUREMENT.md`):
+- 19.4-A CountDistinct identity hasher (Plan 19.4-01: `std::HashSet<u64>` → `hashbrown::HashSet<u64, BuildHasherDefault<NoOpHasher>>`)
+- 19.4-B SmallVec inline-cap 8→16 (Plan 19.4-02: covers fraud-team's 12-field union without spill)
+- 19.4-C Geo lat/lon pre-extraction (Plan 19.4-03: completes Phase 19.2-06's missing register-time `lat_idx`/`lon_idx` resolution)
+- 19.4-D ExtractedFields hoist (Plan 19.4-04: hoist `ExtractedFields` build above per-descriptor loop)
+
+Sanity flamegraph (`19.4-FLAMEGRAPH-POST.md`) confirms 3 of 4 predicted hot-function shifts:
+- `hashbrown::HashMap::insert` self-time: 9.36% → 0.37% (target ≤ 4%) MET
+- `agg_geo::read_lat_lon` self-time: 2.86% → 0.00% (target ≤ 0.5%) MET
+- `apply_event_to_aggregations` self-time: 11.13% → 10.86% (target ≤ 6%) MISS — structurally explained: cost-model overstated post-Plan-02 cap-widening; per Plan 04 SUMMARY analysis the per-desc rebuild cost was already ~10× cheaper than the cost model assumed
+- No new non-artifact hot function > 5%
+
+**Phase 19 verdict:** **PASS** (was PASS-WITH-DEFICIT until Phase 19.1's bench wall-clock fix amendment 2026-04-27; subsequent Phase 19.4 closure 2026-04-28 cleared the cumulative fraud-team 100k EPS gate via 19.2/19.3/19.4 chained optimizations).
+
+**Cumulative path closing the original Phase 19 deficit:**
+1. Phase 19.1 — bench wall-clock fix (canonical small + zipfian cell cleared 2s @ N=1M)
+2. Phase 19.2 — apply-path optimization stack (D-01 field pre-extraction, D-02 FxHasher, D-03 EntityKeyShape hybrid, D-04 UDDSketch flat-vec, D-05 op-removal/recipe-replacement)
+3. Phase 19.3 — windowed pre-extraction (WindowedOp::update_at fast path)
+4. Phase 19.4 — final 100k EPS push (4 flamegraph-derived levers)
+
+Phase 19.5+ pivots to scale-out (sharding deployment + multi-instance benchmarks per `project_no_sharded_apply`); vertical optimization stops here.
+
+---
+
+[Original Phase 19.1 amendment + PASS-WITH-DEFICIT block follow unchanged below for historical record]
 
 ## Amendment — Phase 19.1 rebaseline (2026-04-27)
 

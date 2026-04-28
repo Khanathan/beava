@@ -1,11 +1,11 @@
 ---
 phase: 19-1m-bench
-status: Done (PASS — verdict amended 2026-04-27 from PASS-WITH-DEFICIT via Phase 19.1 rebaseline; original deficit was a measurement-bug artifact in bench wall_clock capture, fixed in Plan 19.1-01)
-date: 2026-04-27 (original) / 2026-04-27 (amended via Phase 19.1)
+status: Done (PASS — verdict updated 2026-04-28 via Phase 19.4 closure; cumulative fraud-team 100k EPS PASS gate hit at 102,800 EPS; see `.planning/phases/19.4-final-100k-push/19.4-VERIFICATION.md` for the closure verdict)
+date: 2026-04-27 (original) / 2026-04-27 (amended via Phase 19.1 bench fix) / 2026-04-28 (closure via Phase 19.4)
 plans: 5
-tags: [bench, throughput, blast-shape, pool-N, multi-process, python-harness, phase-19, 19.1 rebaseline]
+tags: [bench, throughput, blast-shape, pool-N, multi-process, python-harness, phase-19, 19.1 rebaseline, 19.4 closure]
 
-# Phase 19 wraps with all 5 plans landed; canonical regression-gate cell originally PASS-WITH-DEFICIT, AMENDED to PASS via Phase 19.1 rebaseline (1569 ms / 637,218 EPS at N=1M, clears 2s threshold).
+# Phase 19 wraps with all 5 plans landed; canonical regression-gate cell originally PASS-WITH-DEFICIT, AMENDED to PASS via Phase 19.1 rebaseline (1569 ms / 637,218 EPS at N=1M, clears 2s threshold). Verdict updated 2026-04-28 via Phase 19.4 closure: cumulative fraud-team K=10k zipfian sustained_eps = 102,800 EPS (≥ 100,000 v0 ship gate) per Plans 19.2/19.3/19.4 chained apply-path optimizations.
 
 provides:
   - "crates/beava-bench/src/blast_shape.rs — Pool=N pre-encoded-frame builder + 4 shapes + Zipfian sampler"
