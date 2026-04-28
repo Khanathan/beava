@@ -826,7 +826,7 @@ Wave structure:
 
 **Status:** Planned 2026-04-28 as the closure phase for the v0 Phase-19 100k EPS ship gate. Phase 19.3 closed at PASS-WITH-DEFICIT — D-04 architectural fix landed (WindowedOp::update_at) and is shippable, but predicted lift was 60% overestimated by cost-model conjecture. samply flamegraph + per-AggKind drill-down on the post-19.3-A binary identified 5 NEW optimization levers the original investigation missed; this phase picks up the top-3 cheapest + carries forward the deferred 19.3-D ExtractedFields hoist. All cost-model predictions cite `19.3-FLAMEGRAPH.md` directly (per memory `feedback_cost_model_from_flamegraph`).
 
-**Goal:** Lift fraud-team K=10k zipfian from 73,743 EPS (post-19.3-A) to **≥100k EPS** (PASS gate; 75% floor 75k EPS PASS-WITH-DEFICIT). Apply-thread agg-stage drops from 12,533 ns → ≤9,200 ns via 4 surgical optimizations + dual-measurement verification. After Phase 19.4 closes, optimization shifts from per-instance throughput to scale-out (Phase 19.5: sharding deployment patterns + multi-instance benchmarks).
+**Goal:** Lift fraud-team K=10k zipfian from 73,743 EPS (post-19.3-A) to **≥100k EPS** (PASS gate; 75% floor 75k EPS PASS-WITH-DEFICIT). Apply-thread agg-stage drops from 12,533 ns → ≤9,500 ns via 4 surgical optimizations + dual-measurement verification. After Phase 19.4 closes, optimization shifts from per-instance throughput to scale-out (Phase 19.5: sharding deployment patterns + multi-instance benchmarks).
 
 **Sub-goals (in flamegraph-priority order):**
 
@@ -864,7 +864,7 @@ Wave structure:
 **Success criteria:**
 - CountDistinct HashSet mode uses identity hasher; criterion bench shows CountDistinct windowed cost ≤200 ns/call (was 457 ns post-19.3-A)
 - ExtractedFields inline cap = 16; instrumentation shows zero per-event SmallVec spill on fraud-team apply
-- Geo features dispatch via `extracted` indexing; `grep -c 'row.get(' crates/beava-core/src/agg_geo.rs` ≤ 2 (was 6+)
+- Geo features dispatch via `extracted` indexing; `grep -c 'row.get(' crates/beava-core/src/agg_geo.rs` ≤ 2 (was 3)
 - ExtractedFields rebuilt 1× per event (not 5×); instrumentation `EXTRACTED_BUILD_COUNT == event_count`
 - Live `BEAVA_TRACE_APPLY_TIMING` agg-stage mean ≤ 9,500 ns (was 12,533 ns post-19.3-A)
 - fraud-team K=10k zipfian N=1M shows **≥ 100,000 EPS** (PASS gate) — flips Phase 19 verdict from PASS-WITH-DEFICIT → PASS
