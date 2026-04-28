@@ -1143,4 +1143,198 @@ mod registry_source_tests {
             n_events * 2
         );
     }
+
+    // ── Plan 19.4-04 (D-02) Task 4.4 — Bit-identity regression test ──────────
+
+    /// Plan 19.4-04 (D-02) Task 4.4.a RED: bit-identical state cross-check
+    /// between (a) the production hoisted apply path and (b) the legacy
+    /// per-desc-rebuild oracle on a deterministic 14-feature event sequence.
+    ///
+    /// Per CONTEXT D-02 acceptance, the new event-level hoist must produce
+    /// bit-identical state vs a structurally-different legacy path so the
+    /// f64::to_bits() strict equality is meaningful (not a tautology that
+    /// rubber-stamps whatever code ships).
+    ///
+    /// The legacy oracle (Task 4.4.b) MUST exhibit at least three INDEPENDENT
+    /// codepath differences from production:
+    ///   1. Allocates a fresh `ExtractedFields::new()` per descriptor (no
+    ///      reuse, no thread_local — different allocation pattern).
+    ///   2. Populates from `desc.field_names` (per-agg list), NOT
+    ///      `apply_field_names` (per-source union) — different field-list
+    ///      scope.
+    ///   3. Uses the per-agg `feat.descriptor.field_idx` directly into the
+    ///      per-desc rebuild, NOT the union remap via
+    ///      `field_idx_into_event_extracted` — different mapping path.
+    ///
+    /// RED state today: `legacy_apply_event_to_aggregations` does not exist
+    /// as a symbol; cargo build errors with E0425 ("cannot find function").
+    /// Task 4.4.b adds the test-only oracle and flips this to GREEN.
+    #[test]
+    fn bit_identical_state_legacy_per_desc_rebuild_vs_event_level_hoist() {
+        use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
+        use crate::agg_op::{AggKind, AggOpDescriptor, FIELD_IDX_NONE};
+
+        // Build TWO independent registries with the same 14-feature pipeline.
+        let build_registry = || -> Arc<Registry> {
+            let r = Arc::new(Registry::new());
+            let event_txn = EventDescriptor {
+                name: "Txn".to_string(),
+                schema: simple_event_schema(),
+                event_time_field: None,
+                dedupe_key: None,
+                dedupe_window_ms: None,
+                keep_events_for_ms: None,
+                tolerate_delay_ms: None,
+                registered_at_version: 0,
+                name_arc: Arc::from(""),
+                apply_field_names: vec![],
+            };
+            // 14 mixed features: alternating Count and Sum(amount).
+            let mut features = Vec::new();
+            for i in 0..14u32 {
+                features.push(NamedAggOp {
+                    feature_name: format!("f{}", i),
+                    descriptor: AggOpDescriptor {
+                        kind: if i % 2 == 0 {
+                            AggKind::Count
+                        } else {
+                            AggKind::Sum
+                        },
+                        field: if i % 2 == 0 {
+                            None
+                        } else {
+                            Some("amount".to_string())
+                        },
+                        window_ms: None,
+                        where_expr: None,
+                        n: None,
+                        half_life_ms: None,
+                        sub_window_ms: None,
+                        sigma: None,
+                        sketch_params: None,
+                        ext: Default::default(),
+                        field_idx: FIELD_IDX_NONE,
+                        field_idx_into_event_extracted: Vec::new(),
+                    },
+                });
+            }
+            let agg_arc = Arc::new(AggregationDescriptor {
+                node_name: "AggBundle".to_string(),
+                source_node_name: "Txn".to_string(),
+                group_keys: vec!["user_id".to_string()],
+                features,
+                agg_id: 0,
+                field_names: vec![],
+                cluster_id: 0,
+            });
+            let mut deriv_fields = BTreeMap::new();
+            deriv_fields.insert("user_id".to_string(), FieldType::Str);
+            for i in 0..14u32 {
+                deriv_fields.insert(format!("f{}", i), FieldType::F64);
+            }
+            let deriv = DerivationDescriptor {
+                name: "AggBundle".to_string(),
+                output_kind: OutputKind::Table,
+                upstreams: vec!["Txn".to_string()],
+                ops: vec![],
+                schema: DerivedSchema {
+                    fields: deriv_fields,
+                    optional_fields: vec![],
+                },
+                table_primary_key: Some(vec!["user_id".to_string()]),
+                registered_at_version: 0,
+            };
+            r.apply_registration(
+                vec![
+                    PayloadNode::Event(event_txn),
+                    PayloadNode::Derivation(deriv),
+                ],
+                vec![],
+                vec![],
+                vec![("AggBundle".to_string(), agg_arc)],
+            );
+            r
+        };
+
+        let r_new = build_registry();
+        let r_legacy = build_registry();
+
+        let mut state_new: StateTables = crate::agg_state_table::new_state_tables_for(&r_new);
+        let mut state_legacy: StateTables = crate::agg_state_table::new_state_tables_for(&r_legacy);
+
+        // Deterministic 1000-event sequence using a seeded xorshift64 PRNG.
+        let seed: u64 = 0xCAFEBABE_DEADBEEF;
+        let mut state = seed;
+        let mut next_u64 = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for i in 0..1000_u64 {
+            let card = format!("u{}", next_u64() % 100);
+            // Cap amount magnitude so floats stay in-range; use raw u64 → f64
+            // conversion bounded to a reasonable scale.
+            let amount = (next_u64() % 1_000_000) as f64 / 100.0;
+            let event_time = (next_u64() % 86_400_000) as i64;
+            let row = Row::new()
+                .with_field("user_id", Value::Str(card.into()))
+                .with_field("amount", Value::F64(amount))
+                .with_field("status", Value::Str("ok".into()));
+
+            super::apply_event_to_aggregations("Txn", &row, event_time, i, &r_new, &mut state_new);
+            super::legacy_apply_event_to_aggregations(
+                "Txn",
+                &row,
+                event_time,
+                i,
+                &r_legacy,
+                &mut state_legacy,
+            );
+        }
+
+        // Bit-identical state cross-check via f64::to_bits() across all
+        // entities × all features. AggBundle has agg_id=0; both state-table
+        // arrays index there.
+        let table_new = &state_new[0];
+        let table_legacy = &state_legacy[0];
+        let entries_new: Vec<_> = table_new.iter_sorted().collect();
+        let entries_legacy: Vec<_> = table_legacy.iter_sorted().collect();
+        assert_eq!(
+            entries_new.len(),
+            entries_legacy.len(),
+            "same entity count expected"
+        );
+        for ((k_new, ops_new), (k_legacy, ops_legacy)) in
+            entries_new.iter().zip(entries_legacy.iter())
+        {
+            assert_eq!(k_new, k_legacy, "entity-keys must match in sorted order");
+            for (i, (op_new, op_legacy)) in ops_new.iter().zip(ops_legacy.iter()).enumerate() {
+                let v_new = op_new.query(86_400_001);
+                let v_legacy = op_legacy.query(86_400_001);
+                match (&v_new, &v_legacy) {
+                    (Value::F64(a), Value::F64(b)) => assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "feature {} f64 state divergence at key {:?}: new={} legacy={}",
+                        i,
+                        k_new,
+                        a,
+                        b
+                    ),
+                    (Value::I64(a), Value::I64(b)) => assert_eq!(
+                        a, b,
+                        "feature {} i64 state divergence at key {:?}: new={} legacy={}",
+                        i, k_new, a, b
+                    ),
+                    _ => assert_eq!(
+                        v_new, v_legacy,
+                        "feature {} value divergence at key {:?}: new={:?} legacy={:?}",
+                        i, k_new, v_new, v_legacy
+                    ),
+                }
+            }
+        }
+    }
 }
