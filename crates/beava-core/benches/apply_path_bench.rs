@@ -33,14 +33,34 @@ use std::sync::Arc;
 /// ~3 unique group_keys signatures, mimicking the real fraud-team.json shape.
 ///
 /// Concrete layout (14 features, 3 clusters):
-///   Cluster A — group_keys=[user_id]: 7 features (count, sum, percentile, ewma, top_k, entropy, event_type_mix)
-///   Cluster B — group_keys=[user_id, merchant]: 4 features (count, sum, count_distinct, geo_velocity)
-///   Cluster C — group_keys=[device_id]: 3 features (count, sum, bloom_member)
+///   Cluster A — group_keys=[user_id]: 7 features (count, sum, percentile, stddev|ewma*, top_k, entropy, min|event_type_mix*)
+///   Cluster B — group_keys=[user_id, merchant]: 4 features (count, sum, count_distinct, count_distinct)
+///   Cluster C — group_keys=[device_id]: 3 features (count, sum, max|bloom_member*)
+///
+/// (* In the windowed variant of this registry — see Plan 19.3-01 / RESEARCH.md
+/// §2 Q3 — three of the original features are non-windowable per
+/// `agg_windowed.rs:464,473`: `BloomMember`, `EventTypeMix`, `Ewma`. They are
+/// substituted with windowable Tier-1 kinds: `StdDev` (replaces Ewma), `Min`
+/// (replaces EventTypeMix), `Max` (replaces BloomMember). Total feature count
+/// stays at 14 to preserve `14_aggs` ↔ `14_aggs_windowed` naming parity for
+/// the criterion comparison.)
 ///
 /// This is a SYNTHETIC stand-in for the real fraud-team.json (the throughput
 /// rebaseline in Task 2.b drives the actual config end-to-end). The bench
 /// exercises plan 19.2-01/02/03/04/05 code paths without requiring the server.
 fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
+    build_fraud_team_synthetic_registry_inner(None)
+}
+
+/// Windowed sibling of [`build_fraud_team_synthetic_registry`] — every feature
+/// is wrapped in `WindowedOp(window_ms)`. Used by the
+/// `apply_path/warm_key/14_aggs_windowed` criterion group (Plan 19.3-01) to
+/// measure the slow WindowedOp dispatch path that Plan 19.3-02 will optimize.
+fn build_fraud_team_synthetic_registry_windowed(window_ms: u64) -> Arc<Registry> {
+    build_fraud_team_synthetic_registry_inner(Some(window_ms))
+}
+
+fn build_fraud_team_synthetic_registry_inner(window_ms: Option<u64>) -> Arc<Registry> {
     let registry = Arc::new(Registry::new());
 
     // ── Event schema: Txn with 10 fields ────────────────────────────────────
@@ -76,7 +96,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Count,
                 field: None,
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -92,7 +112,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Sum,
                 field: Some("amount".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -108,7 +128,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Percentile,
                 field: Some("amount".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -125,14 +145,15 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             },
         ),
         (
-            "txn_amount_ewma",
+            // Plan 19.3-01: Ewma → StdDev (Ewma is non-windowable; see RESEARCH §2 Q3).
+            "txn_amount_stddev",
             AggOpDescriptor {
-                kind: AggKind::Ewma,
+                kind: AggKind::StdDev,
                 field: Some("amount".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
-                half_life_ms: Some(3_600_000), // 1 hour
+                half_life_ms: None,
                 sub_window_ms: None,
                 sigma: None,
                 sketch_params: None,
@@ -145,7 +166,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::TopK,
                 field: Some("merchant".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -166,7 +187,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Entropy,
                 field: Some("category".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -181,21 +202,19 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             },
         ),
         (
-            "txn_event_type_mix",
+            // Plan 19.3-01: EventTypeMix → Min (EventTypeMix is non-windowable; see RESEARCH §2 Q3).
+            "txn_amount_min",
             AggOpDescriptor {
-                kind: AggKind::EventTypeMix,
-                field: Some("event_type".to_string()),
-                window_ms: None,
+                kind: AggKind::Min,
+                field: Some("amount".to_string()),
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
                 sub_window_ms: None,
                 sigma: None,
                 sketch_params: None,
-                ext: AggExtParams {
-                    max_categories: Some(32),
-                    ..AggExtParams::default()
-                },
+                ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
             },
         ),
@@ -224,7 +243,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Count,
                 field: None,
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -240,7 +259,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Sum,
                 field: Some("amount".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -256,7 +275,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::CountDistinct,
                 field: Some("category".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -272,7 +291,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::CountDistinct,
                 field: Some("status".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -308,7 +327,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Count,
                 field: None,
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -324,7 +343,7 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             AggOpDescriptor {
                 kind: AggKind::Sum,
                 field: Some("amount".to_string()),
-                window_ms: None,
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
@@ -336,22 +355,18 @@ fn build_fraud_team_synthetic_registry() -> Arc<Registry> {
             },
         ),
         (
-            "device_merchant_bloom",
+            // Plan 19.3-01: BloomMember → Max (BloomMember is non-windowable; see RESEARCH §2 Q3).
+            "device_amount_max",
             AggOpDescriptor {
-                kind: AggKind::BloomMember,
-                field: Some("merchant".to_string()),
-                window_ms: None,
+                kind: AggKind::Max,
+                field: Some("amount".to_string()),
+                window_ms,
                 where_expr: None,
                 n: None,
                 half_life_ms: None,
                 sub_window_ms: None,
                 sigma: None,
-                sketch_params: Some(SketchParams {
-                    percentile_q: None,
-                    top_k_k: None,
-                    bloom_capacity: Some(10000),
-                    bloom_fpr: Some(0.01),
-                }),
+                sketch_params: None,
                 ext: AggExtParams::default(),
                 field_idx: FIELD_IDX_NONE,
             },
@@ -486,6 +501,41 @@ fn bench_apply_warm_key(c: &mut Criterion) {
                 black_box(eid),
                 black_box(&registry),
                 black_box(&mut state_tables),
+            );
+            ts += 1;
+            eid += 1;
+        });
+    });
+
+    // Plan 19.3-01 (D-04): windowed sibling — same 14-feature shape, every
+    // feature wrapped in WindowedOp(window_ms = 24h). Measures the slow
+    // WindowedOp dispatch path that bypasses Plan 19.2-01's pre-extraction
+    // protocol (per .planning/phases/19.2-big-apply-path-optimization/
+    // 19.2-INVESTIGATION.md). Plan 19.3-02's `WindowedOp::update_at` fast-path
+    // must drop this baseline ≥ 4×.
+    let registry_w = build_fraud_team_synthetic_registry_windowed(86_400_000);
+    let mut state_tables_w = new_state_tables_for(&registry_w);
+    for i in 0..200_i64 {
+        apply_event_to_aggregations(
+            "Txn",
+            &row,
+            1_714_000_000_000 + i,
+            i as u64,
+            &registry_w,
+            &mut state_tables_w,
+        );
+    }
+    group.bench_function("14_aggs_windowed", |b| {
+        let mut ts: i64 = 1_714_000_001_000;
+        let mut eid: u64 = 200;
+        b.iter(|| {
+            apply_event_to_aggregations(
+                black_box("Txn"),
+                black_box(&row),
+                black_box(ts),
+                black_box(eid),
+                black_box(&registry_w),
+                black_box(&mut state_tables_w),
             );
             ts += 1;
             eid += 1;
