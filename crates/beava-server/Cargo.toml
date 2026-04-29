@@ -273,3 +273,8 @@ harness = false
 name = "phase12_07_read_path"
 harness = false
 required-features = ["testing"]
+
+[[bench]]
+name = "phase12_08_apply_loop"
+harness = false
+required-features = ["testing"]
