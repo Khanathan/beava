@@ -187,6 +187,12 @@ name = "phase12_07_read_your_writes_test"
 path = "tests/phase12_07_read_your_writes_test.rs"
 required-features = ["testing"]
 
+# ─── Plan 12-08 — apply-loop overhead reduction ─────────────────────────────
+[[test]]
+name = "phase12_08_busy_poll_test"
+path = "tests/phase12_08_busy_poll_test.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
