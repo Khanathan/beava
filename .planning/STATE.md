@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 19.4 CLOSED — Phase 19 v0 ship gate met (102,800 EPS); next is Phase 14
-last_updated: "2026-04-28T16:35:00.000Z"
+status: Plan 12-07 closed — /get on mio HTTP+TCP + main.rs ServerV18 migration; read_bench unblocked; next is Plan 12-08 (push-and-get) or Phase 14 (streaming correctness)
+last_updated: "2026-04-29T12:30:00.000Z"
 progress:
-  total_phases: 38
-  completed_phases: 24
-  total_plans: 154
-  completed_plans: 121
-  percent: 78
+  total_phases: 34
+  completed_phases: 20
+  total_plans: 148
+  completed_plans: 114
+  percent: 77
 ---
 
 # State: Beava v2 — v0 OSS Launch
@@ -52,6 +52,7 @@ progress:
 5. **19.4-E** Sanity flamegraph + throughput rebaseline + dual-measurement verification + Phase 19 closure — **PASS** (3 of 4 predicted hot-function shifts confirmed; 5-pipeline rebaseline no WARN/BLOCK; anti-pattern sweep 7/7 PASS; Phase 19 amended PASS-WITH-DEFICIT → PASS)
 
 **Phase 19.4 CLOSED 2026-04-28 at PASS.** fraud-team K=10k zipfian sustained_eps cumulative trajectory:
+
 - post-19.3 12,533 ns / 73,743 EPS → post-19.4-01 11,667 ns / 79,367 EPS → post-19.4-02 10,329 ns / 96,298 EPS → post-19.4-03 8,244 ns / 94,733 EPS → **post-19.4-04 8,344 ns / 102,800 EPS (Plan 04 closure measurement)** = +39% over the phase, **clears 100k v0 ship gate**.
 
 **Phase 19 verdict amended PASS-WITH-DEFICIT → PASS** (cumulative path: Phase 19.1 bench wall-clock fix amendment + Phase 19.2/19.3/19.4 chained apply-path optimizations).
@@ -60,7 +61,12 @@ progress:
 
 **Next: v0 ship critical path:** Phase 14 → 15 → 12 followup → 12.5 → 16 → 13 followup → ship.
 
+---
+
+**Plan 12-07 closed 2026-04-29** (commit `9bb18c7`). Production binary on ServerV18; /get works HTTP+TCP without env-var workarounds; read_bench.py end-to-end ok=1000/1000 with p99=1.81 ms. Wave-by-wave: WireRequest TcpGet variants → TCP parser routing → apply_shard dispatch → real dispatch_get_batch (replaces stub) → OP_GET_RESPONSE = 0x0023 + TCP encoder → /health shim on mio HTTP listener → main.rs migrated to ServerV18 + Config::admin_addr → integration tests + read_bench.py validation → criterion microbench + throughput rebaseline. **Throughput regression-gate: small/tcp 694,144 EPS post-12-07 vs 642,760 EPS post-19.4 = +8.0% (PASS).** Plan 12-08 (push-and-get over mio HTTP+TCP) is unblocked. SUMMARY: `.planning/phases/12-server-side-async-push-coalescing/12-07-SUMMARY.md`.
+
 **Verification artifacts (commit `ff5579a`):**
+
 - `.planning/phases/19.4-final-100k-push/19.4-VERIFICATION.md` — OVERALL: PASS, full evidence
 - `.planning/phases/19.4-final-100k-push/19.4-FLAMEGRAPH-POST.md` — sanity flamegraph + artifact analysis
 - `.planning/phases/19.4-final-100k-push/19.4-05-SUMMARY.md` — plan summary
@@ -87,7 +93,15 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ## Current Focus
 
-**Phase 18 — Redis-shaped hand-rolled hot path. ALL plans landed + continuous pipelining landed; only Phase 18 wrap (SUMMARY + verification + worktree archival decision) remains.**
+**Plan 12-07 closed 2026-04-29 — `/get` on mio HTTP+TCP via apply_shard + main.rs migrated to ServerV18.** Production binary `target/release/beava` now runs the mio data plane (no env-var workarounds for `/get`); `dispatch_get_batch` real impl replaces the Plan 18-01 stub; `OP_GET_RESPONSE = 0x0023` allocated; `/health` shimmed inline on the mio HTTP listener (read_bench.py contract). 22 TDD-paired tasks, 35 new tests, 21 plan commits + this SUMMARY. `python/benches/read_bench.py` runs end-to-end against the unmodified release binary at **1000/1000 OK, p99=1.81 ms**. Throughput rebaseline shows simple-fraud TCP +8.0% vs 19.4 baseline (PASS).
+
+**Phase 18 wrap also closed (main.rs migration was the last item that wasn't verification-only):** main.rs now boots ServerV18; `BEAVA_DEV_ENDPOINTS` retained on legacy `Server` for `phase6_crash_probe` + `TestServer` only. Phase 18 SUMMARY + worktree archival decision remain TBD as housekeeping.
+
+**Next: v0 critical path:** Plan 12-08 (push-and-get over mio HTTP+TCP, supersedes Phase 12.5's axum-shaped plans) OR Phase 14 (streaming correctness — silent data-loss bug in agg_windowed). Both v0-blocking.
+
+---
+
+### Legacy: Phase 18 — Redis-shaped hand-rolled hot path landed + continuous pipelining landed; only Phase 18 wrap (SUMMARY + verification + worktree archival decision) remains. main.rs migration closed by Plan 12-07.
 
 ### Landed and merged on `v2/greenfield` (HEAD `a809d04`):
 
@@ -106,6 +120,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 - **Phase 18 SUMMARY.md** — overall phase wrap covering 18-09, 18-10, 18-11, 18-04.7, 18-04.8, 18-12, plus continuous pipelining
 - **Phase 18 verification** — `/gsd-verify-work 18` against the phase goal
 - **`phase-13.3-lockless-apply` worktree archival decision** — delete vs rename to `archived/phase-13.3-rejected` (Phase 13.3 REJECTED 2026-04-26 per architectural decision)
+- **main.rs migration to ServerV18 completed in Plan 12-07 (commit `2ede08f`)** — production binary now boots ServerV18 (mio data plane) per memory `project_phase18_no_dual_runtime`. Legacy `Server` retained for `phase6_crash_probe` + `TestServer`.
 
 ### Architectural decision LOCKED 2026-04-26:
 
