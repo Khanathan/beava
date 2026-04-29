@@ -1744,6 +1744,8 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"pong": true, "registry_version": registry_version});
             (200, serde_json::to_vec(&body).unwrap_or_default())
         }
+        // Plan 12-07: /health on mio data-plane port. Always 200.
+        GlueResponse::HealthOk => (200, br#"{"status":"ok"}"#.to_vec()),
         GlueResponse::InternalError { reason } => {
             let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
             (500, serde_json::to_vec(&body).unwrap_or_default())

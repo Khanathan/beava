@@ -24,6 +24,9 @@ pub enum Route {
     Retract,
     /// POST /register — pipeline registration.
     Register,
+    /// GET /health — liveness probe (Plan 12-07). Always 200 once listener
+    /// is up; no apply-thread dependency.
+    Health,
     /// Path not in the table.
     NotFound,
     /// Path matched but wrong method.
@@ -130,6 +133,14 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
+        // /health (Plan 12-07) — liveness probe; read_bench.py startup contract.
+        if path == "/health" {
+            return if method == "GET" {
+                Route::Health
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
 
         Route::NotFound
     }
@@ -168,6 +179,18 @@ mod tests {
     #[test]
     fn route_get_batch() {
         assert_eq!(Router::route("POST", "/get"), Route::Get);
+    }
+
+    /// Plan 12-07 — GET /health on the data-plane HTTP port routes to Route::Health.
+    #[test]
+    fn route_health_get() {
+        assert_eq!(Router::route("GET", "/health"), Route::Health);
+    }
+
+    /// Plan 12-07 — POST /health is a method-not-allowed (matches /get behavior).
+    #[test]
+    fn route_health_wrong_method() {
+        assert_eq!(Router::route("POST", "/health"), Route::MethodNotAllowed);
     }
 
     #[test]

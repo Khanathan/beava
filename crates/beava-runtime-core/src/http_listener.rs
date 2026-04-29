@@ -193,6 +193,9 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         Route::Delete { table } => WireRequest::HttpDelete { table, body },
         Route::Retract => WireRequest::HttpRetract { body },
         Route::Register => WireRequest::Register { payload: body },
+        // Plan 12-07: /health on the data-plane HTTP port — inline shim, no
+        // apply-thread roundtrip. read_bench.py polls /health at startup.
+        Route::Health => WireRequest::HttpHealth,
         Route::NotFound => WireRequest::ParseError {
             reason: format!("404 Not Found: {path}"),
         },

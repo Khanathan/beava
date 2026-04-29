@@ -304,6 +304,15 @@ impl ApplyShard {
             | WireRequest::HttpDelete { .. }
             | WireRequest::HttpRetract { .. } => GlueResponse::Unsupported,
 
+            // ─── /health (Plan 12-07 Wave 5.5) ────────────────────────────────
+            // Inline shim — no AppState consult, no WAL recovery dependency.
+            // read_bench.py polls /health with a 0.5s timeout per attempt and
+            // a 10s total budget; gating on apply-thread responsiveness would
+            // race against startup recovery on cold replicas. Returning OK
+            // unconditionally matches the Kubernetes liveness contract:
+            // "yes the process is up and accepting connections".
+            WireRequest::HttpHealth => GlueResponse::HealthOk,
+
             WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => {
                 GlueResponse::Unsupported
             }

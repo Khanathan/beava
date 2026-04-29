@@ -61,6 +61,8 @@ pub enum GlueResponse {
     InternalError { reason: String },
     /// Ping response.
     Pong { registry_version: u32 },
+    /// /health response — always 200 once the listener is up. Plan 12-07.
+    HealthOk,
     /// Unrecognised request type — caller maps to 404 / error frame.
     Unsupported,
 }
@@ -151,6 +153,11 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
             // TODO(phase-18-followup): wire table upsert/delete/retract paths
             GlueResponse::Unsupported
         }
+
+        // Plan 12-07: HTTP /health on the legacy axum path is mounted via
+        // tower (http.rs); HttpHealth here is a fallback for any caller that
+        // routes a parsed mio-shape request through this async path.
+        WireRequest::HttpHealth => GlueResponse::HealthOk,
 
         // Plan 12-07: TCP GET/MGET/GET_MULTI dispatch only via the mio-side
         // ApplyShard sync path (apply_shard.rs). The legacy async path here is

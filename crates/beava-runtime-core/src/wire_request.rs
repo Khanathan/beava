@@ -71,6 +71,10 @@ pub enum WireRequest {
     HttpDelete { table: String, body: Bytes },
     /// HTTP POST /retract — retraction.
     HttpRetract { body: Bytes },
+    /// GET /health — liveness probe (Plan 12-07). No payload, no apply-thread
+    /// roundtrip; the dispatch layer returns `GlueResponse::HealthOk` directly
+    /// so /health stays responsive even before WAL recovery completes.
+    HttpHealth,
     /// Unknown or reserved opcode; contains the raw opcode for error reporting.
     Unknown { op: u16 },
     /// Malformed frame (parse error).
