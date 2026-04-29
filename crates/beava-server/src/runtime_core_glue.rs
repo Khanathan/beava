@@ -338,6 +338,22 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
     /// `feature_query::BATCH_CAP`.
     const BATCH_CAP: usize = 10_000;
 
+    // Plan 12-07 stage timing — same `BEAVA_TRACE_APPLY_TIMING=1` env var
+    // gate as the push path uses. Reading the OnceLock is ~5-10 ns when off.
+    fn trace_get_enabled() -> bool {
+        use std::sync::OnceLock;
+        static FLAG: OnceLock<bool> = OnceLock::new();
+        *FLAG.get_or_init(|| {
+            std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1")
+        })
+    }
+    let trace = trace_get_enabled();
+    let t0 = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
+
     #[derive(serde::Deserialize)]
     struct BatchGetBody {
         keys: Vec<String>,
@@ -351,6 +367,7 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
             }
         }
     };
+    let t_parse = t0.map(|t| t.elapsed());
 
     // 1. Cell-cap check.
     let cell_count = req.keys.len().saturating_mul(req.features.len());
@@ -375,6 +392,7 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
             reason: format!("feature_not_found: missing={:?}", missing_features),
         };
     }
+    let t_resolve = t0.map(|t| t.elapsed());
 
     // 3. Compute query_time_ms (D-06 — never wall clock).
     let query_time_ms = {
@@ -391,6 +409,7 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
 
     // 4. Single state_tables lock for the whole batch.
     let tables = app.dev_agg.state_tables.lock();
+    let t_lock = t0.map(|t| t.elapsed());
 
     let mut result: std::collections::BTreeMap<
         String,
@@ -425,16 +444,31 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
             result.insert(key_str.clone(), key_result);
         }
     }
+    let t_loop = t0.map(|t| t.elapsed());
+    drop(tables);
 
     let body_json = serde_json::json!({"result": result});
-    match serde_json::to_vec(&body_json) {
+    let resp = match serde_json::to_vec(&body_json) {
         Ok(b) => GlueResponse::QueryResult {
             body: Bytes::from(b),
         },
         Err(e) => GlueResponse::InternalError {
             reason: e.to_string(),
         },
+    };
+    if let Some(t0_inst) = t0 {
+        let total = t0_inst.elapsed();
+        eprintln!(
+            "TRACE_APPLY ns get_batch: cells={} parse={} resolve={} lock={} loop={} TOTAL={}",
+            cell_count,
+            t_parse.map(|d| d.as_nanos()).unwrap_or(0),
+            t_resolve.map(|d| d.as_nanos()).unwrap_or(0),
+            t_lock.map(|d| d.as_nanos()).unwrap_or(0),
+            t_loop.map(|d| d.as_nanos()).unwrap_or(0),
+            total.as_nanos()
+        );
     }
+    resp
 }
 
 // ─── WAL Glue (Plan 18-02 Task 2.4) ──────────────────────────────────────────
