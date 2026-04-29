@@ -374,7 +374,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 ### Phase 12: Joins + unions + push/get API completion — 🟡 PARTIAL
 
-**Status:** Plan 12-02 shipped on branch `phase-12-joins` @ `d541971` (WAL replay for `TableUpsert/Delete/Retract`). Plans 12-01, 12-03, 12-04, 12-05, 12-06 pending on worktree `.claude/worktrees/phase-12-followup`.
+**Status:** Plan 12-02 shipped on branch `phase-12-joins` @ `d541971` (WAL replay for `TableUpsert/Delete/Retract`). Plans 12-01, 12-03, 12-04, 12-05, 12-06 pending on worktree `.claude/worktrees/phase-12-followup`. Plan 12-07 (production-ready /get on HTTP+TCP through mio + main.rs migration to ServerV18) PLANNED 2026-04-29 at `.planning/phases/12-server-side-async-push-coalescing/12-07-PLAN.md`; unblocks Phase 19.4 read-bench and closes the Phase 18 main.rs-migration deferral.
 
 **Goal:** Joins (event↔event windowed, event↔table enrichment, table↔table) and `bv.union` implemented end-to-end. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi` wired. Joins against temporal tables use the `as_of=...` kwarg from Phase 11.5 to resolve event-time PIT lookups.
 
