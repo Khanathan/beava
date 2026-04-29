@@ -11,7 +11,9 @@
 //! A single recv() can deliver 0, 1, or many frames — the caller loops until
 //! `Ok(None)` (need more bytes) is returned.
 
-use beava_core::wire::{decode_frame, CT_JSON, CT_MSGPACK, OP_PING, OP_PUSH, OP_REGISTER};
+use beava_core::wire::{
+    decode_frame, CT_JSON, CT_MSGPACK, OP_GET, OP_GET_MULTI, OP_MGET, OP_PING, OP_PUSH, OP_REGISTER,
+};
 use bytes::BytesMut;
 use std::net::SocketAddr;
 
@@ -799,6 +801,36 @@ pub fn parse_wire_request(
                 },
             }
         }
+        // ─── Plan 12-07 Wave 2: TCP /get variants ──────────────────────────
+        // Body is opaque to the parser — dispatch (apply_shard) deserialises
+        // the JSON / MsgPack body into {feature, key} or {keys, features}.
+        OP_GET => match frame.content_type {
+            CT_JSON | CT_MSGPACK => WireRequest::TcpGet {
+                body: frame.payload,
+                body_format: frame.content_type,
+            },
+            other => WireRequest::ParseError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            },
+        },
+        OP_MGET => match frame.content_type {
+            CT_JSON | CT_MSGPACK => WireRequest::TcpMGet {
+                body: frame.payload,
+                body_format: frame.content_type,
+            },
+            other => WireRequest::ParseError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            },
+        },
+        OP_GET_MULTI => match frame.content_type {
+            CT_JSON | CT_MSGPACK => WireRequest::TcpGetMulti {
+                body: frame.payload,
+                body_format: frame.content_type,
+            },
+            other => WireRequest::ParseError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            },
+        },
         op => WireRequest::Unknown { op },
     };
     Ok(Some(req))
