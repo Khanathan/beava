@@ -278,3 +278,8 @@ required-features = ["testing"]
 name = "phase12_08_apply_loop"
 harness = false
 required-features = ["testing"]
+
+[[bench]]
+name = "phase12_09_msgpack_get"
+harness = false
+required-features = ["testing"]
