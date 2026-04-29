@@ -234,85 +234,127 @@ impl ApplyShard {
                 beava_core::wire::CT_JSON,
             ),
 
-            // ─── TCP /get (single) — Plan 12-07 Wave 3 ───────────────────────
-            // Body parses to {"feature": "<name>", "key": "<key>"} (CT_JSON shape
-            // for v0; CT_MSGPACK is reserved for Plan 12-08+ when MsgPack body
-            // parsing for query lands).
-            WireRequest::TcpGet {
-                body,
-                body_format: _,
-            } => {
+            // ─── TCP /get (single) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ─────
+            // Body parses to {"feature": "<name>", "key": "<key>"} via the
+            // codec selected by the frame's content_type byte (`body_format`):
+            //   CT_JSON    -> serde_json::from_slice
+            //   CT_MSGPACK -> rmp_serde::from_slice
+            //   other      -> InternalError "unsupported content_type"
+            // The same `body_format` is then forwarded to dispatch_get_single_sync
+            // so the response is encoded in the matching codec (msgpack-in →
+            // msgpack-out per locked decision D-B).
+            WireRequest::TcpGet { body, body_format } => {
+                use beava_core::wire::{CT_JSON, CT_MSGPACK};
                 #[derive(serde::Deserialize)]
                 struct TcpGetReq {
                     feature: String,
                     key: String,
                 }
-                let req: TcpGetReq = match serde_json::from_slice(&body) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return GlueResponse::InternalError {
-                            reason: e.to_string(),
+                let req: TcpGetReq = match body_format {
+                    CT_JSON => match serde_json::from_slice(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return GlueResponse::InternalError {
+                                reason: e.to_string(),
+                            };
                         }
+                    },
+                    CT_MSGPACK => match rmp_serde::from_slice(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return GlueResponse::InternalError {
+                                reason: e.to_string(),
+                            };
+                        }
+                    },
+                    other => {
+                        return GlueResponse::InternalError {
+                            reason: format!("unsupported content_type: {other:#04x}"),
+                        };
                     }
                 };
                 crate::runtime_core_glue::dispatch_get_single_sync(
                     &self.state,
                     &req.feature,
                     &req.key,
-                    beava_core::wire::CT_JSON,
+                    body_format,
                 )
             }
 
-            // ─── TCP /mget (single feature, multi key) — Plan 12-07 Wave 3 ───
+            // ─── TCP /mget (single feature, multi key) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ───
             // Body parses to {"feature": "<name>", "keys": [...]}. Materialise as
             // a batch with a single-feature list and reuse dispatch_get_batch_sync.
-            WireRequest::TcpMGet {
-                body,
-                body_format: _,
-            } => {
+            //
+            // TODO(12-10+): pass keys/features directly into a batch helper to skip
+            // the re-serialise step on this path. The current form mirrors the
+            // Plan 12-07 shape; this is suboptimal but correct.
+            WireRequest::TcpMGet { body, body_format } => {
+                use beava_core::wire::{CT_JSON, CT_MSGPACK};
                 #[derive(serde::Deserialize)]
                 struct TcpMGetReq {
                     feature: String,
                     keys: Vec<String>,
                 }
-                let req: TcpMGetReq = match serde_json::from_slice(&body) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        return GlueResponse::InternalError {
-                            reason: e.to_string(),
+                let req: TcpMGetReq = match body_format {
+                    CT_JSON => match serde_json::from_slice(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return GlueResponse::InternalError {
+                                reason: e.to_string(),
+                            };
                         }
+                    },
+                    CT_MSGPACK => match rmp_serde::from_slice(&body) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            return GlueResponse::InternalError {
+                                reason: e.to_string(),
+                            };
+                        }
+                    },
+                    other => {
+                        return GlueResponse::InternalError {
+                            reason: format!("unsupported content_type: {other:#04x}"),
+                        };
                     }
                 };
                 let batch_body = serde_json::json!({
                     "keys": req.keys,
                     "features": [req.feature],
                 });
-                let batch_bytes = match serde_json::to_vec(&batch_body) {
-                    Ok(b) => bytes::Bytes::from(b),
-                    Err(e) => {
-                        return GlueResponse::InternalError {
-                            reason: e.to_string(),
+                let batch_bytes = match body_format {
+                    CT_JSON => match serde_json::to_vec(&batch_body) {
+                        Ok(b) => bytes::Bytes::from(b),
+                        Err(e) => {
+                            return GlueResponse::InternalError {
+                                reason: e.to_string(),
+                            };
                         }
-                    }
+                    },
+                    CT_MSGPACK => match rmp_serde::to_vec_named(&batch_body) {
+                        Ok(b) => bytes::Bytes::from(b),
+                        Err(e) => {
+                            return GlueResponse::InternalError {
+                                reason: e.to_string(),
+                            };
+                        }
+                    },
+                    _ => unreachable!("validated above"),
                 };
                 crate::runtime_core_glue::dispatch_get_batch_sync(
                     &self.state,
                     &batch_bytes,
-                    beava_core::wire::CT_JSON,
+                    body_format,
                 )
             }
 
-            // ─── TCP /get-multi (multi feature, multi key) — Plan 12-07 Wave 3 ──
+            // ─── TCP /get-multi (multi feature, multi key) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ──
             // Body shape mirrors HTTP /get: {"keys": [...], "features": [...]}.
-            // Reuse dispatch_get_batch_sync directly.
-            WireRequest::TcpGetMulti {
-                body,
-                body_format: _,
-            } => crate::runtime_core_glue::dispatch_get_batch_sync(
-                &self.state,
-                &body,
-                beava_core::wire::CT_JSON,
-            ),
+            // Body_format selects the parse codec inside dispatch_get_batch_sync
+            // — no re-serialize needed here.
+            WireRequest::TcpGetMulti { body, body_format } => {
+                crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body, body_format)
+            }
 
             // ─── Upsert / delete / retract (table ops — not on hot path) ──────
             WireRequest::HttpUpsert { .. }
