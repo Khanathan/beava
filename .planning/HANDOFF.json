@@ -1,82 +1,71 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-29T04:40:04Z",
-  "phase": "19.4",
-  "phase_name": "final-100k-push (closed) → Phase 12-07 scoped (next)",
-  "phase_dir": ".planning/phases/19.4-final-100k-push",
+  "timestamp": "2026-04-29T16:47:00Z",
+  "phase": "12",
+  "phase_name": "server-side-async-push-coalescing",
+  "phase_dir": ".planning/phases/12-server-side-async-push-coalescing",
   "plan": null,
   "task": null,
   "total_tasks": null,
-  "status": "phase-19.4-shipped-pass; cross-platform-validated; read-path-blocked-by-12-07",
-  "context_summary": "Phase 19.4 fully shipped at PASS (102.8k EPS Apple-M4, 51-58k EPS Hetzner EPYC vServer; verdict amended Phase 19 PASS-WITH-DEFICIT → PASS). Cross-platform validation completed: Linux EPYC numbers measured + reported honestly (KVM-virtualized vServer is the bottleneck, not Beava code). Discovered IoPool default formula bug: `max(2, n_cpus/4)` gives suboptimal value on both M4 (where iot=1 wins +14.4% avg) and Hetzner 16-vCPU (where iot=4 default is the WORST config, beaten by iot=1/2/8/12 by ~10%). Exposed `--io-threads N` CLI flag. Python read-bench harness shipped but currently 404s — root-caused to Phase 12 PARTIAL leftover (`/get` route never wired into mio HTTP fast path). Scoped fix as Plan 12-07. Next session: execute Plan 12-07 to unblock read-bench; or proceed with v0 critical path Phase 14 (streaming correctness — silent-data-loss bug fix in agg_windowed).",
+  "status": "phase-12-07-shipped; plans-12-08-09-10-written-not-executed",
+  "context_summary": "Plan 12-07 SHIPPED (commit e4ab92f, 22 commits): production-ready /get on HTTP+TCP via mio apply_shard + main.rs migration to ServerV18 + dispatch_get_batch real impl + OP_GET_RESPONSE=0x0023 + /health shim on mio listener. Phase 19.4 read-bench unblocked. Next session: review/execute one of three follow-up plans (12-08 apply-overhead reduction, 12-09 TCP /get msgpack, 12-10 push-and-get on mio).",
   "completed_this_session": [
-    {"item": "Hetzner Linux EPYC validation", "commit": "7233bfd", "result": "All 10 pipelines benched; fraud-team 51,363 EPS (vs M4 102,800 = 0.50× — virtualization+microarch gap); 5-pipeline ladder at 0.96-1.08× parity"},
-    {"item": "Python multi-process bench (M4 + Hetzner)", "commit": "de4eee6", "result": "Revealed Rust continuous-mode bench is back-pressure-limited on sketch-heavy pipelines; Python multi-conn shows higher server ceiling on fraud-team (107.9k M4 / 70.0k Hetzner)"},
-    {"item": "Linux perf-tuning experiments (production build, taskset, governor)", "commit": "3f72985", "result": "Production build only +3.9% on Hetzner; taskset 4-core pin gives +11% on fraud-team but HALVES Tier-1 throughput; governor not tunable on KVM"},
-    {"item": "M4 IoPool=1 sweep across 10 pipelines", "commit": "3e4d62d", "result": "+14.4% avg lift across all 10 pipelines on M4; large-with-sketches +33%; medium +21.9%; fraud-team +1.8%; ZERO regressions"},
-    {"item": "Hetzner IoPool sweep {1,2,4,8,12}", "commit": "3e4d62d (bundled)", "result": "Default iot=4 on 16-vCPU is the WORST config; iot=1/2/8/12 all give ~+10% lift; reveals destructive sweet spot in default formula"},
-    {"item": "--io-threads CLI flag GREEN impl", "commit": "3e4d62d (bundled)", "result": "RED test landed in 81bfb6c; GREEN impl bundled here; users can override the broken default formula"},
-    {"item": "Python read-bench harness", "commit": "a116d87", "result": "Harness shipped (497 lines); has 404 bug — every POST /get returns 404 because /get isn't wired in production mio binary"},
-    {"item": "Plan 12-07 scope doc", "commit": "6fb83a9", "result": "Diagnosed: feature_query_router is built and mounted in axum router_with_push, but production beava binary uses mio hand-rolled HTTP that only routes /push + admin endpoints. Scoped 3 fix paths; B1 (wire /get into mio HTTP fast path) recommended; ~1-2 days"}
+    {"item": "Plan 12-07 execution", "commit": "e4ab92f", "result": "/get production-ready HTTP+TCP via mio; main.rs migrated to ServerV18; dispatch_get_batch real impl; OP_GET_RESPONSE=0x0023; /health shim; 22 TDD-paired commits"},
+    {"item": "bench-v18 TCP /get + 8-cell mixed read+write matrix", "commit": "5bcb95a", "result": "Apple-M4 fraud-team P=4/PD=64: 86k EPS push + 6.13ms /get p99; saturated 89k+229ms; small/sat 696k+44ms"},
+    {"item": "bench-v18 --read-workers parallel reads", "commit": "d04c98c", "result": "Read throughput sweep: fraud-team 9,575 r/s peak (32 workers); small 61,888 r/s peak; ~209 ns/cell fraud / ~32 ns/cell small"},
+    {"item": "bench-v18 single-key fetch sweep + cost model", "commit": "38c5c63", "result": "Single-cell 1×1: 175,843 r/s peak Apple-M4 / 196,548 r/s Hetzner. Cost model: ~5.5 µs fixed per req + ~210 ns/cell"},
+    {"item": "stage timing trace for dispatch_get_batch", "commit": "46dad23", "result": "Apply-thread per-/get work: p50=542ns mean=1.21µs. parse 23%, resolve 15%, lock 8%, lookup 23%, serialize 31%"},
+    {"item": "bench-v18 --remote-addr multi-client mode", "commit": "15a3283", "result": "Hetzner 1-client (P=16) = 51,131 EPS; 8-client (P=2 each) = 51,381 EPS aggregate. Confirms server is the bottleneck not bench-side mmap_lock"},
+    {"item": "samply + perf trace analysis (Apple-M4 + Hetzner)", "commit": "n/a (working dir)", "result": "Apply at 3.6% CPU push / 11% read. Real work is 47% (push) / 9% (read) of apply CPU; rest is orchestration overhead (channel/mio/kernel-wakeup/allocator). Bench-side allocator (osq_lock+mprotect+malloc+BytesMut) hits 19% on Hetzner saturated push"},
+    {"item": "Plans 12-08/09/10 scope docs + PLAN.md outputs", "commits": ["06d38a0", "2585f6e", "566c6a6"], "result": "12-08 (apply-overhead) 1629 lines / 12 tasks / 6 waves; 12-09 (TCP msgpack /get) 932 lines / 8 waves; 12-10 (push-and-get mio) 2158 lines / 23 tasks / 11 waves. All red-green TDD-paired."}
   ],
-  "open_decisions_for_resume": [
-    "Path forward — Plan 12-07 (wire /get into mio) vs Phase 14 (streaming correctness): Plan 12-07 unblocks read benchmarks AND is part of v0 critical path (Phase 12 PARTIAL completion). Phase 14 fixes silent-data-loss bug. Both are v0-blocking. Recommend Plan 12-07 first because (a) it's smaller scope (~1-2 days), (b) unblocks the read story for v0 marketing, (c) Phase 14 is independent and can proceed in parallel on a different worktree.",
-    "Default IoPool formula fix — wider hw-class sweep: M4 (10 cores) wins at iot=1; Hetzner 16-vCPU is worst at iot=4 default. Need data on M2 Pro, EPYC bare-metal, Xeon Sapphire Rapids before changing the global default. Surface as Phase 19.5 or v0.1 work.",
-    "Phase 19.4 already-closed status: fraud-team 102,800 EPS PASS gate cleared on M4 (Rust bench) + 107,933 EPS (Python multi-conn). Linux EPYC vServer at 51-70k is below 100k gate but explained by KVM virtualization. Bare-metal Linux number untested (would need Hetzner AX server, ~€2/hour)."
+  "decisions_locked_for_12_08": [
+    {"decision": "Trace gates PASS, EPS gates STRETCH", "rationale": "EPS lift gated by bench-side+kernel-TCP capacity; trace deltas (try_to_wake_up<1%, run_mio_event_loop<5%, malloc<0.5%) we directly control"},
+    {"decision": "Per-thread CPU on apply tid (RUSAGE_THREAD/mach_thread_basic_info)", "rationale": "Process-level rusage flakes from other-thread noise"},
+    {"decision": "RecyclableBytes wrapper (Drop returns BytesMut to pool)", "rationale": "User chose performant variant; zero malloc per response on hot path; falls back to simple buffer-pool design as escape hatch"},
+    {"decision": "Keep apply_loop microbench (Phase 6+ rule)", "rationale": "CLAUDE.md mandates criterion microbench; samply traces are complementary"},
+    {"decision": "Full throughput rebaseline matrix (200 cells)", "rationale": "Comprehensive baselines for Phase 13 ship gate"}
   ],
-  "blockers": [
-    {"description": "Read-bench measurements blocked by Plan 12-07 — POST /get returns 404 on production beava binary", "type": "technical", "workaround": "Plan 12-07 scope doc captures fix paths; ~1-2 days B1 implementation", "blocking": true}
+  "decisions_locked_for_12_10": [
+    {"decision": "D-08 superseded: get half is regular feature query", "rationale": "User 2026-04-29: 'push-and-get only apply event and fetch from table like normal get' — no special PIT semantics until Phase 15 lands"},
+    {"decision": "D-F: wire format follows Plan 12-09 (TCP CT_JSON+CT_MSGPACK; HTTP JSON only)", "rationale": "Match 12-09 conventions"},
+    {"decision": "D-G: OP_PUSH_AND_GET_RESPONSE = 0x0024", "rationale": "Slot after OP_GET_RESPONSE=0x0023; both sync and async modes use it; difference is fsync timing"}
   ],
+  "remaining_work": [
+    {"item": "Optionally review Plan 12-09 (only 12-08 was reviewed)", "blocking": false},
+    {"item": "Execute Plan 12-08 (biggest single lift; ~1.5-1.7× EPS theoretical)", "blocking": false, "command": "/gsd-execute-phase 12 (will pick up 12-08 first)"},
+    {"item": "Execute Plan 12-09 (msgpack TCP /get; independent of 12-08)", "blocking": false},
+    {"item": "Execute Plan 12-10 (push-and-get; depends on 12-09's msgpack response shape)", "blocking": false}
+  ],
+  "blockers": [],
   "human_actions_pending": [
-    {"action": "Decide which to execute next: Plan 12-07 (wire /get into mio) OR Phase 14 (streaming correctness)", "context": "Both v0-blocking; recommend 12-07 first per scope doc rationale", "blocking": false},
-    {"action": "Optional: spin up Hetzner AX bare-metal server briefly (~€2/hour, ~30 min) for true production-class Linux numbers", "context": "Current Hetzner vServer is KVM-virtualized; bare-metal would close the M4-vs-Linux gap meaningfully", "blocking": false}
+    {"action": "Decide order: 12-08 first (biggest lift), 12-09 first (smallest scope), or all three in parallel via worktrees", "context": "All three plans are written and committed", "blocking": false},
+    {"action": "Review Plan 12-09 (skipped in this session)", "context": "Optional but symmetric to 12-08 review", "blocking": false}
   ],
-  "decisions": [
-    {"decision": "Phase 19.5 sharding deployment moved OUT of v0 critical path", "rationale": "Phase 19.4 closed 100k EPS gate; v0 not perf-blocked"},
-    {"decision": "Read-bench harness shipped despite known 404 bug", "rationale": "Harness is correct; the bug is server-side. Once 12-07 lands, harness runs unmodified"},
-    {"decision": "IoPool=1 confirmed BEST on M4 (+14.4% avg); iot=2 default is suboptimal", "rationale": "10-pipeline sweep with zero regressions; phenomenon holds on Hetzner too"},
-    {"decision": "Plan 12-07 Path B1 recommended (wire /get into mio fast path) over Path B2 (axum sidecar)", "rationale": "memory project_phase18_no_dual_runtime locks hand-rolled mio as the only data-plane runtime"},
-    {"decision": "Beava-vs-Redis comparison: 4-7× faster per instance on multi-feature events", "rationale": "Per-state-mutation rate analysis: Beava 4.5-9.2M state-mutations/sec/core vs Redis ~1M HINCRBY/sec/core (pipelined). Marketing claim corrected from 'competitive with Redis' to '5-7× faster'."}
-  ],
-  "anti_patterns_discovered": [
-    {"name": "Background agents bailing at 65% context budget without doing work", "severity": "advisory", "description": "Two consecutive agent dispatches (Python read bench full + Rust read bench full) bailed at startup claiming context budget exhaustion, after only reading 1-2 files. Both could have completed with tighter scope. Pattern: agents are over-cautious about context budgets when scope feels large.", "structural_mitigation": "When agent reports 'context concerns at 65%', re-dispatch with explicitly-tightened scope (single platform, single pipeline, single mode). Don't accept full-scope bail without evidence of actual context exhaustion."},
-    {"name": "IoPool default formula `max(2, n_cpus/4)` is structurally wrong", "severity": "advisory", "description": "On M4 (10 cores) gives iot=2 — but iot=1 wins +14.4% avg with zero regressions. On Hetzner (16 vCPU) gives iot=4 — the WORST config, beaten by iot=1/2/8/12 by ~10%. The formula was designed to be Redis-style conservative but produces worst-case values at common core counts.", "structural_mitigation": "Plan 12-07 (or Phase 19.5 followup) should re-derive the formula from a wider hw-class sweep. For now, --io-threads CLI flag (commit 3e4d62d) lets users override."},
-    {"name": "/get route 404 on production binary — Phase 12 PARTIAL leftover", "severity": "blocking", "description": "feature_query_router is built and mounted in axum router_with_push but the production mio-based beava binary doesn't include /get in its hand-rolled HTTP parser. Discovered via Phase 19.4 read-bench harness 404'ing all 50k requests.", "structural_mitigation": "Plan 12-07 scope doc captures full diagnosis + fix paths. Path B1 (wire /get into mio HTTP fast path) is the architecturally-correct fix per memory project_phase18_no_dual_runtime."}
+  "executor_triage_notes_for_12_10": [
+    {"issue": "Python OP_PUSH=0x0002 vs Rust OP_PUSH=0x0010 inconsistency", "where": "python/beava/_wire.py:35 vs crates/beava-core/src/wire.rs:63", "action": "document in 12-10-SUMMARY as followup; do NOT fix in 12-10"},
+    {"issue": "Wave 6 may collapse into Wave 4.b", "where": "Plan 12-10 Wave 4.b commits encoder arms inline; Wave 6 sanity tests may pass immediately", "action": "executor decides per RED/GREEN status of 6.a"}
   ],
   "uncommitted_files": [
-    {"path": "beava-design-system/project/ui_kits/learn/LearnArticle.jsx", "status": "modified", "note": "Pre-existing"},
-    {"path": "beava-design-system/project/ui_kits/learn/LearnHero.jsx", "status": "modified", "note": "Pre-existing"},
-    {"path": "beava-design-system/project/ui_kits/learn/README.md", "status": "modified", "note": "Pre-existing"},
-    {"path": "beava-website/project/guide/index.html", "status": "modified", "note": "Pre-existing"},
-    {"path": ".planning/phases/19.4-final-100k-push/19.4-02-REMEASUREMENT.md", "status": "untracked", "note": "Pre-existing from prior session"},
-    {"path": "Launch_beava-bench_2026-04-25_13.05.03_03438EBD.trace/", "status": "untracked", "note": "Pre-existing"}
+    {"path": "beava-design-system/project/ui_kits/learn/*.jsx + README.md", "status": "modified", "note": "pre-existing (website work); not relevant to phase 12"},
+    {"path": "beava-website/project/guide/index.html", "status": "modified", "note": "pre-existing"},
+    {"path": ".planning/advanced-recipes/", "status": "untracked", "note": "pre-existing"},
+    {"path": ".planning/phases/19-1m-bench/19-REVIEW.md, 19.4-02-REMEASUREMENT.md, etc.", "status": "untracked", "note": "pre-existing artifacts"},
+    {"path": "Launch_beava-bench_2026-04-25_13.05.03_03438EBD.trace/", "status": "untracked", "note": "pre-existing samply trace dir"}
   ],
   "infrastructure_state": {
     "branch": "v2/greenfield",
-    "head_before_pause": "6fb83a9 (docs(phase-12-07): scope doc — wire /get into mio HTTP fast path)",
-    "commits_since_last_pause": 8,
-    "binary_status": "target/release/beava-bench-v18 + target/release/beava both built post-19.4-04 with RUSTFLAGS='-C target-cpu=native' (production mode)",
-    "remote": "Hetzner 178.104.164.100 — full repo at /root/tally/, full build + Python SDK installed, all bench artifacts under /tmp/bench-* and /tmp/exp-*",
-    "background_processes_local": "Cursor IDE on port 18080 (was port collision for read-bench; switched to 28080)",
-    "background_processes_hetzner": "Playwright Chromium killed earlier session; Arc + Cursor + Antigravity may still be active",
-    "model_profile": "quality (all 18 GSD agents on opus)"
+    "head": "566c6a6",
+    "commits_this_session": 13,
+    "binary_status": "target/release/beava + beava-bench-v18 built post-Plan-12-07 with debug symbols (RUSTFLAGS='-C debuginfo=2'); strip='symbols' setting was temporarily flipped during samply runs and restored to 'symbols' default in Cargo.toml",
+    "remote_hetzner": "178.104.164.100 — full repo /root/tally/ with linux-tools-6.8.0-110-generic installed; perf records at /tmp/bench-12-07-hetzner/{push-sat,read-32w}.perf; standalone beava server stopped at end of session",
+    "model_profile": "quality (all 17 GSD agents on opus)"
   },
-  "v0_critical_path_queue": [
-    {"step": 1, "phase": "12-07", "name": "wire /get into mio HTTP fast path (Plan 12-07)", "status": "scoped not planned", "criticality": "BLOCKS read benchmarks; v0 must-have feature", "estimated_effort": "1-2 days"},
-    {"step": 2, "phase": "14", "name": "streaming correctness — Chunk A (watermark + bucket-reset fix)", "status": "plans written never executed", "criticality": "BLOCKING — silent data-loss bug in agg_windowed", "estimated_effort": "1 week"},
-    {"step": 3, "phase": "15", "name": "event-time PIT temporal store", "status": "plans written never executed", "criticality": "BLOCKS Phase 12 Plan 04", "estimated_effort": "1 week"},
-    {"step": 4, "phase": "14.1", "name": "streaming modifiability", "status": "plans written never executed", "criticality": "needed for retraction story", "estimated_effort": "2 weeks"},
-    {"step": 5, "phase": "12-followup", "name": "joins (event↔event, event↔table, table↔table, bv.union, push/get API)", "status": "1/6 plans shipped; 5 pending on phase-12-followup worktree", "criticality": "v0 must-have", "estimated_effort": "2-3 weeks"},
-    {"step": 6, "phase": "12.5", "name": "push_and_get atomic endpoint", "status": "3 plans written never executed", "criticality": "v0 must-have for fraud-decisioning latency", "estimated_effort": "1 week"},
-    {"step": 7, "phase": "16", "name": "SDK source annotation (@bv.source + app.upsert/delete)", "status": "plans written never executed", "criticality": "public API stability before v0 ship-tag", "estimated_effort": "1 week"},
-    {"step": 8, "phase": "13-followup", "name": "cold-entity GC + perf gate + metric counter wiring", "status": "phase-13-followup worktree pending", "criticality": "ship gate", "estimated_effort": "1 week"},
-    {"step": 9, "phase": "v0", "name": "ship tag", "status": "PENDING", "criticality": "milestone close", "estimated_effort": "1 day"}
-  ],
-  "next_action_recommended": "Resume with /gsd-resume-work, then /gsd-discuss-phase 12 (or scoped /gsd-quick) to break Plan 12-07 into red-green tasks. Execute. Once /get is wired, run python/benches/read_bench.py unmodified for the read baseline. Then proceed to Phase 14.",
+  "next_action_recommended": "Resume with /gsd-resume-work then /gsd-execute-phase 12 to pick up Plan 12-08 (apply-overhead reduction; biggest single lift). Trace-based gates ensure plan PASSES even if bench-bound EPS lift falls short. After 12-08, dispatch 12-09 (msgpack TCP /get) and 12-10 (push-and-get) in either order.",
   "next_action_alternatives": [
-    "Skip 12-07 for now; jump to Phase 14 (streaming correctness — also v0-blocking, fixes silent data-loss bug). Would defer read benchmarks to later.",
-    "Spin up Hetzner AX bare-metal server briefly to get the true production Linux number on writes; combine with 12-07 follow-up for reads.",
-    "Cleanup pass: /gsd-cleanup to archive accumulated agent worktrees from Phase 19.x and this session."
+    "Review Plan 12-09 first (skipped in this session) before executing",
+    "Execute 12-09 first (smaller scope, independent) for quicker shippable win",
+    "Execute all three in parallel via .claude/worktrees (12-08, 12-09 are independent; 12-10 depends on 12-09's GlueResponse shape)"
   ],
-  "context_notes": "Big session — 8 commits beyond prior pause. Phase 19.4 numbers are now richer: cross-platform validated (M4 + Hetzner Linux EPYC), IoPool sensitivity mapped on both platforms, Python multi-conn bench reveals Rust bench-v18 back-pressure on sketch-heavy pipelines, --io-threads CLI flag exposed, Plan 12-07 scoped. The 'Beava vs Redis' marketing claim corrected from 'competitive' to '5-7× faster per instance on multi-feature events' — based on per-state-mutation analysis (Beava 4.5-9.2M state-mutations/sec/core vs Redis ~1M HINCRBY/sec/core pipelined). Read benchmarks remain blocked until 12-07 lands; harness is shipped and ready to run unmodified once /get is wired."
+  "context_notes": "Big session. Plan 12-07 shipped end-to-end with 22 commits + benchmarks + 13 follow-up commits. Three downstream plans scoped + written. The headline finding from perf traces: at saturated push the apply thread is only 3.6% CPU on Hetzner (server is fundamentally underutilized; bench-side allocator is the visible bottleneck via osq_lock+mprotect contention). Plan 12-08 expects to drive apply to ~100% via busy-poll + drain + batching + RecyclableBytes pool, opening ~1.7× theoretical apply ceiling. Plan 12-09 reduces dispatch_get_batch p50 by ~50% via msgpack. Plan 12-10 collapses fraud-decisioning hot path from 2 RTs to 1. Combined estimated: push 51k→95k EPS Hetzner (1.85×), single-cell read 196k→360k r/s Hetzner (1.83×); fraud-decisioning P50 latency 500µs→250µs. ALL within locked architectural constraints (single apply thread, mio data plane, no same-key sketch batching, read-after-write atomicity)."
 }
