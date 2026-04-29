@@ -456,3 +456,26 @@ Filtered median of per-run medians: **9,666 ns/event**
 | 9 | (Geo) GeoSpread | 1.0 | 84.0 | n/a | n/a | Same as above |
 
 **Total per-AggKind subtotal:** ~14,800 ns/event of feature-update cost (down from ~16,260 ns post-19.3-A's per-AggKind sum). Confirmed direction: cumulative Phase 19.4 lift is real and present in per-AggKind data. The Entropy regression is documented as carrying forward from Phase 19.2-06.
+
+---
+
+### Phase 12-07 — read path (Apple-M4)
+
+Captured: 2026-04-29. Methodology: criterion default (100 samples, 3s warm-up, 5s collection). Drives warm-cache `dispatch_get_single_sync` / `dispatch_get_batch_sync` over a 1000-entity Txn -> TxnAgg(cnt) registry (10 events per entity = 10k pushes pre-bench). Excludes wire encode/decode + socket I/O.
+
+**hw-class string:** `Apple-M4 / Darwin-24.3.0 / 10 cores`
+
+| Bench | Median | Captured | Phase | Notes |
+|---|---|---|---|---|
+| read_path/get_single | 155.72 ns | 2026-04-29 | 12-07 | dispatch_get_single_sync, 1 feature, 1 entity warm |
+| read_path/get_batch/10x5 | 6.15 µs | 2026-04-29 | 12-07 | 10 keys × 5 features = 50 cells |
+| read_path/get_batch/100x1 | 34.09 µs | 2026-04-29 | 12-07 | 100 keys × 1 feature (PERF-02 shape) |
+| read_path/get_batch/100x5 | 60.99 µs | 2026-04-29 | 12-07 | 100 keys × 5 features = 500 cells |
+
+**PERF-02 sanity check (100 features × 1 entity batch — PERF-02 reads "100 features × 1 entity P50 < 2ms"):**
+- 100x1 cell-shape median: 34.09 µs = 0.034 ms — **well below** P50 < 2ms (15× headroom) and P99 < 10ms (290× headroom).
+- The bench's `100x1` cell shape is "100 keys × 1 feature" not "1 key × 100 features"; both are 100 cells dimensional-wise so the per-cell cost is comparable. With ~341 ns/cell overhead, a 100-feature × 1-entity query is in the same envelope.
+
+**Methodology note:** repeating the same feature name `cnt` `n_features` times in the request is intentional — it measures cell-count overhead (entity-key parse + state_tables lookup + query_feature) without requiring a multi-feature pipeline scaffold. Real workloads vary the feature names; per-cell overhead dominates either way.
+
+**Future regression gate:** 10% slower → WARN; 25% slower → BLOCK against these post-12-07 baselines on Apple-M4 hw-class.
