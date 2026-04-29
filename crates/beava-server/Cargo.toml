@@ -233,6 +233,10 @@ fxhash = { workspace = true }
 # the apply thread (Receiver). Replaces the per-tick `MioClient.parsed_requests`
 # Vec batch publish + `IoPool::join_all` spin barrier with continuous event flow.
 crossbeam-channel = "0.5"
+# Plan 12-08 (D-A): pthread_self() on the apply thread for per-thread CPU
+# accounting (test hooks); pthread_mach_thread_np / pthread_getcpuclockid in
+# tests for actual CPU sampling.
+libc = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]

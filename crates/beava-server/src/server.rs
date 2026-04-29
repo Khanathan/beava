@@ -854,6 +854,59 @@ pub mod iopool_observer {
     }
 }
 
+// ─── Plan 12-08 (D-A) — apply-thread busy-poll instrumentation ───────────────
+
+/// Plan 12-08: cumulative count of `read_rx.recv_timeout(50µs)` calls made
+/// by the apply thread when spin-K=10_000 elapses without seeing work.
+/// Test hook only — production code never reads this.
+static APPLY_RECV_TIMEOUT_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Plan 12-08: max drain count observed in a single apply-loop iteration
+/// (fetch_max'd on every drain; never reset). Test hook for D-D verification.
+static APPLY_MAX_DRAIN_PER_ITER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Plan 12-08: pthread_t of the apply thread, set by `run_mio_event_loop` at
+/// startup. Test hook for per-thread CPU accounting (`mach_thread_basic_info`
+/// on macOS; `pthread_getcpuclockid` on Linux). Stored as `usize` because
+/// `pthread_t` is opaque + Send-unfriendly across an `AtomicUsize`.
+static APPLY_PTHREAD_ID: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Plan 12-08 test hook. Cumulative count of apply-thread idle fall-through
+/// calls into `read_rx.recv_timeout(50µs)` since process start.
+#[doc(hidden)]
+pub fn apply_recv_timeout_calls() -> u64 {
+    APPLY_RECV_TIMEOUT_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Plan 12-08 test hook. Max number of `RingItem`s drained in a single
+/// apply-loop iteration since process start. Used by Wave 2 tests to verify
+/// the DRAIN_CAP=1024 cap was removed (drain-until-empty).
+#[doc(hidden)]
+pub fn apply_max_drain_per_iter() -> u64 {
+    APPLY_MAX_DRAIN_PER_ITER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Plan 12-08 test hook. Returns the apply thread's pthread_t (as a libc
+/// pthread_t value) once the apply thread has booted, or `None` if the apply
+/// thread has not yet registered. Used by tests to call
+/// `mach_thread_basic_info` / `pthread_getcpuclockid` for per-thread CPU
+/// accounting.
+#[doc(hidden)]
+pub fn apply_pthread_id() -> Option<libc::pthread_t> {
+    let raw = APPLY_PTHREAD_ID.load(std::sync::atomic::Ordering::Acquire);
+    if raw == 0 {
+        None
+    } else {
+        // SAFETY: we stored a pthread_t (opaque pointer-sized handle) earlier;
+        // pthread_t is layout-compatible with usize on linux+macos. We never
+        // dereference the value — we only hand it back to libc functions.
+        Some(raw as libc::pthread_t)
+    }
+}
+
 /// Resolve the IoPool thread count from the BEAVA_IO_THREADS env var.
 ///
 /// Default = `max(2, available_parallelism / 4)` — Redis-style ratio that
@@ -892,6 +945,71 @@ fn default_io_threads() -> usize {
 /// publish + join_all cycle. The two phases are strictly serialized by
 /// `IoPool::join_all()` Acquire barriers, so the apply thread never touches
 /// the same client a worker is touching.
+/// Plan 12-08 (D-A): dispatch a single `RingItem` from the apply-thread side.
+///
+/// Extracted into a free helper so both the top-of-loop `try_recv()` drain AND
+/// the idle-backoff `recv_timeout(50µs)` Ok arm can share the same dispatch
+/// shape. Wave 3 (D-B) extends this helper's signature with a per-iteration
+/// response_batch + batch_started_at.
+///
+/// `wake_workers` is updated as a bitmask; the caller fires worker wakers
+/// after a complete drain pass (one wake per worker per pass — the waker is
+/// edge-triggered + idempotent).
+#[inline]
+fn dispatch_one_ring_item(
+    item: beava_runtime_core::work_ring::RingItem,
+    apply_shard: &crate::apply_shard::ApplyShard,
+    write_txs: &[crossbeam_channel::Sender<(u64, beava_runtime_core::io_thread_worker::WriteEncoder)>],
+    n_workers: usize,
+    wake_workers: &mut u32,
+) {
+    use beava_runtime_core::io_thread_worker::{WorkerProto, WriteEncoder};
+    use beava_runtime_core::work_ring::{ParseErrorKind, RingItem};
+    match item {
+        RingItem::Request {
+            slot_idx,
+            keep_alive: _,
+            request,
+            parsed_row,
+        } => {
+            let responses = apply_shard.dispatch_wire_request_with_row(request, parsed_row);
+            let slot_u64 = slot_idx as u64;
+            let w = (slot_u64 as usize) % n_workers;
+            for resp in responses {
+                let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
+                    WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
+                    WorkerProto::Http => encode_glue_response_http(&resp, buf),
+                });
+                if write_txs[w].send((slot_u64, encoder)).is_ok() {
+                    *wake_workers |= 1u32 << (w & 31);
+                }
+            }
+        }
+        RingItem::ParseError { slot_idx, kind } => {
+            use crate::runtime_core_glue::GlueResponse;
+            let slot_u64 = slot_idx as u64;
+            let w = (slot_u64 as usize) % n_workers;
+            let resp = match kind {
+                ParseErrorKind::TcpFrame => GlueResponse::PushError {
+                    code: "frame_error",
+                    registry_version: 0,
+                },
+                ParseErrorKind::HttpProtocol => GlueResponse::PushError {
+                    code: "http_protocol_error",
+                    registry_version: 0,
+                },
+            };
+            let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
+                WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
+                WorkerProto::Http => encode_glue_response_http(&resp, buf),
+            });
+            if write_txs[w].send((slot_u64, encoder)).is_ok() {
+                *wake_workers |= 1u32 << (w & 31);
+            }
+        }
+    }
+}
+
 fn run_mio_event_loop(
     http_listener_std: std::net::TcpListener,
     tcp_listener_std: std::net::TcpListener,
@@ -916,12 +1034,21 @@ fn run_mio_event_loop(
         start_worker, NewClient, WorkerConfig, WorkerHandle, WorkerProto,
     };
     use beava_runtime_core::tcp_listener::TcpListener as MioTcpListener;
-    use beava_runtime_core::work_ring::{ParseErrorKind, RingItem};
+    use beava_runtime_core::work_ring::RingItem;
     use std::sync::atomic::Ordering as AOrdering;
 
     // Plan 18-04.7: record this thread as the apply thread. Test instrumentation
     // (iopool_observer) compares parse/encode call sites against this id.
     iopool_observer::set_apply_tid();
+
+    // Plan 12-08 (D-A): record the apply thread's pthread_t for per-thread CPU
+    // accounting. macOS uses `mach_thread_basic_info` via pthread_mach_thread_np;
+    // Linux uses `pthread_getcpuclockid`. Process-level rusage is unreliable
+    // here because it sums across apply + N IO workers + admin tokio workers.
+    {
+        let pid: libc::pthread_t = unsafe { libc::pthread_self() };
+        APPLY_PTHREAD_ID.store(pid as usize, std::sync::atomic::Ordering::Release);
+    }
 
     // ── Apply-thread EventLoop: just the two listeners + the worker waker ────
     // (Created BEFORE workers so we can register the apply-side waker with this
@@ -1033,81 +1160,55 @@ fn run_mio_event_loop(
 
     tracing::info!(target: "beava.server", "apply thread: dispatcher loop started");
 
-    // Plan 18-06 follow-up: busy-spin on `read_rx.try_recv()` to minimize the
-    // pickup gap from worker → apply (target: ~50–200 ns vs ~2 µs for the
-    // kqueue waker round-trip). Listener events get a non-blocking poll every
-    // `LISTENER_POLL_EVERY` iterations. After `IDLE_BACKOFF_THRESHOLD`
-    // consecutive empty drains we drop into a blocking `tick()` to save CPU
-    // when the server is genuinely idle — `apply_waker` pulls us back out the
-    // moment a worker pushes a new RingItem.
+    // Plan 12-08 (D-A): adaptive busy-poll on apply.
+    //
+    // The apply thread tight-spins on `read_rx.try_recv()` for up to
+    // `SPIN_BUDGET_K` consecutive empty iterations. After that it falls
+    // through to a single blocking `read_rx.recv_timeout(50µs)` — wakes
+    // immediately when a worker sends, otherwise returns Err(Timeout) so
+    // the apply core doesn't burn 100% CPU at no-load.
+    //
+    // The listener-poll cadence ALWAYS runs every `LISTENER_POLL_EVERY`
+    // iterations as a non-blocking `event_loop.tick(0)` — accept latency
+    // stays bounded regardless of read pressure. The 50ms blocking
+    // `tick(50ms)` shape that 12-07 shipped is removed; idleness now lives
+    // entirely on the channel side via recv_timeout.
+    //
+    // Pre-12-08: blocking `tick(50ms)` returned only on listener events or
+    // the `apply_waker` fired by workers. Apply could sit idle for tens of
+    // ms after the LAST event with no further wakeups (waker is
+    // edge-triggered; the previous-iteration drain consumed the edge).
+    // Post-12-08: `recv_timeout(50µs)` checks the channel directly with
+    // ~50ns response time at no-load, and 100% bypasses the kqueue waker
+    // round-trip on the hot path.
     const LISTENER_POLL_EVERY: u32 = 1024;
-    const IDLE_BACKOFF_THRESHOLD: u32 = 1024;
+    const SPIN_BUDGET_K: u32 = 10_000;
     let mut iter_counter: u32 = 0;
     let mut idle_iters: u32 = 0;
 
     loop {
         // ── 1. Drain read_rx — dispatch + encode + push to write_tx[w] ───────
         // Bounded drain: at most 1024 items per pass, then go check listeners
-        // so a steady client stream doesn't starve accept.
+        // so a steady client stream doesn't starve accept. (Wave 2 — D-D —
+        // removes this cap and switches to drain-until-empty.)
         const DRAIN_CAP: usize = 1024;
-        let mut drained = 0usize;
+        let mut drained: u64 = 0;
         // Track which workers got new write work this pass; one wake per
         // worker per pass is enough (waker is edge-triggered + idempotent).
         let mut wake_workers: u32 = 0;
-        while drained < DRAIN_CAP {
+        while drained < DRAIN_CAP as u64 {
             let item = match read_rx.try_recv() {
                 Ok(it) => it,
                 Err(_) => break,
             };
             drained += 1;
-            match item {
-                RingItem::Request {
-                    slot_idx,
-                    keep_alive: _,
-                    request,
-                    parsed_row,
-                } => {
-                    let responses = apply_shard.dispatch_wire_request_with_row(request, parsed_row);
-                    let slot_u64 = slot_idx as u64;
-                    let w = (slot_u64 as usize) % n_workers;
-                    for resp in responses {
-                        // Plan 18-06 follow-up: ship a closure that the worker
-                        // invokes to encode the response. The serde_json /
-                        // header-format / extend_from_slice work runs on the
-                        // worker thread, off the apply hot path. Apply only
-                        // pays the Box<FnOnce> alloc + channel send.
-                        let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
-                            WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
-                            WorkerProto::Http => encode_glue_response_http(&resp, buf),
-                        });
-                        if write_txs[w].send((slot_u64, encoder)).is_ok() {
-                            wake_workers |= 1u32 << (w & 31);
-                        }
-                    }
-                }
-                RingItem::ParseError { slot_idx, kind } => {
-                    use crate::runtime_core_glue::GlueResponse;
-                    let slot_u64 = slot_idx as u64;
-                    let w = (slot_u64 as usize) % n_workers;
-                    let resp = match kind {
-                        ParseErrorKind::TcpFrame => GlueResponse::PushError {
-                            code: "frame_error",
-                            registry_version: 0,
-                        },
-                        ParseErrorKind::HttpProtocol => GlueResponse::PushError {
-                            code: "http_protocol_error",
-                            registry_version: 0,
-                        },
-                    };
-                    let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
-                        WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
-                        WorkerProto::Http => encode_glue_response_http(&resp, buf),
-                    });
-                    if write_txs[w].send((slot_u64, encoder)).is_ok() {
-                        wake_workers |= 1u32 << (w & 31);
-                    }
-                }
-            }
+            dispatch_one_ring_item(
+                item,
+                &apply_shard,
+                &write_txs,
+                n_workers,
+                &mut wake_workers,
+            );
         }
         // Wake workers that received new write work in this pass. n_workers
         // is small (≤ ~32 by default_io_threads()); the bitmask + shift loop
@@ -1123,27 +1224,19 @@ fn run_mio_event_loop(
         // ── 2. Update idle/iter bookkeeping ──────────────────────────────────
         iter_counter = iter_counter.wrapping_add(1);
         if drained > 0 {
+            APPLY_MAX_DRAIN_PER_ITER.fetch_max(drained, std::sync::atomic::Ordering::Relaxed);
             idle_iters = 0;
         } else {
             idle_iters = idle_iters.saturating_add(1);
         }
 
-        // ── 3. Listener poll cadence ─────────────────────────────────────────
-        // Active path: every LISTENER_POLL_EVERY iters do a non-blocking
-        // `tick(0ms)` to handle accept without sleeping — apply stays in the
-        // tight try_recv loop the rest of the time.
-        // Idle path: after IDLE_BACKOFF_THRESHOLD consecutive empty drains
-        // we sleep in `tick(short timeout)` and rely on apply_waker
-        // (worker-fired) to interrupt as soon as work arrives.
-        let should_poll =
-            iter_counter % LISTENER_POLL_EVERY == 0 || idle_iters >= IDLE_BACKOFF_THRESHOLD;
-        if should_poll {
-            let timeout = if idle_iters >= IDLE_BACKOFF_THRESHOLD {
-                Some(Duration::from_millis(50))
-            } else {
-                Some(Duration::from_millis(0))
-            };
-            let tokens: Vec<mio::Token> = match event_loop.tick(timeout) {
+        // ── 3. Listener poll cadence (non-blocking) ──────────────────────────
+        // Plan 12-08 (D-A): listener poll is ALWAYS non-blocking. Idle backoff
+        // moved to the recv_timeout branch below. This way listener accepts
+        // never block on the channel, and channel recv never blocks on
+        // listener events.
+        if iter_counter % LISTENER_POLL_EVERY == 0 {
+            let tokens: Vec<mio::Token> = match event_loop.tick(Some(Duration::from_millis(0))) {
                 Ok(events) => events.map(|e| e.token()).collect(),
                 Err(e) => {
                     tracing::warn!("apply thread: poll error: {e}");
@@ -1171,14 +1264,58 @@ fn run_mio_event_loop(
                 } else if token == TOKEN_APPLY_WAKER {
                     // Worker pushed RingItems to read_rx; loop back to drain.
                     // No work needed here — the next iteration's drain pass
-                    // will process the items.
+                    // will process the items. (Pre-12-08 this token also
+                    // unblocked tick(50ms); post-12-08 the recv_timeout
+                    // branch handles the wake directly via the channel.)
                 }
                 // Client-token events stay on the workers' EventLoops; apply
                 // thread should never see them. Defensive: ignore unknown tokens.
             }
         }
 
-        // ── 4. Shutdown check ────────────────────────────────────────────────
+        // ── 4. Idle backoff via recv_timeout (D-A) ───────────────────────────
+        // After SPIN_BUDGET_K consecutive empty try_recv passes, give up CPU
+        // for at most 50µs by blocking on the channel. A worker push wakes
+        // us within ~50ns (channel signal is in-process; no kqueue/epoll
+        // syscall round-trip). On Timeout we re-enter the tight try_recv
+        // loop — listener poll cadence is unchanged.
+        if idle_iters >= SPIN_BUDGET_K {
+            APPLY_RECV_TIMEOUT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match read_rx.recv_timeout(Duration::from_micros(50)) {
+                Ok(item) => {
+                    let mut wake_one: u32 = 0;
+                    dispatch_one_ring_item(
+                        item,
+                        &apply_shard,
+                        &write_txs,
+                        n_workers,
+                        &mut wake_one,
+                    );
+                    if wake_one != 0 {
+                        for (w, waker) in worker_wakers.iter().enumerate() {
+                            if (wake_one >> (w & 31)) & 1 == 1 {
+                                let _ = waker.wake();
+                            }
+                        }
+                    }
+                    idle_iters = 0;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // Idle 50µs elapsed — fall back into the spin loop. Don't
+                    // reset idle_iters; we want to immediately re-enter
+                    // recv_timeout next iteration if still idle.
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    tracing::info!(
+                        target: "beava.server",
+                        "apply thread: read_rx disconnected (all workers gone), exiting"
+                    );
+                    break;
+                }
+            }
+        }
+
+        // ── 5. Shutdown check ────────────────────────────────────────────────
         if shutdown.load(AOrdering::Acquire) {
             tracing::info!(
                 target: "beava.server",
