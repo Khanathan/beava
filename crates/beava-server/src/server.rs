@@ -2091,4 +2091,58 @@ mod tests {
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::BindTcp { .. }));
     }
+
+    // ─── Plan 12-07 Wave 5 (RED) — TCP encoder for QueryResult / QueryNotFound ─
+
+    /// Plan 12-07 Task 5.a: encode_glue_response_tcp must emit OP_GET_RESPONSE
+    /// for QueryResult so that batched/single TCP /get clients can read back
+    /// the JSON body framed under the new opcode.
+    #[test]
+    fn test_encode_tcp_query_result_emits_op_get_response_frame() {
+        use crate::runtime_core_glue::GlueResponse;
+        use beava_core::wire::{decode_frame, CT_JSON, OP_GET_RESPONSE};
+
+        let mut buf = bytes::BytesMut::new();
+        let resp = GlueResponse::QueryResult {
+            body: bytes::Bytes::from_static(br#"{"value":42}"#),
+        };
+        encode_glue_response_tcp(&resp, &mut buf);
+        let frame = decode_frame(&mut buf, 4 * 1024 * 1024)
+            .expect("decode_frame")
+            .expect("complete frame");
+        assert_eq!(
+            frame.op, OP_GET_RESPONSE,
+            "expected OP_GET_RESPONSE (0x0023), got {:#06x}",
+            frame.op
+        );
+        assert_eq!(frame.content_type, CT_JSON);
+        assert_eq!(frame.payload.as_ref(), br#"{"value":42}"#);
+    }
+
+    /// Plan 12-07 Task 5.a: QueryNotFound emits an OP_ERROR_RESPONSE frame
+    /// whose payload carries the error code.
+    #[test]
+    fn test_encode_tcp_query_not_found_emits_error_response() {
+        use crate::runtime_core_glue::GlueResponse;
+        use beava_core::wire::{decode_frame, OP_ERROR_RESPONSE};
+
+        let mut buf = bytes::BytesMut::new();
+        let resp = GlueResponse::QueryNotFound {
+            code: "key_not_found",
+        };
+        encode_glue_response_tcp(&resp, &mut buf);
+        let frame = decode_frame(&mut buf, 4 * 1024 * 1024)
+            .expect("decode_frame")
+            .expect("complete frame");
+        assert_eq!(
+            frame.op, OP_ERROR_RESPONSE,
+            "expected OP_ERROR_RESPONSE for QueryNotFound, got {:#06x}",
+            frame.op
+        );
+        let payload_str = std::str::from_utf8(&frame.payload).expect("utf8 payload");
+        assert!(
+            payload_str.contains("key_not_found"),
+            "payload must carry error code, got: {payload_str}"
+        );
+    }
 }
