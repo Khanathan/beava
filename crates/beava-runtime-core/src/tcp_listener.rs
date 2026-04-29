@@ -1124,4 +1124,105 @@ mod tests {
             other => panic!("expected TcpPush, got {other:?}"),
         }
     }
+
+    // ─── Plan 12-07 Wave 2 Task 2.a (RED): OP_GET / OP_MGET / OP_GET_MULTI parser ───
+
+    /// Build a frame with explicit content_type. Mirrors `make_frame` but lets
+    /// the caller specify CT_JSON / CT_MSGPACK / arbitrary byte for negative tests.
+    fn make_frame_ct(op: u16, ct: u8, payload: impl Into<Bytes>) -> BytesMut {
+        let frame = Frame::new(op, ct, payload.into());
+        let mut buf = BytesMut::new();
+        encode_frame(&frame, &mut buf);
+        buf
+    }
+
+    #[test]
+    fn parse_op_get_json_yields_tcp_get() {
+        use beava_core::wire::OP_GET;
+        let payload = br#"{"feature":"cnt","key":"alice"}"#;
+        let mut buf = make_frame_ct(OP_GET, CT_JSON, Bytes::copy_from_slice(payload));
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no error")
+            .expect("complete frame");
+        match req {
+            WireRequest::TcpGet { body, body_format } => {
+                assert_eq!(body.as_ref(), payload, "body bytes preserved");
+                assert_eq!(body_format, CT_JSON);
+            }
+            other => panic!("expected TcpGet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_op_get_msgpack_yields_tcp_get() {
+        use beava_core::wire::{CT_MSGPACK, OP_GET};
+        // Sentinel msgpack byte (a fixmap of 0 entries: 0x80). Parser doesn't
+        // deserialize the body — that happens at dispatch time — so any non-empty
+        // payload is fine.
+        let payload = &[0x80u8][..];
+        let mut buf = make_frame_ct(OP_GET, CT_MSGPACK, Bytes::copy_from_slice(payload));
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no error")
+            .expect("complete frame");
+        match req {
+            WireRequest::TcpGet { body, body_format } => {
+                assert_eq!(body.as_ref(), payload);
+                assert_eq!(body_format, CT_MSGPACK);
+            }
+            other => panic!("expected TcpGet (msgpack), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_op_mget_json_yields_tcp_mget() {
+        use beava_core::wire::OP_MGET;
+        let payload = br#"{"feature":"cnt","keys":["alice","bob"]}"#;
+        let mut buf = make_frame_ct(OP_MGET, CT_JSON, Bytes::copy_from_slice(payload));
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no error")
+            .expect("complete frame");
+        match req {
+            WireRequest::TcpMGet { body, body_format } => {
+                assert_eq!(body.as_ref(), payload);
+                assert_eq!(body_format, CT_JSON);
+            }
+            other => panic!("expected TcpMGet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_op_get_multi_json_yields_tcp_get_multi() {
+        use beava_core::wire::OP_GET_MULTI;
+        let payload = br#"{"keys":["alice","bob"],"features":["cnt","sum"]}"#;
+        let mut buf = make_frame_ct(OP_GET_MULTI, CT_JSON, Bytes::copy_from_slice(payload));
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no error")
+            .expect("complete frame");
+        match req {
+            WireRequest::TcpGetMulti { body, body_format } => {
+                assert_eq!(body.as_ref(), payload);
+                assert_eq!(body_format, CT_JSON);
+            }
+            other => panic!("expected TcpGetMulti, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_op_get_unsupported_ct_yields_parse_error() {
+        use beava_core::wire::OP_GET;
+        let payload = b"{}";
+        let mut buf = make_frame_ct(OP_GET, 0x99, Bytes::copy_from_slice(payload));
+        let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
+            .expect("no error")
+            .expect("complete frame");
+        match req {
+            WireRequest::ParseError { reason } => {
+                assert!(
+                    reason.contains("unsupported content_type"),
+                    "expected unsupported content_type reason, got {reason}"
+                );
+            }
+            other => panic!("expected ParseError, got {other:?}"),
+        }
+    }
 }
