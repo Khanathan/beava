@@ -193,8 +193,9 @@ fn test_no_write_join_all_apply_doesnt_wait() {
     let start = std::time::Instant::now();
     for _ in 0..1000 {
         let p = payload.clone();
+        // Plan 12-08 (D-C): WriteEncoder now takes a `&BytesMutPool` too.
         let encoder: beava_runtime_core::io_thread_worker::WriteEncoder =
-            Box::new(move |_proto, buf| {
+            Box::new(move |_proto, _pool, buf| {
                 buf.extend_from_slice(&p);
             });
         write_txs[0].send((0u64, encoder)).expect("write_tx send");

@@ -20,6 +20,7 @@
 //! The apply thread assigns clients deterministically: `slot_idx % N_workers`.
 //! This is enforced by the apply thread; the worker trusts the assignment.
 
+use crate::bytes_pool::BytesMutPool;
 use crate::io_backend::{IoBackend, IoEvent, MioTcpStream, WakerHandle};
 use crate::wire_request::WireRequest;
 use crate::work_ring::{ParseErrorKind, RingItem};
@@ -46,12 +47,21 @@ pub enum WorkerProto {
 ///
 /// Apply thread builds the closure with the typed response captured by move
 /// and ships it through `write_rx`. The worker invokes the closure with the
-/// client's protocol and a mutable reference to the client's `write_buf` —
-/// JSON serialization + HTTP/TCP framing happen on the worker, not apply.
+/// client's protocol, a handle to its `BytesMutPool`, and a mutable reference
+/// to the client's `write_buf` — JSON serialization + HTTP/TCP framing
+/// happen on the worker, not apply.
 ///
 /// `FnOnce` is appropriate because each closure encodes exactly one response.
 /// `Send + 'static` is required for crossbeam channels.
-pub type WriteEncoder = Box<dyn FnOnce(WorkerProto, &mut bytes::BytesMut) + Send + 'static>;
+///
+/// Plan 12-08 (D-C): the encoder now takes a `&BytesMutPool` so it can
+/// acquire a pre-sized pool buffer for the encode work, fill it, then
+/// extend `client_write_buf` from it and release the pool buffer back.
+/// Net effect on the steady-state hot path: the per-response
+/// `BytesMut::with_capacity(4096)` allocator hit is gone (pool recycles
+/// after the first ~256 responses warm the pool).
+pub type WriteEncoder =
+    Box<dyn FnOnce(WorkerProto, &BytesMutPool, &mut bytes::BytesMut) + Send + 'static>;
 
 /// A new client handed from the apply thread to a worker.
 pub struct NewClient {
@@ -92,11 +102,13 @@ pub struct WorkerConfig {
     pub read_tx: Sender<RingItem>,
     /// Channel from apply thread carrying `(slot_idx, encoder)` write jobs.
     ///
-    /// Plan 18-06 follow-up: encode is now a closure that runs on the worker
-    /// thread (the worker calls `encoder(proto, &mut client.write_buf)`).
-    /// This moves response encoding off the apply hot path — apply just
-    /// boxes the encoder closure with the response captured by move and
-    /// the worker pays the JSON serialization + frame-header cost.
+    /// Plan 18-06 follow-up + Plan 12-08 (D-C): encode is a closure that runs
+    /// on the worker thread (the worker calls
+    /// `encoder(proto, &pool, &mut client.write_buf)`). This moves response
+    /// encoding off the apply hot path — apply just boxes the encoder
+    /// closure with the response captured by move; the worker pays the JSON
+    /// serialization + frame-header cost AND the BytesMut allocation is
+    /// served from a per-worker pool (no malloc on the steady-state hot path).
     pub write_rx: Receiver<(u64, WriteEncoder)>,
     /// Channel from apply thread carrying new clients to register.
     pub new_client_rx: Receiver<NewClient>,
@@ -247,6 +259,14 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
     // Idle poll timeout: 1 second. Waker interrupts this for hot paths.
     const IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 
+    // Plan 12-08 (D-C): per-worker BytesMutPool. Sized for typical fraud-team
+    // batch response (~3-5 KiB JSON); 256 cap = 1 MiB per worker; 4096
+    // capacity each. NOT shared across workers — each worker constructs its
+    // own pool here so there's no cross-thread contention on acquire/release.
+    const POOL_CAP: usize = 256;
+    const POOL_BUF_CAPACITY: usize = 4096;
+    let pool = BytesMutPool::new(POOL_CAP, POOL_BUF_CAPACITY);
+
     let mut events: Vec<IoEvent> = Vec::with_capacity(64);
     let mut clients: HashMap<u64, WorkerClient> = HashMap::new();
 
@@ -262,11 +282,17 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
         // Plan 18-06 follow-up: encoder runs HERE (worker thread), not on
         // apply. JSON serialization + frame headers happen off the apply
         // hot path. The closure was built on apply with the response
-        // captured by move; we just hand it the proto + buffer.
+        // captured by move; we just hand it the proto + pool + buffer.
+        //
+        // Plan 12-08 (D-C): the encoder uses `pool` to acquire a pre-sized
+        // BytesMut, fills it with the framed response, extends `c.write_buf`
+        // from the pool buffer, then releases the pool buffer back. Zero
+        // per-response BytesMut::with_capacity calls on the steady-state
+        // hot path.
         while let Ok((slot, encoder)) = write_rx.try_recv() {
             if let Some(c) = clients.get_mut(&slot) {
                 let proto = c.proto;
-                encoder(proto, &mut c.write_buf);
+                encoder(proto, &pool, &mut c.write_buf);
                 // Arm WRITABLE interest so the backend fires Writable events.
                 backend.set_interest_writable(slot, true);
             }

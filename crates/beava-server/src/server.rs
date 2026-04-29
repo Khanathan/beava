@@ -981,6 +981,11 @@ type ResponseBatchEntry = (
 /// elapsed. `batch_started_at` is set on the FIRST push into an empty batch
 /// so the timer starts from "first response of this batch", not "last drain
 /// pass".
+///
+/// Wave 4 (D-C): the encoder closure now takes a `&BytesMutPool` from the
+/// worker side; it acquires a pool buffer, encodes the framed response into
+/// it, extends `client_write_buf` from the pool buffer (reuses the
+/// allocation), then releases the pool buffer back.
 #[inline]
 fn dispatch_one_ring_item(
     item: beava_runtime_core::work_ring::RingItem,
@@ -1003,9 +1008,14 @@ fn dispatch_one_ring_item(
             let slot_u64 = slot_idx as u64;
             let w = (slot_u64 as usize) % n_workers;
             for resp in responses {
-                let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
-                    WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
-                    WorkerProto::Http => encode_glue_response_http(&resp, buf),
+                let encoder: WriteEncoder = Box::new(move |proto, pool, client_buf| {
+                    let mut tmp = pool.acquire();
+                    match proto {
+                        WorkerProto::Tcp => encode_glue_response_tcp(&resp, &mut tmp),
+                        WorkerProto::Http => encode_glue_response_http(&resp, &mut tmp),
+                    }
+                    client_buf.extend_from_slice(&tmp);
+                    pool.release(tmp);
                 });
                 if batch_started_at.is_none() {
                     *batch_started_at = Some(Instant::now());
@@ -1027,9 +1037,14 @@ fn dispatch_one_ring_item(
                     registry_version: 0,
                 },
             };
-            let encoder: WriteEncoder = Box::new(move |proto, buf| match proto {
-                WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
-                WorkerProto::Http => encode_glue_response_http(&resp, buf),
+            let encoder: WriteEncoder = Box::new(move |proto, pool, client_buf| {
+                let mut tmp = pool.acquire();
+                match proto {
+                    WorkerProto::Tcp => encode_glue_response_tcp(&resp, &mut tmp),
+                    WorkerProto::Http => encode_glue_response_http(&resp, &mut tmp),
+                }
+                client_buf.extend_from_slice(&tmp);
+                pool.release(tmp);
             });
             if batch_started_at.is_none() {
                 *batch_started_at = Some(Instant::now());
@@ -1407,6 +1422,17 @@ fn run_mio_event_loop(
         // — the recv_timeout might block for the full 50µs and we don't want
         // to delay queued responses by another 50µs while our own apply
         // thread is idle.
+        //
+        // Listener cross-wake (D-A correctness fix, observed 2026-04-29):
+        // Pre-12-08 the apply thread blocked on `event_loop.tick(50ms)` so
+        // listener events (accept) and apply_waker fired on the SAME blocking
+        // primitive. Post-12-08 it blocks on `recv_timeout` (channel-side),
+        // which the listener event_loop can't wake. Without an explicit
+        // listener-poll on each idle backoff, accept latency under sparse
+        // load grows to LISTENER_POLL_EVERY × recv_timeout duration ≈ 50 ms
+        // (1024 × 50 µs). That's a 1000× regression on first-connection
+        // latency. Mitigation: do a non-blocking `event_loop.tick(0)` here
+        // BEFORE the recv_timeout. Cheap (~1 µs syscall) and bounded.
         if idle_iters >= SPIN_BUDGET_K {
             if !response_batch.is_empty() {
                 flush_response_batch(
@@ -1416,6 +1442,28 @@ fn run_mio_event_loop(
                     &worker_wakers,
                     n_workers,
                 );
+            }
+            // Drain pending listener events before blocking.
+            if let Ok(events) = event_loop.tick(Some(Duration::from_millis(0))) {
+                for token in events.map(|e| e.token()) {
+                    if token == TOKEN_HTTP_LISTENER {
+                        accept_clients_to_workers(
+                            &mut http_listener,
+                            WorkerProto::Http,
+                            &workers,
+                            &mut slot_proto,
+                            &mut accept_seq,
+                        );
+                    } else if token == TOKEN_TCP_LISTENER {
+                        accept_clients_to_workers(
+                            &mut tcp_listener,
+                            WorkerProto::Tcp,
+                            &workers,
+                            &mut slot_proto,
+                            &mut accept_seq,
+                        );
+                    }
+                }
             }
             APPLY_RECV_TIMEOUT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match read_rx.recv_timeout(Duration::from_micros(50)) {
