@@ -104,6 +104,16 @@ struct Cli {
     #[arg(long)]
     no_ledger: bool,
 
+    /// Connect to an existing remote beava server instead of binding our
+    /// own ServerV18. Format: `host:http_port,host:tcp_port` (e.g.
+    /// `127.0.0.1:8080,127.0.0.1:8081`). When set, the bench skips
+    /// ServerV18::bind, /register (assumes pipeline already registered),
+    /// and pre-warm; just runs the workload. Used to measure server-side
+    /// throughput with multiple bench client processes pointing at one
+    /// server (escapes per-process glibc mmap_lock contention).
+    #[arg(long)]
+    remote_addr: Option<String>,
+
     /// TCP pipeline depth — caps inflight pushes per worker connection.
     /// In burst mode (--continuous-pipeline=false), each batch sends N
     /// pushes back-to-back then reads N acks. In continuous mode (default),
@@ -331,44 +341,64 @@ async fn main() -> Result<()> {
         cli.total_events,
     );
 
-    // Bind ServerV18 directly — no TestServer.
-    let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let sv18 = ServerV18::bind(any, any, any)
-        .await
-        .context("ServerV18::bind")?;
+    // Either bind a local ServerV18 OR connect to an existing remote one.
+    // The latter is the "many bench clients, one server" mode used to escape
+    // the per-process glibc mmap_lock contention that caps in-process push EPS.
+    let (http_addr, tcp_addr, _local_server_handles) = if let Some(remote) = &cli.remote_addr {
+        let parts: Vec<&str> = remote.split(',').collect();
+        anyhow::ensure!(parts.len() == 2, "--remote-addr expects \"host:http_port,host:tcp_port\", got {:?}", remote);
+        let http: std::net::SocketAddr = parts[0]
+            .parse()
+            .with_context(|| format!("parse remote http addr {:?}", parts[0]))?;
+        let tcp: std::net::SocketAddr = parts[1]
+            .parse()
+            .with_context(|| format!("parse remote tcp addr {:?}", parts[1]))?;
+        eprintln!("beava-bench-v18: REMOTE mode http={} tcp={} (skipping bind/register/prewarm)", http, tcp);
+        (http, tcp, None)
+    } else {
+        let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let sv18 = ServerV18::bind(any, any, any)
+            .await
+            .context("ServerV18::bind")?;
 
-    let http_addr = sv18.http_addr();
-    let tcp_addr = sv18.tcp_addr();
+        let http_addr = sv18.http_addr();
+        let tcp_addr = sv18.tcp_addr();
 
-    eprintln!(
-        "beava-bench-v18: bound http={} tcp={} admin={}",
-        http_addr,
-        tcp_addr,
-        sv18.admin_addr()
-    );
+        eprintln!(
+            "beava-bench-v18: bound http={} tcp={} admin={}",
+            http_addr,
+            tcp_addr,
+            sv18.admin_addr()
+        );
 
-    // Serve on a tokio task with a oneshot shutdown signal.
-    let wal_dir = tempfile::tempdir().context("wal tempdir")?;
-    let snap_dir = tempfile::tempdir().context("snap tempdir")?;
+        let wal_dir = tempfile::tempdir().context("wal tempdir")?;
+        let snap_dir = tempfile::tempdir().context("snap tempdir")?;
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let wal_path = wal_dir.path().to_path_buf();
-    let snap_path = snap_dir.path().to_path_buf();
-    let serve_task = tokio::spawn(async move {
-        sv18.serve_with_dirs(
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            wal_path,
-            snap_path,
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let wal_path = wal_dir.path().to_path_buf();
+        let snap_path = snap_dir.path().to_path_buf();
+        let serve_task = tokio::spawn(async move {
+            sv18.serve_with_dirs(
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                wal_path,
+                snap_path,
+            )
+            .await
+        });
+
+        // Hold dirs + shutdown so they outlive the bench (drop closes them).
+        (
+            http_addr,
+            tcp_addr,
+            Some((wal_dir, snap_dir, shutdown_tx, serve_task)),
         )
-        .await
-    });
+    };
 
     // Wait for the server to start accepting.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    // Register the pipeline via HTTP (register is always HTTP regardless of transport).
     let http_base = format!("http://{}", http_addr);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -376,23 +406,24 @@ async fn main() -> Result<()> {
         .build()
         .context("build reqwest client")?;
 
-    let reg_resp = client
-        .post(format!("{http_base}/register"))
-        .header("Content-Type", "application/json")
-        .body(pipeline.register.to_string())
-        .send()
-        .await
-        .context("register request")?;
-    let reg_status = reg_resp.status();
-    let reg_body = reg_resp.text().await.unwrap_or_default();
-    anyhow::ensure!(
-        reg_status.is_success(),
-        "register failed: status={reg_status} body={reg_body}"
-    );
-    eprintln!("beava-bench-v18: registered pipeline OK ({})", reg_status);
+    if cli.remote_addr.is_none() {
+        // Local server — register pipeline + pre-warm.
+        let reg_resp = client
+            .post(format!("{http_base}/register"))
+            .header("Content-Type", "application/json")
+            .body(pipeline.register.to_string())
+            .send()
+            .await
+            .context("register request")?;
+        let reg_status = reg_resp.status();
+        let reg_body = reg_resp.text().await.unwrap_or_default();
+        anyhow::ensure!(
+            reg_status.is_success(),
+            "register failed: status={reg_status} body={reg_body}"
+        );
+        eprintln!("beava-bench-v18: registered pipeline OK ({})", reg_status);
 
-    // Pre-warm: 100 events serially before timed run.
-    {
+        // Pre-warm: 100 events serially before timed run.
         let mut rng = sampling_rng(cli.seed ^ 0xDEAD);
         for i in 0..100_u64 {
             let body = make_event_payload(&pipeline, i, &mut rng);
@@ -403,8 +434,10 @@ async fn main() -> Result<()> {
                 .send()
                 .await;
         }
+        eprintln!("beava-bench-v18: pre-warm done");
+    } else {
+        eprintln!("beava-bench-v18: REMOTE mode — skipping pipeline register + pre-warm (assumed already done)");
     }
-    eprintln!("beava-bench-v18: pre-warm done");
 
     // Run the workload.
     let result = run_workload(
@@ -454,9 +487,11 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Shutdown.
-    let _ = shutdown_tx.send(());
-    let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
+    // Shutdown — only when we own the local server.
+    if let Some((_wal_dir, _snap_dir, shutdown_tx, serve_task)) = _local_server_handles {
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
+    }
 
     Ok(())
 }
