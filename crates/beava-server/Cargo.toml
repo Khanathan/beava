@@ -156,6 +156,12 @@ path = "tests/phase18_05_continuous_workers_test.rs"
 name = "wal_env_var_tunables"
 path = "tests/wal_env_var_tunables.rs"
 
+# ─── Plan 12-07 — read path on mio (HTTP + TCP) ─────────────────────────────
+[[test]]
+name = "phase12_07_tcp_get_test"
+path = "tests/phase12_07_tcp_get_test.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
