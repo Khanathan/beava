@@ -12,6 +12,11 @@ progress:
   percent: 77
 ---
 
+<!-- Session continuity (resume) -->
+<!-- Last session: 2026-04-29 — resumed via /gsd-resume-work; routing to /gsd-execute-phase 12 (Plan 12-08 first) -->
+<!-- Stopped at: Plan 12-07 SHIPPED; 12-08/09/10 written-not-executed; HANDOFF.json consumed -->
+
+
 # State: Beava v2 — v0 OSS Launch
 
 **Project reference:** `.planning/PROJECT.md`
