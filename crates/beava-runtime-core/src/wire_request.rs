@@ -48,6 +48,23 @@ pub enum WireRequest {
     HttpGet { body: Bytes },
     /// HTTP GET /get/:feature/:key — single feature read.
     HttpGetSingle { feature: String, key: String },
+    /// OP_GET (0x0020) — TCP single-key feature read (Plan 12-07).
+    ///
+    /// `body` is the JSON or MsgPack payload encoding `{feature, key}`;
+    /// `body_format` is `beava_core::wire::CT_JSON` (0x01) or `CT_MSGPACK` (0x02).
+    /// The actual deserialisation happens at dispatch time in
+    /// `beava_server::runtime_core_glue::dispatch_get_*` so the wire crate
+    /// stays serialiser-agnostic.
+    TcpGet { body: Bytes, body_format: u8 },
+    /// OP_MGET (0x0021) — TCP batched single-feature multi-key read (Plan 12-07).
+    ///
+    /// `body` payload encodes `{feature: <name>, keys: [...]}`; same content_type rules.
+    TcpMGet { body: Bytes, body_format: u8 },
+    /// OP_GET_MULTI (0x0022) — TCP batched multi-feature multi-key read (Plan 12-07).
+    ///
+    /// `body` payload encodes `{keys: [...], features: [...]}` (mirrors HTTP /get);
+    /// same content_type rules.
+    TcpGetMulti { body: Bytes, body_format: u8 },
     /// HTTP POST /upsert/:table — table upsert.
     HttpUpsert { table: String, body: Bytes },
     /// HTTP POST /delete/:table — table tombstone.

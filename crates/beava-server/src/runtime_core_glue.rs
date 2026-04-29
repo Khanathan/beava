@@ -152,7 +152,16 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
             GlueResponse::Unsupported
         }
 
-        WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => GlueResponse::Unsupported,
+        // Plan 12-07: TCP GET/MGET/GET_MULTI dispatch only via the mio-side
+        // ApplyShard sync path (apply_shard.rs). The legacy async path here is
+        // admin-only post-Phase-18; route the new variants to Unsupported to
+        // preserve exhaustiveness without dragging the sync GET helpers into
+        // the async path.
+        WireRequest::Unknown { .. }
+        | WireRequest::ParseError { .. }
+        | WireRequest::TcpGet { .. }
+        | WireRequest::TcpMGet { .. }
+        | WireRequest::TcpGetMulti { .. } => GlueResponse::Unsupported,
     }
 }
 

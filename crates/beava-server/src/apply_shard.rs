@@ -233,9 +233,14 @@ impl ApplyShard {
             | WireRequest::HttpDelete { .. }
             | WireRequest::HttpRetract { .. } => GlueResponse::Unsupported,
 
-            WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => {
-                GlueResponse::Unsupported
-            }
+            // Plan 12-07: TCP GET/MGET/GET_MULTI variants land in Wave 3.
+            // Until then keep them in the catch-all so workspace stays exhaustive.
+            // Wave 3 task 3.b moves TcpGet/TcpMGet/TcpGetMulti into dedicated arms.
+            WireRequest::Unknown { .. }
+            | WireRequest::ParseError { .. }
+            | WireRequest::TcpGet { .. }
+            | WireRequest::TcpMGet { .. }
+            | WireRequest::TcpGetMulti { .. } => GlueResponse::Unsupported,
         }
     }
 
