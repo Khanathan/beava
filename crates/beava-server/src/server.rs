@@ -1644,7 +1644,7 @@ fn encode_glue_response_tcp(
     buf: &mut bytes::BytesMut,
 ) {
     use crate::runtime_core_glue::GlueResponse;
-    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
+    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_GET_RESPONSE, OP_PING, OP_PUSH};
 
     match resp {
         GlueResponse::Pong { .. } => {
@@ -1676,6 +1676,19 @@ fn encode_glue_response_tcp(
         }
         GlueResponse::PushError { code, .. } => {
             let body = serde_json::json!({"code": code});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        }
+        // Plan 12-07 Wave 5: TCP /get response framing.
+        // Echo back the (already-serialised) JSON body framed as
+        // OP_GET_RESPONSE = 0x0023. FIFO correlation on the connection
+        // ties this frame to its originating OP_GET / OP_MGET / OP_GET_MULTI
+        // request — Redis-style strict-FIFO ordering, no request_id needed.
+        GlueResponse::QueryResult { body } => {
+            encode_tcp_frame_bytes(OP_GET_RESPONSE, CT_JSON, body, buf);
+        }
+        GlueResponse::QueryNotFound { code } => {
+            let body = serde_json::json!({"error": {"code": code}});
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
