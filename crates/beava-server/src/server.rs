@@ -404,6 +404,17 @@ impl ServerV18 {
                 source: e,
             })?;
         let http_bound = http_listener.local_addr().map_err(ServerError::Serve)?;
+        // Plan 12-09: emit `server.http_bound` log line (parsed by
+        // python/tests/conftest.py beava_server fixture + read_bench.py to
+        // discover the OS-assigned port when listen_addr=127.0.0.1:0).
+        // ServerV18::bind didn't emit this in Plan 12-07; tests that use the
+        // env-var override pattern need it.
+        tracing::info!(
+            target: "beava.server",
+            kind = "server.http_bound",
+            addr = %http_bound,
+            "HTTP server bound (ServerV18)"
+        );
 
         let tcp_listener =
             std::net::TcpListener::bind(tcp_addr).map_err(|e| ServerError::BindTcp {
@@ -419,6 +430,14 @@ impl ServerV18 {
                 source: e,
             })?;
         let tcp_bound = tcp_listener.local_addr().map_err(ServerError::Serve)?;
+        // Plan 12-09: emit `server.tcp_bound` log line (parsed by
+        // python/tests/conftest.py beava_server fixture).
+        tracing::info!(
+            target: "beava.server",
+            kind = "server.tcp_bound",
+            addr = %tcp_bound,
+            "TCP wire listener bound (ServerV18)"
+        );
 
         // Bind admin (tokio/axum).
         let snapshot = std::sync::Arc::new(std::sync::RwLock::new(
