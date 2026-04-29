@@ -228,19 +228,85 @@ impl ApplyShard {
                 crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body)
             }
 
+            // ─── TCP /get (single) — Plan 12-07 Wave 3 ───────────────────────
+            // Body parses to {"feature": "<name>", "key": "<key>"} (CT_JSON shape
+            // for v0; CT_MSGPACK is reserved for Plan 12-08+ when MsgPack body
+            // parsing for query lands).
+            WireRequest::TcpGet {
+                body,
+                body_format: _,
+            } => {
+                #[derive(serde::Deserialize)]
+                struct TcpGetReq {
+                    feature: String,
+                    key: String,
+                }
+                let req: TcpGetReq = match serde_json::from_slice(&body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return GlueResponse::InternalError {
+                            reason: e.to_string(),
+                        }
+                    }
+                };
+                crate::runtime_core_glue::dispatch_get_single_sync(
+                    &self.state,
+                    &req.feature,
+                    &req.key,
+                )
+            }
+
+            // ─── TCP /mget (single feature, multi key) — Plan 12-07 Wave 3 ───
+            // Body parses to {"feature": "<name>", "keys": [...]}. Materialise as
+            // a batch with a single-feature list and reuse dispatch_get_batch_sync.
+            WireRequest::TcpMGet {
+                body,
+                body_format: _,
+            } => {
+                #[derive(serde::Deserialize)]
+                struct TcpMGetReq {
+                    feature: String,
+                    keys: Vec<String>,
+                }
+                let req: TcpMGetReq = match serde_json::from_slice(&body) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return GlueResponse::InternalError {
+                            reason: e.to_string(),
+                        }
+                    }
+                };
+                let batch_body = serde_json::json!({
+                    "keys": req.keys,
+                    "features": [req.feature],
+                });
+                let batch_bytes = match serde_json::to_vec(&batch_body) {
+                    Ok(b) => bytes::Bytes::from(b),
+                    Err(e) => {
+                        return GlueResponse::InternalError {
+                            reason: e.to_string(),
+                        }
+                    }
+                };
+                crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &batch_bytes)
+            }
+
+            // ─── TCP /get-multi (multi feature, multi key) — Plan 12-07 Wave 3 ──
+            // Body shape mirrors HTTP /get: {"keys": [...], "features": [...]}.
+            // Reuse dispatch_get_batch_sync directly.
+            WireRequest::TcpGetMulti {
+                body,
+                body_format: _,
+            } => crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body),
+
             // ─── Upsert / delete / retract (table ops — not on hot path) ──────
             WireRequest::HttpUpsert { .. }
             | WireRequest::HttpDelete { .. }
             | WireRequest::HttpRetract { .. } => GlueResponse::Unsupported,
 
-            // Plan 12-07: TCP GET/MGET/GET_MULTI variants land in Wave 3.
-            // Until then keep them in the catch-all so workspace stays exhaustive.
-            // Wave 3 task 3.b moves TcpGet/TcpMGet/TcpGetMulti into dedicated arms.
-            WireRequest::Unknown { .. }
-            | WireRequest::ParseError { .. }
-            | WireRequest::TcpGet { .. }
-            | WireRequest::TcpMGet { .. }
-            | WireRequest::TcpGetMulti { .. } => GlueResponse::Unsupported,
+            WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => {
+                GlueResponse::Unsupported
+            }
         }
     }
 
