@@ -1255,3 +1255,10 @@ Pre-12-08 Hetzner baseline (from Phase 19.4 §1M-event blast): small/tcp
 **Regression thresholds (Phase 13+):** 10% slow on small/tcp (regression-gate
 cell) = WARN; 25% slow = BLOCKER. Apply against the **707,237 EPS post-12-08
 baseline** for Apple-M4 hw-class.
+
+## Phase 12-09 — TCP /get msgpack default (Apple-M4)
+
+TODO: rebaseline pending Plan 12-09 Wave 7.d run. Will populate after
+the throughput matrix `(small, fraud-team) × (tcp+msgpack, tcp+json,
+http+json) × /get` cells are measured via `python/benches/read_bench_tcp.py`
++ `python/benches/read_bench.py`.
