@@ -53,8 +53,14 @@ pub enum GlueResponse {
         code: &'static str,
         registry_version: u32,
     },
-    /// Feature query result (JSON-encoded `{"value": ...}` or batch result).
-    QueryResult { body: Bytes },
+    /// Feature query result (`{"value": ...}` or batch result).
+    ///
+    /// `format` is the wire content_type byte of the response payload — Plan 12-09:
+    /// `CT_JSON` (HTTP path always; TCP /get when caller sent CT_JSON) or
+    /// `CT_MSGPACK` (TCP /get when caller sent CT_MSGPACK). The HTTP encoder
+    /// IGNORES this byte and always emits `Content-Type: application/json`
+    /// (locked decision D-D — HTTP /get is JSON-only).
+    QueryResult { body: Bytes, format: u8 },
     /// Feature not found or key not found.
     QueryNotFound { code: &'static str },
     /// Internal error (serialisation failure, etc.)
@@ -141,10 +147,13 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
         }
 
         // ─── GET single feature/key ───────────────────────────────────────────
-        WireRequest::HttpGetSingle { feature, key } => dispatch_get_single(app, &feature, &key),
+        // Plan 12-09: HTTP path always passes CT_JSON (D-D — HTTP /get is JSON-only).
+        WireRequest::HttpGetSingle { feature, key } => {
+            dispatch_get_single(app, &feature, &key, beava_core::wire::CT_JSON)
+        }
 
         // ─── GET batch ────────────────────────────────────────────────────────
-        WireRequest::HttpGet { body } => dispatch_get_batch(app, &body),
+        WireRequest::HttpGet { body } => dispatch_get_batch(app, &body, beava_core::wire::CT_JSON),
 
         // ─── Upsert / delete / retract ────────────────────────────────────────
         WireRequest::HttpUpsert { .. }
@@ -201,7 +210,24 @@ async fn dispatch_push(
 
 // ─── Query helpers ────────────────────────────────────────────────────────────
 
-fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueResponse {
+fn dispatch_get_single(
+    app: &Arc<AppState>,
+    feature: &str,
+    key: &str,
+    body_format: u8,
+) -> GlueResponse {
+    use beava_core::wire::{CT_JSON, CT_MSGPACK};
+    // Validate body_format upfront — single-key path doesn't parse a body, but
+    // we must reject unsupported codecs before stamping a bogus format byte on
+    // QueryResult.
+    match body_format {
+        CT_JSON | CT_MSGPACK => {}
+        other => {
+            return GlueResponse::InternalError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            };
+        }
+    }
     let registry = &app.dev_agg.registry;
 
     let query_time_ms = {
@@ -244,13 +270,17 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
         return match value_opt {
             Some(v) => {
                 let json_val = serde_json::json!({ "value": value_to_json(v) });
-                match serde_json::to_vec(&json_val) {
+                let resp_bytes_res: Result<Vec<u8>, String> = match body_format {
+                    CT_JSON => serde_json::to_vec(&json_val).map_err(|e| e.to_string()),
+                    CT_MSGPACK => rmp_serde::to_vec_named(&json_val).map_err(|e| e.to_string()),
+                    _ => unreachable!("validated above"),
+                };
+                match resp_bytes_res {
                     Ok(b) => GlueResponse::QueryResult {
                         body: Bytes::from(b),
+                        format: body_format,
                     },
-                    Err(e) => GlueResponse::InternalError {
-                        reason: e.to_string(),
-                    },
+                    Err(reason) => GlueResponse::InternalError { reason },
                 }
             }
             None => GlueResponse::QueryNotFound {
@@ -291,13 +321,18 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
                 code: "key_not_found",
             };
         }
-        return match serde_json::to_vec(&serde_json::Value::Object(result)) {
+        let json_val = serde_json::Value::Object(result);
+        let resp_bytes_res: Result<Vec<u8>, String> = match body_format {
+            CT_JSON => serde_json::to_vec(&json_val).map_err(|e| e.to_string()),
+            CT_MSGPACK => rmp_serde::to_vec_named(&json_val).map_err(|e| e.to_string()),
+            _ => unreachable!("validated above"),
+        };
+        return match resp_bytes_res {
             Ok(b) => GlueResponse::QueryResult {
                 body: Bytes::from(b),
+                format: body_format,
             },
-            Err(e) => GlueResponse::InternalError {
-                reason: e.to_string(),
-            },
+            Err(reason) => GlueResponse::InternalError { reason },
         };
     }
 
@@ -307,13 +342,28 @@ fn dispatch_get_single(app: &Arc<AppState>, feature: &str, key: &str) -> GlueRes
 }
 
 /// Sync wrapper for `dispatch_get_single` — called from `ApplyShard` on the apply thread.
-pub fn dispatch_get_single_sync(app: &Arc<AppState>, feature: &str, key: &str) -> GlueResponse {
-    dispatch_get_single(app, feature, key)
+///
+/// `body_format` is the wire content_type byte from the request frame:
+/// - `CT_JSON` (HTTP path always; TCP /get when caller sent CT_JSON)
+/// - `CT_MSGPACK` (TCP /get when caller sent CT_MSGPACK)
+///
+/// The response `QueryResult.format` mirrors the request format byte (msgpack-in →
+/// msgpack-out, json-in → json-out — locked decision D-B). HTTP encoder ignores
+/// the byte and always emits JSON (D-D).
+pub fn dispatch_get_single_sync(
+    app: &Arc<AppState>,
+    feature: &str,
+    key: &str,
+    body_format: u8,
+) -> GlueResponse {
+    dispatch_get_single(app, feature, key, body_format)
 }
 
 /// Sync wrapper for `dispatch_get_batch` — called from `ApplyShard` on the apply thread.
-pub fn dispatch_get_batch_sync(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
-    dispatch_get_batch(app, body)
+///
+/// See `dispatch_get_single_sync` for the `body_format` contract.
+pub fn dispatch_get_batch_sync(app: &Arc<AppState>, body: &Bytes, body_format: u8) -> GlueResponse {
+    dispatch_get_batch(app, body, body_format)
 }
 
 /// Plan 12-07 Wave 4: real batch GET dispatch.
@@ -333,7 +383,8 @@ pub fn dispatch_get_batch_sync(app: &Arc<AppState>, body: &Bytes) -> GlueRespons
 ///    features cells.
 /// 6. Omit keys with no matching state (NOT inserted with null / empty obj).
 ///    Mirrors axum-side feature_query.rs:232-234 semantics.
-fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
+fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes, body_format: u8) -> GlueResponse {
+    use beava_core::wire::{CT_JSON, CT_MSGPACK};
     /// Cell-count cap enforced by SRV-API-08 / T-05-06-01. Mirrors
     /// `feature_query::BATCH_CAP`.
     const BATCH_CAP: usize = 10_000;
@@ -357,12 +408,28 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
         keys: Vec<String>,
         features: Vec<String>,
     }
-    let req: BatchGetBody = match serde_json::from_slice(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return GlueResponse::InternalError {
-                reason: e.to_string(),
+    // Plan 12-09 D-A/D-B: body_format byte selects parse codec.
+    let req: BatchGetBody = match body_format {
+        CT_JSON => match serde_json::from_slice(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return GlueResponse::InternalError {
+                    reason: e.to_string(),
+                };
             }
+        },
+        CT_MSGPACK => match rmp_serde::from_slice(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return GlueResponse::InternalError {
+                    reason: e.to_string(),
+                };
+            }
+        },
+        other => {
+            return GlueResponse::InternalError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            };
         }
     };
     let t_parse = t0.map(|t| t.elapsed());
@@ -446,13 +513,22 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
     drop(tables);
 
     let body_json = serde_json::json!({"result": result});
-    let resp = match serde_json::to_vec(&body_json) {
+    // Plan 12-09 D-B: response format mirrors request format (msgpack-in → msgpack-out,
+    // json-in → json-out). Use `to_vec_named` (NOT `to_vec`) for msgpack so map keys
+    // round-trip as strings — matching Plan 18-09's push-side msgpack semantics; a plain
+    // `to_vec` would emit sequential integer keys and break SDK decoders that expect
+    // JSON-equivalent string-keyed objects.
+    let resp_bytes_res: Result<Vec<u8>, String> = match body_format {
+        CT_JSON => serde_json::to_vec(&body_json).map_err(|e| e.to_string()),
+        CT_MSGPACK => rmp_serde::to_vec_named(&body_json).map_err(|e| e.to_string()),
+        _ => unreachable!("validated at body parse"),
+    };
+    let resp = match resp_bytes_res {
         Ok(b) => GlueResponse::QueryResult {
             body: Bytes::from(b),
+            format: body_format,
         },
-        Err(e) => GlueResponse::InternalError {
-            reason: e.to_string(),
-        },
+        Err(reason) => GlueResponse::InternalError { reason },
     };
     if let Some(t0_inst) = t0 {
         let total = t0_inst.elapsed();

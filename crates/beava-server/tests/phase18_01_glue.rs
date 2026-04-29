@@ -101,7 +101,7 @@ async fn http_push_through_glue_applies_event_and_returns_ok() {
     };
     let get_resp = dispatch_wire_request(&app, get_req).await;
     match get_resp {
-        GlueResponse::QueryResult { body } => {
+        GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(v["cnt"], 1, "expected cnt=1 after one push; got: {v:#}");
         }

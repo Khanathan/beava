@@ -158,7 +158,7 @@ fn test_apply_shard_dispatches_tcp_get_single() {
     );
     assert_eq!(resps.len(), 1);
     match &resps[0] {
-        GlueResponse::QueryResult { body } => {
+        GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(v["value"], 1, "expected value=1, got {v:#}");
         }
@@ -181,7 +181,7 @@ fn test_apply_shard_dispatches_tcp_mget() {
     );
     assert_eq!(resps.len(), 1);
     match &resps[0] {
-        GlueResponse::QueryResult { body } => {
+        GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
                 v["result"]["alice"]["cnt"], 1,
@@ -211,7 +211,7 @@ fn test_apply_shard_dispatches_tcp_get_multi() {
     );
     assert_eq!(resps.len(), 1);
     match &resps[0] {
-        GlueResponse::QueryResult { body } => {
+        GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
                 v["result"]["alice"]["cnt"], 1,

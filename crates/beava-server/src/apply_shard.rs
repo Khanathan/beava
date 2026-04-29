@@ -209,8 +209,12 @@ impl ApplyShard {
                 } else {
                     None
                 };
-                let resp =
-                    crate::runtime_core_glue::dispatch_get_single_sync(&self.state, &feature, &key);
+                let resp = crate::runtime_core_glue::dispatch_get_single_sync(
+                    &self.state,
+                    &feature,
+                    &key,
+                    beava_core::wire::CT_JSON,
+                );
                 if let Some(t0_inst) = t0 {
                     let total = t0_inst.elapsed();
                     eprintln!(
@@ -224,9 +228,11 @@ impl ApplyShard {
             }
 
             // ─── GET batch ────────────────────────────────────────────────────
-            WireRequest::HttpGet { body } => {
-                crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body)
-            }
+            WireRequest::HttpGet { body } => crate::runtime_core_glue::dispatch_get_batch_sync(
+                &self.state,
+                &body,
+                beava_core::wire::CT_JSON,
+            ),
 
             // ─── TCP /get (single) — Plan 12-07 Wave 3 ───────────────────────
             // Body parses to {"feature": "<name>", "key": "<key>"} (CT_JSON shape
@@ -253,6 +259,7 @@ impl ApplyShard {
                     &self.state,
                     &req.feature,
                     &req.key,
+                    beava_core::wire::CT_JSON,
                 )
             }
 
@@ -288,7 +295,11 @@ impl ApplyShard {
                         }
                     }
                 };
-                crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &batch_bytes)
+                crate::runtime_core_glue::dispatch_get_batch_sync(
+                    &self.state,
+                    &batch_bytes,
+                    beava_core::wire::CT_JSON,
+                )
             }
 
             // ─── TCP /get-multi (multi feature, multi key) — Plan 12-07 Wave 3 ──
@@ -297,7 +308,11 @@ impl ApplyShard {
             WireRequest::TcpGetMulti {
                 body,
                 body_format: _,
-            } => crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body),
+            } => crate::runtime_core_glue::dispatch_get_batch_sync(
+                &self.state,
+                &body,
+                beava_core::wire::CT_JSON,
+            ),
 
             // ─── Upsert / delete / retract (table ops — not on hot path) ──────
             WireRequest::HttpUpsert { .. }

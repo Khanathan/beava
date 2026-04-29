@@ -2022,11 +2022,17 @@ fn encode_glue_response_tcp(
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
         // Plan 12-07 Wave 5: TCP /get response framing.
-        // Echo back the (already-serialised) JSON body framed as
+        // Echo back the (already-serialised) body framed as
         // OP_GET_RESPONSE = 0x0023. FIFO correlation on the connection
         // ties this frame to its originating OP_GET / OP_MGET / OP_GET_MULTI
         // request — Redis-style strict-FIFO ordering, no request_id needed.
-        GlueResponse::QueryResult { body } => {
+        // Plan 12-09 Wave 3 will replace `_format: u8` with the actual byte
+        // so msgpack responses get CT_MSGPACK on the wire; until then this
+        // encoder still hardcodes CT_JSON.
+        GlueResponse::QueryResult {
+            body,
+            format: _format,
+        } => {
             encode_tcp_frame_bytes(OP_GET_RESPONSE, CT_JSON, body, buf);
         }
         GlueResponse::QueryNotFound { code } => {
@@ -2077,7 +2083,7 @@ fn encode_glue_response_http(
             let status = if *code == "event_not_found" { 404 } else { 400 };
             (status, serde_json::to_vec(&body).unwrap_or_default())
         }
-        GlueResponse::QueryResult { body } => (200, body.to_vec()),
+        GlueResponse::QueryResult { body, format: _ } => (200, body.to_vec()),
         GlueResponse::QueryNotFound { code } => {
             let body = serde_json::json!({"error": {"code": code}});
             (404, serde_json::to_vec(&body).unwrap_or_default())
@@ -2468,6 +2474,7 @@ mod tests {
         let mut buf = bytes::BytesMut::new();
         let resp = GlueResponse::QueryResult {
             body: bytes::Bytes::from_static(br#"{"value":42}"#),
+            format: CT_JSON,
         };
         encode_glue_response_tcp(&resp, &mut buf);
         let frame = decode_frame(&mut buf, 4 * 1024 * 1024)

@@ -136,6 +136,7 @@ fn bench_get_single(c: &mut Criterion) {
                 criterion::black_box(&app),
                 criterion::black_box("cnt"),
                 criterion::black_box("alice_500"),
+                criterion::black_box(beava_core::wire::CT_JSON),
             );
             criterion::black_box(resp);
         })
@@ -159,6 +160,7 @@ fn bench_get_batch(c: &mut Criterion) {
                     let resp = dispatch_get_batch_sync(
                         criterion::black_box(&app),
                         criterion::black_box(body),
+                        criterion::black_box(beava_core::wire::CT_JSON),
                     );
                     criterion::black_box(resp);
                 })

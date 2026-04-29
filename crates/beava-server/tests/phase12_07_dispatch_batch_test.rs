@@ -134,9 +134,9 @@ fn setup_app_state_with_count_pipeline() -> AppFixture {
 fn test_dispatch_get_batch_returns_real_results() {
     let fx = setup_app_state_with_count_pipeline();
     let body = Bytes::from_static(br#"{"keys":["alice"],"features":["cnt"]}"#);
-    let resp = dispatch_get_batch_sync(&fx.app_state, &body);
+    let resp = dispatch_get_batch_sync(&fx.app_state, &body, CT_JSON);
     match resp {
-        GlueResponse::QueryResult { body } => {
+        GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(
                 v["result"]["alice"]["cnt"], 1,
@@ -153,9 +153,9 @@ fn test_dispatch_get_batch_returns_real_results() {
 fn test_dispatch_get_batch_omits_missing_keys() {
     let fx = setup_app_state_with_count_pipeline();
     let body = Bytes::from_static(br#"{"keys":["alice","ghost"],"features":["cnt"]}"#);
-    let resp = dispatch_get_batch_sync(&fx.app_state, &body);
+    let resp = dispatch_get_batch_sync(&fx.app_state, &body, CT_JSON);
     match resp {
-        GlueResponse::QueryResult { body } => {
+        GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert!(
                 v["result"]["alice"].is_object(),
@@ -176,7 +176,7 @@ fn test_dispatch_get_batch_omits_missing_keys() {
 fn test_dispatch_get_batch_returns_error_for_unknown_feature() {
     let fx = setup_app_state_with_count_pipeline();
     let body = Bytes::from_static(br#"{"keys":["alice"],"features":["unknown_feat"]}"#);
-    let resp = dispatch_get_batch_sync(&fx.app_state, &body);
+    let resp = dispatch_get_batch_sync(&fx.app_state, &body, CT_JSON);
     match resp {
         GlueResponse::InternalError { reason } => {
             assert!(
@@ -201,7 +201,7 @@ fn test_dispatch_get_batch_enforces_cell_cap_10000() {
     let payload = serde_json::json!({"keys": keys, "features": ["cnt"]});
     let body_bytes = serde_json::to_vec(&payload).unwrap();
     let body = Bytes::from(body_bytes);
-    let resp = dispatch_get_batch_sync(&fx.app_state, &body);
+    let resp = dispatch_get_batch_sync(&fx.app_state, &body, CT_JSON);
     match resp {
         GlueResponse::InternalError { reason } => {
             assert!(
