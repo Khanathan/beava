@@ -536,3 +536,100 @@ execution on Apple-M4 only). Future Phase 13 / regression sweeps should
 re-run on Hetzner to populate the parallel column. Documented in
 `.planning/phases/12-server-side-async-push-coalescing/12-08-FLAMEGRAPH.md`
 follow-up section.
+
+---
+
+### Phase 12-09 — read path msgpack vs JSON (Apple-M4)
+
+Captured: 2026-04-29. hw-class: `Apple-M4 / Darwin-24.3.0 / 10 cores`.
+Methodology: criterion 100 samples, 3s warm-up, 5s collection. Bench
+harness at `crates/beava-server/benches/phase12_09_msgpack_get.rs`. Same
+fixture as Phase 12-07 read_path bench (1000 entities, Txn → TxnAgg(cnt)
+registry; warm cache). Compares JSON vs MessagePack body+response on each
+shape.
+
+| Bench | JSON Median | MsgPack Median | Δ (msgpack/json) | Captured | Phase | Notes |
+|---|---|---|---|---|---|---|
+| read_path/get_single | 171.69 ns | 174.88 ns | **+1.9%** (msgpack slower) | 2026-04-29 | 12-09 | single-cell `{value: <int>}` — serialization is a tiny fraction of total cost |
+| read_path/get_batch/10x5 (50 cells) | 6.5405 µs | 6.4428 µs | **-1.5%** | 2026-04-29 | 12-09 | 50 cells, integer values |
+| read_path/get_batch/100x5 (500 cells) | 65.976 µs | 64.377 µs | **-2.4%** | 2026-04-29 | 12-09 | 500 cells, integer values |
+
+#### Cost-model gap vs prediction
+
+**Plan 12-09 SCOPE.md predicted** "JSON parse + serialize ~54% of
+`dispatch_get_batch` apply work" → ≥ 40% lift on the 100x5 shape (60.99 µs
+JSON → ≤ 36 µs msgpack target).
+
+**Observed:** the lift is **~2-3% at most** on Apple-M4. The cost-model
+prediction was wrong for this fixture. Honest documentation per memory
+`feedback_cost_model_from_flamegraph` (don't suppress observed data).
+
+**Hypothesis** (un-flamegraph'd as of 2026-04-29):
+
+1. **Serialization is NOT the bottleneck on this fixture.** The Plan
+   12-07 bench showed `read_path/get_batch/100x5 = 60.99 µs ≈ 122 ns/cell`
+   total. The dominant per-cell cost is the `tables.get(agg_id).
+   query_feature(&entity_key, feature_idx, query_time_ms)` chain — Vec
+   indexing + HashMap lookup + atomic load. The `serde_json::to_vec` /
+   `rmp_serde::to_vec_named` final encode walks an already-built
+   `BTreeMap<String, BTreeMap<String, Value>>` — at integer leaves the
+   walk is identical work for both codecs.
+
+2. **The 12-09 SCOPE doc's "54%" came from a different shape.** Plan
+   12-08's flamegraph showed JSON-on-the-read-path as a heavy fraction
+   of fraud-team `apply_loop` cost — but that was with a different
+   feature mix (sketches, percentiles, complex shapes). On the
+   integer-only fixture used by this bench, the codec costs are nearly
+   equal because the leaf encode is the same shape work.
+
+3. **`rmp_serde::to_vec_named` walks the same BTreeMap nodes** that
+   `serde_json::to_vec` does, hitting the same allocations and the same
+   String key formatting. The cost differential between "write
+   `\"cnt\":1` as 8 bytes" vs "write `cnt: 1` as msgpack-tagged 4-5
+   bytes" is real but small at integer scale.
+
+**Implication for Plan 12-09 must_haves:** the truth target "Apple-M4
+read_path/get_batch/100x5 with msgpack body ≥ 40% faster than JSON" is
+**NOT MET** at the microbench level. The msgpack feature is correctly
+implemented end-to-end (all 12 tests GREEN; the production binary now
+defaults to msgpack on tcp:// for SDK reads), but the predicted
+performance lift on this microbench fixture didn't materialize.
+
+**Future work to confirm or refute the prediction:**
+- Run `samply` / `cargo flamegraph` on a fraud-team-shape pipeline (with
+  percentile / count_distinct / top_k sketches) reading 100×5 cells.
+  THAT shape may show the 40% lift the SCOPE doc predicted.
+- Run the bench with `--features=production-pipelines` once a real
+  multi-feature integer + sketch fixture exists.
+- Throughput-baselines.md (Wave 7.d) may show a larger lift at the
+  end-to-end level (where serialization overhead compounds across
+  network roundtrips), even if the microbench doesn't.
+
+**Future regression gate (post-12-09):** 10% slower → WARN; 25% slower
+→ BLOCK against these baselines on Apple-M4 hw-class. Acceptable
+microbench expectation for plans that follow 12-09: msgpack and JSON
+within ±5% on integer-leaf fixtures (no expected-lift requirement);
+multi-codec shape parity test in `phase12_09_dispatch_msgpack_test`
+must remain GREEN.
+
+#### Methodology note
+
+- Both JSON and msgpack request bodies are built once outside the
+  criterion loop (`Bytes::from(serde_json::to_vec(...))` /
+  `Bytes::from(rmp_serde::to_vec_named(...))`), so the bench measures
+  parse + dispatch + encode, NOT body-build cost.
+- Both codecs' bodies parse to the same `BatchGetBody { keys, features }`
+  struct, so the body-decode work is comparable in shape (just different
+  bytes).
+- The response shape is `serde_json::json!({"result": <BTreeMap<String,
+  BTreeMap<String, Value>>>})`. Both codecs walk the same in-memory tree;
+  msgpack writes string-keyed maps via `to_vec_named` (matching the JSON
+  shape).
+- The request body shape (1 feature × N keys, OR 5 features × N keys
+  with the same `cnt` repeated) is intentionally simple to isolate the
+  codec lift. A real workload with longer feature names / floating-point
+  values may show different ratios.
+
+**Hetzner Linux EPYC-Genoa baseline:** not captured in this run
+(single-pass execution on Apple-M4 only). Future Phase 13 / regression
+sweeps should re-run on Hetzner.
