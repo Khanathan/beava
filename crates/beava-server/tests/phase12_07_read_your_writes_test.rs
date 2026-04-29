@@ -18,6 +18,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Serializer pattern: `{ let _g = MUTEX.lock(); }` — drop before awaits.
+/// Mirrors phase18_04_6_integration_test.rs:23 etc.
 static SERVER_SERIALIZER_12_07_RYW: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 async fn boot_v18() -> (
@@ -117,9 +119,11 @@ fn register_payload() -> serde_json::Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_http_push_then_get_on_same_connection_sees_pushed_event() {
-    let _g = SERVER_SERIALIZER_12_07_RYW
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_RYW
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, _tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
 
     // Single keep-alive client (reqwest::Client reuses HTTP/1.1 connections).
@@ -173,7 +177,10 @@ async fn tcp_send_one_frame_and_read_one(
     rx_buf: &mut BytesMut,
 ) -> Frame {
     let mut tx = BytesMut::new();
-    encode_frame(&Frame::new(op, ct, Bytes::copy_from_slice(payload)), &mut tx);
+    encode_frame(
+        &Frame::new(op, ct, Bytes::copy_from_slice(payload)),
+        &mut tx,
+    );
     sock.write_all(&tx).await.expect("write");
     let mut tmp = [0u8; 8192];
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -196,9 +203,11 @@ async fn tcp_send_one_frame_and_read_one(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_op_push_then_op_get_on_same_connection_sees_pushed_event() {
     use beava_core::wire::{OP_GET, OP_GET_RESPONSE, OP_PUSH};
-    let _g = SERVER_SERIALIZER_12_07_RYW
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_RYW
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
 
     // Register over HTTP (the simpler path; TCP register works too but isn't
@@ -218,14 +227,9 @@ async fn test_tcp_op_push_then_op_get_on_same_connection_sees_pushed_event() {
     // OP_PUSH.
     let push_envelope =
         br#"{"event":"Txn","body":{"event_time":1000,"user_id":"alice","amount":1.0}}"#;
-    let ack = tcp_send_one_frame_and_read_one(
-        &mut sock,
-        OP_PUSH,
-        CT_JSON,
-        push_envelope,
-        &mut rx_buf,
-    )
-    .await;
+    let ack =
+        tcp_send_one_frame_and_read_one(&mut sock, OP_PUSH, CT_JSON, push_envelope, &mut rx_buf)
+            .await;
     // OP_PUSH ack reflects back as OP_PUSH echo per encode_glue_response_tcp.
     assert_eq!(ack.op, OP_PUSH, "expected OP_PUSH ack, got {:#06x}", ack.op);
 

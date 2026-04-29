@@ -17,6 +17,7 @@ use std::time::Duration;
 /// Global serializer for tests that boot a full ServerV18 — same pattern as
 /// phase18_04_6 / phase18_04_7 to avoid OS scheduler thrash when multiple
 /// ServerV18 instances boot concurrently.
+/// Serializer pattern: `{ let _g = MUTEX.lock(); }` — drop before awaits.
 static SERVER_SERIALIZER_12_07_HEALTH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Poll until a TCP listener is up at `addr` (kernel-accept level).
@@ -34,7 +35,9 @@ async fn poll_until_listening(addr: SocketAddr, deadline: Duration) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn health_endpoint_returns_200_on_mio_data_plane_port() {
     {
-        let _g = SERVER_SERIALIZER_12_07_HEALTH.lock().unwrap();
+        let _g = SERVER_SERIALIZER_12_07_HEALTH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
     }
 
     let any: SocketAddr = "127.0.0.1:0".parse().unwrap();

@@ -15,6 +15,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Serializer pattern: `{ let _g = MUTEX.lock(); }` — drop before awaits.
+/// Mirrors phase18_04_6_integration_test.rs:23 etc.
 static SERVER_SERIALIZER_12_07_GET: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Boot ServerV18 + return (sv18, http_addr, tcp_addr, shutdown_tx, serve_task).
@@ -139,9 +141,11 @@ async fn register_and_push_for_alice(http_addr: SocketAddr) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_http_get_single_via_mio_returns_value() {
-    let _g = SERVER_SERIALIZER_12_07_GET
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_GET
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, _tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
@@ -161,9 +165,11 @@ async fn test_http_get_single_via_mio_returns_value() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_http_get_batch_via_mio_returns_result_map() {
-    let _g = SERVER_SERIALIZER_12_07_GET
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_GET
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, _tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
@@ -194,7 +200,10 @@ async fn tcp_send_and_recv(tcp_addr: SocketAddr, op: u16, ct: u8, payload: &[u8]
         .await
         .expect("tcp connect");
     let mut tx_buf = BytesMut::new();
-    encode_frame(&Frame::new(op, ct, Bytes::copy_from_slice(payload)), &mut tx_buf);
+    encode_frame(
+        &Frame::new(op, ct, Bytes::copy_from_slice(payload)),
+        &mut tx_buf,
+    );
     sock.write_all(&tx_buf).await.expect("write");
     let mut rx_buf = BytesMut::with_capacity(64 * 1024);
     let mut tmp = [0u8; 8192];
@@ -220,9 +229,11 @@ async fn tcp_send_and_recv(tcp_addr: SocketAddr, op: u16, ct: u8, payload: &[u8]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_op_get_single_returns_op_get_response() {
     use beava_core::wire::{OP_GET, OP_GET_RESPONSE};
-    let _g = SERVER_SERIALIZER_12_07_GET
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_GET
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
@@ -247,9 +258,11 @@ async fn test_tcp_op_get_single_returns_op_get_response() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_op_mget_returns_op_get_response() {
     use beava_core::wire::{OP_GET_RESPONSE, OP_MGET};
-    let _g = SERVER_SERIALIZER_12_07_GET
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_GET
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
@@ -275,9 +288,11 @@ async fn test_tcp_op_mget_returns_op_get_response() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_op_get_multi_returns_op_get_response() {
     use beava_core::wire::{OP_GET_MULTI, OP_GET_RESPONSE};
-    let _g = SERVER_SERIALIZER_12_07_GET
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = SERVER_SERIALIZER_12_07_GET
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop before awaits
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 

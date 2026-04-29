@@ -56,9 +56,10 @@ fn main() -> Result<()> {
             .listen_addr
             .parse()
             .with_context(|| format!("parse listen_addr {:?}", cfg.listen_addr))?;
-        let tcp_addr: std::net::SocketAddr = format!("{}:{}", cfg.tcp.host, cfg.tcp.port)
-            .parse()
-            .with_context(|| format!("parse tcp addr {}:{}", cfg.tcp.host, cfg.tcp.port))?;
+        let tcp_addr: std::net::SocketAddr =
+            format!("{}:{}", cfg.tcp.host, cfg.tcp.port)
+                .parse()
+                .with_context(|| format!("parse tcp addr {}:{}", cfg.tcp.host, cfg.tcp.port))?;
         let admin_addr: std::net::SocketAddr = cfg
             .admin_addr
             .parse()

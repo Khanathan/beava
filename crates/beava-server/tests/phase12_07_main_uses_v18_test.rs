@@ -17,6 +17,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 /// Serializer for tests that boot the release binary subprocess + bind ports.
+/// Pattern: `{ let _g = RELEASE_BINARY_SERIALIZER.lock(); }` — drop guard
+/// before any await. Mirrors phase18_04_6_integration_test.rs:23 etc.
 static RELEASE_BINARY_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Path to `target/release/beava`. Walks up two levels from this crate's
@@ -70,6 +72,7 @@ async fn spawn_with_minimal_config() -> SpawnedServer {
 
     let http_port = alloc_free_port();
     let tcp_port = alloc_free_port();
+    let admin_port = alloc_free_port();
 
     let dir = tempfile::tempdir().expect("tempdir");
     let wal_dir = dir.path().join("wal");
@@ -77,9 +80,12 @@ async fn spawn_with_minimal_config() -> SpawnedServer {
     std::fs::create_dir_all(&wal_dir).unwrap();
     std::fs::create_dir_all(&snap_dir).unwrap();
 
+    // admin_addr set explicitly to avoid the default 127.0.0.1:8090 colliding
+    // when multiple test instances spawn concurrently.
     let cfg_text = format!(
         r#"listen_addr: "127.0.0.1:{http_port}"
 log_level: warn
+admin_addr: "127.0.0.1:{admin_port}"
 tcp:
   enabled: true
   host: "127.0.0.1"
@@ -90,6 +96,7 @@ durability:
 "#,
         http_port = http_port,
         tcp_port = tcp_port,
+        admin_port = admin_port,
         wal_dir = wal_dir.display(),
         snap_dir = snap_dir.display(),
     );
@@ -99,7 +106,7 @@ durability:
     std::mem::forget(dir);
 
     let bin = release_binary_path();
-    let proc = Command::new(&bin)
+    let mut proc = Command::new(&bin)
         .arg("--config")
         .arg(&cfg_path)
         .stdout(Stdio::null())
@@ -122,6 +129,9 @@ durability:
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // Kill+wait the spawned process to avoid leaving a zombie if /health never came up.
+    let _ = proc.kill();
+    let _ = proc.wait();
     panic!("release binary /health never returned 200 within 10s");
 }
 
@@ -166,12 +176,7 @@ async fn register_pipeline(http_port: u16) {
         .expect("register");
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    assert!(
-        status.is_success(),
-        "register failed: {} {}",
-        status,
-        body
-    );
+    assert!(status.is_success(), "register failed: {} {}", status, body);
 }
 
 async fn push_event_for_alice(http_port: u16) {
@@ -189,12 +194,7 @@ async fn push_event_for_alice(http_port: u16) {
         .expect("push");
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
-    assert!(
-        status.is_success(),
-        "push failed: {} {}",
-        status,
-        body
-    );
+    assert!(status.is_success(), "push failed: {} {}", status, body);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -204,7 +204,11 @@ async fn push_event_for_alice(http_port: u16) {
 /// startup.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_release_binary_exists_and_runs_with_minimal_config() {
-    let _guard = RELEASE_BINARY_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = RELEASE_BINARY_SERIALIZER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop guard before awaits — serialises test start only
     let _server = spawn_with_minimal_config().await;
     // Spawn helper already polled /health; reaching here means PASS.
 }
@@ -214,7 +218,11 @@ async fn test_release_binary_exists_and_runs_with_minimal_config() {
 /// because the mio HTTP listener routes `/get/:feature/:key` unconditionally.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_release_binary_responds_to_get_without_dev_endpoints_env() {
-    let _guard = RELEASE_BINARY_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = RELEASE_BINARY_SERIALIZER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop guard before awaits — serialises test start only
     let server = spawn_with_minimal_config().await;
     register_pipeline(server.http_port).await;
     push_event_for_alice(server.http_port).await;
@@ -237,8 +245,7 @@ async fn test_release_binary_responds_to_get_without_dev_endpoints_env() {
         status,
         body_text
     );
-    let body: serde_json::Value =
-        serde_json::from_str(&body_text).expect("body parses as JSON");
+    let body: serde_json::Value = serde_json::from_str(&body_text).expect("body parses as JSON");
     assert_eq!(body["value"], 1, "expected value=1, got {body:#}");
 }
 
@@ -246,7 +253,11 @@ async fn test_release_binary_responds_to_get_without_dev_endpoints_env() {
 /// batch endpoint that feeds `read_bench.py`'s primary measurement workload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_release_binary_responds_to_post_get_without_dev_endpoints_env() {
-    let _guard = RELEASE_BINARY_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
+    {
+        let _g = RELEASE_BINARY_SERIALIZER
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+    } // drop guard before awaits — serialises test start only
     let server = spawn_with_minimal_config().await;
     register_pipeline(server.http_port).await;
     push_event_for_alice(server.http_port).await;
@@ -268,8 +279,7 @@ async fn test_release_binary_responds_to_post_get_without_dev_endpoints_env() {
         status,
         body_text
     );
-    let body: serde_json::Value =
-        serde_json::from_str(&body_text).expect("body parses as JSON");
+    let body: serde_json::Value = serde_json::from_str(&body_text).expect("body parses as JSON");
     assert_eq!(
         body["result"]["alice"]["cnt"], 1,
         "expected result.alice.cnt=1, got {body:#}"
