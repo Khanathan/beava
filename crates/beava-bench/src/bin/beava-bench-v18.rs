@@ -139,6 +139,18 @@ struct Cli {
     /// Isolation mode — print wall_clock_ms / send_drain_ms / ack_lag_ms columns.
     #[arg(long, default_value_t = false)]
     isolation_mode: bool,
+
+    /// IoPool worker count override (Phase 19.4 followup).
+    ///
+    /// Defaults to `max(2, available_parallelism / 4)` (Redis-style ratio).
+    /// On virtualized cloud servers with ≥16 vCPUs the auto-default can
+    /// underperform: the Hetzner sweep on 2026-04-28 showed iot=4 is the
+    /// worst config for fraud-team-shaped workloads (~10% lift available
+    /// at iot=2 or iot=8). Try `--io-threads 2` for feature-heavy
+    /// workloads or `--io-threads 8` for thin shapes if the auto-default
+    /// underperforms on your box. Equivalent to setting `BEAVA_IO_THREADS=N`.
+    #[arg(long)]
+    io_threads: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -280,6 +292,16 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Phase 19.4 followup: --io-threads N overrides the IoPool worker count
+    // by setting BEAVA_IO_THREADS, which `default_io_threads()` reads inside
+    // `run_mio_event_loop`. Must be set BEFORE ServerV18::bind so the apply
+    // thread sees it when it spawns the per-worker continuous-loop pool.
+    if let Some(n) = cli.io_threads {
+        std::env::set_var("BEAVA_IO_THREADS", n.to_string());
+        eprintln!("beava-bench-v18: --io-threads {n} → BEAVA_IO_THREADS={n}");
+    }
+
     let pipeline = load_pipeline(&cli.pipeline)?;
     let parallel = cli
         .parallel
@@ -1534,12 +1556,8 @@ mod tests {
     /// without env-var ceremony.
     #[test]
     fn cli_parses_io_threads_flag() {
-        let cli = Cli::try_parse_from([
-            "beava-bench-v18",
-            "--io-threads",
-            "7",
-        ])
-        .expect("parses --io-threads 7");
+        let cli = Cli::try_parse_from(["beava-bench-v18", "--io-threads", "7"])
+            .expect("parses --io-threads 7");
         assert_eq!(
             cli.io_threads,
             Some(7),
@@ -1549,8 +1567,7 @@ mod tests {
 
     #[test]
     fn cli_io_threads_defaults_to_none() {
-        let cli =
-            Cli::try_parse_from(["beava-bench-v18"]).expect("parses with no args");
+        let cli = Cli::try_parse_from(["beava-bench-v18"]).expect("parses with no args");
         assert!(
             cli.io_threads.is_none(),
             "no --io-threads flag means auto-default (BEAVA_IO_THREADS env or formula)"
