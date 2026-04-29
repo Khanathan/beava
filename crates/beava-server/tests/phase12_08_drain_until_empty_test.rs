@@ -165,7 +165,7 @@ async fn test_apply_drains_more_than_1024_items_per_iteration() {
     const N_PUSHES: usize = 4096;
     let burst = build_push_burst(N_PUSHES);
 
-    let mut sock = tokio::net::TcpStream::connect(tcp_addr).await.expect("connect");
+    let sock = tokio::net::TcpStream::connect(tcp_addr).await.expect("connect");
     sock.set_nodelay(true).ok();
 
     // Spawn a reader task to drain ack frames concurrently.

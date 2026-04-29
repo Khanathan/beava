@@ -1188,18 +1188,35 @@ fn run_mio_event_loop(
 
     loop {
         // ── 1. Drain read_rx — dispatch + encode + push to write_tx[w] ───────
-        // Bounded drain: at most 1024 items per pass, then go check listeners
-        // so a steady client stream doesn't starve accept. (Wave 2 — D-D —
-        // removes this cap and switches to drain-until-empty.)
-        const DRAIN_CAP: usize = 1024;
+        // Plan 12-08 (D-D): drain-until-empty. The previous DRAIN_CAP=1024
+        // forced re-entry into the listener-poll cadence after every 1024
+        // items, costing an extra event_loop.tick(0) syscall + idle/iter
+        // bookkeeping pass between batches. Apply is single-threaded; we
+        // WANT to fully drain the channel and dispatch all queued work in
+        // arrival order before checking accepts.
+        //
+        // Safety: read_rx is bounded(16_384), so even under burst load the
+        // drain is bounded by channel capacity (workers can't outpace apply
+        // forever — they backpressure on the bounded send). The accept
+        // cadence still runs every LISTENER_POLL_EVERY=1024 OUTER iterations,
+        // not every 1024 items.
         let mut drained: u64 = 0;
         // Track which workers got new write work this pass; one wake per
         // worker per pass is enough (waker is edge-triggered + idempotent).
         let mut wake_workers: u32 = 0;
-        while drained < DRAIN_CAP as u64 {
+        let mut read_rx_disconnected = false;
+        loop {
             let item = match read_rx.try_recv() {
                 Ok(it) => it,
-                Err(_) => break,
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    tracing::info!(
+                        target: "beava.server",
+                        "apply thread: read_rx disconnected during drain"
+                    );
+                    read_rx_disconnected = true;
+                    break;
+                }
             };
             drained += 1;
             dispatch_one_ring_item(
@@ -1321,6 +1338,11 @@ fn run_mio_event_loop(
                 target: "beava.server",
                 "apply thread: shutdown signal received, stopping workers"
             );
+            break;
+        }
+        // Plan 12-08 (D-D): if the drain pass observed a disconnected channel,
+        // exit the loop after honouring the existing shutdown contract.
+        if read_rx_disconnected {
             break;
         }
     }
