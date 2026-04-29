@@ -514,10 +514,26 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes, body_format: u8) -> Glu
 
     let body_json = serde_json::json!({"result": result});
     // Plan 12-09 D-B: response format mirrors request format (msgpack-in → msgpack-out,
-    // json-in → json-out). Use `to_vec_named` (NOT `to_vec`) for msgpack so map keys
-    // round-trip as strings — matching Plan 18-09's push-side msgpack semantics; a plain
-    // `to_vec` would emit sequential integer keys and break SDK decoders that expect
-    // JSON-equivalent string-keyed objects.
+    // json-in → json-out).
+    //
+    // ┌─ SHAPE-PARITY CONTRACT (Plan 12-09 Wave 2) ──────────────────────────┐
+    // │ Use `rmp_serde::to_vec_named` (NOT plain `rmp_serde::to_vec`).       │
+    // │                                                                      │
+    // │ `to_vec_named` writes Map<String, Value> as a msgpack `map<str, *>`  │
+    // │ — string-keyed, mirroring JSON's object shape so the round-tripped   │
+    // │ `serde_json::Value` from the msgpack response equals the JSON-side   │
+    // │ value exactly.                                                       │
+    // │                                                                      │
+    // │ Plain `to_vec` would emit sequential-integer keys (treating the      │
+    // │ Value::Object's BTreeMap as a positional sequence), breaking SDK     │
+    // │ decoders that expect string-keyed maps and breaking the locked       │
+    // │ JSON-equivalent shape contract per memory `project_v2_devex_first`.  │
+    // │                                                                      │
+    // │ Same precedent: Plan 18-09 / 18-10 push-side msgpack body parsing.   │
+    // │                                                                      │
+    // │ Test guard: `phase12_09_dispatch_msgpack_test::                      │
+    // │              test_msgpack_and_json_responses_are_shape_equivalent`.  │
+    // └──────────────────────────────────────────────────────────────────────┘
     let resp_bytes_res: Result<Vec<u8>, String> = match body_format {
         CT_JSON => serde_json::to_vec(&body_json).map_err(|e| e.to_string()),
         CT_MSGPACK => rmp_serde::to_vec_named(&body_json).map_err(|e| e.to_string()),
