@@ -1111,3 +1111,50 @@ All 30 runs (5 pipelines × 3 runs × 2 machines) had `requested == pushed == ac
 - fraud-team peak read throughput ≥ 8,500 reads/sec (10% under today's 9,575)
 - small peak read throughput ≥ 55,000 reads/sec (10% under today's 61,888)
 - Single-conn fraud-team p99 ≤ 350 µs (25% over today's 280 µs)
+
+### Single-key read throughput (post-12-07, Apple-M4)
+
+**Captured:** 2026-04-29. Same driver as the parallel sweep above; `--get-batch-keys 1` instead of 100. Tests the production fraud-decisioning shape: "fetch one entity's feature vector". Body shape stays `OP_GET_MULTI` `{"keys": [<1>], "features": [<N>]}` — same dispatch path, fewer cells.
+
+| Pipeline | Cells / req | Workers | reads/sec | /get p99 | Cells/sec |
+|---|---:|---:|---:|---:|---:|
+| fraud-team | 5 (1 key × 5 features) | 1 | 22,699 | 145 µs | 113.5k |
+| fraud-team | 5 (1 key × 5 features) | 32 | **117,122** | 1.10 ms | 585k |
+| fraud-team | 1 (1 key × 1 feature) | 1 | 21,409 | 188 µs | 21.4k |
+| fraud-team | 1 (1 key × 1 feature) | 32 | **175,843** | 411 µs | **175.8k** |
+| small | 3 (1 key × 3 features) | 1 | 31,782 | 100 µs | 95.3k |
+| small | 3 (1 key × 3 features) | 32 | **188,423** | 368 µs | 565k |
+
+**Cost model (fraud-team, derived from cells/req sweep):**
+
+Fitting `total_apply_us / req = fixed + N_cells × per_cell_ns`:
+
+- **Fixed per-request: ~5.5 µs** (TCP frame parse + JSON body parse + dispatch + response JSON serialize + TCP frame encode)
+- **Per-cell variable: ~210 ns** (HashMap lookup + atomic load + value→JSON)
+
+Validation across cells/req at 32 workers (saturated):
+
+| Cells/req | Predicted req cost | Measured req cost | Match |
+|---:|---:|---:|---|
+| 1   | 5.5 µs +    1 × 210 ns =   5.7 µs |   5.7 µs (175,843 reads/sec) | ✓ |
+| 5   | 5.5 µs +    5 × 210 ns =   6.6 µs |   8.5 µs (117,122 reads/sec) | ~ (JSON parse scales) |
+| 500 | 5.5 µs +  500 × 210 ns = 110.5 µs | 104.0 µs (9,575 reads/sec)  | ✓ |
+
+**Headline:**
+
+| Read shape | Apple-M4 peak (32 workers) | Latency p99 |
+|---|---:|---:|
+| Truly single-cell (1×1 fraud-team) | **175,843 reads/sec** | 411 µs |
+| Single-key feature-vector (1×5 fraud-team) | 117,122 reads/sec | 1.10 ms |
+| Bulk batch (100×5 fraud-team) | 9,575 reads/sec / 4.79M cells/sec | 4.64 ms |
+
+**Production interpretation:**
+
+- **Fraud-decisioning hot path** typically does single-key lookups (1 entity × full feature vector). On fraud-team that's ~117k req/sec single-instance with sub-1.1ms p99. At 32 workers and 8.5 µs/req apply-thread cost, this is well below the apply saturation point — significant headroom for concurrent push.
+- **Bulk feature-server** pattern (model retraining, batch scoring) hits 9.6k req/sec but processes 4.79M cells/sec — 5.4× the cell throughput of single-key shape. Use batches for offline/throughput-sensitive workloads.
+- **The fixed ~5.5 µs per-request overhead** dominates single-cell shape (95% of cost) but is amortized to <5% in bulk shape. Choose batch size by latency target: P99 < 1 ms → ≤10 cells/req; P99 < 10 ms → ≤500 cells/req.
+
+**Regression gates (Phase 13+):**
+- Single-cell fraud-team peak ≥ 158k reads/sec (10% under today's 175,843)
+- Single-key fraud-team peak ≥ 105k reads/sec (10% under today's 117,122)
+- Single-key fraud-team single-conn p99 ≤ 200 µs (40% over today's 145 µs)
