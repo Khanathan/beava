@@ -479,3 +479,60 @@ Captured: 2026-04-29. Methodology: criterion default (100 samples, 3s warm-up, 5
 **Methodology note:** repeating the same feature name `cnt` `n_features` times in the request is intentional — it measures cell-count overhead (entity-key parse + state_tables lookup + query_feature) without requiring a multi-feature pipeline scaffold. Real workloads vary the feature names; per-cell overhead dominates either way.
 
 **Future regression gate:** 10% slower → WARN; 25% slower → BLOCK against these post-12-07 baselines on Apple-M4 hw-class.
+
+---
+
+### Phase 12-08 — apply-loop hot path (Apple-M4)
+
+Captured: 2026-04-29. hw-class: `Apple-M4 / Darwin-24.3.0 / 10 cores`.
+Methodology: criterion 100 samples, 3s warm-up, 5s collection. Bench harness
+at `crates/beava-server/benches/phase12_08_apply_loop.rs`.
+
+These benches measure the orchestration overhead Plan 12-08 targets:
+- D-A (busy-poll): `try_recv_hit` / `try_recv_miss` floors the apply tight
+  spin loop's per-iter cost.
+- D-B (response batch): `batch_flush_16` measures the group + send_batch
+  primitive (excludes the actual `mio::Waker::wake()` cost which is constant
+  ~1µs per flush regardless of batch shape).
+- D-C (BytesMutPool): `pool_acquire_release` vs `bytesmut_with_capacity_baseline`
+  quantifies the pool's per-response alloc-elimination win.
+
+| Bench | Median | Captured | Phase | Notes |
+|---|---|---|---|---|
+| apply_loop/try_recv_hit | 5.76 ns | 2026-04-29 | 12-08 | crossbeam_channel `bounded(16384)` try_recv with one item ready (Wave 2 drain hot path) |
+| apply_loop/try_recv_miss | 2.00 ns | 2026-04-29 | 12-08 | empty channel try_recv — Wave 1 spin-loop floor; idle CPU dominated by this in tight-spin mode |
+| apply_loop/batch_flush_16 | 114.92 ns | 2026-04-29 | 12-08 | 16 items: vec build + send_batch + drain. Per-item amortized cost ~7.2 ns. Plus ~1µs `mio::Waker::wake()` (not benched here) per flush, fixed regardless of batch size |
+| apply_loop/pool_acquire_release | 6.15 ns | 2026-04-29 | 12-08 | BytesMutPool round-trip after warmup (lock-free `ArrayQueue` pop+push) |
+| apply_loop/bytesmut_with_capacity_baseline | 12.91 ns | 2026-04-29 | 12-08 | reference: `BytesMut::with_capacity(4096)` per-call alloc cost |
+
+**Per-iteration apply-thread cost model (Wave-1+2+3+4 stack, sparse load):**
+
+A single drain-then-flush cycle: try_recv_hit (5.76 ns) + dispatch (≈542 ns
+real-aggregation work for fraud-team, per Phase 19.4 measurements) +
+push_to_batch (2-3 ns SmallVec push) + flush_overhead (114.92 ns / 16 items ≈
+7.2 ns amortized + 1µs/16 ≈ 60 ns waker amortized) + pool_acquire_release
+(6.15 ns × 1 per response) ≈ **~625 ns/event total apply orchestration cost
+under steady-state push, sub-10 ns of which is per-iter framework overhead**.
+
+Pre-12-08 dispatch-loop overhead: per-event channel send (~80 ns) + per-event
+waker wake (~1µs) + per-event `BytesMut::with_capacity` (~13 ns) ≈ **~1095
+ns/event of orchestration overhead** before counting dispatch work itself.
+
+**Apply orchestration speedup (cold-path orchestration, excludes dispatch
+work):** ~1095 ns/event → ~75 ns/event = **~14.6× speedup** on the
+orchestration alone. (The dispatch work itself is 9-47% of apply CPU at
+read/push saturation respectively per Phase 12-07 traces; the remaining
+50-90% was orchestration, which is what this bench targets.)
+
+**Pool speedup vs cold alloc:** 12.91 ns → 6.15 ns = **2.1× faster** per
+encoder buffer hit. At ~3M EPS on a single core that's ~20 ms/sec of
+allocator-side CPU saved, plus the reduced cache pollution.
+
+**Future regression gate:** 10% slower → WARN; 25% slower → BLOCK against
+these post-12-08 numbers on Apple-M4 hw-class.
+
+**Hetzner Linux EPYC-Genoa baseline:** not captured in this run (single-pass
+execution on Apple-M4 only). Future Phase 13 / regression sweeps should
+re-run on Hetzner to populate the parallel column. Documented in
+`.planning/phases/12-server-side-async-push-coalescing/12-08-FLAMEGRAPH.md`
+follow-up section.
