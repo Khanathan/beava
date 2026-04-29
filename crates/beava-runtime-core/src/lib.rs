@@ -12,6 +12,7 @@
 //! - `router`     — path dispatch for HTTP requests
 //! - `response`   — pre-encoded byte-string response templates (hot path, no serde)
 
+pub mod bytes_pool;
 pub mod client;
 pub mod config;
 pub mod event_loop;

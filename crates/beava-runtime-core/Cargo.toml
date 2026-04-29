@@ -19,6 +19,9 @@ mio = { version = "1", features = ["os-poll", "net"] }
 bytes = { workspace = true }
 httparse = "1.10"
 crossbeam-channel = "0.5"
+# Plan 12-08 (D-C): bounded MPSC queue for the per-IO-worker BytesMutPool.
+# ArrayQueue<BytesMut> with fixed capacity; pop()/push() are lock-free, ~30 ns.
+crossbeam-queue = "0.3"
 # Plan 18-13: lock-free SPSC ring buffer between IoPool worker threads and
 # the apply thread. ~10-30 ns push/pop overhead (vs ~80 ns crossbeam-channel),
 # cache-line padded heads/tails. Replaces the per-tick join_all spin barrier

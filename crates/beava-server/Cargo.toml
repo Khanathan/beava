@@ -203,6 +203,11 @@ name = "phase12_08_response_batch_test"
 path = "tests/phase12_08_response_batch_test.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase12_08_bytes_pool_test"
+path = "tests/phase12_08_bytes_pool_test.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
