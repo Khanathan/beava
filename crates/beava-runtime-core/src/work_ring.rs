@@ -60,3 +60,27 @@ pub enum ParseErrorKind {
     /// HTTP/1.1 protocol violation.
     HttpProtocol,
 }
+
+/// Plan 12-08 (D-B): batch-send extension for the apply → IO worker
+/// `write_rx` channel.
+///
+/// crossbeam_channel doesn't have a native `send_many`; we just send each
+/// item individually. The amortization comes from the CALLER firing the
+/// worker's `Waker::wake()` ONCE after the batch (instead of once per
+/// response). `Sender::send` itself is ~80 ns; firing the mio Waker is
+/// ~1 µs (cross-thread eventfd/kqueue write + worker poll wake).
+///
+/// Net effect under steady-state push load: one `Waker::wake()` per
+/// (drain pass × affected worker) ÷ 16 responses, instead of per response.
+pub trait WriteRingExt<T> {
+    fn send_batch(&self, items: Vec<T>) -> Result<(), crossbeam_channel::SendError<T>>;
+}
+
+impl<T> WriteRingExt<T> for crossbeam_channel::Sender<T> {
+    fn send_batch(&self, items: Vec<T>) -> Result<(), crossbeam_channel::SendError<T>> {
+        for item in items {
+            self.send(item)?;
+        }
+        Ok(())
+    }
+}

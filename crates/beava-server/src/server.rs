@@ -874,6 +874,11 @@ static APPLY_MAX_DRAIN_PER_ITER: std::sync::atomic::AtomicU64 =
 static APPLY_PTHREAD_ID: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Plan 12-08 (D-B): cumulative count of `flush_response_batch` calls that
+/// flushed a non-empty batch. Test hook only.
+static APPLY_RESPONSE_BATCH_FLUSHES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Plan 12-08 test hook. Cumulative count of apply-thread idle fall-through
 /// calls into `read_rx.recv_timeout(50µs)` since process start.
 #[doc(hidden)]
@@ -887,6 +892,15 @@ pub fn apply_recv_timeout_calls() -> u64 {
 #[doc(hidden)]
 pub fn apply_max_drain_per_iter() -> u64 {
     APPLY_MAX_DRAIN_PER_ITER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Plan 12-08 (D-B) test hook. Cumulative count of response-batch flushes
+/// (a flush fires when the batch reaches BATCH_SIZE_FLUSH=16 OR
+/// BATCH_TIME_FLUSH=100µs elapses). Used by Wave 3 tests to verify D-B has
+/// landed.
+#[doc(hidden)]
+pub fn response_batch_flushes() -> u64 {
+    APPLY_RESPONSE_BATCH_FLUSHES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Plan 12-08 test hook. Returns the apply thread's pthread_t (as a libc
@@ -945,26 +959,39 @@ fn default_io_threads() -> usize {
 /// publish + join_all cycle. The two phases are strictly serialized by
 /// `IoPool::join_all()` Acquire barriers, so the apply thread never touches
 /// the same client a worker is touching.
-/// Plan 12-08 (D-A): dispatch a single `RingItem` from the apply-thread side.
+/// Plan 12-08: per-iteration response batch entry.
+///
+/// `(worker_index, slot_idx, encoder)` — the worker is selected by the apply
+/// thread (`slot_idx % n_workers`), and the encoder runs on the IO worker
+/// thread once the batch is flushed.
+type ResponseBatchEntry = (
+    usize,
+    u64,
+    beava_runtime_core::io_thread_worker::WriteEncoder,
+);
+
+/// Plan 12-08 (D-A + D-B): dispatch a single `RingItem` from the apply-thread.
 ///
 /// Extracted into a free helper so both the top-of-loop `try_recv()` drain AND
-/// the idle-backoff `recv_timeout(50µs)` Ok arm can share the same dispatch
-/// shape. Wave 3 (D-B) extends this helper's signature with a per-iteration
-/// response_batch + batch_started_at.
+/// the idle-backoff `recv_timeout(50µs)` Ok arm share the same dispatch shape.
 ///
-/// `wake_workers` is updated as a bitmask; the caller fires worker wakers
-/// after a complete drain pass (one wake per worker per pass — the waker is
-/// edge-triggered + idempotent).
+/// Wave 3 (D-B): pushes responses into a per-iteration `response_batch`
+/// instead of immediately calling `write_txs[w].send`. The caller flushes
+/// the batch when it reaches BATCH_SIZE_FLUSH=16 OR BATCH_TIME_FLUSH=100µs
+/// elapsed. `batch_started_at` is set on the FIRST push into an empty batch
+/// so the timer starts from "first response of this batch", not "last drain
+/// pass".
 #[inline]
 fn dispatch_one_ring_item(
     item: beava_runtime_core::work_ring::RingItem,
     apply_shard: &crate::apply_shard::ApplyShard,
-    write_txs: &[crossbeam_channel::Sender<(u64, beava_runtime_core::io_thread_worker::WriteEncoder)>],
     n_workers: usize,
-    wake_workers: &mut u32,
+    response_batch: &mut smallvec::SmallVec<[ResponseBatchEntry; 16]>,
+    batch_started_at: &mut Option<Instant>,
 ) {
     use beava_runtime_core::io_thread_worker::{WorkerProto, WriteEncoder};
     use beava_runtime_core::work_ring::{ParseErrorKind, RingItem};
+    let _ = apply_shard; // referenced via match arm below; silence linter on early returns
     match item {
         RingItem::Request {
             slot_idx,
@@ -980,9 +1007,10 @@ fn dispatch_one_ring_item(
                     WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
                     WorkerProto::Http => encode_glue_response_http(&resp, buf),
                 });
-                if write_txs[w].send((slot_u64, encoder)).is_ok() {
-                    *wake_workers |= 1u32 << (w & 31);
+                if batch_started_at.is_none() {
+                    *batch_started_at = Some(Instant::now());
                 }
+                response_batch.push((w, slot_u64, encoder));
             }
         }
         RingItem::ParseError { slot_idx, kind } => {
@@ -1003,11 +1031,64 @@ fn dispatch_one_ring_item(
                 WorkerProto::Tcp => encode_glue_response_tcp(&resp, buf),
                 WorkerProto::Http => encode_glue_response_http(&resp, buf),
             });
-            if write_txs[w].send((slot_u64, encoder)).is_ok() {
-                *wake_workers |= 1u32 << (w & 31);
+            if batch_started_at.is_none() {
+                *batch_started_at = Some(Instant::now());
+            }
+            response_batch.push((w, slot_u64, encoder));
+        }
+    }
+}
+
+/// Plan 12-08 (D-B): flush the per-iteration response batch.
+///
+/// Groups by worker index `w`, sends each worker's slice via
+/// `WriteRingExt::send_batch` (one channel.send per item; the amortization
+/// is in firing the worker waker ONCE per worker per flush instead of once
+/// per response). Resets `batch_started_at` to `None`.
+///
+/// Returns the total number of items flushed.
+#[inline]
+fn flush_response_batch(
+    response_batch: &mut smallvec::SmallVec<[ResponseBatchEntry; 16]>,
+    batch_started_at: &mut Option<Instant>,
+    write_txs: &[crossbeam_channel::Sender<(u64, beava_runtime_core::io_thread_worker::WriteEncoder)>],
+    worker_wakers: &[Arc<dyn beava_runtime_core::io_backend::WakerHandle>],
+    n_workers: usize,
+) -> usize {
+    use beava_runtime_core::io_thread_worker::WriteEncoder;
+    use beava_runtime_core::work_ring::WriteRingExt;
+    if response_batch.is_empty() {
+        return 0;
+    }
+    let total = response_batch.len();
+    // Group items by worker index. n_workers is small (≤ 32 by
+    // default_io_threads()); fixed-size stack array beats a HashMap.
+    let mut per_worker: smallvec::SmallVec<[Vec<(u64, WriteEncoder)>; 32]> =
+        smallvec::SmallVec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        per_worker.push(Vec::new());
+    }
+    for (w, slot, enc) in response_batch.drain(..) {
+        per_worker[w].push((slot, enc));
+    }
+    let mut affected_workers: u32 = 0;
+    for (w, items) in per_worker.iter_mut().enumerate() {
+        if items.is_empty() {
+            continue;
+        }
+        let _ = write_txs[w].send_batch(std::mem::take(items));
+        affected_workers |= 1u32 << (w & 31);
+    }
+    if affected_workers != 0 {
+        for (w, waker) in worker_wakers.iter().enumerate() {
+            if (affected_workers >> (w & 31)) & 1 == 1 {
+                let _ = waker.wake();
             }
         }
     }
+    *batch_started_at = None;
+    APPLY_RESPONSE_BATCH_FLUSHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    total
 }
 
 fn run_mio_event_loop(
@@ -1174,20 +1255,24 @@ fn run_mio_event_loop(
     // `tick(50ms)` shape that 12-07 shipped is removed; idleness now lives
     // entirely on the channel side via recv_timeout.
     //
-    // Pre-12-08: blocking `tick(50ms)` returned only on listener events or
-    // the `apply_waker` fired by workers. Apply could sit idle for tens of
-    // ms after the LAST event with no further wakeups (waker is
-    // edge-triggered; the previous-iteration drain consumed the edge).
-    // Post-12-08: `recv_timeout(50µs)` checks the channel directly with
-    // ~50ns response time at no-load, and 100% bypasses the kqueue waker
-    // round-trip on the hot path.
+    // Plan 12-08 (D-B): per-iteration response_batch. Responses queue into
+    // a SmallVec inline-cap=16; flush fires when batch reaches
+    // BATCH_SIZE_FLUSH=16 OR BATCH_TIME_FLUSH=100µs elapsed since first
+    // push (whichever comes first). The flush groups items by worker and
+    // fires worker_wakers[w].wake() ONCE per affected worker — collapses
+    // N response wakes into 1 wake per batch.
     const LISTENER_POLL_EVERY: u32 = 1024;
     const SPIN_BUDGET_K: u32 = 10_000;
+    const BATCH_SIZE_FLUSH: usize = 16;
+    const BATCH_TIME_FLUSH: Duration = Duration::from_micros(100);
     let mut iter_counter: u32 = 0;
     let mut idle_iters: u32 = 0;
+    let mut response_batch: smallvec::SmallVec<[ResponseBatchEntry; 16]> =
+        smallvec::SmallVec::new();
+    let mut batch_started_at: Option<Instant> = None;
 
     loop {
-        // ── 1. Drain read_rx — dispatch + encode + push to write_tx[w] ───────
+        // ── 1. Drain read_rx — dispatch + queue into response_batch ──────────
         // Plan 12-08 (D-D): drain-until-empty. The previous DRAIN_CAP=1024
         // forced re-entry into the listener-poll cadence after every 1024
         // items, costing an extra event_loop.tick(0) syscall + idle/iter
@@ -1195,15 +1280,16 @@ fn run_mio_event_loop(
         // WANT to fully drain the channel and dispatch all queued work in
         // arrival order before checking accepts.
         //
+        // Plan 12-08 (D-B): inside the drain we also check the size-flush
+        // trigger (batch.len() ≥ 16) — keeps the response_batch from growing
+        // unboundedly inside one big drain pass.
+        //
         // Safety: read_rx is bounded(16_384), so even under burst load the
         // drain is bounded by channel capacity (workers can't outpace apply
         // forever — they backpressure on the bounded send). The accept
         // cadence still runs every LISTENER_POLL_EVERY=1024 OUTER iterations,
         // not every 1024 items.
         let mut drained: u64 = 0;
-        // Track which workers got new write work this pass; one wake per
-        // worker per pass is enough (waker is edge-triggered + idempotent).
-        let mut wake_workers: u32 = 0;
         let mut read_rx_disconnected = false;
         loop {
             let item = match read_rx.try_recv() {
@@ -1222,23 +1308,43 @@ fn run_mio_event_loop(
             dispatch_one_ring_item(
                 item,
                 &apply_shard,
-                &write_txs,
                 n_workers,
-                &mut wake_workers,
+                &mut response_batch,
+                &mut batch_started_at,
             );
-        }
-        // Wake workers that received new write work in this pass. n_workers
-        // is small (≤ ~32 by default_io_threads()); the bitmask + shift loop
-        // avoids a HashSet per pass.
-        if wake_workers != 0 {
-            for (w, waker) in worker_wakers.iter().enumerate() {
-                if (wake_workers >> (w & 31)) & 1 == 1 {
-                    let _ = waker.wake();
-                }
+            // Plan 12-08 (D-B): size-flush inside the drain so a long drain
+            // pass doesn't grow the batch unboundedly. The Smallvec inline
+            // cap is 16; once we exceed it the batch spills to heap, but
+            // we'd rather flush + restart accumulation.
+            if response_batch.len() >= BATCH_SIZE_FLUSH {
+                flush_response_batch(
+                    &mut response_batch,
+                    &mut batch_started_at,
+                    &write_txs,
+                    &worker_wakers,
+                    n_workers,
+                );
             }
         }
 
-        // ── 2. Update idle/iter bookkeeping ──────────────────────────────────
+        // ── 2. Time-flush trigger ────────────────────────────────────────────
+        // Plan 12-08 (D-B): after a drain pass, check if the batch's first
+        // entry has been waiting ≥ 100µs. Under sparse load this dominates:
+        // the size-16 trigger never fires, so the time floor delivers
+        // responses with bounded p99 latency.
+        if !response_batch.is_empty()
+            && batch_started_at.is_some_and(|t| t.elapsed() >= BATCH_TIME_FLUSH)
+        {
+            flush_response_batch(
+                &mut response_batch,
+                &mut batch_started_at,
+                &write_txs,
+                &worker_wakers,
+                n_workers,
+            );
+        }
+
+        // ── 3. Update idle/iter bookkeeping ──────────────────────────────────
         iter_counter = iter_counter.wrapping_add(1);
         if drained > 0 {
             APPLY_MAX_DRAIN_PER_ITER.fetch_max(drained, std::sync::atomic::Ordering::Relaxed);
@@ -1247,7 +1353,7 @@ fn run_mio_event_loop(
             idle_iters = idle_iters.saturating_add(1);
         }
 
-        // ── 3. Listener poll cadence (non-blocking) ──────────────────────────
+        // ── 4. Listener poll cadence (non-blocking) ──────────────────────────
         // Plan 12-08 (D-A): listener poll is ALWAYS non-blocking. Idle backoff
         // moved to the recv_timeout branch below. This way listener accepts
         // never block on the channel, and channel recv never blocks on
@@ -1290,31 +1396,46 @@ fn run_mio_event_loop(
             }
         }
 
-        // ── 4. Idle backoff via recv_timeout (D-A) ───────────────────────────
+        // ── 5. Idle backoff via recv_timeout (D-A) ───────────────────────────
         // After SPIN_BUDGET_K consecutive empty try_recv passes, give up CPU
         // for at most 50µs by blocking on the channel. A worker push wakes
         // us within ~50ns (channel signal is in-process; no kqueue/epoll
         // syscall round-trip). On Timeout we re-enter the tight try_recv
         // loop — listener poll cadence is unchanged.
+        //
+        // Plan 12-08 (D-B): before blocking, flush any pending response_batch
+        // — the recv_timeout might block for the full 50µs and we don't want
+        // to delay queued responses by another 50µs while our own apply
+        // thread is idle.
         if idle_iters >= SPIN_BUDGET_K {
+            if !response_batch.is_empty() {
+                flush_response_batch(
+                    &mut response_batch,
+                    &mut batch_started_at,
+                    &write_txs,
+                    &worker_wakers,
+                    n_workers,
+                );
+            }
             APPLY_RECV_TIMEOUT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match read_rx.recv_timeout(Duration::from_micros(50)) {
                 Ok(item) => {
-                    let mut wake_one: u32 = 0;
                     dispatch_one_ring_item(
                         item,
                         &apply_shard,
-                        &write_txs,
                         n_workers,
-                        &mut wake_one,
+                        &mut response_batch,
+                        &mut batch_started_at,
                     );
-                    if wake_one != 0 {
-                        for (w, waker) in worker_wakers.iter().enumerate() {
-                            if (wake_one >> (w & 31)) & 1 == 1 {
-                                let _ = waker.wake();
-                            }
-                        }
-                    }
+                    // Flush immediately on the recv_timeout Ok arm — we
+                    // were just blocked, no point holding the response.
+                    flush_response_batch(
+                        &mut response_batch,
+                        &mut batch_started_at,
+                        &write_txs,
+                        &worker_wakers,
+                        n_workers,
+                    );
                     idle_iters = 0;
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
@@ -1332,7 +1453,7 @@ fn run_mio_event_loop(
             }
         }
 
-        // ── 5. Shutdown check ────────────────────────────────────────────────
+        // ── 6. Shutdown check ────────────────────────────────────────────────
         if shutdown.load(AOrdering::Acquire) {
             tracing::info!(
                 target: "beava.server",
@@ -1345,6 +1466,18 @@ fn run_mio_event_loop(
         if read_rx_disconnected {
             break;
         }
+    }
+
+    // Plan 12-08 (D-B): on shutdown, flush any pending responses so we
+    // don't lose acks queued in the batch.
+    if !response_batch.is_empty() {
+        flush_response_batch(
+            &mut response_batch,
+            &mut batch_started_at,
+            &write_txs,
+            &worker_wakers,
+            n_workers,
+        );
     }
 
     // ── Shutdown sequence: tell workers to stop, then join ───────────────────

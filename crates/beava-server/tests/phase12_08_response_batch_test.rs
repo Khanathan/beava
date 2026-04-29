@@ -286,9 +286,8 @@ async fn test_response_batch_low_load_latency_under_5ms() {
     let mut rx = BytesMut::with_capacity(64 * 1024);
     let mut tmp = [0u8; 32 * 1024];
     let elapsed: Option<Duration> = loop {
-        match decode_frame(&mut rx, 4 * 1024 * 1024) {
-            Ok(Some(_)) => break Some(t0.elapsed()),
-            _ => {}
+        if let Ok(Some(_)) = decode_frame(&mut rx, 4 * 1024 * 1024) {
+            break Some(t0.elapsed());
         }
         let n = read_half.read(&mut tmp).await.expect("read");
         if n == 0 {
