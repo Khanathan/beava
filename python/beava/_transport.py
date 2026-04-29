@@ -29,6 +29,8 @@ from beava._wire import (
     CT_JSON,
     CT_MSGPACK,
     MAX_FRAME_BYTES,
+    OP_GET,
+    OP_GET_RESPONSE,
     OP_PING,
     OP_PUSH,
     OP_REGISTER,
@@ -133,6 +135,26 @@ class HttpTransport(Transport):
             "HTTP transport has no /ping endpoint in v0; "
             "use tcp:// transport for ping"
         )
+
+    def http_get_single(self, feature: str, key: str) -> object:
+        """Plan 12-09: GET /get/{feature}/{key} → returns the unwrapped value.
+
+        HTTP /get is JSON-only per locked decision D-D — regardless of whether
+        the TCP transport defaults to msgpack on the read path, the HTTP path
+        always speaks JSON.
+
+        Args:
+            feature: Feature name (e.g. "cnt").
+            key: Entity key value (e.g. "alice"; URL-encoded if needed).
+
+        Returns:
+            The unwrapped feature value (i.e. the contents of the response's
+            ``"value"`` field). Raises if the server returned a non-2xx.
+        """
+        r = self._client.get(f"/get/{feature}/{key}")
+        r.raise_for_status()
+        body = r.json()
+        return body.get("value")
 
     def close(self) -> None:
         """Close the underlying httpx client connection pool."""
@@ -280,6 +302,88 @@ class TcpTransport(Transport):
         result: dict[str, object] = json.loads(frame.payload.decode("utf-8"))
         return result
 
+    def tcp_get_single(
+        self,
+        feature: str,
+        key: str,
+        *,
+        wire_format: str = "msgpack",
+    ) -> object:
+        """Plan 12-09: send OP_GET frame and return the unwrapped feature value.
+
+        Defaults to **msgpack** on the wire (the production read fast-path per
+        locked decision D-A/D-B). Pass ``wire_format="json"`` to force the
+        legacy CT_JSON path (regression coverage / debugging).
+
+        Args:
+            feature: Feature name (e.g. "cnt").
+            key: Entity key value (e.g. "alice").
+            wire_format: ``"msgpack"`` (default) or ``"json"``.
+
+        Returns:
+            The unwrapped feature value (``response["value"]``).
+
+        Raises:
+            ValueError: ``wire_format`` is not ``"msgpack"`` or ``"json"``.
+            ImportError: ``wire_format="msgpack"`` but ``msgpack`` not installed.
+            RegistrationError: Server returned OP_ERROR_RESPONSE or unexpected op.
+        """
+        body_dict = {"feature": feature, "key": key}
+        if wire_format == "msgpack":
+            try:
+                import msgpack  # type: ignore[import-untyped]
+            except ImportError as exc:
+                raise ImportError(
+                    "wire_format='msgpack' requires the 'msgpack' package: "
+                    "pip install msgpack"
+                ) from exc
+            body = msgpack.packb(body_dict, use_bin_type=True)
+            ct = CT_MSGPACK
+        elif wire_format == "json":
+            body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+            ct = CT_JSON
+        else:
+            raise ValueError(
+                f"wire_format must be 'msgpack' or 'json', got {wire_format!r}"
+            )
+
+        sock = self._ensure_connected()
+        sock.sendall(encode_frame(OP_GET, ct, body))
+        frame = read_frame(sock, self.max_frame_bytes)
+        if frame.op != OP_GET_RESPONSE:
+            # Could be OP_ERROR_RESPONSE (0xFFFF) — surface server's reason.
+            try:
+                err_body = json.loads(frame.payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                err_body = {"error": {"code": "unparseable_error"}}
+            raise RegistrationError(
+                code=err_body.get("error", {}).get("code", "unexpected_frame"),
+                message=(
+                    f"expected OP_GET_RESPONSE (0x0023), "
+                    f"got op={frame.op:#06x} ct={frame.ct:#04x} body={err_body!r}"
+                ),
+            )
+
+        # Decode response per its content_type byte (server uses same-format-as-
+        # request; if we sent msgpack, response is msgpack).
+        if frame.ct == CT_MSGPACK:
+            try:
+                import msgpack  # type: ignore[import-untyped]
+            except ImportError as exc:
+                raise ImportError(
+                    "received CT_MSGPACK response but 'msgpack' package not "
+                    "installed: pip install msgpack"
+                ) from exc
+            decoded = msgpack.unpackb(frame.payload, raw=False)
+        else:
+            decoded = json.loads(frame.payload.decode("utf-8"))
+        if not isinstance(decoded, dict):
+            raise RegistrationError(
+                code="unexpected_frame",
+                message=f"expected dict response body, got {type(decoded).__name__}",
+            )
+        return decoded.get("value")
+
     def close(self) -> None:
         """Close the underlying socket if open."""
         if self._socket is not None:
@@ -328,6 +432,16 @@ class EmbedTransport(Transport):
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
         return self._tcp.send_ping()
+
+    def tcp_get_single(
+        self,
+        feature: str,
+        key: str,
+        *,
+        wire_format: str = "msgpack",
+    ) -> object:
+        """Delegate to the embedded TcpTransport (Plan 12-09)."""
+        return self._tcp.tcp_get_single(feature, key, wire_format=wire_format)
 
     def close(self) -> None:
         """Close the TCP socket then terminate the embedded server process."""

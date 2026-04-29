@@ -30,7 +30,6 @@ import json
 from typing import Any
 
 import httpx
-import pytest
 
 import beava as bv
 

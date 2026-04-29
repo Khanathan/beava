@@ -255,3 +255,40 @@ class App:
             content=payload_bytes,
             headers={"Content-Type": "application/json"},
         ).json()
+
+    def get(self, feature: str, key: str) -> Any:
+        """Plan 12-09: read one feature for one entity key.
+
+        Dispatches based on the underlying transport:
+          - ``tcp://`` (or embed mode, which wraps TCP): uses ``OP_GET`` over
+            the binary-framed TCP wire with **msgpack body+response by default**
+            (locked decision D-A/D-B; the server now supports CT_MSGPACK on
+            the read path).
+          - ``http://`` / ``https://``: uses ``GET /get/{feature}/{key}`` with
+            JSON only (locked decision D-D — HTTP /get is JSON-only).
+
+        Args:
+            feature: Feature name (e.g. ``"cnt"``).
+            key: Entity key value (e.g. ``"alice"``).
+
+        Returns:
+            The unwrapped feature value (the contents of the server response's
+            ``"value"`` field). Returns ``None`` if the server returned a
+            QueryNotFound shape — the transport may surface that as the
+            literal value ``None`` (caller should disambiguate via business
+            logic; v0 doesn't separate "no key" from "value is null").
+
+        Raises:
+            RuntimeError: Called on a closed App or embed mode without context manager.
+        """
+        transport = self._require_transport()
+        # TCP / embed path: msgpack default per locked decision D-A/D-B.
+        if hasattr(transport, "tcp_get_single"):
+            return transport.tcp_get_single(feature, key)
+        # HTTP path: JSON-only per locked decision D-D.
+        if hasattr(transport, "http_get_single"):
+            return transport.http_get_single(feature, key)
+        raise RuntimeError(
+            "transport does not support .get() — expected TcpTransport / "
+            "HttpTransport / EmbedTransport"
+        )

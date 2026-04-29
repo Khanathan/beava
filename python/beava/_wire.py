@@ -33,6 +33,13 @@ from typing import Any, cast
 OP_PING: int = 0x0000
 OP_REGISTER: int = 0x0001
 OP_PUSH: int = 0x0002  # data-plane push (Phase 2.5+)
+
+# Plan 12-07 / 12-09: TCP /get opcodes.
+OP_GET: int = 0x0020  # single feature, single key
+OP_MGET: int = 0x0021  # single feature, many keys
+OP_GET_MULTI: int = 0x0022  # many features, many keys
+OP_GET_RESPONSE: int = 0x0023  # response opcode (Plan 12-07)
+
 OP_ERROR_RESPONSE: int = 0xFFFF
 
 # ─── Content-type constants ──────────────────────────────────────────────────
