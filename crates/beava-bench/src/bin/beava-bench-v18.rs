@@ -90,6 +90,16 @@ struct Cli {
     #[arg(long, default_value_t = 100)]
     get_batch_keys: usize,
 
+    /// Number of parallel back-to-back /get worker tasks (Plan 12-07
+    /// follow-up). Each worker holds its own TcpClient connection (TCP
+    /// transport) or reqwest client (HTTP transport) and issues /get
+    /// requests as fast as the server responds — no sleep between requests.
+    /// Use this to measure read throughput, not just sampled latency.
+    /// 0 (default) disables parallel read workers; the legacy
+    /// `--get-sample-interval-ms` sampler still runs.
+    #[arg(long, default_value_t = 0)]
+    read_workers: usize,
+
     /// Suppress markdown ledger row; only print human summary.
     #[arg(long)]
     no_ledger: bool,
@@ -692,6 +702,104 @@ async fn run_workload(
         }
     });
 
+    // Plan 12-07 follow-up: parallel back-to-back read workers (read-throughput mode).
+    // Each worker holds its own TcpClient/reqwest client and issues /get requests
+    // as fast as the server responds — no sleep between requests. Aggregate reads
+    // across all workers count toward `get_samples_counter` (which becomes the
+    // total completed-read count under this mode) and `get_hist` (aggregated
+    // latency histogram).
+    let read_workers_count = cli.read_workers;
+    let mut read_worker_handles: Vec<tokio::task::JoinHandle<()>> =
+        Vec::with_capacity(read_workers_count);
+    for read_worker_id in 0..read_workers_count {
+        let read_hist = Arc::clone(&get_hist);
+        let read_samples = Arc::clone(&get_samples_counter);
+        let read_seed = cli
+            .seed
+            .wrapping_add(0xBADC0FEE)
+            .wrapping_add(read_worker_id as u64 * 0x9E37);
+        let read_features = pipeline.features.clone();
+        let read_batch_keys = cli.get_batch_keys;
+        let read_transport = cli.transport;
+        let read_tcp_addr = tcp_addr;
+        let read_get_url = format!("http://{}/get", http_addr);
+        let read_http_client = Arc::clone(&http_client);
+        let read_stop_rx = bg_stop_tx.subscribe();
+
+        read_worker_handles.push(tokio::spawn(async move {
+            use rand::Rng;
+            let mut rng = sampling_rng(read_seed);
+
+            // Per-worker client (one connection per worker for TCP).
+            let mut tcp_client: Option<beava_server::testing::TcpClient> =
+                if matches!(read_transport, Transport::Tcp) {
+                    match beava_server::testing::TcpClient::connect(read_tcp_addr).await {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            eprintln!(
+                                "read_worker {read_worker_id} TcpClient::connect failed: {e}"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+            loop {
+                // Stop signal — checked before each request, no sleep.
+                if read_stop_rx.has_changed().unwrap_or(false) {
+                    break;
+                }
+
+                let keys: Vec<String> = (0..read_batch_keys)
+                    .map(|_| format!("k{:08}", rng.gen_range(0..KEY_SPACE)))
+                    .collect();
+                let body =
+                    serde_json::json!({"keys": keys, "features": read_features});
+
+                let start = Instant::now();
+                let ok = match (read_transport, tcp_client.as_mut()) {
+                    (Transport::Tcp, Some(client)) => {
+                        let payload = Bytes::from(body.to_string().into_bytes());
+                        match client.send_raw(OP_GET_MULTI, CT_JSON, payload).await {
+                            Ok(frame) => frame.op == OP_GET_RESPONSE,
+                            Err(_) => {
+                                if let Ok(c) =
+                                    beava_server::testing::TcpClient::connect(read_tcp_addr).await
+                                {
+                                    tcp_client = Some(c);
+                                }
+                                false
+                            }
+                        }
+                    }
+                    _ => match read_http_client
+                        .post(&read_get_url)
+                        .header("Content-Type", "application/json")
+                        .body(body.to_string())
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            let _ = r.bytes().await;
+                            true
+                        }
+                        _ => false,
+                    },
+                };
+
+                if ok {
+                    let elapsed_us = start.elapsed().as_micros() as u64;
+                    let mut h = read_hist.lock().await;
+                    let _ = h.record(elapsed_us.max(1));
+                    drop(h);
+                    read_samples.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+
     // Spawn N parallel push workers.
     let mut workers = Vec::with_capacity(parallel);
     for worker_id in 0..parallel {
@@ -776,6 +884,9 @@ async fn run_workload(
     // channel) and join them for clean shutdown.
     let _ = bg_stop_tx.send(());
     let _ = get_task.await;
+    for h in read_worker_handles {
+        let _ = h.await;
+    }
     let _ = rss_task.await;
     let push_count = pushes.load(Ordering::Relaxed);
     let push_errors = errors.load(Ordering::Relaxed);
@@ -1485,6 +1596,8 @@ fn format_report(
          sustained_eps:    {:.0}\n\
          push p50/p95/p99: {} / {} / {} µs\n\
          get_samples:      {}\n\
+         read_workers:     {}\n\
+         read_throughput:  {:.0} reads/sec\n\
          get p99:          {} µs\n\
          peak_rss_mb:      {}\n\
          elapsed:          {:?}\n\
@@ -1502,6 +1615,8 @@ fn format_report(
         r.push_p95_us,
         r.push_p99_us,
         r.get_samples,
+        cli.read_workers,
+        r.get_samples as f64 / r.elapsed.as_secs_f64(),
         r.get_p99_us,
         r.peak_rss_mb,
         r.elapsed,

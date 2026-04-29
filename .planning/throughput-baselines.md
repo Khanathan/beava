@@ -1062,3 +1062,52 @@ All 30 runs (5 pipelines × 3 runs × 2 machines) had `requested == pushed == ac
 - Read-latency floor ≤ 250 µs (cell 6 target: 0.22 ms today)
 - Small mixed /get p99 ≤ 2 ms (cell 7 target: 1.64 ms today)
 - 10-25% slower = WARN; >25% = BLOCK.
+
+### Read throughput sweep (post-12-07, Apple-M4)
+
+**Captured:** 2026-04-29. Driver: `target/release/beava-bench-v18` with the new `--read-workers N` flag (Plan 12-07 follow-up). Each read-worker holds its own TCP connection and issues OP_GET_MULTI requests back-to-back (no sleep). Push runs minimally (P=1 / PD=1, total_events=100k) so the apply thread is not push-saturated and reads see best-case server-side throughput. Each /get queries 100 random keys × pipeline.features.
+
+**Methodology:**
+- Push: TCP / msgpack at P=1/PD=1 (~1 push/ms — minimal apply-thread interference)
+- /get: TCP / OP_GET_MULTI / CT_JSON, body = `{"keys": [<100 random>], "features": <pipeline.features>}`
+- Each worker = one TcpClient; back-to-back send_raw / read_one_frame; no inter-request delay
+- Total reads = sum across all workers; latency histogram aggregated across workers
+
+| Pipeline | Workers | reads/sec | /get p99 | Cells/sec | Push EPS | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| fraud-team | 1 | 6,980 | 280 µs | 3.49 M | 8,525 | single-conn baseline |
+| fraud-team | 2 | 7,439 | 611 µs | 3.72 M | 4,051 | apply-thread serialization visible |
+| fraud-team | 4 | 8,401 | 896 µs | 4.20 M | 2,527 | sweet spot (low-latency × high-throughput) |
+| fraud-team | 8 | 7,427 | 4.14 ms | 3.71 M | 1,071 | queueing — throughput regresses |
+| fraud-team | 16 | 9,009 | 3.27 ms | 4.50 M | 620 | scheduler-recovered |
+| fraud-team | 32 | **9,575** | 4.64 ms | **4.79 M** | 323 | apparent ceiling |
+| small | 1 | 17,765 | 118 µs | 8.88 M | 31,132 | single-conn baseline |
+| small | 4 | 41,086 | 203 µs | 20.5 M | 13,431 | scales 2.3× — cheap pipeline |
+| small | 16 | 57,436 | 691 µs | 28.7 M | 4,043 | strong scaling |
+| small | 32 | **61,888** | 1.48 ms | **30.9 M** | 1,891 | apparent ceiling |
+
+**Headline numbers:**
+
+| Pipeline | Peak reads/sec | Peak cells/sec | Peak key-feature ops/sec | Per-cell cost |
+|---|---:|---:|---:|---:|
+| **fraud-team** | **9,575** | **4.79 M** | **957k** | ~209 ns/cell |
+| **small** | **61,888** | **30.9 M** | **6.19 M** | ~32 ns/cell |
+
+**Interpretation:**
+
+1. **fraud-team peak read throughput: ~9.6k reads/sec / 4.8M cells/sec.** With 110-feature realistic pipeline + HLL/bounded-buffer/sketch ops, each /get ticks the apply thread for ~104 µs. That's the hard ceiling on a single-instance read path; for higher aggregate, scale out (`memory project_no_sharded_apply`).
+2. **small peak read throughput: ~62k reads/sec / 30.9M cells/sec.** Cheaper pipeline = ~16 µs per /get on the apply thread. Per-cell cost is 6× cheaper than fraud-team because there's no sketch-state lookup per cell.
+3. **Read parallelism scales sub-linearly** — single apply thread is the bottleneck. fraud-team single-conn = 6,980 reads/sec; 32-worker only gets 1.37×. small scales better (1 → 32 = 3.5×) because per-/get apply cost is small relative to network roundtrip.
+4. **Push throughput collapses under heavy read load** because both share the apply thread. fraud-team P=1/PD=1 push goes from 31k EPS solo (cell 6 baseline) to 323 EPS at 32 read workers — pushes get crowded out.
+5. **Latency hockey-stick at workers ≥ 8** — once the apply-thread is fully busy, additional readers just queue. p99 latency grows roughly linearly with offered concurrency past saturation.
+
+**Production sizing implication for read-only workloads:**
+
+- For fraud-decisioning peak-load reads (e.g., scoring service queries): 4-16 worker connections gives best latency × throughput. Single-instance ceiling ~9-10k reads/sec on fraud-shape; 4.5M cells/sec aggregate.
+- For lightweight feature-serving (small-pipeline workloads): single instance scales to ~60k reads/sec / 30M cells/sec.
+- For higher aggregate, shard at entity-key level across multiple Beava instances (Redis-cluster pattern).
+
+**Regression gates (Phase 13+):**
+- fraud-team peak read throughput ≥ 8,500 reads/sec (10% under today's 9,575)
+- small peak read throughput ≥ 55,000 reads/sec (10% under today's 61,888)
+- Single-conn fraud-team p99 ≤ 350 µs (25% over today's 280 µs)
