@@ -36,7 +36,7 @@
 
 use anyhow::{Context, Result};
 use beava_bench::blast_shape::{build_pool_timed, BlastShape, BlastShapeConfig, PipelineConfig};
-use beava_core::wire::OP_PUSH;
+use beava_core::wire::{CT_JSON, OP_GET_MULTI, OP_GET_RESPONSE, OP_PUSH};
 use beava_server::server::ServerV18;
 use bytes::Bytes;
 use clap::{Parser, ValueEnum};
@@ -598,9 +598,29 @@ async fn run_workload(
     let get_seed = cli.seed;
     let get_client = Arc::clone(&http_client);
     let mut get_stop_rx = bg_stop_tx.subscribe();
+    let get_transport = cli.transport;
+    let get_tcp_addr = tcp_addr;
     let get_task = tokio::spawn(async move {
         use rand::Rng;
         let mut rng = sampling_rng(get_seed.wrapping_add(0xDEAD));
+
+        // Plan 12-07: when transport is TCP, drive /get over the framed-TCP
+        // OP_GET_MULTI opcode (matches HTTP /get's multi-key+multi-feature
+        // body shape). When transport is HTTP, keep the legacy reqwest path.
+        // Both share the same apply thread server-side.
+        let mut tcp_client: Option<beava_server::testing::TcpClient> =
+            if matches!(get_transport, Transport::Tcp) {
+                match beava_server::testing::TcpClient::connect(get_tcp_addr).await {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        eprintln!("get_task TcpClient::connect failed: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
         loop {
             // tokio::select! between the stop signal and the get-interval
             // sleep — same rationale as rss_task above. Without this, the
@@ -616,22 +636,56 @@ async fn run_workload(
                         .collect();
                     let body =
                         serde_json::json!({"keys": keys, "features": features_clone});
+
                     let start = Instant::now();
-                    let resp = get_client
-                        .post(&get_url)
-                        .header("Content-Type", "application/json")
-                        .body(body.to_string())
-                        .send()
-                        .await;
-                    if let Ok(r) = resp {
-                        if r.status().is_success() {
-                            let elapsed_us = start.elapsed().as_micros() as u64;
-                            let _ = r.bytes().await;
-                            let mut h = get_hist_clone.lock().await;
-                            let _ = h.record(elapsed_us.max(1));
-                            drop(h);
-                            get_samples_clone.fetch_add(1, Ordering::Relaxed);
+
+                    // Two transport paths share the same body shape; both
+                    // ultimately route to dispatch_get_batch_sync on the apply
+                    // thread.
+                    let ok = match (get_transport, tcp_client.as_mut()) {
+                        (Transport::Tcp, Some(client)) => {
+                            // OP_GET_MULTI framed-TCP request.
+                            // Body is JSON {"keys": [...], "features": [...]}.
+                            let payload = Bytes::from(body.to_string().into_bytes());
+                            match client.send_raw(OP_GET_MULTI, CT_JSON, payload).await {
+                                Ok(frame) => {
+                                    // Successful response is OP_GET_RESPONSE with a JSON body.
+                                    // Server emits OP_ERROR_RESPONSE on failure paths.
+                                    frame.op == OP_GET_RESPONSE
+                                }
+                                Err(_) => {
+                                    // Reconnect on transport error and skip this sample.
+                                    if let Ok(c) = beava_server::testing::TcpClient::connect(get_tcp_addr).await {
+                                        tcp_client = Some(c);
+                                    }
+                                    false
+                                }
+                            }
                         }
+                        _ => {
+                            // HTTP path (transport == Http or TcpClient unavailable).
+                            match get_client
+                                .post(&get_url)
+                                .header("Content-Type", "application/json")
+                                .body(body.to_string())
+                                .send()
+                                .await
+                            {
+                                Ok(r) if r.status().is_success() => {
+                                    let _ = r.bytes().await;
+                                    true
+                                }
+                                _ => false,
+                            }
+                        }
+                    };
+
+                    if ok {
+                        let elapsed_us = start.elapsed().as_micros() as u64;
+                        let mut h = get_hist_clone.lock().await;
+                        let _ = h.record(elapsed_us.max(1));
+                        drop(h);
+                        get_samples_clone.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }

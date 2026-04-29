@@ -1021,29 +1021,44 @@ All 30 runs (5 pipelines × 3 runs × 2 machines) had `requested == pushed == ac
 
 > Regression thresholds: +10% slow on small/tcp (regression-gate cell) = WARNING; +25% slow = BLOCKER. Apply against the 694,144 EPS post-12-07 baseline for Phase 13+ regression checks.
 
-### Mixed push+read (post-12-07, Apple-M4)
+### Mixed push+read matrix (post-12-07, Apple-M4)
 
-**Captured:** 2026-04-29. Same hw-class. Driver: `target/release/beava-bench-v18` with `--get-sample-interval-ms 10 --get-batch-keys 100` — concurrent /get sampling task on HTTP runs alongside the TCP push workload, sharing the apply thread (memory `project_phase18_no_dual_runtime`: single data-plane runtime).
+**Captured:** 2026-04-29. Same hw-class. Driver: `target/release/beava-bench-v18` with `--get-sample-interval-ms 10 --get-batch-keys 100`. After Plan 12-07's TCP /get wiring landed, the bench now drives /get via `OP_GET_MULTI` framed-TCP requests when `--transport=tcp` (HTTP path retained for `--transport=http`). Both paths share the same apply thread server-side (`memory project_phase18_no_dual_runtime`).
 
 **Methodology:**
-- Push transport: TCP / msgpack
-- Read transport: HTTP / JSON (the bench's get task is HTTP-only; both share the apply thread)
-- /get body shape: `{"keys": [<100 random>], "features": <pipeline.features>}` (1 batch per ~10ms)
+- Push transport: TCP / msgpack (or HTTP / JSON for cell 8)
+- /get transport: matches push transport (TCP via OP_GET_MULTI, or HTTP via POST /get)
+- /get body shape: `{"keys": [<100 random>], "features": <pipeline.features>}` (1 batch per ~10 ms)
 - 1 run per cell
 
-| Pipeline | Push config | Push EPS | Push p99 | /get p99 | /get samples / expected | Notes |
-|---|---|---:|---:|---:|---|---|
-| fraud-team | P=4 / PD=64 (light) | **92,979** | 6.06 ms | **4.27 ms** | 202 / 215 (94%) | realistic fraud-server load; reads stay sub-10ms |
-| fraud-team | P=16 / PD=1024 (saturated) | 89,264 | 374 ms | **229 ms** | 306 / 1120 (27%) | apply-thread queuing — reads share latency budget with backed-up pushes |
-| small | P=16 / PD=1024 (saturated) | 696,883 | 50 ms | **43.8 ms** | 125 / 144 (87%) | regression-gate cell with reads in the loop |
+| # | Mode | Pipeline | /get transport | P / PD | Push EPS | Push p99 | /get p99 | /get samples | Notes |
+|---:|---|---|---|---|---:|---:|---:|---:|---|
+| 1 | write-only | fraud-team | — | 4 / 64 | 88,373 | 5.22 ms | — | — | light push baseline |
+| 2 | write-only | fraud-team | — | 16 / 1024 | 84,402 | 608 ms | — | — | saturated push baseline |
+| 3 | mixed | fraud-team | TCP | 4 / 64 | 86,297 | 9.52 ms | **6.13 ms** | 551 | realistic load; reads sub-10 ms ✓ |
+| 4 | mixed | fraud-team | TCP | 16 / 1024 | 90,482 | 263 ms | **232.7 ms** | 331 | saturated; reads queue with pushes |
+| 5 | mixed | fraud-team | TCP | 8 / 256 | **106,253** | 27.4 ms | 30.0 ms | 289 | sweet spot — P=8 EPS beats both light AND saturated |
+| 6 | read-heavy | fraud-team | TCP | 1 / 1 | 26,493 | 0.14 ms | **0.22 ms** | 1,979 | minimal push contention — read-latency floor |
+| 7 | mixed | small | TCP | 4 / 64 | 532,327 | 0.88 ms | **1.64 ms** | 108 | small pipeline; less per-event work → faster reads |
+| 8 | mixed | fraud-team | HTTP | 4 / 64 | 35,319 | 0.38 ms | 1.03 ms | 513 | HTTP push capped at single-conn ceiling; not apples-to-apples vs TCP |
 
 **Headline interpretation:**
 
-1. **Light-load (production-realistic) read latency: p99 = 4.27 ms** under 93k EPS push. Well within PERF-02's "P99 < 10ms batch /get" target. This is the SLA target for fraud serving.
-2. **Saturated read latency: p99 = 229 ms** on fraud-team. Reads share the apply thread with a 374ms-deep push queue; latencies match. This is *expected* given the architecture (`memory project_phase18_no_dual_runtime` — single apply thread; reads serialize with pushes), not a bug.
-3. **Read load barely costs push throughput.** Light fraud-team mixed = 92,979 EPS vs. push-only = 92,213 EPS — within run-to-run noise. Reads at 100 batches/sec × ~3-4 ms each = sub-1% apply-thread cost.
-4. **/get sample drop rate under saturation** is a bench-harness artifact: the get task sequentially awaits each /get; when /get takes longer than the 10 ms interval, samples are dropped. Not a server-side error rate.
+1. **TCP /get latency floor: 220 µs p99** (cell 6, minimal push contention). With Plan 12-07's `OP_GET_MULTI` opcode landed, /get over TCP is **~5× faster than HTTP /get** (cf. Wave 7.d's read_bench.py over HTTP at p99 = 1.81 ms with similarly low push pressure). HTTP per-request handshake overhead is the difference.
+2. **Light-load production read p99 = 6.13 ms** (cell 3) under 86k EPS push — within PERF-02's "P99 < 10 ms batch /get" target. This is the SLA target for fraud serving.
+3. **Saturated read p99 = 232.7 ms** (cell 4) — reads share the apply thread with a 263 ms-deep push queue; latencies match. This is *expected* per the locked single-thread architecture, not a bug.
+4. **P=8/PD=256 is the throughput sweet spot for fraud-team** (cell 5: 106k EPS push) — between light and saturated. Reads degrade ~5× vs cell 3 (30 ms vs 6 ms p99) but push throughput climbs +23%.
+5. **Read-heavy cell (cell 6) shows 1,979 read samples in 3.8 s** — ~520 reads/sec ceiling per single bench-side TCP connection (sequential-await loop). Real production read throughput (multi-connection) would scale linearly until apply-thread saturation.
+6. **Read load barely costs push throughput.** Mixed light fraud-team push EPS = 86,297 vs write-only = 88,373 → −2.4% (within noise). Reads at 100 batches/sec × ~6 ms each = sub-1% apply-thread cost.
+7. **Small-pipeline read p99 = 1.64 ms** (cell 7) — small pipeline has less per-event aggregation work, so apply-thread bursts are shorter, so reads slot in faster.
 
-**Production sizing implication:** for fraud-decisioning at 93k EPS pushes, /get p99 stays under 10 ms when push pipeline-depth is bounded (≤64 inflight per worker). For higher push throughput, run multiple Beava instances and shard at the entity-key level (memory `project_no_sharded_apply`). Do NOT run reads against an instance saturated on pushes.
+**Production sizing implication:**
+- For fraud-decisioning at ~85-90k EPS pushes, /get p99 stays under 10 ms when push pipeline-depth is bounded (≤64 inflight per worker).
+- For higher push throughput, the sweet spot at P=8/PD=256 gives ~106k EPS but trades ~5× read latency.
+- For >106k EPS aggregate, run multiple Beava instances and shard at the entity-key level (`memory project_no_sharded_apply`). Do NOT run reads against an instance saturated on pushes — saturation pushes /get p99 well past the 10 ms PERF-02 target.
 
-**Future regression gate (mixed):** for Phase 13+ ship gate, light fraud-team /get p99 ≤ 10 ms is the target. 10-25% slower = WARN; >25% = BLOCK.
+**Regression gates (Phase 13+):**
+- Light fraud-team /get p99 ≤ 10 ms (cell 3 target: 6.13 ms today)
+- Read-latency floor ≤ 250 µs (cell 6 target: 0.22 ms today)
+- Small mixed /get p99 ≤ 2 ms (cell 7 target: 1.64 ms today)
+- 10-25% slower = WARN; >25% = BLOCK.
