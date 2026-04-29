@@ -309,27 +309,118 @@ pub fn dispatch_get_batch_sync(app: &Arc<AppState>, body: &Bytes) -> GlueRespons
     dispatch_get_batch(app, body)
 }
 
-fn dispatch_get_batch(_app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
-    // TODO(phase-18-followup): implement full batch GET dispatch.
-    // Stub: delegate to the parse path and return an empty result for now.
+/// Plan 12-07 Wave 4: real batch GET dispatch.
+///
+/// Mirrors the axum-side `post_get_batch_handler` (feature_query.rs:169-238):
+///
+/// 1. Cell-cap (SRV-API-08): keys × features > 10_000 -> InternalError
+///    "batch_too_large: cells={n} cap={cap}".
+/// 2. Resolve all features upfront — any missing -> InternalError
+///    "feature_not_found: missing=[...]" with the exact axum-side semantics.
+/// 3. Compute query_time_ms once via D-06 max-event-time tracking.
+/// 4. Acquire `state_tables.lock()` ONCE for the whole batch (single critical
+///    section; reuse the guard for all keys × features cells). Per-cell:
+///    `query_feature(&entity_key, feature_idx, query_time_ms)`.
+/// 5. Iteration order is `for key { for feature }` — per memory
+///    `project_no_same_key_batching`, NO sketch coalescing across the keys ×
+///    features cells.
+/// 6. Omit keys with no matching state (NOT inserted with null / empty obj).
+///    Mirrors axum-side feature_query.rs:232-234 semantics.
+fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
+    /// Cell-count cap enforced by SRV-API-08 / T-05-06-01. Mirrors
+    /// `feature_query::BATCH_CAP`.
+    const BATCH_CAP: usize = 10_000;
+
     #[derive(serde::Deserialize)]
     struct BatchGetBody {
-        #[allow(dead_code)]
         keys: Vec<String>,
-        #[allow(dead_code)]
         features: Vec<String>,
     }
-    let _req: BatchGetBody = match serde_json::from_slice(body) {
+    let req: BatchGetBody = match serde_json::from_slice(body) {
         Ok(r) => r,
         Err(e) => {
             return GlueResponse::InternalError {
                 reason: e.to_string(),
-            };
+            }
         }
     };
-    // Stub return — Plan 18-01 only requires GetSingle for the integration test.
-    let empty = serde_json::json!({ "result": {} });
-    match serde_json::to_vec(&empty) {
+
+    // 1. Cell-cap check.
+    let cell_count = req.keys.len().saturating_mul(req.features.len());
+    if cell_count > BATCH_CAP {
+        return GlueResponse::InternalError {
+            reason: format!("batch_too_large: cells={} cap={}", cell_count, BATCH_CAP),
+        };
+    }
+
+    // 2. Resolve all features upfront.
+    let registry = &app.dev_agg.registry;
+    let mut missing_features: Vec<String> = Vec::new();
+    let mut feature_resolutions: Vec<(String, usize)> = Vec::new();
+    for feat in &req.features {
+        match registry.resolve_feature(feat) {
+            Some(resolution) => feature_resolutions.push(resolution),
+            None => missing_features.push(feat.clone()),
+        }
+    }
+    if !missing_features.is_empty() {
+        return GlueResponse::InternalError {
+            reason: format!("feature_not_found: missing={:?}", missing_features),
+        };
+    }
+
+    // 3. Compute query_time_ms (D-06 — never wall clock).
+    let query_time_ms = {
+        let raw = app
+            .dev_agg
+            .max_event_time_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        if raw == 0 {
+            0i64
+        } else {
+            raw as i64
+        }
+    };
+
+    // 4. Single state_tables lock for the whole batch.
+    let tables = app.dev_agg.state_tables.lock();
+
+    let mut result: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, serde_json::Value>,
+    > = std::collections::BTreeMap::new();
+
+    for key_str in &req.keys {
+        let mut key_result: std::collections::BTreeMap<String, serde_json::Value> =
+            std::collections::BTreeMap::new();
+        for (feat_name, (agg_node, feature_idx)) in
+            req.features.iter().zip(feature_resolutions.iter())
+        {
+            let descriptor = match registry.compiled_aggregation(agg_node) {
+                Some(d) => d,
+                None => continue,
+            };
+            // Skip features where the key is malformed for this group_by arity.
+            // Mirrors feature_query.rs:217-222 (WR-02 silent omission).
+            let entity_key = match parse_entity_key(key_str, &descriptor.group_keys) {
+                Some(k) => k,
+                None => continue,
+            };
+            if let Some(val) = tables
+                .get(descriptor.agg_id as usize)
+                .and_then(|t| t.query_feature(&entity_key, *feature_idx, query_time_ms))
+            {
+                key_result.insert(feat_name.clone(), value_to_json(val));
+            }
+        }
+        // Omit keys with no matching state (SRV-API-08).
+        if !key_result.is_empty() {
+            result.insert(key_str.clone(), key_result);
+        }
+    }
+
+    let body_json = serde_json::json!({"result": result});
+    match serde_json::to_vec(&body_json) {
         Ok(b) => GlueResponse::QueryResult {
             body: Bytes::from(b),
         },
