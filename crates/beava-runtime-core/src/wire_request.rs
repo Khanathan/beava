@@ -113,4 +113,73 @@ mod tests {
             other => panic!("expected HttpPush, got {other:?}"),
         }
     }
+
+    // ─── Plan 12-07 Task 1.a (RED): TcpGet / TcpMGet / TcpGetMulti carry body_format ───
+
+    /// Plan 12-07 Task 1.a: TcpGet (OP_GET, single-key feature read) carries a
+    /// body_format byte so the dispatch layer knows whether the payload is JSON
+    /// or MessagePack. RED until `WireRequest::TcpGet { body, body_format }` exists.
+    #[test]
+    fn test_tcp_get_carries_body_format() {
+        let body = Bytes::from_static(br#"{"feature":"cnt","key":"alice"}"#);
+        let req = WireRequest::TcpGet {
+            body: body.clone(),
+            body_format: CT_JSON,
+        };
+        match req {
+            WireRequest::TcpGet {
+                body: b,
+                body_format,
+            } => {
+                assert_eq!(b, body);
+                assert_eq!(body_format, CT_JSON);
+                assert_ne!(body_format, CT_MSGPACK);
+            }
+            other => panic!("expected TcpGet, got {other:?}"),
+        }
+    }
+
+    /// Plan 12-07 Task 1.a: TcpMGet (OP_MGET, batched single-feature multi-key
+    /// read) carries body_format. RED until variant exists.
+    #[test]
+    fn test_tcp_mget_carries_body_format() {
+        let body = Bytes::from_static(b"\x82\xa7feature\xa3cnt\xa4keys\x91\xa5alice");
+        let req = WireRequest::TcpMGet {
+            body: body.clone(),
+            body_format: CT_MSGPACK,
+        };
+        match req {
+            WireRequest::TcpMGet {
+                body: b,
+                body_format,
+            } => {
+                assert_eq!(b, body);
+                assert_eq!(body_format, CT_MSGPACK);
+                assert_ne!(body_format, CT_JSON);
+            }
+            other => panic!("expected TcpMGet, got {other:?}"),
+        }
+    }
+
+    /// Plan 12-07 Task 1.a: TcpGetMulti (OP_GET_MULTI, multi-feature multi-key
+    /// read) carries body_format. RED until variant exists.
+    #[test]
+    fn test_tcp_get_multi_carries_body_format() {
+        let body = Bytes::from_static(br#"{"keys":["alice"],"features":["cnt"]}"#);
+        let req = WireRequest::TcpGetMulti {
+            body: body.clone(),
+            body_format: CT_JSON,
+        };
+        match req {
+            WireRequest::TcpGetMulti {
+                body: b,
+                body_format,
+            } => {
+                assert_eq!(b, body);
+                assert_eq!(body_format, CT_JSON);
+                assert_ne!(body_format, CT_MSGPACK);
+            }
+            other => panic!("expected TcpGetMulti, got {other:?}"),
+        }
+    }
 }
