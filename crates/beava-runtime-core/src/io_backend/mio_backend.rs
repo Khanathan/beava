@@ -18,7 +18,7 @@
 //! `READABLE | WRITABLE`. After the write buffer drains, it re-registers with
 //! `READABLE` only.
 
-use super::{IoBackend, IoEvent, MioTcpStream, WakerHandle};
+use super::{IoBackend, IoEvent, MioTcpStream, WakerHandle, WORKER_WAKE_CALLS};
 use bytes::BytesMut;
 use mio::{Events, Interest, Poll, Token, Waker};
 use std::collections::HashMap;
@@ -42,6 +42,9 @@ struct MioWakerHandle {
 
 impl WakerHandle for MioWakerHandle {
     fn wake(&self) -> std::io::Result<()> {
+        // Plan 12-08 (D-B): bump the wake counter before the actual wake.
+        // Tests use this to verify response batching amortises worker wakes.
+        WORKER_WAKE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.wake()
     }
 }
