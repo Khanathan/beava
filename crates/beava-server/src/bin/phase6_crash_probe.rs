@@ -49,6 +49,7 @@ fn main() {
                 wal_fsync_interval_ms: fsync_ms,
                 ..Default::default()
             },
+            admin_addr: "127.0.0.1:0".to_string(),
         };
 
         let server = Server::bind(&cfg, false).await.expect("bind");

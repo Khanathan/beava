@@ -92,6 +92,9 @@ impl Default for TestServerBuilder {
                 snapshot_retain_count: 2,
                 ..Default::default()
             },
+            // Plan 12-07: admin_addr must be OS-allocated for tests to avoid
+            // colliding with the default 127.0.0.1:8090.
+            admin_addr: "127.0.0.1:0".to_string(),
         };
         Self {
             cfg,

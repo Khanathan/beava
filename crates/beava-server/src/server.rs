@@ -1918,6 +1918,8 @@ mod tests {
                 snapshot_dir: unique_snapshot_dir(),
                 ..Default::default()
             },
+            // Plan 12-07: OS-allocate admin port so legacy tests don't bind 8090.
+            admin_addr: "127.0.0.1:0".to_string(),
         }
     }
 
@@ -1937,6 +1939,7 @@ mod tests {
                 snapshot_dir: unique_snapshot_dir(),
                 ..Default::default()
             },
+            admin_addr: "127.0.0.1:0".to_string(),
         }
     }
 
@@ -1959,6 +1962,7 @@ mod tests {
                 ..Default::default()
             },
             durability: Default::default(),
+            admin_addr: "127.0.0.1:0".to_string(),
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::InvalidAddr(_, _)));
@@ -2058,6 +2062,7 @@ mod tests {
                 max_frame_bytes: 1024,
             },
             durability: Default::default(),
+            admin_addr: "127.0.0.1:0".to_string(),
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::BindTcp { .. }));
@@ -2102,6 +2107,7 @@ mod tests {
                 max_frame_bytes: 1024,
             },
             durability: Default::default(),
+            admin_addr: "127.0.0.1:0".to_string(),
         };
         let err = Server::bind(&cfg, false).await.unwrap_err();
         assert!(matches!(err, ServerError::BindTcp { .. }));

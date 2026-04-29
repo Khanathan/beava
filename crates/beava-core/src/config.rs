@@ -33,6 +33,13 @@ pub struct Config {
     /// Phase 6 D-06/D-13: WAL + idempotency cache knobs.
     #[serde(default)]
     pub durability: DurabilityConfig,
+    /// Plan 12-07: Admin endpoint address (for /metrics, /registry, /debug).
+    /// The data-plane (HTTP /push, /get; TCP) binds to `listen_addr` and
+    /// `tcp.host:tcp.port`; the admin plane binds separately so prometheus
+    /// scrapers and ops dashboards don't share a port with high-throughput
+    /// data traffic. Env override: `BEAVA_ADMIN_ADDR`.
+    #[serde(default = "default_admin_addr")]
+    pub admin_addr: String,
 }
 
 fn default_listen_addr() -> String {
@@ -43,6 +50,10 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_admin_addr() -> String {
+    "127.0.0.1:8090".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -50,6 +61,7 @@ impl Default for Config {
             log_level: default_log_level(),
             tcp: TcpConfig::default(),
             durability: DurabilityConfig::default(),
+            admin_addr: default_admin_addr(),
         }
     }
 }
@@ -330,6 +342,10 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
             }
         };
     }
+    // Plan 12-07: admin_addr env override.
+    if let Ok(v) = std::env::var("BEAVA_ADMIN_ADDR") {
+        cfg.admin_addr = v;
+    }
     Ok(())
 }
 
@@ -340,6 +356,14 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         .map_err(|e| ConfigError::Validation {
             field: "listen_addr",
             reason: format!("`{}` is not a valid socket address: {}", cfg.listen_addr, e),
+        })?;
+
+    // Plan 12-07: Validate admin_addr parses as a SocketAddr.
+    cfg.admin_addr
+        .parse::<std::net::SocketAddr>()
+        .map_err(|e| ConfigError::Validation {
+            field: "admin_addr",
+            reason: format!("`{}` is not a valid socket address: {}", cfg.admin_addr, e),
         })?;
 
     // Validate log_level is one of the known tracing levels.
