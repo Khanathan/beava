@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Plan 12-08 SHIPPED 2026-04-29 — apply-loop overhead reduction (busy-poll + drain-until-empty + response batch + BytesMutPool); fraud-team/tcp +10.9%, fraud-team/http +82%; orchestration cost 1095→75 ns (14.6×); next is Plan 12-09 (msgpack TCP /get) or 12-10 (push-and-get) or 12-11 (RecyclableBytes follow-up if memcpy residual worth harvesting)
+status: Plan 12-09 SHIPPED 2026-04-29 — TCP /get msgpack default (HTTP unchanged); GlueResponse::QueryResult{body,format} threaded; Python SDK App.get on tcp:// defaults to msgpack; D-A..D-E locked decisions honored; STRETCH miss documented (~2-3% codec lift vs predicted 40%; integer-leaf fixture not representative); next is Plan 12-10 (push-and-get; depends on 12-09's GlueResponse shape — now unblocked) or Plan 12-11 (RecyclableBytes wrapper, conditional)
 last_updated: "2026-04-29T12:30:00.000Z"
 progress:
   total_phases: 34
   completed_phases: 20
   total_plans: 148
-  completed_plans: 115
+  completed_plans: 116
   percent: 78
 ---
 
@@ -99,6 +99,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 ## Current Focus
 
 **Plan 12-07 closed 2026-04-29 — `/get` on mio HTTP+TCP via apply_shard + main.rs migrated to ServerV18.** Production binary `target/release/beava` now runs the mio data plane (no env-var workarounds for `/get`); `dispatch_get_batch` real impl replaces the Plan 18-01 stub; `OP_GET_RESPONSE = 0x0023` allocated; `/health` shimmed inline on the mio HTTP listener (read_bench.py contract). 22 TDD-paired tasks, 35 new tests, 21 plan commits + this SUMMARY. `python/benches/read_bench.py` runs end-to-end against the unmodified release binary at **1000/1000 OK, p99=1.81 ms**. Throughput rebaseline shows simple-fraud TCP +8.0% vs 19.4 baseline (PASS).
+
+**Plan 12-09 closed 2026-04-29 — TCP /get msgpack default.** v2/greenfield HEAD `98e305b`. 14 task commits + SUMMARY across 8 waves. Branched `dispatch_get_*_sync` on `body_format: u8` (CT_JSON / CT_MSGPACK); extended `GlueResponse::QueryResult { body, format }` so the encoder emits the right content-type byte; threaded body_format through `apply_shard.rs` TcpGet/MGet/Multi arms (Http arms hardcode CT_JSON); Python SDK `App.get(...)` on `tcp://` defaults to msgpack; HTTP /get bit-for-bit unchanged. 16 new tests (12 Rust + 4 Python integration) + criterion microbench `phase12_09_msgpack_get.rs` + throughput rebaseline matrix. **Locked decisions D-A..D-E honored end-to-end.** **STRETCH miss (documented honestly per `feedback_cost_model_from_flamegraph`):** Apple-M4 microbench shows ~2-3% codec lift, NOT the 40% the SCOPE doc predicted on integer-leaf fixtures; hypothesis: heavy-sketch leaf shapes may show predicted lift; current single-cell measurement is dominated by HashMap lookup + entity-key parse, not serialization. Push small/tcp regression -14% (WARN) attributed to load-sensitive variance (system load avg 7-9 during measurement; plan touches no push code paths). SUMMARY: `.planning/phases/12-server-side-async-push-coalescing/12-09-SUMMARY.md`.
 
 **Plan 12-08 closed 2026-04-29 — apply-loop overhead reduction.** v2/greenfield HEAD `c6471bd`. 11 TDD-paired tasks across 6 waves: D-A adaptive busy-poll (recv_timeout 50µs after K=10k spin), D-D drain-until-empty (no DRAIN_CAP), D-B response batch with hybrid 16/100µs flush + 1-wake-per-batch amortization, D-C per-IO-worker BytesMutPool (cap=256 × 4 KiB). Apply orchestration: **1095 ns → 75 ns/event (14.6×)**. fraud-team/tcp **92,213 → 102,291 EPS (+10.9%)**, fraud-team/http **30,372 → 55,233 EPS (+82%)**. Small/tcp regression-gate **+1.9%** PASS. Pool design: simpler `acquire/encode/extend/release` shape adopted (NOT RecyclableBytes wrapper — fallback path per plan's escape hatch; FnOnce + same-scope encoding makes Drop-based reclamation unnecessary). Listener cross-wake fix discovered + applied (non-blocking event_loop.tick(0) before recv_timeout fall-through; bounds first-connection latency 50ms→150µs). 4 documented deviations (idle CPU 12% vs <5% target due to crossbeam Backoff; STRETCH-targets miss on cheap pipelines = dispatch-bound). SUMMARY: `.planning/phases/12-server-side-async-push-coalescing/12-08-SUMMARY.md`. Hetzner Linux baseline + samply trace pending Phase 13 sweep.
 
