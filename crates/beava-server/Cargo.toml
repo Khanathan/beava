@@ -177,6 +177,11 @@ name = "phase12_07_main_uses_v18_test"
 path = "tests/phase12_07_main_uses_v18_test.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "phase12_07_get_via_mio_test"
+path = "tests/phase12_07_get_via_mio_test.rs"
+required-features = ["testing"]
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
