@@ -165,7 +165,9 @@ async fn test_apply_drains_more_than_1024_items_per_iteration() {
     const N_PUSHES: usize = 4096;
     let burst = build_push_burst(N_PUSHES);
 
-    let sock = tokio::net::TcpStream::connect(tcp_addr).await.expect("connect");
+    let sock = tokio::net::TcpStream::connect(tcp_addr)
+        .await
+        .expect("connect");
     sock.set_nodelay(true).ok();
 
     // Spawn a reader task to drain ack frames concurrently.
@@ -217,10 +219,7 @@ async fn test_apply_drains_more_than_1024_items_per_iteration() {
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
     std::env::remove_var("BEAVA_IO_THREADS");
 
-    assert_eq!(
-        acked, N_PUSHES,
-        "expected {N_PUSHES} acks, got {acked}"
-    );
+    assert_eq!(acked, N_PUSHES, "expected {N_PUSHES} acks, got {acked}");
     assert!(
         max_drain > 1024,
         "expected apply_max_drain_per_iter > 1024 (D-D drain-until-empty), got {max_drain} \

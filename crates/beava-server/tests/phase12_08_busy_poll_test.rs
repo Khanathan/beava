@@ -124,7 +124,8 @@ async fn register_and_push_n(http_addr: SocketAddr, n_pushes: usize) {
     assert!(resp.status().is_success(), "register failed");
 
     for i in 0..n_pushes {
-        let body = serde_json::json!({"event_time": 1000 + i as i64, "user_id": "alice", "amount": 1.0});
+        let body =
+            serde_json::json!({"event_time": 1000 + i as i64, "user_id": "alice", "amount": 1.0});
         let resp = client
             .post(format!("http://{}/push/Txn", http_addr))
             .json(&body)

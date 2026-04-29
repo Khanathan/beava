@@ -70,8 +70,7 @@ pub trait WakerHandle: Send + Sync {
 /// Plan 12-08 (D-B) test instrumentation: cumulative count of `wake()` calls
 /// on any `WakerHandle` (across all workers). Wave 3 verifies that response
 /// batching collapses N response wakes into one wake per batch.
-pub static WORKER_WAKE_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub static WORKER_WAKE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Plan 12-08 test hook. Cumulative count of `WakerHandle::wake()` calls
 /// since process start (counts both data-plane worker wakes and the apply-side

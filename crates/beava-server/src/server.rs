@@ -871,8 +871,7 @@ static APPLY_MAX_DRAIN_PER_ITER: std::sync::atomic::AtomicU64 =
 /// startup. Test hook for per-thread CPU accounting (`mach_thread_basic_info`
 /// on macOS; `pthread_getcpuclockid` on Linux). Stored as `usize` because
 /// `pthread_t` is opaque + Send-unfriendly across an `AtomicUsize`.
-static APPLY_PTHREAD_ID: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static APPLY_PTHREAD_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Plan 12-08 (D-B): cumulative count of `flush_response_batch` calls that
 /// flushed a non-empty batch. Test hook only.
@@ -1066,7 +1065,10 @@ fn dispatch_one_ring_item(
 fn flush_response_batch(
     response_batch: &mut smallvec::SmallVec<[ResponseBatchEntry; 16]>,
     batch_started_at: &mut Option<Instant>,
-    write_txs: &[crossbeam_channel::Sender<(u64, beava_runtime_core::io_thread_worker::WriteEncoder)>],
+    write_txs: &[crossbeam_channel::Sender<(
+        u64,
+        beava_runtime_core::io_thread_worker::WriteEncoder,
+    )>],
     worker_wakers: &[Arc<dyn beava_runtime_core::io_backend::WakerHandle>],
     n_workers: usize,
 ) -> usize {

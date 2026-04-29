@@ -31,13 +31,11 @@ use std::sync::Arc;
 
 /// Plan 12-08 (D-C) test instrumentation: cumulative count of pool
 /// allocations (cache misses — pool was empty when acquire() was called).
-static POOL_ALLOC_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static POOL_ALLOC_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Plan 12-08 (D-C) test instrumentation: cumulative count of pool acquires
 /// (hits + misses).
-static POOL_ACQUIRE_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static POOL_ACQUIRE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Cumulative number of `BytesMut::with_capacity` allocations (cache misses).
 /// Test hook only — Wave 4 verifies that under steady-state push load
@@ -156,7 +154,8 @@ mod tests {
         }
         let alloc_after_second_round = pool_alloc_count();
         assert_eq!(
-            alloc_after_second_round, alloc_after_first_round,
+            alloc_after_second_round,
+            alloc_after_first_round,
             "recycle should not allocate; got {} new allocs",
             alloc_after_second_round - alloc_after_first_round
         );

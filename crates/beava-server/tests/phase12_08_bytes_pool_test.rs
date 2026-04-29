@@ -162,7 +162,9 @@ async fn test_response_pool_used_by_encoder() {
     let allocs_before = pool_alloc_count();
     let acquires_before = pool_acquire_count();
 
-    let sock = tokio::net::TcpStream::connect(tcp_addr).await.expect("connect");
+    let sock = tokio::net::TcpStream::connect(tcp_addr)
+        .await
+        .expect("connect");
     sock.set_nodelay(true).ok();
     let (mut read_half, mut write_half) = sock.into_split();
 
