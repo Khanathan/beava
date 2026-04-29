@@ -243,3 +243,8 @@ criterion = { workspace = true }
 [[bench]]
 name = "phase25_wire"
 harness = false
+
+[[bench]]
+name = "phase12_07_read_path"
+harness = false
+required-features = ["testing"]
