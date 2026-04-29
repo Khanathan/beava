@@ -40,6 +40,7 @@ fn count_desc() -> AggOpDescriptor {
         sketch_params: None,
         ext: Default::default(),
         field_idx: FIELD_IDX_NONE,
+        field_idx_into_event_extracted: Vec::new(),
     }
 }
 
