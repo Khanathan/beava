@@ -343,9 +343,7 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes) -> GlueResponse {
     fn trace_get_enabled() -> bool {
         use std::sync::OnceLock;
         static FLAG: OnceLock<bool> = OnceLock::new();
-        *FLAG.get_or_init(|| {
-            std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1")
-        })
+        *FLAG.get_or_init(|| std::env::var("BEAVA_TRACE_APPLY_TIMING").ok().as_deref() == Some("1"))
     }
     let trace = trace_get_enabled();
     let t0 = if trace {

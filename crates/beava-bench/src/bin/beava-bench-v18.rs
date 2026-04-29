@@ -346,14 +346,21 @@ async fn main() -> Result<()> {
     // the per-process glibc mmap_lock contention that caps in-process push EPS.
     let (http_addr, tcp_addr, _local_server_handles) = if let Some(remote) = &cli.remote_addr {
         let parts: Vec<&str> = remote.split(',').collect();
-        anyhow::ensure!(parts.len() == 2, "--remote-addr expects \"host:http_port,host:tcp_port\", got {:?}", remote);
+        anyhow::ensure!(
+            parts.len() == 2,
+            "--remote-addr expects \"host:http_port,host:tcp_port\", got {:?}",
+            remote
+        );
         let http: std::net::SocketAddr = parts[0]
             .parse()
             .with_context(|| format!("parse remote http addr {:?}", parts[0]))?;
         let tcp: std::net::SocketAddr = parts[1]
             .parse()
             .with_context(|| format!("parse remote tcp addr {:?}", parts[1]))?;
-        eprintln!("beava-bench-v18: REMOTE mode http={} tcp={} (skipping bind/register/prewarm)", http, tcp);
+        eprintln!(
+            "beava-bench-v18: REMOTE mode http={} tcp={} (skipping bind/register/prewarm)",
+            http, tcp
+        );
         (http, tcp, None)
     } else {
         let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -790,8 +797,7 @@ async fn run_workload(
                 let keys: Vec<String> = (0..read_batch_keys)
                     .map(|_| format!("k{:08}", rng.gen_range(0..KEY_SPACE)))
                     .collect();
-                let body =
-                    serde_json::json!({"keys": keys, "features": read_features});
+                let body = serde_json::json!({"keys": keys, "features": read_features});
 
                 let start = Instant::now();
                 let ok = match (read_transport, tcp_client.as_mut()) {
