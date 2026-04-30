@@ -75,6 +75,24 @@ pub enum WireRequest {
     /// roundtrip; the dispatch layer returns `GlueResponse::HealthOk` directly
     /// so /health stays responsive even before WAL recovery completes.
     HttpHealth,
+    /// GET /ready — readiness probe on the data-plane port (Plan 12.6-01).
+    /// Mirrors the admin sidecar's /ready for back-compat with the ~20
+    /// TestServer-using test files that poll `base_url()` for readiness.
+    HttpReady,
+    /// GET /registry — registry snapshot dump on the data-plane port (Plan 12.6-01).
+    /// Mirrors the admin sidecar's /registry for back-compat with the
+    /// phase4/5/11.5 tests that GET `/registry` for schema-propagation
+    /// assertions.
+    HttpRegistry,
+    /// Plan 12.6-01: HTTP request whose path didn't match the router table.
+    /// Distinct from `ParseError` (which covers wire-level decode failures)
+    /// so the encoder can return `404 Not Found` for unknown routes — the
+    /// legacy axum behaviour that TestServer-using tests assert.
+    HttpNotFound { path: String },
+    /// Plan 12.6-01: HTTP request whose path matched a route but with the
+    /// wrong method.  Encoder returns `405 Method Not Allowed` (the legacy
+    /// axum default).
+    HttpMethodNotAllowed { method: String, path: String },
     /// Unknown or reserved opcode; contains the raw opcode for error reporting.
     Unknown { op: u16 },
     /// Malformed frame (parse error).

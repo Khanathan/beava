@@ -108,8 +108,11 @@ fn setup_apply_shard_with_count_pipeline() -> ShardFixture {
         },
         None,
     );
+    // Plan 12.6-01: success path is `Register { http_status: 200, .. }`.
     match &reg_resps[0] {
-        GlueResponse::RegisterOk { .. } => {}
+        GlueResponse::Register {
+            http_status: 200, ..
+        } => {}
         other => panic!("registration failed: {other:?}"),
     }
 

@@ -17,7 +17,7 @@
 //! In the serve loop, only the single apply thread calls `dispatch_wire_request_sync`;
 //! the Mutex is uncontended → lock+unlock cost ~10–20 ns on macOS/Linux.
 
-use crate::register::{RegisterOutcome, RegisterPayload};
+use crate::register::RegisterPayload;
 use crate::runtime_core_glue::GlueResponse;
 use crate::AppState;
 use beava_core::row::Row;
@@ -99,20 +99,29 @@ impl ApplyShard {
             // deferred to Plan 18-06 (currently the legacy WalSink path handles
             // durability for /register; the mio path calls it without WAL for now).
             WireRequest::Register { payload } => {
+                // Plan 12.6-01: parse + dispatch on the apply thread, then
+                // funnel the outcome through `register_outcome_to_glue`
+                // so wire bytes match the legacy axum
+                // `register::map_outcome_to_http` output exactly.
                 let reg_payload: RegisterPayload = match serde_json::from_slice(&payload) {
                     Ok(p) => p,
                     Err(e) => {
-                        return GlueResponse::RegisterError {
-                            code: "invalid_registration".to_owned(),
-                            message: e.to_string(),
+                        let (path, reason) = crate::register::format_serde_error_public(&e);
+                        let body = serde_json::json!({
+                            "error": {
+                                "code": "invalid_registration",
+                                "path": path,
+                                "reason": reason,
+                            },
+                            "registry_version": self.state.dev_agg.registry.version(),
+                        });
+                        return GlueResponse::Register {
+                            http_status: 400,
+                            body: bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                            tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
                 };
-                // Delegate to the async glue via a blocking thread so the apply thread
-                // doesn't stall on the tokio WAL channel (register is cold path).
-                // This is the correct approach: apply thread stays sync; register just
-                // calls the standard glue dispatch which is allowed to be async for
-                // admin/cold paths per D-3.
                 // Register is a cold path on the mio event loop.
                 // Delegate to the async WAL-backed register function using a
                 // temporary single-threaded tokio runtime (register is never
@@ -135,30 +144,12 @@ impl ApplyShard {
                     let mut tables = state_clone.dev_agg.state_tables.lock();
                     beava_core::agg_state_table::ensure_capacity_for(&mut tables, new_next_agg_id);
                 }
-                match outcome {
-                    RegisterOutcome::Success { version, .. } => {
-                        GlueResponse::RegisterOk { version }
-                    }
-                    RegisterOutcome::EmptyPayload { version } => {
-                        GlueResponse::RegisterOk { version }
-                    }
-                    RegisterOutcome::Noop { version, .. } => GlueResponse::RegisterOk { version },
-                    RegisterOutcome::ValidationFailed {
-                        first_error_path,
-                        first_error_reason,
-                        ..
-                    } => GlueResponse::RegisterError {
-                        code: "invalid_registration".to_owned(),
-                        message: format!("{first_error_path}: {first_error_reason}"),
-                    },
-                    RegisterOutcome::Conflict { .. } => GlueResponse::RegisterError {
-                        code: "registration_conflict".to_owned(),
-                        message: "descriptor conflict".to_owned(),
-                    },
-                    RegisterOutcome::WalUnavailable { .. } => GlueResponse::RegisterError {
-                        code: "wal_unavailable".to_owned(),
-                        message: "WAL unavailable".to_owned(),
-                    },
+                let (http_status, body, tcp_op) =
+                    crate::register::register_outcome_to_glue(outcome);
+                GlueResponse::Register {
+                    http_status,
+                    body,
+                    tcp_op,
                 }
             }
 
@@ -369,6 +360,28 @@ impl ApplyShard {
             // unconditionally matches the Kubernetes liveness contract:
             // "yes the process is up and accepting connections".
             WireRequest::HttpHealth => GlueResponse::HealthOk,
+
+            // Plan 12.6-01: data-plane /ready and /registry shims for
+            // back-compat with TestServer-using tests. /ready is a
+            // constant-body shim (mirrors admin sidecar's /ready). /registry
+            // serializes the live registry snapshot via
+            // `registry_debug::build_registry_dump`.
+            WireRequest::HttpReady => GlueResponse::ReadyOk,
+            WireRequest::HttpRegistry => {
+                let dump = crate::registry_debug::build_registry_dump(&self.state.dev_agg.registry);
+                let body = serde_json::to_vec(&dump).unwrap_or_default();
+                GlueResponse::RegistrySnapshot {
+                    body: bytes::Bytes::from(body),
+                }
+            }
+            // Plan 12.6-01: route-level errors (unknown path / wrong method)
+            // surface as 404 / 405 — same shape as the legacy axum
+            // fallback. ParseError (wire-level decode failure) and Unknown
+            // op (TCP) still map to 501 Unsupported below.
+            WireRequest::HttpNotFound { path } => GlueResponse::HttpRouteNotFound { path },
+            WireRequest::HttpMethodNotAllowed { method, path } => {
+                GlueResponse::HttpMethodNotAllowed { method, path }
+            }
 
             WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => {
                 GlueResponse::Unsupported

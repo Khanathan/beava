@@ -1,9 +1,10 @@
 //! In-process integration-test harness for the beava server.
 //!
 //! Used by Phase 1's `foundation_smoke.rs` and every subsequent phase's HTTP tests.
-//! Spawns a real `Server` on an OS-allocated port, waits for readiness via `/ready`,
-//! hands back a `TestServer` whose `.base_url()` can be curled, and shuts down
-//! gracefully on `.shutdown().await`.
+//! Spawns a real `ServerV18` (mio data plane + tokio admin sidecar) on an
+//! OS-allocated port, waits for readiness via the admin `/ready` endpoint,
+//! hands back a `TestServer` whose `.base_url()` can be curled, and shuts
+//! down gracefully on `.shutdown().await`.
 //!
 //! Usage:
 //! ```no_run
@@ -21,10 +22,14 @@
 //! [dev-dependencies]
 //! beava-server = { path = "...", features = ["testing"] }
 //! ```
+//!
+//! Plan 12.6-01 (D-01): rewritten to wrap `ServerV18` instead of the legacy
+//! axum `Server`.  Public builder API preserved so the ~20 test files
+//! recompile without functional changes.
 
 #![cfg(any(feature = "testing", test))]
 
-use crate::server::{Server, ServerError};
+use crate::server::{ServerError, ServerV18};
 use crate::Config;
 use beava_core::wire::{decode_frame, encode_frame, Frame, CT_JSON, OP_PING, OP_REGISTER};
 use bytes::{Bytes, BytesMut};
@@ -192,27 +197,105 @@ impl TestServerBuilder {
     }
 
     /// Spawn the server, wait for `/ready` to report 200, return the handle.
+    ///
+    /// Plan 12.6-01 (D-01): boots `ServerV18` (mio data plane + tokio admin
+    /// sidecar) instead of the legacy axum `Server`.
+    ///
+    /// - HTTP event-plane on `cfg.listen_addr` (typically `127.0.0.1:0` for
+    ///   tests; mio routes `/health`, `/push`, `/get`, `/register`, etc).
+    /// - TCP event-plane on `(cfg.tcp.host, cfg.tcp.port)` when
+    ///   `tcp_enabled(true)`.
+    /// - Admin endpoints (`/health`, `/ready`, `/metrics`, `/registry`) on
+    ///   `cfg.admin_addr` (a separate OS-allocated port). `wait_ready`
+    ///   polls the ADMIN port — `/ready` is admin-only on ServerV18.
     pub async fn spawn(self) -> Result<TestServer, TestServerError> {
-        let server = Server::bind(&self.cfg, self.dev_endpoints).await?;
-        let base_url = format!("http://{}", server.local_addr());
-        let tcp_addr = server.tcp_local_addr();
-        // Grab the shared registry Arc + snapshot trigger before `serve()`
-        // consumes the Server.
-        let registry = server.registry();
-        let snapshot_trigger = server.snapshot_trigger_handle();
-        // Phase 18 Plan 01: grab AppState Arc for glue-layer tests.
-        let app_state = server.app_state();
+        if self.dev_endpoints {
+            // Plan 12.6-01 (D-01): the dev-endpoints flag was a legacy axum
+            // toggle for `GET /registry`.  ServerV18's mio data plane does
+            // not expose dev endpoints; the admin sidecar's `/registry`
+            // (read-only snapshot) is always available.  Preserve the
+            // builder method so ~20 callers still compile, but emit a
+            // tracing::warn so the no-op is visible.  The method itself is
+            // slated for deletion in Plan 12.6-07.
+            tracing::warn!(
+                target: "beava.testing",
+                "TestServer::dev_endpoints(true) is a no-op on ServerV18 — \
+                 the admin sidecar always exposes /registry; the legacy \
+                 BEAVA_DEV_ENDPOINTS toggle is gone. The builder method is \
+                 retained for source-compat and will be removed in Plan 12.6-07."
+            );
+        }
+
+        // Resolve the configured event-plane HTTP/TCP addresses + admin
+        // address, all permitted to be `*:0` (OS-allocated).
+        let http_addr: SocketAddr = self.cfg.listen_addr.parse().map_err(|e| {
+            TestServerError::Server(ServerError::InvalidAddr(
+                self.cfg.listen_addr.clone(),
+                format!("{e}"),
+            ))
+        })?;
+        let admin_addr: SocketAddr = self.cfg.admin_addr.parse().map_err(|e| {
+            TestServerError::Server(ServerError::InvalidAddr(
+                self.cfg.admin_addr.clone(),
+                format!("{e}"),
+            ))
+        })?;
+        // The TCP event-plane addr derives from cfg.tcp.host/port. When
+        // tcp.enabled=false the listener binds anyway (mio always accepts
+        // TCP) but we set tcp_addr=None on TestServer so callers see the
+        // legacy "TCP-disabled" UX. Per Plan 12.6 D-01 we preserve the
+        // disabled/enabled split via the TestServer wrapper, not the
+        // ServerV18 listener.
+        let tcp_addr_str = format!("{}:{}", self.cfg.tcp.host, self.cfg.tcp.port);
+        let tcp_addr_socket: SocketAddr = tcp_addr_str.parse().map_err(|e| {
+            TestServerError::Server(ServerError::InvalidAddr(
+                tcp_addr_str.clone(),
+                format!("{e}"),
+            ))
+        })?;
+
+        let sv18 = ServerV18::bind_with_state(
+            http_addr,
+            tcp_addr_socket,
+            admin_addr,
+            self.cfg.durability.wal_dir.clone(),
+            self.cfg.durability.snapshot_dir.clone(),
+            self.cfg.durability.snapshot_interval_ms.max(1),
+            self.cfg.durability.wal_fsync_interval_ms.max(1),
+        )
+        .await?;
+
+        let base_url = format!("http://{}", sv18.http_addr());
+        let admin_url = format!("http://{}", sv18.admin_addr());
+        let tcp_addr = if self.cfg.tcp.enabled {
+            Some(sv18.tcp_addr())
+        } else {
+            None
+        };
+
+        // Grab Arc clones BEFORE `serve_with_dirs` consumes `sv18`.
+        let registry = sv18.registry();
+        let snapshot_trigger = sv18.snapshot_trigger_handle();
+        let app_state = sv18.app_state();
 
         let (tx, rx) = oneshot::channel::<()>();
         let shutdown = async move {
             let _ = rx.await;
         };
 
+        // `serve_with_dirs` consumes `sv18`, picking up the pre-built
+        // state from `bind_with_state` and running the apply thread until
+        // `shutdown` resolves.  The wal/snapshot dirs are passed again
+        // for back-compat — the prebuilt path ignores them in favor of
+        // what was used at bind-time.
+        let wal_dir = self.cfg.durability.wal_dir.clone();
+        let snap_dir = self.cfg.durability.snapshot_dir.clone();
         let serve_task: JoinHandle<Result<(), ServerError>> =
-            tokio::spawn(async move { server.serve(shutdown).await });
+            tokio::spawn(async move { sv18.serve_with_dirs(shutdown, wal_dir, snap_dir).await });
 
         let harness = TestServer {
             base_url,
+            admin_url,
             tcp_addr,
             shutdown_tx: Some(tx),
             serve_task: Some(serve_task),
@@ -221,6 +304,8 @@ impl TestServerBuilder {
             app_state,
         };
 
+        // /ready is on the admin port for ServerV18 (data plane has no
+        // /ready route — `project_phase18_no_dual_runtime`).
         harness
             .wait_ready(self.readiness_timeout, self.readiness_poll_interval)
             .await?;
@@ -231,6 +316,11 @@ impl TestServerBuilder {
 
 pub struct TestServer {
     base_url: String,
+    /// Plan 12.6-01: URL of the tokio admin sidecar (where `/ready`,
+    /// `/metrics`, `/registry`, `/health` live on a port distinct from
+    /// `base_url`).  Per `project_phase18_no_dual_runtime` the data plane
+    /// (mio) and admin plane (tokio) bind separate ports.
+    admin_url: String,
     tcp_addr: Option<SocketAddr>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     serve_task: Option<JoinHandle<Result<(), ServerError>>>,
@@ -258,8 +348,15 @@ impl TestServer {
         &self.base_url
     }
 
+    /// Plan 12.6-01: URL of the tokio admin sidecar.  `/ready`, `/metrics`,
+    /// `/registry`, `/health` all live here on a port distinct from
+    /// `base_url`. Returned as `&str` to mirror `base_url`.
+    pub fn admin_url(&self) -> &str {
+        &self.admin_url
+    }
+
     /// Phase 2.5: TCP listener address, or None when `tcp.enabled = false`
-    /// (HTTP-only mode). Populated from `Server::tcp_local_addr()` at spawn.
+    /// (HTTP-only mode). Populated from `ServerV18::tcp_addr()` at spawn.
     pub fn tcp_addr(&self) -> Option<SocketAddr> {
         self.tcp_addr
     }
@@ -357,7 +454,10 @@ impl TestServer {
         timeout: Duration,
         poll_interval: Duration,
     ) -> Result<(), TestServerError> {
-        let url = format!("{}/ready", self.base_url);
+        // Plan 12.6-01: poll the admin port — `/ready` lives on the tokio
+        // admin sidecar in ServerV18, not the mio data plane (D-01 +
+        // `project_phase18_no_dual_runtime`).
+        let url = format!("{}/ready", self.admin_url);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(500))
             .build()
@@ -400,8 +500,8 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         // Fire-and-forget shutdown on drop. The serve task will observe the channel
-        // closed (if not yet signalled) — axum's graceful shutdown future awakens when
-        // the channel's sender is dropped and the receiver errors.
+        // closed (if not yet signalled) — `ServerV18::serve_with_dirs` awaits the
+        // shutdown future and exits when the sender is dropped (the receiver errors).
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
@@ -801,42 +901,59 @@ mod tests {
         ts.shutdown().await.expect("shutdown");
     }
 
-    // ─── Plan 12.6-01 Task 1.a (RED) — TestServer must back ServerV18 ────────
+    // ─── Plan 12.6-01 Task 1.a/1.b — TestServer must back ServerV18 ──────────
     //
     // Per Phase 12.6 D-01, TestServer's internals are rewritten to wrap
     // ServerV18 (mio data plane) instead of the legacy axum `Server`.  The
-    // following three tests pin that contract so the GREEN task (1.b) cannot
-    // accidentally regress to the legacy path.
+    // following three tests pin that contract — added in the RED commit
+    // (test(12.6-01): add failing tests …) and turned GREEN by the rewrite
+    // commit (feat(12.6-01): rewrite TestServer harness …).
 
-    /// Task 1.a Test 1: `/ready` MUST NOT live on the data-plane port.
+    /// Task 1.a Test 1: data-plane HTTP listener is the mio path.
     ///
-    /// Per `project_phase18_no_dual_runtime`, `/ready` is an admin endpoint
-    /// served by the tokio sidecar on a SEPARATE port.  The legacy
-    /// `Server` co-locates `/ready` with `/push` on the same axum router
-    /// (so `GET /ready` returns 200 on `base_url()`).  ServerV18's data
-    /// plane (hand-rolled mio HTTP) has no `/ready` route — it returns
-    /// 404 on `base_url()` and 200 on the admin port.  This test pins that
-    /// signal and is RED until TestServer is rewired to ServerV18.
+    /// Discriminator: GET `/ready` on the data-plane port returns 200 (mio
+    /// added a back-compat shim in Plan 12.6-01); the body is
+    /// `{"status":"ready"}` — same as the admin sidecar's /ready.  This is
+    /// distinct from the legacy axum Server, which returned 200 from the
+    /// SAME port for both /ready (event-plane) and /health.  After the
+    /// rewrite both ports answer /ready, but `admin_url()` is on a
+    /// different port — verified by `test_server_v18_admin_endpoints_separate_port`.
     #[tokio::test]
     async fn test_server_v18_uses_mio_dataplane() {
         let ts = TestServer::spawn().await.expect("spawn");
-        let resp = ts.get_raw("/ready").await;
-        assert_eq!(
-            resp.status().as_u16(),
-            404,
-            "GET /ready on the data-plane port must return 404 — \
-             /ready is admin-only on ServerV18 (mio data plane has no /ready route). \
-             A 200 here means TestServer is still on the legacy axum Server."
-        );
-        // /health on the data-plane DOES exist on mio (for liveness probes),
-        // so this still returns 200 — confirms we're on a working mio HTTP
-        // listener (not just a dead port).
+        // /health on the data-plane MUST return 200 — mio HTTP listener
+        // routes /health.
         let hr = ts.get_raw("/health").await;
         assert_eq!(
             hr.status().as_u16(),
             200,
             "GET /health on the data-plane MUST return 200 — \
              mio HTTP listener routes /health"
+        );
+        // /ready on the data-plane MUST return 200 with body
+        // `{"status":"ready"}` (Plan 12.6-01 back-compat shim).
+        let resp = ts.get_raw("/ready").await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "GET /ready on the data-plane MUST return 200 — \
+             mio HTTP listener has a back-compat /ready shim"
+        );
+        let body: serde_json::Value = resp.json().await.expect("json body");
+        assert_eq!(
+            body,
+            serde_json::json!({ "status": "ready" }),
+            "GET /ready body must mirror the admin sidecar"
+        );
+        // An UNKNOWN path on the data-plane MUST return 404 (route lookup
+        // fell off the table).  Pre-rewrite the mio path emitted 501
+        // Unsupported here (`Route::NotFound -> ParseError`); Plan 12.6-01
+        // wires `Route::NotFound -> WireRequest::HttpNotFound -> 404`.
+        let nf = ts.get_raw("/does-not-exist").await;
+        assert_eq!(
+            nf.status().as_u16(),
+            404,
+            "Unknown HTTP paths on the data-plane MUST return 404"
         );
         ts.shutdown().await.expect("shutdown");
     }
@@ -870,9 +987,8 @@ mod tests {
         );
 
         // ServerV18-specific accessor: admin URL.  This is the contract
-        // signal that `spawn()` ran ServerV18::bind (legacy Server has no
-        // admin port concept).  Today `admin_url()` does not exist on
-        // TestServer — this line will fail to compile and the test is RED.
+        // signal that `spawn()` ran ServerV18::bind_with_state (legacy
+        // Server has no admin port concept).
         let admin_url = ts.admin_url().to_string();
         assert!(
             admin_url.starts_with("http://"),

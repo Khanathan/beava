@@ -170,7 +170,7 @@ pub struct ResponseDiff {
 /// `handle_register` (Phase 2.5 Plan 04) maps the same cases to response frames
 /// with op=OP_REGISTER (success) or op=OP_ERROR_RESPONSE (validation/conflict).
 #[derive(Debug)]
-pub(crate) enum RegisterOutcome {
+pub enum RegisterOutcome {
     /// Additive install succeeded; version bumped.
     Success {
         version: u64,
@@ -391,6 +391,27 @@ fn to_json_value<T: serde::Serialize>(v: T) -> serde_json::Value {
             "error": {"code": "internal_error", "reason": "response serialization failed"}
         })
     })
+}
+
+/// Plan 12.6-01: serialise a `RegisterOutcome` into the
+/// `GlueResponse::Register { http_status, body, tcp_op }` triple consumed
+/// by the mio-path HTTP and TCP encoders.  Same wire shape as the legacy
+/// axum `map_outcome_to_http` body — `RegisterSuccess` /
+/// `RegisterErrorBody`, serialised once here so both transports emit the
+/// same bytes.  `tcp_op` is `OP_REGISTER` on success, `OP_ERROR_RESPONSE`
+/// on failure.  Used by `apply_shard.rs::dispatch_one` and
+/// `runtime_core_glue::dispatch_wire_request`.
+pub fn register_outcome_to_glue(outcome: RegisterOutcome) -> (u16, bytes::Bytes, u16) {
+    use beava_core::wire::{OP_ERROR_RESPONSE, OP_REGISTER};
+
+    let (status, value) = map_outcome_to_http(outcome);
+    let body_bytes = bytes::Bytes::from(serde_json::to_vec(&value.0).unwrap_or_default());
+    let tcp_op = if status == StatusCode::OK {
+        OP_REGISTER
+    } else {
+        OP_ERROR_RESPONSE
+    };
+    (status.as_u16(), body_bytes, tcp_op)
 }
 
 fn map_outcome_to_http(outcome: RegisterOutcome) -> (StatusCode, Json<serde_json::Value>) {
@@ -616,6 +637,14 @@ fn is_json_content_type(ct: Option<&HeaderValue>) -> bool {
 /// v0: returns `("<body>", err.to_string())`. Richer JSON-pointer paths are Phase 3+ work.
 fn format_serde_error(e: &serde_json::Error) -> (String, String) {
     ("<body>".to_string(), e.to_string())
+}
+
+/// Plan 12.6-01: public re-export of `format_serde_error` so the mio
+/// glue layer (`runtime_core_glue::dispatch_wire_request`) can produce
+/// identical `error.path` + `error.reason` pairs as the legacy axum
+/// `post_register` handler.
+pub fn format_serde_error_public(e: &serde_json::Error) -> (String, String) {
+    format_serde_error(e)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
