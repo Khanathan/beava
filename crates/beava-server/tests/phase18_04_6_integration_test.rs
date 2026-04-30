@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Mutex as TokioMutex;
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -17,9 +18,13 @@ use std::time::Instant;
 /// Each ServerV18::serve() spawns a std::thread (mio loop) + tokio admin
 /// server + WalWriter + WalSink. When two such tests run concurrently the OS
 /// thread pool and tokio task queues become saturated, causing startup timeouts.
-/// Holding this lock for the duration of each server test ensures only one
-/// heavy server is live at a time without needing --test-threads 1.
-static SERVER_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// Plan 12.6-15: `tokio::sync::Mutex` so the guard CAN be held across awaits
+/// (`std::sync::Mutex` could not — the prior pattern dropped the guard
+/// before any await, which only sequenced test starts, not the full
+/// boot/serve cycle, leading to resource-saturation flakes when both
+/// server-boot tests landed on the same Tokio scheduler simultaneously).
+static SERVER_SERIALIZER: TokioMutex<()> = TokioMutex::const_new(());
 
 /// Poll an HTTP or admin address until the server responds to an HTTP GET or
 /// the deadline is reached.  Verifies that the event loop is actually
@@ -125,9 +130,10 @@ async fn test_apply_shard_single_writer_no_lock_contention() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_serve_loop_uses_mio_not_tokio() {
     // Serialize against other server-boot tests to avoid thread/resource contention.
-    {
-        let _g = SERVER_SERIALIZER.lock().unwrap();
-    } // serialise test start; _g drops before any await
+    // Plan 12.6-15: hold the guard across the entire test (not just the
+    // start) so two concurrent boots don't stomp on each other's tokio
+    // executors / kernel backlogs.
+    let _serializer_guard = SERVER_SERIALIZER.lock().await;
 
     use beava_server::server::ServerV18;
     use std::net::SocketAddr;
@@ -264,9 +270,10 @@ async fn test_apply_writes_to_wal_buffer_ring_not_walsink() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_runtime_kind_metric_mio() {
     // Serialize against other server-boot tests to avoid thread/resource contention.
-    {
-        let _g = SERVER_SERIALIZER.lock().unwrap();
-    } // serialise test start; _g drops before any await
+    // Plan 12.6-15: hold the guard across the entire test (not just the
+    // start) so two concurrent boots don't stomp on each other's tokio
+    // executors / kernel backlogs.
+    let _serializer_guard = SERVER_SERIALIZER.lock().await;
 
     use beava_server::server::ServerV18;
     use std::net::SocketAddr;
