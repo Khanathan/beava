@@ -6,7 +6,7 @@
 //! the dep surface small for v0; can swap to `h3o` in v0.1.
 //!
 //! D-06 invariants: no wall-clock reads, no rand. All state transitions are a
-//! pure function of `(row, event_time_ms, prior state)`.
+//! pure function of `(row, now_ms, prior state)`.
 //! D-08 (Phase 11 CONTEXT): all operators are lifetime / windowless in v0.
 //!
 //! Each geo state owns its `lat_field` / `lon_field` name (captured at register
@@ -95,14 +95,14 @@ impl GeoVelocityState {
         }
     }
 
-    pub fn update(&mut self, row: &Row, event_time_ms: i64, where_matched: bool) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, where_matched: bool) {
         if !where_matched {
             return;
         }
         let Some((lat, lon)) = read_lat_lon(row, &self.lat_field, &self.lon_field) else {
             return;
         };
-        self.apply(lat, lon, event_time_ms);
+        self.apply(lat, lon, now_ms);
     }
 
     /// Plan 19.2-06 (D-01): index-based fast path — reads lat/lon from
@@ -112,7 +112,7 @@ impl GeoVelocityState {
         extracted: &ExtractedFields<'_>,
         lat_idx: u8,
         lon_idx: u8,
-        event_time_ms: i64,
+        now_ms: i64,
         where_matched: bool,
     ) {
         if !where_matched {
@@ -121,12 +121,12 @@ impl GeoVelocityState {
         let Some((lat, lon)) = read_lat_lon_from_extracted(extracted, lat_idx, lon_idx) else {
             return;
         };
-        self.apply(lat, lon, event_time_ms);
+        self.apply(lat, lon, now_ms);
     }
 
-    fn apply(&mut self, lat: f64, lon: f64, event_time_ms: i64) {
+    fn apply(&mut self, lat: f64, lon: f64, now_ms: i64) {
         if let Some((plat, plon, pt)) = self.prev {
-            let dt_ms = event_time_ms - pt;
+            let dt_ms = now_ms - pt;
             if dt_ms > 0 {
                 let km = haversine_km((plat, plon), (lat, lon));
                 let kmh = km / (dt_ms as f64 / 3_600_000.0);
@@ -135,7 +135,7 @@ impl GeoVelocityState {
                 }
             }
         }
-        self.prev = Some((lat, lon, event_time_ms));
+        self.prev = Some((lat, lon, now_ms));
     }
 
     pub fn query(&self) -> Value {

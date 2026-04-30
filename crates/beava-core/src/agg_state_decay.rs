@@ -8,11 +8,11 @@
 //! - `DecayedCountState`    — AGG-DECAY-05: forward-decay count
 //! - `TwaState`             — AGG-DECAY-06: time-weighted average
 //!
-//! Each state persists (running_value, last_event_time_ms). On each event, the
+//! Each state persists (running_value, last_now_ms). On each event, the
 //! decay coefficient α = 1 - exp(-Δt / half_life_ms) is applied to integrate the
 //! new event into the running statistic. Late events (Δt < 0) keep prior state.
 //!
-//! D-06 (from Phase 5 CONTEXT): no wall-clock reads — event_time_ms only.
+//! D-06 (from Phase 5 CONTEXT): no wall-clock reads — now_ms only.
 
 use crate::row::{Row, Value};
 use serde::{Deserialize, Serialize};
@@ -35,11 +35,11 @@ fn numeric_from_row(row: &Row, field: &str) -> Option<f64> {
 /// state) or half_life_ms == 0 (caller's bug — should be rejected at register
 /// time but defensively returns None).
 #[inline]
-fn decay_alpha(event_time_ms: i64, last_event_time_ms: i64, half_life_ms: u64) -> Option<f64> {
+fn decay_alpha(now_ms: i64, last_now_ms: i64, half_life_ms: u64) -> Option<f64> {
     if half_life_ms == 0 {
         return None;
     }
-    let dt = event_time_ms.saturating_sub(last_event_time_ms);
+    let dt = now_ms.saturating_sub(last_now_ms);
     if dt <= 0 {
         return None;
     }
@@ -52,11 +52,11 @@ fn decay_alpha(event_time_ms: i64, last_event_time_ms: i64, half_life_ms: u64) -
 /// forward-decay (Cormode-style) sum/count: each prior contribution decays by
 /// this factor on each event observation.
 #[inline]
-fn decay_factor(event_time_ms: i64, last_event_time_ms: i64, half_life_ms: u64) -> f64 {
+fn decay_factor(now_ms: i64, last_now_ms: i64, half_life_ms: u64) -> f64 {
     if half_life_ms == 0 {
         return 1.0;
     }
-    let dt = event_time_ms.saturating_sub(last_event_time_ms).max(0) as f64;
+    let dt = now_ms.saturating_sub(last_now_ms).max(0) as f64;
     let lambda = std::f64::consts::LN_2 / half_life_ms as f64;
     (-dt * lambda).exp()
 }
@@ -70,7 +70,7 @@ fn decay_factor(event_time_ms: i64, last_event_time_ms: i64, half_life_ms: u64) 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EwmaState {
     pub value: f64,
-    pub last_event_time_ms: i64,
+    pub last_now_ms: i64,
     /// True after the first observation.
     pub initialized: bool,
 }
@@ -79,7 +79,7 @@ impl EwmaState {
     pub fn update(
         &mut self,
         row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
         half_life_ms: u64,
@@ -93,14 +93,14 @@ impl EwmaState {
         };
         if !self.initialized {
             self.value = x;
-            self.last_event_time_ms = event_time_ms;
+            self.last_now_ms = now_ms;
             self.initialized = true;
             return;
         }
-        match decay_alpha(event_time_ms, self.last_event_time_ms, half_life_ms) {
+        match decay_alpha(now_ms, self.last_now_ms, half_life_ms) {
             Some(alpha) => {
                 self.value = alpha * x + (1.0 - alpha) * self.value;
-                self.last_event_time_ms = event_time_ms;
+                self.last_now_ms = now_ms;
             }
             None => {
                 // Late event: don't move time backwards. Apply unweighted blend
@@ -129,7 +129,7 @@ impl EwmaState {
 pub struct EwVarState {
     pub mean: f64,
     pub m2: f64,
-    pub last_event_time_ms: i64,
+    pub last_now_ms: i64,
     pub initialized: bool,
     pub last_value: f64,
 }
@@ -138,7 +138,7 @@ impl EwVarState {
     pub fn update(
         &mut self,
         row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
         half_life_ms: u64,
@@ -153,13 +153,12 @@ impl EwVarState {
         if !self.initialized {
             self.mean = x;
             self.m2 = 0.0;
-            self.last_event_time_ms = event_time_ms;
+            self.last_now_ms = now_ms;
             self.last_value = x;
             self.initialized = true;
             return;
         }
-        let alpha =
-            decay_alpha(event_time_ms, self.last_event_time_ms, half_life_ms).unwrap_or(0.0);
+        let alpha = decay_alpha(now_ms, self.last_now_ms, half_life_ms).unwrap_or(0.0);
         // EW Welford-style: update mean, then m2 against new mean.
         let delta = x - self.mean;
         let new_mean = self.mean + alpha * delta;
@@ -167,7 +166,7 @@ impl EwVarState {
         self.m2 = (1.0 - alpha) * self.m2 + alpha * delta * delta2;
         self.mean = new_mean;
         if alpha > 0.0 {
-            self.last_event_time_ms = event_time_ms;
+            self.last_now_ms = now_ms;
         }
         self.last_value = x;
     }
@@ -195,13 +194,13 @@ impl EwZScoreState {
     pub fn update(
         &mut self,
         row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
         half_life_ms: u64,
     ) {
         self.inner
-            .update(row, event_time_ms, field, where_matched, half_life_ms);
+            .update(row, now_ms, field, where_matched, half_life_ms);
     }
 
     pub fn query(&self) -> Value {
@@ -225,7 +224,7 @@ impl EwZScoreState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DecayedSumState {
     pub total: f64,
-    pub last_event_time_ms: i64,
+    pub last_now_ms: i64,
     pub initialized: bool,
 }
 
@@ -233,7 +232,7 @@ impl DecayedSumState {
     pub fn update(
         &mut self,
         row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
         half_life_ms: u64,
@@ -247,14 +246,14 @@ impl DecayedSumState {
         };
         if !self.initialized {
             self.total = x;
-            self.last_event_time_ms = event_time_ms;
+            self.last_now_ms = now_ms;
             self.initialized = true;
             return;
         }
-        let factor = decay_factor(event_time_ms, self.last_event_time_ms, half_life_ms);
+        let factor = decay_factor(now_ms, self.last_now_ms, half_life_ms);
         self.total = self.total * factor + x;
-        if event_time_ms > self.last_event_time_ms {
-            self.last_event_time_ms = event_time_ms;
+        if now_ms > self.last_now_ms {
+            self.last_now_ms = now_ms;
         }
     }
 
@@ -275,7 +274,7 @@ impl DecayedSumState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DecayedCountState {
     pub total: f64,
-    pub last_event_time_ms: i64,
+    pub last_now_ms: i64,
     pub initialized: bool,
 }
 
@@ -283,7 +282,7 @@ impl DecayedCountState {
     pub fn update(
         &mut self,
         _row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
         half_life_ms: u64,
@@ -293,14 +292,14 @@ impl DecayedCountState {
         }
         if !self.initialized {
             self.total = 1.0;
-            self.last_event_time_ms = event_time_ms;
+            self.last_now_ms = now_ms;
             self.initialized = true;
             return;
         }
-        let factor = decay_factor(event_time_ms, self.last_event_time_ms, half_life_ms);
+        let factor = decay_factor(now_ms, self.last_now_ms, half_life_ms);
         self.total = self.total * factor + 1.0;
-        if event_time_ms > self.last_event_time_ms {
-            self.last_event_time_ms = event_time_ms;
+        if now_ms > self.last_now_ms {
+            self.last_now_ms = now_ms;
         }
     }
 
@@ -332,13 +331,7 @@ pub struct TwaState {
 }
 
 impl TwaState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -348,17 +341,17 @@ impl TwaState {
         };
         if !self.initialized {
             self.last_v = x;
-            self.last_t = event_time_ms;
+            self.last_t = now_ms;
             self.initialized = true;
             return;
         }
-        let dt = (event_time_ms - self.last_t).max(0) as f64;
+        let dt = (now_ms - self.last_t).max(0) as f64;
         if dt > 0.0 {
             self.sum_v_dt += self.last_v * dt;
             self.sum_dt += dt;
         }
         self.last_v = x;
-        self.last_t = event_time_ms;
+        self.last_t = now_ms;
     }
 
     pub fn query(&self) -> Value {
