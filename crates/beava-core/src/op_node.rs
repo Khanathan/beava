@@ -335,4 +335,52 @@ mod tests {
             "error should mention 'join_type', got: {msg}"
         );
     }
+
+    // ── Phase 12.6 Plan 04: Join/Union variant removal ────────────────────────
+    //
+    // After Plan 04 lands, OpNode has 9 variants (Filter, Select, Drop, Rename,
+    // WithColumns, Map, Cast, Fillna, GroupBy). Join/Union are PERMANENTLY
+    // removed per project_redis_shaped_no_event_time_ever (2026-04-30).
+    //
+    // These two tests assert the deletion at the serde/enum level. They are
+    // RED while the variants are alive (serde successfully deserializes
+    // {"op":"join", ...}); they go GREEN as soon as the variants are deleted
+    // and serde returns "unknown variant `join`" / "unknown variant `union`".
+
+    // Test 13: {"op":"join"} payload must NOT deserialize as OpNode (post-removal).
+    #[test]
+    fn join_op_unknown_variant_after_phase_12_6_removal() {
+        let result: Result<OpNode, _> = serde_json::from_str(
+            r#"{"op":"join","other":"E","on":["x"],"join_type":"inner"}"#,
+        );
+        assert!(
+            result.is_err(),
+            "post-Phase-12.6 OpNode must not accept {{op:join}}; \
+             got Ok({:?}) — joins are permanently removed",
+            result.ok()
+        );
+        let msg = result.unwrap_err().to_string().to_lowercase();
+        assert!(
+            msg.contains("unknown variant") || msg.contains("join"),
+            "expected 'unknown variant' or 'join' in serde error, got: {msg}"
+        );
+    }
+
+    // Test 14: {"op":"union"} payload must NOT deserialize as OpNode (post-removal).
+    #[test]
+    fn union_op_unknown_variant_after_phase_12_6_removal() {
+        let result: Result<OpNode, _> =
+            serde_json::from_str(r#"{"op":"union","others":["E2"]}"#);
+        assert!(
+            result.is_err(),
+            "post-Phase-12.6 OpNode must not accept {{op:union}}; \
+             got Ok({:?}) — unions are permanently removed",
+            result.ok()
+        );
+        let msg = result.unwrap_err().to_string().to_lowercase();
+        assert!(
+            msg.contains("unknown variant") || msg.contains("union"),
+            "expected 'unknown variant' or 'union' in serde error, got: {msg}"
+        );
+    }
 }
