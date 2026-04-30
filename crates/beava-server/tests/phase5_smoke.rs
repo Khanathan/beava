@@ -34,30 +34,37 @@ fn transaction_schema() -> serde_json::Value {
     })
 }
 
-/// Push a single event via /dev/apply_events.
+/// Plan 12.6-15: replacement for the legacy `POST /dev/apply_events`
+/// endpoint — fires a single push via the mio data-plane `/push/<source>`
+/// route. The descriptor's `event_time_field` (e.g. `event_time`) is set
+/// to `event_time_ms` so windowed-op semantics see the deterministic
+/// arrival time instead of `now_ms()`. This is byte-equivalent to the
+/// legacy axum apply_events behaviour for these tests because both code
+/// paths drive the SAME `apply_event_to_aggregations` function.
 ///
-/// Returns the response body as serde_json::Value.
+/// Returns the parsed `/push` response (`{ack_lsn, idempotent_replay,
+/// registry_version}` shape) for callers that need to assert on it.
 async fn apply_event(
     ts: &beava_server::testing::TestServer,
     source: &str,
     event_time_ms: i64,
     row: serde_json::Value,
 ) -> serde_json::Value {
+    // Inject `event_time` into the row so the descriptor's
+    // `event_time_field` lookup returns `event_time_ms`.
+    let mut row_with_time = row;
+    if let Some(obj) = row_with_time.as_object_mut() {
+        obj.insert("event_time".to_string(), json!(event_time_ms));
+    }
+    let path = format!("/push/{source}");
     let resp = ts
-        .post_json(
-            "/dev/apply_events",
-            &json!({
-                "source": source,
-                "event_time_ms": event_time_ms,
-                "row": row
-            }),
-        )
+        .post_json(&path, &row_with_time)
         .await
-        .expect("apply_events post");
+        .expect("push post");
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "apply_events must succeed: source={source}"
+        "push must succeed: source={source}"
     );
     resp.json().await.expect("json")
 }
@@ -492,19 +499,19 @@ async fn sc4_replay_determinism() {
         let resp = ts.post_json("/register", &body).await.expect("register");
         assert_eq!(resp.status().as_u16(), 200);
 
-        // Apply events.
+        // Apply events. Plan 12.6-15: migrate from /dev/apply_events to
+        // /push/Transaction (mio data-plane route). Inject `event_time`
+        // field so the descriptor's `event_time_field` lookup returns
+        // the deterministic test timestamp.
         for (event_time_ms, row) in events {
+            let mut row_with_time = row.clone();
+            if let Some(obj) = row_with_time.as_object_mut() {
+                obj.insert("event_time".to_string(), json!(event_time_ms));
+            }
             let resp = ts
-                .post_json(
-                    "/dev/apply_events",
-                    &json!({
-                        "source": "Transaction",
-                        "event_time_ms": event_time_ms,
-                        "row": row
-                    }),
-                )
+                .post_json("/push/Transaction", &row_with_time)
                 .await
-                .expect("apply_events");
+                .expect("push");
             assert_eq!(resp.status().as_u16(), 200);
         }
 
