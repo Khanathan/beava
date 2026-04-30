@@ -22,6 +22,9 @@ pub enum Route {
     Delete { table: String },
     /// POST /retract — retraction.
     Retract,
+    /// GET /table/:table — point lookup (Plan 12.6-14). Query string
+    /// `?key=<v>[&as_of=<lsn>]` carried in the parsed `WireRequest::HttpTableGet`.
+    TableGet { table: String },
     /// POST /register — pipeline registration.
     Register,
     /// GET /health — liveness probe (Plan 12-07). Always 200 once listener
@@ -52,6 +55,14 @@ pub struct Router;
 impl Router {
     /// Dispatch `(method, path)` into a `Route`.
     pub fn route(method: &str, path: &str) -> Route {
+        // Plan 12.6-14: strip query string for route matching. Path-segment
+        // routes (e.g. `/upsert/:table`, `/table/:table`) capture the
+        // trailing path component; the query string is parsed separately by
+        // the dispatcher when needed (`HttpTableGet` carries query=...).
+        let path = match path.split_once('?') {
+            Some((p, _q)) => p,
+            None => path,
+        };
         // Normalise: strip trailing slash for tolerance.
         let path = path.trim_end_matches('/');
 
@@ -131,6 +142,16 @@ impl Router {
         if path == "/retract" {
             return if method == "POST" {
                 Route::Retract
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /table/:table — point lookup (Plan 12.6-14)
+        if let Some(rest) = path.strip_prefix("/table/") {
+            return if method == "GET" {
+                Route::TableGet {
+                    table: rest.to_owned(),
+                }
             } else {
                 Route::MethodNotAllowed
             };

@@ -94,6 +94,18 @@ pub enum GlueResponse {
     /// Plan 12.6-01: HTTP path matched a route but with the wrong method.
     /// Encoded as `405 Method Not Allowed`.
     HttpMethodNotAllowed { method: String, path: String },
+    /// Plan 12.6-14: temporal-table or retract response — body is
+    /// pre-serialised by the apply-thread `temporal_http` helpers
+    /// (matching the legacy axum upsert/delete/retract/table_get handler
+    /// shapes exactly).  `http_status` is whatever the helper returned
+    /// (200, 400, 404, 409, 501, 503).
+    TemporalResponse { http_status: u16, body: Bytes },
+    /// Plan 12.6-14: 415 Unsupported Media Type for POST endpoints whose
+    /// Content-Type header was missing or not `application/json`. Body
+    /// matches the legacy axum register handler `RegisterErrorBody`
+    /// shape (so the `success_criterion_5_malformed_returns_400_with_path`
+    /// assertion at `error.code == "unsupported_media_type"` passes).
+    HttpUnsupportedMediaType { received: String, path: String },
     /// Unrecognised request type — caller maps to 404 / error frame.
     Unsupported,
 }
@@ -180,11 +192,41 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
         WireRequest::HttpGet { body } => dispatch_get_batch(app, &body, beava_core::wire::CT_JSON),
 
         // ─── Upsert / delete / retract ────────────────────────────────────────
-        WireRequest::HttpUpsert { .. }
-        | WireRequest::HttpDelete { .. }
-        | WireRequest::HttpRetract { .. } => {
-            // TODO(phase-18-followup): wire table upsert/delete/retract paths
-            GlueResponse::Unsupported
+        // Plan 12.6-14: bridge to the shared `temporal_http::*_via_mio`
+        // helpers (same impl as the sync apply path in `apply_shard`).
+        WireRequest::HttpUpsert { table, body } => {
+            let (status, body_bytes) =
+                crate::temporal_http::upsert_via_mio(app, &table, &body).await;
+            GlueResponse::TemporalResponse {
+                http_status: status,
+                body: Bytes::from(body_bytes),
+            }
+        }
+        WireRequest::HttpDelete { table, body } => {
+            let (status, body_bytes) =
+                crate::temporal_http::delete_via_mio(app, &table, &body).await;
+            GlueResponse::TemporalResponse {
+                http_status: status,
+                body: Bytes::from(body_bytes),
+            }
+        }
+        WireRequest::HttpRetract { body } => {
+            let (status, body_bytes) = crate::temporal_http::retract_via_mio(app, &body).await;
+            GlueResponse::TemporalResponse {
+                http_status: status,
+                body: Bytes::from(body_bytes),
+            }
+        }
+        WireRequest::HttpTableGet { table, query } => {
+            let (status, body_bytes) =
+                crate::temporal_http::table_get_via_mio(app, &table, &query);
+            GlueResponse::TemporalResponse {
+                http_status: status,
+                body: Bytes::from(body_bytes),
+            }
+        }
+        WireRequest::HttpUnsupportedMediaType { received, path } => {
+            GlueResponse::HttpUnsupportedMediaType { received, path }
         }
 
         // Plan 12-07: HTTP /health on the legacy axum path is mounted via
@@ -198,10 +240,20 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
         // call `ts.get_json("/registry")`.
         WireRequest::HttpReady => GlueResponse::ReadyOk,
         WireRequest::HttpRegistry => {
-            let dump = crate::registry_debug::build_registry_dump(&app.dev_agg.registry);
-            let body = serde_json::to_vec(&dump).unwrap_or_default();
-            GlueResponse::RegistrySnapshot {
-                body: Bytes::from(body),
+            // Plan 12.6-14: dev_endpoints gating. Match legacy axum where
+            // GET /registry returns 404 unless BEAVA_DEV_ENDPOINTS=1
+            // (post-Plan-12.6-01 the flag lives on AppState; the env-var
+            // path is wired up at server construction time).
+            if !app.dev_endpoints_enabled() {
+                GlueResponse::HttpRouteNotFound {
+                    path: "/registry".to_owned(),
+                }
+            } else {
+                let dump = crate::registry_debug::build_registry_dump(&app.dev_agg.registry);
+                let body = serde_json::to_vec(&dump).unwrap_or_default();
+                GlueResponse::RegistrySnapshot {
+                    body: Bytes::from(body),
+                }
             }
         }
         // Plan 12.6-01: route-level errors (404 / 405).

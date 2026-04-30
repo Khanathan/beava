@@ -47,6 +47,12 @@ pub struct AppState {
     pub dev_agg: DevAggState,
     pub wal_sink: WalSink,
     pub idem_cache: Arc<IdemCache>,
+    /// Plan 12.6-14: dev endpoints flag — gates `/registry` on the mio
+    /// data plane (404 when false). Mirrors the legacy axum
+    /// `BEAVA_DEV_ENDPOINTS=1` toggle. Stored in an Arc<AtomicBool> so
+    /// TestServer-builder callers can flip it post-spawn (matches the
+    /// `.dev_endpoints(true)` builder method semantics).
+    pub dev_endpoints: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -55,7 +61,17 @@ impl AppState {
             dev_agg,
             wal_sink,
             idem_cache,
+            dev_endpoints: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Plan 12.6-14: return true iff the data-plane `/registry` shim
+    /// should serve. Reads the flag stored on construction (which was
+    /// either `BEAVA_DEV_ENDPOINTS=1` for production or the
+    /// `dev_endpoints(bool)` builder for TestServer).
+    pub fn dev_endpoints_enabled(&self) -> bool {
+        self.dev_endpoints
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 

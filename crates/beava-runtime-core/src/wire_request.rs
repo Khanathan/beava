@@ -71,6 +71,16 @@ pub enum WireRequest {
     HttpDelete { table: String, body: Bytes },
     /// HTTP POST /retract — retraction.
     HttpRetract { body: Bytes },
+    /// HTTP GET /table/:table?key=...&as_of=... — point lookup (Plan 12.6-14).
+    /// `query` is the raw query-string (without leading `?`) so the dispatch
+    /// layer can parse `key=` / `as_of=` exactly as the legacy axum handler.
+    HttpTableGet { table: String, query: String },
+    /// Plan 12.6-14: POST request whose Content-Type was not
+    /// `application/json` (or absent). Encoded as 415 with the structured
+    /// `unsupported_media_type` body shape used by legacy axum's register
+    /// handler.  `received` is what the client sent (or the empty string
+    /// when the header was absent); `path` is the HTTP request path.
+    HttpUnsupportedMediaType { received: String, path: String },
     /// GET /health — liveness probe (Plan 12-07). No payload, no apply-thread
     /// roundtrip; the dispatch layer returns `GlueResponse::HealthOk` directly
     /// so /health stays responsive even before WAL recovery completes.

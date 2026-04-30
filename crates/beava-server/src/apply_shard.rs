@@ -348,9 +348,71 @@ impl ApplyShard {
             }
 
             // ─── Upsert / delete / retract (table ops — not on hot path) ──────
-            WireRequest::HttpUpsert { .. }
-            | WireRequest::HttpDelete { .. }
-            | WireRequest::HttpRetract { .. } => GlueResponse::Unsupported,
+            // Plan 12.6-14: dispatch via the shared `temporal_http::*_via_mio`
+            // helpers so the mio data-plane response is byte-identical to
+            // legacy axum's upsert/delete/retract handlers. WAL append is
+            // async; we run the helper on a temp current-thread tokio
+            // runtime (same approach as the register dispatch above —
+            // table ops are cold-path, not on the hot push loop).
+            WireRequest::HttpUpsert { table, body } => {
+                let state_clone = Arc::clone(&self.state);
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("temp tokio rt for upsert");
+                let (status, body_bytes) = rt.block_on(crate::temporal_http::upsert_via_mio(
+                    &state_clone,
+                    &table,
+                    &body,
+                ));
+                GlueResponse::TemporalResponse {
+                    http_status: status,
+                    body: bytes::Bytes::from(body_bytes),
+                }
+            }
+            WireRequest::HttpDelete { table, body } => {
+                let state_clone = Arc::clone(&self.state);
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("temp tokio rt for delete");
+                let (status, body_bytes) = rt.block_on(crate::temporal_http::delete_via_mio(
+                    &state_clone,
+                    &table,
+                    &body,
+                ));
+                GlueResponse::TemporalResponse {
+                    http_status: status,
+                    body: bytes::Bytes::from(body_bytes),
+                }
+            }
+            WireRequest::HttpRetract { body } => {
+                let state_clone = Arc::clone(&self.state);
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("temp tokio rt for retract");
+                let (status, body_bytes) =
+                    rt.block_on(crate::temporal_http::retract_via_mio(&state_clone, &body));
+                GlueResponse::TemporalResponse {
+                    http_status: status,
+                    body: bytes::Bytes::from(body_bytes),
+                }
+            }
+            WireRequest::HttpTableGet { table, query } => {
+                let (status, body_bytes) =
+                    crate::temporal_http::table_get_via_mio(&self.state, &table, &query);
+                GlueResponse::TemporalResponse {
+                    http_status: status,
+                    body: bytes::Bytes::from(body_bytes),
+                }
+            }
+            // Plan 12.6-14: 415 Unsupported Media Type — POST request with
+            // wrong/missing Content-Type. Body matches legacy axum's
+            // register handler `RegisterErrorBody` shape.
+            WireRequest::HttpUnsupportedMediaType { received, path } => {
+                GlueResponse::HttpUnsupportedMediaType { received, path }
+            }
 
             // ─── /health (Plan 12-07 Wave 5.5) ────────────────────────────────
             // Inline shim — no AppState consult, no WAL recovery dependency.
@@ -368,10 +430,18 @@ impl ApplyShard {
             // `registry_debug::build_registry_dump`.
             WireRequest::HttpReady => GlueResponse::ReadyOk,
             WireRequest::HttpRegistry => {
-                let dump = crate::registry_debug::build_registry_dump(&self.state.dev_agg.registry);
-                let body = serde_json::to_vec(&dump).unwrap_or_default();
-                GlueResponse::RegistrySnapshot {
-                    body: bytes::Bytes::from(body),
+                // Plan 12.6-14: dev_endpoints gating — 404 unless flag set.
+                if !self.state.dev_endpoints_enabled() {
+                    GlueResponse::HttpRouteNotFound {
+                        path: "/registry".to_owned(),
+                    }
+                } else {
+                    let dump =
+                        crate::registry_debug::build_registry_dump(&self.state.dev_agg.registry);
+                    let body = serde_json::to_vec(&dump).unwrap_or_default();
+                    GlueResponse::RegistrySnapshot {
+                        body: bytes::Bytes::from(body),
+                    }
                 }
             }
             // Plan 12.6-01: route-level errors (unknown path / wrong method)

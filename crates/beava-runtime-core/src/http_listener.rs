@@ -94,6 +94,10 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     let mut keep_alive = true; // HTTP/1.1 default
     let mut content_length: Option<usize> = None;
     let mut is_chunked = false;
+    // Plan 12.6-14: capture Content-Type so we can return 415 for POST
+    // endpoints when the client sends a non-JSON media type. None means
+    // header was absent; Some("") means header was present but empty.
+    let mut content_type_header: Option<String> = None;
 
     for h in req.headers.iter() {
         let name_lower = h.name.to_ascii_lowercase();
@@ -124,6 +128,14 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
                 if val.contains("chunked") {
                     is_chunked = true;
                 }
+            }
+            "content-type" => {
+                content_type_header = Some(
+                    std::str::from_utf8(h.value)
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned(),
+                );
             }
             _ => {}
         }
@@ -171,6 +183,50 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     use crate::router::Route;
     // HTTP always carries JSON bodies (content_type = CT_JSON = 0x01).
     use beava_core::wire::CT_JSON;
+
+    // Plan 12.6-14: enforce application/json on POST endpoints. Match the
+    // legacy axum register handler `is_json_content_type` semantics:
+    //   - missing header  → 415
+    //   - "application/json" or "application/json; charset=utf-8" → OK
+    //   - anything else (including "text/plain") → 415
+    // The 415 surfaces via WireRequest::HttpUnsupportedMediaType so the
+    // encoder emits the structured body legacy callers assert on.
+    let is_post = method.eq_ignore_ascii_case("POST");
+    let post_needs_json = matches!(
+        route,
+        Route::Push { .. }
+            | Route::PushSync { .. }
+            | Route::PushBatch { .. }
+            | Route::Get
+            | Route::Upsert { .. }
+            | Route::Delete { .. }
+            | Route::Retract
+            | Route::Register
+    );
+    if is_post && post_needs_json {
+        let ct_ok = match &content_type_header {
+            None => false,
+            Some(ct) => is_json_content_type(ct),
+        };
+        if !ct_ok {
+            let received = content_type_header.clone().unwrap_or_default();
+            return Ok(Some((
+                WireRequest::HttpUnsupportedMediaType {
+                    received,
+                    path: path.clone(),
+                },
+                keep_alive,
+            )));
+        }
+    }
+
+    // Strip query-string from path for routing carriers that don't use it.
+    // For Route::TableGet we pass the query through to the dispatcher.
+    let query_string = match path.split_once('?') {
+        Some((_p, q)) => q.to_owned(),
+        None => String::new(),
+    };
+
     let wire_req = match route {
         Route::Push { event_name } => WireRequest::HttpPush {
             event_name,
@@ -192,6 +248,10 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         Route::Upsert { table } => WireRequest::HttpUpsert { table, body },
         Route::Delete { table } => WireRequest::HttpDelete { table, body },
         Route::Retract => WireRequest::HttpRetract { body },
+        Route::TableGet { table } => WireRequest::HttpTableGet {
+            table,
+            query: query_string,
+        },
         Route::Register => WireRequest::Register { payload: body },
         // Plan 12-07: /health on the data-plane HTTP port — inline shim, no
         // apply-thread roundtrip. read_bench.py polls /health at startup.
@@ -212,6 +272,15 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     };
 
     Ok(Some((wire_req, keep_alive)))
+}
+
+/// Plan 12.6-14: returns true iff the Content-Type media type (before `;`)
+/// is `application/json` (case-insensitive, trimmed). Mirrors the legacy
+/// axum `register::is_json_content_type` semantics so the mio path emits
+/// 415 for the same set of bad media types the legacy axum handler did.
+fn is_json_content_type(ct: &str) -> bool {
+    let media_type = ct.split(';').next().unwrap_or("").trim();
+    media_type.eq_ignore_ascii_case("application/json")
 }
 
 // ─── Chunked transfer encoding parser ─────────────────────────────────────────

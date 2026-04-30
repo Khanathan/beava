@@ -166,6 +166,14 @@ impl Server {
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
 
         let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
+        // Plan 12.6-14: legacy Server (axum) takes the dev_endpoints flag
+        // explicitly — propagate it onto AppState so the mio-shaped
+        // dispatch (when running side-by-side) sees the same gate.
+        if dev_endpoints {
+            app_state
+                .dev_endpoints
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
 
         // Periodic dedupe sweep.
         let sweep_interval_secs = cfg.durability.dedupe_sweep_interval_secs.max(1);
@@ -742,6 +750,15 @@ async fn build_runtime_state(
     .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
 
     let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
+    // Plan 12.6-14: pick up `BEAVA_DEV_ENDPOINTS=1` so the production
+    // binary's mio data plane mirrors the legacy axum gating contract.
+    // TestServer overrides this directly via
+    // `app_state.dev_endpoints.store(...)` after spawn.
+    if std::env::var("BEAVA_DEV_ENDPOINTS").ok().as_deref() == Some("1") {
+        app_state
+            .dev_endpoints
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 
     // ── Hand-rolled WAL stack ────────────────────────────────────────────
     let wal_lsn = Arc::new(WalLsn::new());
@@ -2339,6 +2356,25 @@ fn encode_glue_response_http(
             });
             (405, serde_json::to_vec(&body).unwrap_or_default())
         }
+        // Plan 12.6-14: temporal /upsert /delete /retract /table — body
+        // pre-serialised by `temporal_http::*_via_mio` to match legacy
+        // axum response shapes byte-for-byte.
+        GlueResponse::TemporalResponse { http_status, body } => (*http_status, body.to_vec()),
+        // Plan 12.6-14: 415 Unsupported Media Type for POST endpoints.
+        // Body matches legacy axum register handler `RegisterErrorBody`
+        // shape (`error.code = "unsupported_media_type"`).
+        GlueResponse::HttpUnsupportedMediaType { received, path } => {
+            let _ = received;
+            let body = serde_json::json!({
+                "error": {
+                    "code": "unsupported_media_type",
+                    "path": path,
+                    "reason": "expected application/json",
+                },
+                "registry_version": 0u64,
+            });
+            (415, serde_json::to_vec(&body).unwrap_or_default())
+        }
         GlueResponse::InternalError { reason } => {
             let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
             (500, serde_json::to_vec(&body).unwrap_or_default())
@@ -2351,8 +2387,11 @@ fn encode_glue_response_http(
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        415 => "Unsupported Media Type",
         500 => "Internal Server Error",
         501 => "Not Implemented",
+        503 => "Service Unavailable",
         _ => "OK",
     };
 

@@ -209,22 +209,10 @@ impl TestServerBuilder {
     ///   `cfg.admin_addr` (a separate OS-allocated port). `wait_ready`
     ///   polls the ADMIN port — `/ready` is admin-only on ServerV18.
     pub async fn spawn(self) -> Result<TestServer, TestServerError> {
-        if self.dev_endpoints {
-            // Plan 12.6-01 (D-01): the dev-endpoints flag was a legacy axum
-            // toggle for `GET /registry`.  ServerV18's mio data plane does
-            // not expose dev endpoints; the admin sidecar's `/registry`
-            // (read-only snapshot) is always available.  Preserve the
-            // builder method so ~20 callers still compile, but emit a
-            // tracing::warn so the no-op is visible.  The method itself is
-            // slated for deletion in Plan 12.6-07.
-            tracing::warn!(
-                target: "beava.testing",
-                "TestServer::dev_endpoints(true) is a no-op on ServerV18 — \
-                 the admin sidecar always exposes /registry; the legacy \
-                 BEAVA_DEV_ENDPOINTS toggle is gone. The builder method is \
-                 retained for source-compat and will be removed in Plan 12.6-07."
-            );
-        }
+        // Plan 12.6-14: dev_endpoints is now a real toggle on the mio
+        // data plane (not just the admin sidecar). The flag is applied
+        // post-bind via `app_state.dev_endpoints.store(...)` once we
+        // have the Arc<AppState> handle below.
 
         // Resolve the configured event-plane HTTP/TCP addresses + admin
         // address, all permitted to be `*:0` (OS-allocated).
@@ -277,6 +265,14 @@ impl TestServerBuilder {
         let registry = sv18.registry();
         let snapshot_trigger = sv18.snapshot_trigger_handle();
         let app_state = sv18.app_state();
+        // Plan 12.6-14: apply the builder's `dev_endpoints` flag to the
+        // shared AppState so `/registry` on the mio data plane gates
+        // identically to the legacy axum `BEAVA_DEV_ENDPOINTS=1`
+        // toggle. (Default false; `.dev_endpoints(true)` flips it.)
+        app_state.dev_endpoints.store(
+            self.dev_endpoints,
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         let (tx, rx) = oneshot::channel::<()>();
         let shutdown = async move {
