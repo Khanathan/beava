@@ -66,18 +66,20 @@
   },
   "open_product_questions_to_resolve_before_ship": [
     {
-      "id": "Q1-dataframe-similarity",
-      "topic": "Python dataframe API similarity",
-      "what": "Users should be able to use the Beava API for dataframe-style work. Specifically: SDK chain should feel like pandas/polars idioms where it makes sense (filter/select/with_columns/cast/fillna already polars-shaped) so a data scientist familiar with dataframes can use Beava without learning a foreign API.",
-      "why_now": "v0 audience is Priya YC fintech CTO + her data-scientist team. If the API feels like 'yet another streaming framework' instead of 'pandas-but-real-time', adoption stalls. Existing memory `project_pandas_mapping_revisit` already flagged that the beava.dev homepage uses simplified `events.agg(key=, window=, ...)` form that doesn't match real decorator API.",
+      "id": "Q1-polars-similarity",
+      "topic": "Polars-style API parity check",
+      "what": "Users should be able to use the Beava SDK as if it were polars. The SDK chain (`bv.col(\"x\")` / `.filter` / `.select` / `.with_columns` / `.cast` / `.fillna` / `.group_by().agg()`) is already polars-shaped — the question is closing the polars-parity gap so a polars-native data scientist is instantly productive without learning a foreign API. NOT pandas style — Beava's expression-first immutable shape is intentionally polars-shaped, not pandas-shaped.",
+      "why_now": "v0 audience is Priya YC fintech CTO + her data-scientist team. Polars is the modern dataframe choice for that audience (Rust-backed, expression-first, immutable). Beava is structurally polars-shaped already; the question is whether the parity is tight enough that a polars user reads the SDK and says 'oh, this is just polars-for-streaming' without friction. Existing memory `project_pandas_mapping_revisit` flagged that beava.dev homepage uses simplified `events.agg(key=, window=, ...)` form — that pandas-leaning framing should pivot to polars positioning since the actual API is polars-shaped.",
       "open_aspects": [
-        "Gap analysis — actual SDK shape vs pandas/polars idioms (what feels natural, what doesn't)",
-        "Aggregation chain shape — `events.group_by(...).agg(...)` (current) vs simpler `events.agg(group_by=, ...)` for common cases",
-        "Eager-vs-deferred mental model — pandas/polars are eager (df.assign read immediately); Beava is register-then-push (deferred). How do we frame this difference in docs without confusing dataframe-native users?",
-        "DataFrame interop — does `app.get(...)` return something that can be `pd.DataFrame.from_records(...)`-friendly? FeatureResult shape question.",
-        "Recipe parity — every pandas recipe (group_by/rolling/agg) should have a Beava equivalent in docs"
+        "Polars-parity gap analysis — every polars idiom (`pl.col`, `.select`, `.filter`, `.with_columns`, `.group_by().agg()`, `.over()`, `.cast()`, `.fillna()`, expression chaining, lazy vs eager) checked against Beava's actual SDK; flag where Beava deviates and decide keep-vs-fix",
+        "Aggregation chain shape — `events.group_by(...).agg(...)` (current; polars-matching) is correct; consider whether Beava's register-then-push model has any awkward edges vs polars `.lazy().group_by().agg().collect()`",
+        "Lazy-vs-eager / register-then-push framing — polars HAS a lazy mode (`pl.LazyFrame`) so the deferred-eval mental model is closer to polars than to pandas. Frame Beava's `app.register(...)` as 'collect()-equivalent that ships the plan to the server'.",
+        "Polars `.over(partitions)` window expressions — Beava's per-entity aggregation is conceptually `events.group_by(entity).agg(...).over(window)`. Does the SDK surface this clearly enough that a polars user maps it instantly?",
+        "Output interop — does `app.get(...)` return something that can be `pl.DataFrame.from_dicts(...)`-friendly? `FeatureResult` shape vs polars-friendliness.",
+        "Recipe parity — every common polars recipe (group_by + agg, rolling windows via `.over()`, expression chains) should have a Beava equivalent in docs",
+        "beava.dev positioning sweep — homepage + guide pages should pitch as 'polars for streaming features' not 'pandas for streaming features' (existing pandas-mapping is misframed)"
       ],
-      "phase_target": "Phase 13 docs/SDK polish, possibly with API touchpoints in Phase 12.6 if gaps surface"
+      "phase_target": "Phase 13 docs/SDK polish (positioning + recipes); minor API touchpoints in Phase 12.6 if gaps surface during the SDK sweep"
     },
     {
       "id": "Q2-schema-evolution-ux",
