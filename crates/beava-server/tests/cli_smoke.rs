@@ -71,7 +71,9 @@ fn unique_snapshot_dir() -> std::path::PathBuf {
 
 #[test]
 fn loads_valid_config_starts_and_prints_banner() {
-    let _guard = CLI_SUBPROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = CLI_SUBPROCESS_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let port = free_port();
     let mut f = NamedTempFile::new().expect("tempfile");
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
@@ -125,7 +127,9 @@ fn missing_config_errors_with_path_in_message() {
 
 #[test]
 fn env_var_overrides_listen_addr() {
-    let _guard = CLI_SUBPROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = CLI_SUBPROCESS_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let port = free_port();
     let override_port = free_port();
     let mut f = NamedTempFile::new().expect("tempfile");

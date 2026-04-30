@@ -1295,9 +1295,7 @@ fn dispatch_one_ring_item(
                 // error frame with `limit` field (criterion 7).
                 ParseErrorKind::TcpFrameTooLarge { declared, limit } => GlueResponse::TcpError {
                     code: "frame_too_large",
-                    message: format!(
-                        "declared frame length {declared} exceeds limit {limit}",
-                    ),
+                    message: format!("declared frame length {declared} exceeds limit {limit}",),
                     extras: serde_json::json!({"limit": limit, "declared": declared}),
                 },
                 ParseErrorKind::TcpFrame => GlueResponse::PushError {
