@@ -409,6 +409,9 @@ struct ServerV18State {
     wal_ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
     wal_lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
     wal_writer_handle: std::thread::JoinHandle<()>,
+    /// Plan 12.6-15: shutdown flag for the WalWriter loop. Set on server
+    /// shutdown to trigger the writer's final seal+drain+fsync block.
+    wal_writer_shutdown: Arc<std::sync::atomic::AtomicBool>,
     snapshot_cancel: CancellationToken,
     snapshot_worker: JoinHandle<()>,
     snapshot_trigger: SnapshotTriggerTx,
@@ -700,30 +703,48 @@ async fn build_runtime_state(
     let registry = Arc::new(beava_core::registry::Registry::new());
     let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
 
-    // ── Recovery: replay persistence WAL (*.log) then hand-rolled WAL (*.wal) ──
+    // ── Recovery: snapshot install → *.log replay (post-snapshot) → *.wal replay ──
     //
-    // Step 1: replay *.log registry bumps from beava-persistence WalSink.
-    //   These records carry /register payloads (RegistryBump). Without them,
-    //   the second server instance has no event descriptors and cannot replay
-    //   data-plane events.
+    // Plan 12.6-15: install latest *.bvs snapshot BEFORE replaying WAL tails.
+    // The legacy Server::bind path already does this; Plan 12.6-01's
+    // build_runtime_state extraction copied only the WAL replay paths and
+    // skipped the snapshot loader — losing all events between the snapshot
+    // and shutdown after restart (phase7_restart_cycle::sc1_snapshot_then_restart
+    // expected 1250, observed 1189; 61 missing = events past the snapshot
+    // that snapshot-replay would otherwise re-feed via the snapshot's
+    // pre-aggregated state tables).
     //
-    // Step 2: replay *.wal data-plane events from WalBufferRing + WalWriter.
-    //   These records use the v=2 binary format (apply_shard.rs).
+    // Step 1: install snapshot if any (registry descriptors + state tables +
+    //   next_event_id + max_event_time_ms). Returns snapshot_lsn for WAL gating.
+    //
+    // Step 2: replay *.log records with `lsn > snapshot_lsn`
+    //   (RegistryBump records that landed after the snapshot, plus any
+    //    persistence-WAL events from the legacy WalSink path).
+    //
+    // Step 3: replay *.wal data-plane events (v=2 binary format from apply_shard).
+    let snapshot_lsn = crate::recovery::load_snapshot_if_any(&snapshot_dir, &dev_agg)
+        .ok()
+        .unwrap_or(0);
+
     let persistence_lsn = if wal_dir.exists() {
-        match replay_wal_from_lsn(&wal_dir, 0, &dev_agg) {
+        match replay_wal_from_lsn(&wal_dir, snapshot_lsn, &dev_agg) {
             Ok(outcome) => outcome.last_lsn,
-            Err(_) => 0,
+            Err(_) => snapshot_lsn,
         }
     } else {
-        0
+        snapshot_lsn
     };
 
-    // Step 2: replay hand-rolled *.wal data-plane events.
-    // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across both WALs.
+    // Step 3: replay hand-rolled *.wal data-plane events.
+    // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across all paths.
     let handrolled_lsn_start = persistence_lsn + 1;
     let handrolled_outcome =
         replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
-    let initial_start_lsn = handrolled_outcome.last_lsn.max(persistence_lsn) + 1;
+    let initial_start_lsn = handrolled_outcome
+        .last_lsn
+        .max(persistence_lsn)
+        .max(snapshot_lsn)
+        + 1;
 
     tracing::info!(
         target: "beava.recovery",
@@ -792,6 +813,15 @@ async fn build_runtime_state(
         wal_cfg.tick_ms,
     )
     .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+    // Plan 12.6-15: capture WalWriter's shutdown flag BEFORE spawn() consumes
+    // self. Without this we couldn't actually trigger the writer's
+    // final-drain-and-fsync block at server shutdown — the writer loop
+    // would just keep ticking (sleep → seal → drain → check shutdown
+    // (always false) → loop) and the JoinHandle drop would detach the
+    // thread mid-tick, losing any active-buffer contents that hadn't
+    // been sealed yet. Surfaced by phase7_restart_cycle::sc1 (1216 of
+    // 1250 expected post-restart events; 34 lost in the active buffer).
+    let wal_writer_shutdown = wal_writer.shutdown_flag();
     let wal_writer_handle = wal_writer.spawn();
 
     // ── Spawn snapshot task (admin plane) ────────────────────────────────
@@ -816,6 +846,7 @@ async fn build_runtime_state(
         wal_ring,
         wal_lsn,
         wal_writer_handle,
+        wal_writer_shutdown,
         snapshot_cancel,
         snapshot_worker,
         snapshot_trigger,
@@ -850,6 +881,7 @@ where
         wal_ring,
         wal_lsn,
         wal_writer_handle,
+        wal_writer_shutdown,
         snapshot_cancel,
         snapshot_worker,
         snapshot_trigger,
@@ -896,11 +928,14 @@ where
     // Wait for the apply thread to drain.
     let _ = apply_join.join();
 
-    // Signal the WalWriter to do a final fsync and exit.
-    // The WalWriter loop: sleep tick → seal → drain → check shutdown.
-    // Give it 2 ticks (4ms) to drain, then drop.
-    std::thread::sleep(Duration::from_millis(6));
-    drop(wal_writer_handle);
+    // Plan 12.6-15: signal the WalWriter to seal+drain+fsync the active
+    // buffer (which may hold ~tick_ms worth of post-snapshot pushes that
+    // would otherwise be lost when JoinHandle is dropped) and JOIN the
+    // thread so we wait for the final fsync to land BEFORE we let the
+    // WAL ring/lsn Arcs drop. Surfaced by phase7_restart_cycle::sc1
+    // (~34 events / ~1 tick of pushes lost per restart pre-fix).
+    wal_writer_shutdown.store(true, AOrdering::Release);
+    let _ = wal_writer_handle.join();
 
     // Stop snapshot task.
     snapshot_cancel.cancel();

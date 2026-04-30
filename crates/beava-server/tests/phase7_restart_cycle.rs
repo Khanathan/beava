@@ -19,6 +19,13 @@
 
 use beava_server::testing::TestServerBuilder;
 use serde_json::json;
+use tokio::sync::Mutex as TokioMutex;
+
+/// Plan 12.6-15: serialize ServerV18 boots so two restart-cycle tests don't
+/// stomp on each other's tokio scheduler / kernel backlog. Each test boots
+/// TWO instances sequentially; running 3 tests in parallel = 6 concurrent
+/// boots, which exhausts macOS launch-budget under default test threading.
+static RESTART_CYCLE_SERIALIZER: TokioMutex<()> = TokioMutex::const_new(());
 
 fn txn_descriptor() -> serde_json::Value {
     json!({
@@ -125,6 +132,7 @@ async fn get_feature(
 /// 1250 total events.
 #[tokio::test]
 async fn sc1_snapshot_then_restart_reproduces_state() {
+    let _serializer_guard = RESTART_CYCLE_SERIALIZER.lock().await;
     let wal = tempfile::tempdir().unwrap();
     let snap = tempfile::tempdir().unwrap();
 
@@ -201,6 +209,7 @@ async fn sc1_snapshot_then_restart_reproduces_state() {
 /// values must match.
 #[tokio::test]
 async fn sc4_schema_evolution_survives_restart() {
+    let _serializer_guard = RESTART_CYCLE_SERIALIZER.lock().await;
     let wal = tempfile::tempdir().unwrap();
     let snap = tempfile::tempdir().unwrap();
 
@@ -274,6 +283,7 @@ async fn sc4_schema_evolution_survives_restart() {
 /// covers v2 RegistryBump + post-snapshot events.
 #[tokio::test]
 async fn snapshot_then_schema_evolution_then_restart() {
+    let _serializer_guard = RESTART_CYCLE_SERIALIZER.lock().await;
     let wal = tempfile::tempdir().unwrap();
     let snap = tempfile::tempdir().unwrap();
 
