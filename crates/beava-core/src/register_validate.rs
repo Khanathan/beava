@@ -198,6 +198,79 @@ pub fn pre_check_removed_ops(body: &serde_json::Value) -> Option<FeatureRemovedE
     None
 }
 
+// ─── Legacy event-time JSON-key strict-deny shim (Phase 12.6 Plan 06) ─────────
+
+/// Walks the request JSON looking for legacy `event_time_field` /
+/// `tolerate_delay_ms` keys on any payload node. Returns `Some(_)` on the
+/// first hit; `None` if the payload is clean.
+///
+/// Runs at the JSON layer BEFORE strict `RegisterPayload` deserialize so the
+/// rejection is independent of whether the corresponding `EventDescriptor`
+/// fields still exist.  Once Plan 06 deletes
+/// `EventDescriptor.event_time_field` / `EventDescriptor.tolerate_delay_ms`,
+/// serde would otherwise either silently strip the keys (no-op) or surface a
+/// generic "unknown field" message — neither matches the D-03 contract that
+/// stale fixtures get a structured error code.
+///
+/// **D-03 verbatim:** "Hard rip everywhere — zero `event_time_ms` compat at any
+/// layer. … No deprecation window, no parse-and-strip, no warn-then-error."
+/// Silent-strip is parse-and-strip — explicitly forbidden.
+///
+/// Architectural commitment per `project_redis_shaped_no_event_time_ever`
+/// (locked 2026-04-30): event_time / watermarks / joins / PIT removed from v0
+/// permanently. Reviving any of these requires explicit user override + a new
+/// ADR.
+pub fn pre_check_legacy_event_time_keys(
+    body: &serde_json::Value,
+) -> Option<FeatureRemovedError> {
+    let nodes = body.get("nodes")?.as_array()?;
+    for (node_idx, node) in nodes.iter().enumerate() {
+        // Path prefix uses the node `name` if present, otherwise just the index.
+        let node_name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let path_prefix = if node_name.is_empty() {
+            format!("nodes[{node_idx}]")
+        } else {
+            format!("nodes[{node_idx}].{node_name}")
+        };
+        if node.get("event_time_field").is_some() {
+            return Some(FeatureRemovedError {
+                code: "unknown_field_event_time_v0",
+                op_label: "event_time_field",
+                path: format!("{path_prefix}.event_time_field"),
+                reason: "The `event_time_field` decorator key was permanently \
+                         removed from v0 in the 2026-04-30 architectural pivot to \
+                         a Redis-shaped, processing-time-only feature server. \
+                         Windowed operators (rolling counts, decay, velocity, \
+                         etc.) now bucket on **server-side wall-clock at \
+                         dispatch** (`SystemTime::now()`), not on a body-derived \
+                         event timestamp. There is no deprecation period and no \
+                         compat shim — drop the `event_time_field` key from your \
+                         registration payload. See \
+                         .planning/phases/12.6-v0-surface-reduction/ for context."
+                    .to_string(),
+            });
+        }
+        if node.get("tolerate_delay_ms").is_some() {
+            return Some(FeatureRemovedError {
+                code: "unknown_field_tolerate_delay_v0",
+                op_label: "tolerate_delay_ms",
+                path: format!("{path_prefix}.tolerate_delay_ms"),
+                reason: "The `tolerate_delay_ms` decorator key was permanently \
+                         removed from v0 in the 2026-04-30 architectural pivot. \
+                         Out-of-order tolerance was an event-time concept; \
+                         post-pivot bucketing uses server arrival-time exclusively \
+                         and tolerance is degenerate (the server never sees \
+                         out-of-order arrivals — it timestamps at dispatch). Drop \
+                         the `tolerate_delay_ms` key from your registration \
+                         payload. See \
+                         .planning/phases/12.6-v0-surface-reduction/ for context."
+                    .to_string(),
+            });
+        }
+    }
+    None
+}
+
 /// Newtype wrapper: a `Vec<PayloadNode>` that has passed all validation rules.
 /// `compute_diff` (Plan 03) accepts `&[PayloadNode]` via `as_slice()`.
 /// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.

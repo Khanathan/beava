@@ -182,6 +182,25 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
                         tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                     };
                 }
+                // Plan 12.6-06: legacy event-time JSON-key strict-deny shim.
+                // See apply_shard.rs::dispatch_one Register arm for rationale.
+                if let Some(removed) =
+                    beava_core::register_validate::pre_check_legacy_event_time_keys(&json_value)
+                {
+                    let body = serde_json::json!({
+                        "error": {
+                            "code": removed.code,
+                            "path": removed.path,
+                            "reason": removed.reason,
+                        },
+                        "registry_version": app.dev_agg.registry.version(),
+                    });
+                    return GlueResponse::Register {
+                        http_status: 400,
+                        body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                        tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
+                    };
+                }
             }
             // Plan 12.6-01: parse + dispatch to the shared
             // `execute_register_with_wal`, then funnel the outcome through

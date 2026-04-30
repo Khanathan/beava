@@ -125,6 +125,31 @@ impl ApplyShard {
                             tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
+                    // Plan 12.6-06: legacy event-time JSON-key strict-deny shim.
+                    // Same JSON-prelude posture as Plan 04's removed-ops check
+                    // — runs BEFORE strict RegisterPayload deserialize so legacy
+                    // `event_time_field` / `tolerate_delay_ms` keys raise a
+                    // structured error code (unknown_field_event_time_v0 /
+                    // unknown_field_tolerate_delay_v0) per D-03 hard-rip.
+                    if let Some(removed) =
+                        beava_core::register_validate::pre_check_legacy_event_time_keys(
+                            &json_value,
+                        )
+                    {
+                        let body = serde_json::json!({
+                            "error": {
+                                "code": removed.code,
+                                "path": removed.path,
+                                "reason": removed.reason,
+                            },
+                            "registry_version": self.state.dev_agg.registry.version(),
+                        });
+                        return GlueResponse::Register {
+                            http_status: 400,
+                            body: bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                            tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
+                        };
+                    }
                 }
                 // Plan 12.6-01: parse + dispatch on the apply thread, then
                 // funnel the outcome through `register_outcome_to_glue`
@@ -631,7 +656,41 @@ impl ApplyShard {
         };
         let t_lookup = t0.map(|t| t.elapsed());
 
-        // 3. Schema validate against Row.fields directly.
+        // 3. Plan 12.6-06: strict-deny on legacy `event_time` / `event_time_ms`
+        //    fields in the push body. Per CONTEXT D-03 hard-rip: the wire
+        //    schema permanently does not accept event-time data; clients
+        //    sending the legacy field get a structured 400 with code
+        //    `unknown_field_event_time_v0` rather than silent-ignore.
+        //
+        //    The check runs against the *parsed Row* — Beava's Row is a
+        //    generic key-value map (events have arbitrary user-defined
+        //    schemas), so deny_unknown_fields on Row itself is wrong. The
+        //    correct boundary is the EventDescriptor: any Row field absent
+        //    from descriptor.schema.fields is a stale-fixture / forbidden
+        //    field.
+        for (field_name, _) in row.iter() {
+            if !descriptor.schema.fields.contains_key(field_name)
+                && !descriptor
+                    .schema
+                    .optional_fields
+                    .iter()
+                    .any(|f| f == field_name)
+            {
+                let code: &'static str = if field_name == "event_time"
+                    || field_name == "event_time_ms"
+                {
+                    "unknown_field_event_time_v0"
+                } else {
+                    "unknown_field_v0"
+                };
+                return GlueResponse::PushError {
+                    code,
+                    registry_version,
+                };
+            }
+        }
+
+        // 4. Schema validate against Row.fields directly.
         if !validate_row_against_descriptor(&descriptor, &row) {
             return GlueResponse::PushError {
                 code: "invalid_event",

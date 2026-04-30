@@ -562,6 +562,22 @@ pub async fn post_register(
             });
             return (StatusCode::BAD_REQUEST, Json(body_json));
         }
+        // Plan 12.6-06: legacy event-time JSON-key strict-deny shim.
+        // See apply_shard.rs::dispatch_one Register arm for rationale.
+        if let Some(removed) =
+            beava_core::register_validate::pre_check_legacy_event_time_keys(&json_value)
+        {
+            let current_version = state.registry.version();
+            let body_json = serde_json::json!({
+                "error": {
+                    "code": removed.code,
+                    "path": removed.path,
+                    "reason": removed.reason,
+                },
+                "registry_version": current_version,
+            });
+            return (StatusCode::BAD_REQUEST, Json(body_json));
+        }
     }
 
     // 2. JSON parse → 400 — transport-specific.
