@@ -155,9 +155,12 @@ impl OpChain {
                     CompiledOp::Fillna(entries)
                 }
 
-                // GroupBy / Join / Union are rejected by propagate_schema above.
+                // GroupBy is rejected by propagate_schema as UnsupportedOp.
                 // If we somehow reach here, skip silently (defensive).
-                OpNode::GroupBy { .. } | OpNode::Join { .. } | OpNode::Union { .. } => continue,
+                //
+                // Phase 12.6 (2026-04-30): OpNode::Join / OpNode::Union arms
+                // removed — variants permanently deleted from the enum.
+                OpNode::GroupBy { .. } => continue,
             };
             compiled.push(cop);
         }

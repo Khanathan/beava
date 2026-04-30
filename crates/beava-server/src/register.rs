@@ -544,6 +544,26 @@ pub async fn post_register(
         );
     }
 
+    // Plan 12.6-04: JSON-prelude shim — intercept removed ops
+    // (`{"op":"join"}` / `{"op":"union"}`) BEFORE strict RegisterPayload
+    // deserialize. Emits structured error codes feature_removed_no_joins_v0
+    // / feature_removed_no_unions_v0 per CONTEXT.md §Implementation
+    // Decisions / Bucket 5.
+    if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&body) {
+        if let Some(removed) = beava_core::register_validate::pre_check_removed_ops(&json_value) {
+            let current_version = state.registry.version();
+            let body_json = serde_json::json!({
+                "error": {
+                    "code": removed.code,
+                    "path": removed.path,
+                    "reason": removed.reason,
+                },
+                "registry_version": current_version,
+            });
+            return (StatusCode::BAD_REQUEST, Json(body_json));
+        }
+    }
+
     // 2. JSON parse → 400 — transport-specific.
     let payload: RegisterPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,

@@ -105,7 +105,8 @@ pub enum PropagationError {
         op_index: usize,
         parse_error: ParseError,
     },
-    /// An op is not supported in Phase 4 (GroupBy / Join / Union).
+    /// An op is not supported in Phase 4 — only GroupBy emits this in v0
+    /// (Join + Union were permanently removed in Phase 12.6, 2026-04-30).
     UnsupportedOp { op_index: usize, op: &'static str },
 }
 
@@ -152,22 +153,16 @@ pub fn propagate_schema(
             OpNode::Fillna { defaults } => {
                 apply_fillna_schema(op_index, defaults, &mut current, &mut errors);
             }
+            // Phase 12.6 (2026-04-30): the Join + Union match arms were deleted
+            // per project_redis_shaped_no_event_time_ever (variants gone from
+            // the enum). The JSON-prelude shim
+            // register_validate::pre_check_removed_ops intercepts those payloads
+            // BEFORE the strict OpNode deserialize, emitting structured codes
+            // feature_removed_no_joins_v0 / feature_removed_no_unions_v0.
             OpNode::GroupBy { .. } => {
                 errors.push(PropagationError::UnsupportedOp {
                     op_index,
                     op: "group_by",
-                });
-            }
-            OpNode::Join { .. } => {
-                errors.push(PropagationError::UnsupportedOp {
-                    op_index,
-                    op: "join",
-                });
-            }
-            OpNode::Union { .. } => {
-                errors.push(PropagationError::UnsupportedOp {
-                    op_index,
-                    op: "union",
                 });
             }
         }
@@ -1266,12 +1261,19 @@ mod tests {
     }
 
     // ── Test 21: Passthrough ops unsupported ──────────────────────────────────
+    //
+    // Phase 12.6 (2026-04-30): the Join + Union sub-cases of this test were
+    // deleted with the variants per project_redis_shaped_no_event_time_ever.
+    // The remaining GroupBy passthrough is the single legitimate
+    // UnsupportedOp emitter in v0; joins/unions are rejected one layer up
+    // by `register_validate::pre_check_removed_ops` with structured codes
+    // feature_removed_no_joins_v0 / feature_removed_no_unions_v0.
 
     #[test]
     fn prop_passthrough_ops_unsupported() {
         let input = schema_with(&[("amount", FieldType::F64)]);
 
-        // GroupBy
+        // GroupBy is the lone v0 passthrough case.
         let ops_gb = vec![OpNode::GroupBy {
             keys: vec!["amount".to_string()],
             agg: BTreeMap::new(),
@@ -1286,41 +1288,6 @@ mod tests {
                 }
             )),
             "expected UnsupportedOp(group_by), got {errs:?}"
-        );
-
-        // Join
-        let ops_join = vec![OpNode::Join {
-            other: "other_stream".to_string(),
-            on: vec!["amount".to_string()],
-            within_ms: None,
-            join_type: crate::op_node::JoinType::Inner,
-        }];
-        let errs2 = assert_errors(propagate_schema(&input, &ops_join));
-        assert!(
-            errs2.iter().any(|e| matches!(
-                e,
-                PropagationError::UnsupportedOp {
-                    op_index: 0,
-                    op: "join"
-                }
-            )),
-            "expected UnsupportedOp(join), got {errs2:?}"
-        );
-
-        // Union
-        let ops_union = vec![OpNode::Union {
-            others: vec!["other_stream".to_string()],
-        }];
-        let errs3 = assert_errors(propagate_schema(&input, &ops_union));
-        assert!(
-            errs3.iter().any(|e| matches!(
-                e,
-                PropagationError::UnsupportedOp {
-                    op_index: 0,
-                    op: "union"
-                }
-            )),
-            "expected UnsupportedOp(union), got {errs3:?}"
         );
     }
 

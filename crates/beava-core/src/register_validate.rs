@@ -109,6 +109,95 @@ pub struct ValidationError {
     pub reason: String,
 }
 
+// ─── Removed-op JSON-prelude shim (Phase 12.6 Plan 04) ────────────────────────
+
+/// Structured "feature removed" error emitted by `pre_check_removed_ops`.
+///
+/// This is distinct from `ValidationError` because the wire `code` is a fixed
+/// string (`feature_removed_no_joins_v0` / `feature_removed_no_unions_v0`) per
+/// CONTEXT.md §Implementation Decisions / Bucket 5, NOT one of the standard
+/// `ErrorCode` variants. The dispatch site (apply_shard / runtime_core_glue /
+/// post_register) maps this directly into a `{"error": {"code", "path",
+/// "reason"}}` HTTP 400 body, bypassing the normal `RegisterOutcome` flow.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FeatureRemovedError {
+    pub code: &'static str,
+    pub op_label: &'static str,
+    pub path: String,
+    pub reason: String,
+}
+
+/// Walks the request JSON looking for op nodes whose `"op"` field names a
+/// permanently-removed feature (`"join"` or `"union"`). Returns `Some(_)` on
+/// the first hit; `None` if the payload is clean.
+///
+/// Runs at the JSON layer BEFORE strict `RegisterPayload` deserialize so the
+/// rejection works whether or not the corresponding `OpNode` variants still
+/// exist in the enum. Once Phase 12.6 Plan 04 deletes `OpNode::Join` /
+/// `OpNode::Union`, serde would otherwise return "unknown variant `join`" and
+/// the structured error code would be lost — this shim preserves it.
+///
+/// Architectural commitment per `project_redis_shaped_no_event_time_ever`
+/// (locked 2026-04-30): joins and unions are removed from v0 permanently.
+/// Reviving either requires explicit user override + a new ADR.
+pub fn pre_check_removed_ops(body: &serde_json::Value) -> Option<FeatureRemovedError> {
+    // Walk `body.nodes[*]` looking for derivation nodes with an `ops` array.
+    let nodes = body.get("nodes")?.as_array()?;
+    for (node_idx, node) in nodes.iter().enumerate() {
+        // Only derivation nodes carry ops.
+        let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "derivation" {
+            continue;
+        }
+        let ops = match node.get("ops").and_then(|v| v.as_array()) {
+            Some(o) => o,
+            None => continue,
+        };
+        let deriv_name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        for (op_idx, op_value) in ops.iter().enumerate() {
+            let op_str = op_value.get("op").and_then(|v| v.as_str()).unwrap_or("");
+            let path_prefix = if deriv_name.is_empty() {
+                format!("nodes[{node_idx}].ops[{op_idx}]")
+            } else {
+                format!("nodes[{node_idx}].{deriv_name}.ops[{op_idx}]")
+            };
+            match op_str {
+                "join" => {
+                    return Some(FeatureRemovedError {
+                        code: "feature_removed_no_joins_v0",
+                        op_label: "join",
+                        path: path_prefix,
+                        reason: "Joins were permanently removed from v0 in the \
+                                 2026-04-30 architectural pivot to a Redis-shaped, \
+                                 processing-time-only feature server. There is no \
+                                 deprecation period and no compat shim — push events \
+                                 to each stream independently and compose features \
+                                 client-side instead. See \
+                                 .planning/phases/12.6-v0-surface-reduction/ for \
+                                 context."
+                            .to_string(),
+                    });
+                }
+                "union" => {
+                    return Some(FeatureRemovedError {
+                        code: "feature_removed_no_unions_v0",
+                        op_label: "union",
+                        path: path_prefix,
+                        reason: "Unions were permanently removed from v0 in the \
+                                 2026-04-30 architectural pivot. There is no \
+                                 deprecation period and no compat shim. See \
+                                 .planning/phases/12.6-v0-surface-reduction/ for \
+                                 context."
+                            .to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// Newtype wrapper: a `Vec<PayloadNode>` that has passed all validation rules.
 /// `compute_diff` (Plan 03) accepts `&[PayloadNode]` via `as_slice()`.
 /// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.
@@ -774,17 +863,19 @@ fn validate_expressions(
             union_schemas(upstream_schemas)
         };
 
-        // Check for UnsupportedOp ops (GroupBy/Join/Union) — treat as pass-through.
+        // Check for UnsupportedOp ops (GroupBy) — treat as pass-through.
         // Filter them out before calling OpChain::compile so we don't get spurious errors.
         // Phase 4 treats these as warnings; register succeeds.
-        let has_unsupported = deriv.ops.iter().any(|op| {
-            matches!(
-                op,
-                crate::op_node::OpNode::GroupBy { .. }
-                    | crate::op_node::OpNode::Join { .. }
-                    | crate::op_node::OpNode::Union { .. }
-            )
-        });
+        //
+        // Phase 12.6 (2026-04-30): OpNode::Join / OpNode::Union arms removed.
+        // The JSON-prelude shim `pre_check_removed_ops` runs at the dispatch
+        // layer BEFORE strict RegisterPayload deserialize and emits structured
+        // error codes feature_removed_no_joins_v0 / feature_removed_no_unions_v0
+        // — joins/unions never reach this point.
+        let has_unsupported = deriv
+            .ops
+            .iter()
+            .any(|op| matches!(op, crate::op_node::OpNode::GroupBy { .. }));
 
         if has_unsupported {
             // Log a warning (at build time this is a tracing warn; tests won't see it,
@@ -792,7 +883,7 @@ fn validate_expressions(
             tracing::warn!(
                 kind = "register.rule10.unsupported_op",
                 derivation = %deriv.name,
-                "derivation contains GroupBy/Join/Union ops which are not validated in Phase 4 \
+                "derivation contains GroupBy ops which are not validated in Phase 4 \
                  (pass-through)"
             );
             propagated_schemas.push((deriv.name.clone(), deriv.schema.clone()));
