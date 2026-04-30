@@ -22,7 +22,6 @@ fn valid_event_payload() -> Value {
                 "fields": {"card_id": "str", "amount": "f64", "event_time": "i64"},
                 "optional_fields": []
             },
-            "event_time_field": "event_time"
         }]
     })
 }
@@ -35,7 +34,6 @@ fn event_node_named(name: &str) -> Value {
             "fields": {"event_time": "i64", "x": "f64"},
             "optional_fields": []
         },
-        "event_time_field": "event_time"
     })
 }
 

@@ -104,7 +104,6 @@ fn register_payload() -> serde_json::Value {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

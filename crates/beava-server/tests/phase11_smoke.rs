@@ -105,7 +105,6 @@ async fn all_eleven_ops_round_trip_through_http() {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -178,10 +177,9 @@ async fn all_eleven_ops_round_trip_through_http() {
         ),
     ];
 
-    for (t, row) in events {
+    for (_t, row) in events {
         let body = serde_json::json!({
             "source": "TxEvent",
-            "event_time_ms": t,
             "row": row,
         });
         let (status, body) = call_post(r.clone(), "/dev/apply_events", body).await;
@@ -255,11 +253,22 @@ async fn all_eleven_ops_round_trip_through_http() {
     assert!(body["value"].is_array());
 
     // kmh (geo_velocity → F64)
+    //
+    // Plan 12.6-05/06 Path X + D-03 hard rip: windowed/velocity ops now
+    // bucket on **server arrival-time** rather than body `event_time`.  The
+    // test events are pushed back-to-back (all within a few wall-clock
+    // milliseconds of each other), so dt between events is tiny and kmh is
+    // *very large* rather than the pre-Path-X ~111 km/h that the body's
+    // synthetic 1-hour event_time spacing produced.  Relaxed assertion: kmh
+    // must be a finite positive number — the mechanical correctness of the
+    // operator is what's under test, not the synthetic dt.
     let (status, body) = call_get(r.clone(), "/get/kmh/alice").await;
     assert_eq!(status, StatusCode::OK);
     let v = body["value"].as_f64().expect("kmh F64");
-    // Between event 2 and 3 we move ~111 km in 1h → ~111 km/h
-    assert!((v - 111.0).abs() < 5.0, "expected max kmh ~111, got {v}");
+    assert!(
+        v.is_finite() && v >= 0.0,
+        "kmh must be finite positive, got {v}"
+    );
 
     // path_km (geo_distance → F64)
     let (status, body) = call_get(r.clone(), "/get/path_km/alice").await;
@@ -387,7 +396,6 @@ async fn all_eleven_ops_type_mix_set_membership() {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -438,10 +446,9 @@ async fn all_eleven_ops_type_mix_set_membership() {
             serde_json::json!({"user_id":"alice","amount":200.0, "category":"a","lat":41.9128,"lon":-74.0060}),
         ),
     ];
-    for (t, row) in events {
+    for (_t, row) in events {
         let body = serde_json::json!({
             "source": "TxEvent",
-            "event_time_ms": t,
             "row": row,
         });
         let (status, _b) = call_post(r.clone(), "/dev/apply_events", body).await;
@@ -472,7 +479,7 @@ async fn replay_determinism_across_two_runs() {
         );
         let payload = serde_json::json!({
             "nodes": [
-                {"kind":"event","name":"E","schema":{"fields":{"event_time":"i64","u":"str","x":"f64","lat":"f64","lon":"f64"},"optional_fields":[]},"event_time_field":"event_time"},
+                {"kind":"event","name":"E","schema":{"fields":{"event_time":"i64","u":"str","x":"f64","lat":"f64","lon":"f64"},"optional_fields":[]}},
                 {"kind":"derivation","name":"D","output_kind":"table","upstreams":["E"],
                  "ops":[{"op":"group_by","keys":["u"],"agg":{
                     "path_km":{"op":"geo_distance","params":{"lat":"lat","lon":"lon"}},
@@ -487,7 +494,6 @@ async fn replay_determinism_across_two_runs() {
         for i in 0..50_i64 {
             let body = serde_json::json!({
                 "source": "E",
-                "event_time_ms": i,
                 "row": {"u":"u1","x":(i as f64),"lat":(40.0 + i as f64 * 0.01),"lon":-74.0},
             });
             let (s, _) = call_post(r.clone(), "/dev/apply_events", body).await;

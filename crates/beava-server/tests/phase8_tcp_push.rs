@@ -35,7 +35,6 @@ async fn boot_with_transaction() -> beava_server::testing::TestServer {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -203,7 +202,6 @@ async fn tcp_push_idempotent_replay_returns_cached_with_flag() {
                 },
                 "optional_fields": []
             },
-            "event_time_field": "event_time",
             "dedupe_key": "txn_id",
             "dedupe_window_ms": 60_000
         }]

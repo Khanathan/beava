@@ -41,7 +41,6 @@ fn small_pipeline() -> PipelineConfig {
                     "fields": {"event_time": "i64", "user_id": "str", "amount": "f64"},
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             }
         ]
     });

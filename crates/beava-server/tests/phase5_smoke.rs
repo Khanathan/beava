@@ -30,7 +30,6 @@ fn transaction_schema() -> serde_json::Value {
             },
             "optional_fields": []
         },
-        "event_time_field": "event_time"
     })
 }
 
@@ -477,7 +476,6 @@ async fn sc4_replay_determinism() {
                         },
                         "optional_fields": []
                     },
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "derivation",

@@ -75,7 +75,6 @@ fn setup_app_state_with_count_pipeline() -> AppFixture {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

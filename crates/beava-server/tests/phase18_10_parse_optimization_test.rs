@@ -46,7 +46,6 @@ fn small_pipeline_register() -> serde_json::Value {
                     "fields": {"user_id": "str", "amount": "f64", "event_time": "i64"},
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

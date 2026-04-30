@@ -28,7 +28,6 @@ async fn register_txn_agg(ts: &beava_server::testing::TestServer) {
                 "user_id": "str",
                 "amount": "f64"
             }, "optional_fields": []},
-            "event_time_field": "event_time",
         },
         {
             "kind": "derivation",

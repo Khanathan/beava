@@ -39,7 +39,6 @@ async fn register_transaction(
             },
             "optional_fields": []
         },
-        "event_time_field": "event_time"
     });
     if let Some(k) = dedupe_key {
         event_node["dedupe_key"] = json!(k);

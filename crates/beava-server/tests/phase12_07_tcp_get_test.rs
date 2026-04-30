@@ -81,7 +81,6 @@ fn setup_apply_shard_with_count_pipeline() -> ShardFixture {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

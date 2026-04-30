@@ -718,7 +718,7 @@ mod tests {
         response
     }
 
-    fn event_node_json(name: &str, fields: &[(&str, &str)], etf: &str) -> serde_json::Value {
+    fn event_node_json(name: &str, fields: &[(&str, &str)], _etf: &str) -> serde_json::Value {
         let fields_map: serde_json::Map<String, serde_json::Value> = fields
             .iter()
             .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
@@ -727,7 +727,6 @@ mod tests {
             "kind": "event",
             "name": name,
             "schema": {"fields": fields_map, "optional_fields": []},
-            "event_time_field": etf,
         })
     }
 
@@ -772,13 +771,16 @@ mod tests {
 
     #[tokio::test]
     async fn handle_register_validation_failure_uses_error_response_opcode() {
+        // Plan 12.6-06 D-03 hard rip: pre-pivot this used a payload with a
+        // missing event_time_field schema slot to trigger validation failure.
+        // Post-pivot use a bad-pattern name instead — same goal: validator
+        // emits an error, dispatch encodes via OP_ERROR_RESPONSE.
         let reg = Arc::new(Registry::new());
         let bad = serde_json::json!({
             "nodes": [{
                 "kind": "event",
-                "name": "A",
+                "name": "1bad", // digit-leading: NameBadPattern
                 "schema": {"fields": {"x": "f64"}, "optional_fields": []},
-                "event_time_field": "ts"  // not in schema
             }]
         });
         let req = Frame::new(

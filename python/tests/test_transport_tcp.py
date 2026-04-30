@@ -12,15 +12,17 @@ import pytest
 from beava._errors import RegistrationError
 from beava._transport import TcpTransport
 
-# A minimal valid event registration payload (matches Phase 2.5 wire contract).
+# A minimal valid event registration payload (matches Phase 12.6-06 wire contract).
+# Plan 12.6-06 D-03 hard rip: `event_time_field` and `tolerate_delay_ms` keys
+# removed from EventDescriptor; sending them now raises a structured 400 with
+# `unknown_field_event_time_v0` / `unknown_field_tolerate_delay_v0`.
 VALID_REGISTER_PAYLOAD = (
     b'{"nodes":[{'
     b'"kind":"event",'
     b'"name":"TcpTestEvent",'
     b'"schema":{"fields":{"event_time":"i64","amount":"f64"},"optional_fields":[]},'
-    b'"event_time_field":"event_time",'
     b'"dedupe_key":null,"dedupe_window_ms":null,'
-    b'"keep_events_for_ms":null,"tolerate_delay_ms":null'
+    b'"keep_events_for_ms":null'
     b"}]}"
 )
 
@@ -30,9 +32,8 @@ INVALID_REGISTER_PAYLOAD = (
     b'"kind":"event",'
     b'"name":"_beava_reserved",'
     b'"schema":{"fields":{"x":"f64"},"optional_fields":[]},'
-    b'"event_time_field":null,'
     b'"dedupe_key":null,"dedupe_window_ms":null,'
-    b'"keep_events_for_ms":null,"tolerate_delay_ms":null'
+    b'"keep_events_for_ms":null'
     b"}]}"
 )
 

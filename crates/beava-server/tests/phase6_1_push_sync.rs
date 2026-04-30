@@ -30,7 +30,6 @@ async fn register_transaction(ts: &beava_server::testing::TestServer) {
             },
             "optional_fields": []
         },
-        "event_time_field": "event_time"
     });
     let agg_node = json!({
         "kind": "derivation",

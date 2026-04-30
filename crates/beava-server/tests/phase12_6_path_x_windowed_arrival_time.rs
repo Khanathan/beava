@@ -59,7 +59,6 @@ async fn path_x_bucketing_is_on_arrival_not_event_time() {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

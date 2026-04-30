@@ -25,7 +25,6 @@ fn valid_event_payload(name: &str, extra_field: &str, field_type: &str) -> Value
                 "fields": {"event_time": "i64", extra_field: field_type},
                 "optional_fields": []
             },
-            "event_time_field": "event_time"
         }]
     })
 }
@@ -101,7 +100,6 @@ async fn success_criterion_3_additive_bumps_version() {
                 "kind": "event",
                 "name": "Transaction",
                 "schema": {"fields": {"event_time": "i64", "amount": "f64"}, "optional_fields": []},
-                "event_time_field": "event_time"
             },
             {
                 "kind": "table",
@@ -167,13 +165,16 @@ async fn success_criterion_4_conflict_returns_409_with_diff() {
 async fn success_criterion_5_malformed_returns_400_with_path() {
     let ts = TestServer::spawn().await.expect("spawn");
 
-    // (a) Missing event_time_field value in schema
+    // (a) Plan 12.6-06 D-03 hard rip: pre-pivot this used a payload missing
+    //     the schema field referenced by event_time_field.  Post-pivot
+    //     event_time_field is gone, so use a payload with a bad-pattern name
+    //     instead — same goal: structural validation failure → 400 with
+    //     path reference + non-empty reason.
     let bad_event = json!({
         "nodes": [{
             "kind": "event",
-            "name": "T",
+            "name": "1bad", // digit-leading: NameBadPattern
             "schema": {"fields": {"x": "f64"}, "optional_fields": []},
-            "event_time_field": "event_time"
         }]
     });
     let resp = post_register(&ts, &bad_event).await;
@@ -182,8 +183,8 @@ async fn success_criterion_5_malformed_returns_400_with_path() {
     assert_eq!(val["error"]["code"], "invalid_registration");
     let path = val["error"]["path"].as_str().unwrap_or("");
     assert!(
-        path.contains("event_time") || path.contains("nodes[0]"),
-        "path should reference event_time field: {path}"
+        path.contains("name") || path.contains("nodes[0]"),
+        "path should reference the offending node: {path}"
     );
     let reason = val["error"]["reason"].as_str().unwrap_or("");
     assert!(!reason.is_empty(), "reason must be non-empty");
@@ -226,7 +227,6 @@ async fn success_criterion_5_malformed_returns_400_with_path() {
             "kind": "event",
             "name": "Src",
             "schema": {"fields": {"event_time": "i64", "x": "f64"}, "optional_fields": []},
-            "event_time_field": "event_time"
         }, {
             "kind": "derivation",
             "name": "D",

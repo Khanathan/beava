@@ -19,7 +19,6 @@ fn transaction_schema() -> Value {
             },
             "optional_fields": []
         },
-        "event_time_field": "event_time"
     })
 }
 
@@ -126,18 +125,23 @@ async fn phase9_register_all_16_ops_and_push_events() {
 
     // GET /get/{feature}/u1 for each — all should return non-error JSON;
     // most should be non-null after 30 events.
+    //
+    // Plan 12.6-05/06 (Path X + D-03 hard rip): windowed/velocity ops bucket
+    // on **server arrival-time** (events pushed back-to-back land in the
+    // same wall-clock millisecond on the server).  Time-derivative ops
+    // (`trend`, `trend_residual`, `rate_of_change`, `interarrival`, etc.)
+    // need wall-clock dt > 0 to produce a non-null output and so may return
+    // null when events arrive too close together.  Their structural
+    // correctness is exercised by the GET request returning 200; null
+    // values are acceptable post-Path-X for time-derivative features.
     let features_expected_non_null = [
         "ewma_amt",
         "ewvar_amt",
         "decayed_sum_amt",
         "decayed_count_n",
         "twa_amt",
-        "rate_of_change",
-        "interarrival",
         "burst",
         "delta",
-        "trend_amt",
-        "trend_residual",
         "value_changes",
         "z_amt",
     ];
@@ -148,6 +152,18 @@ async fn phase9_register_all_16_ops_and_push_events() {
             !v["value"].is_null() || feature == "ew_z_amt",
             "feature {feature} should be non-null after 30 events: {v:#}"
         );
+    }
+    // Time-derivative features may be null when events arrive in the same
+    // wall-clock millisecond (Path X arrival-time semantics). We only
+    // assert the GET request succeeded structurally.
+    for feature in &[
+        "rate_of_change",
+        "interarrival",
+        "trend_amt",
+        "trend_residual",
+    ] {
+        let path = format!("/get/{feature}/u1");
+        let _v = ts.get_json(&path).await; // success = no panic
     }
 
     // ew_z_amt (current z) and outliers may be null/zero respectively in early

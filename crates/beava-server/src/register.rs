@@ -732,7 +732,7 @@ mod tests {
         Body::from(serde_json::to_vec(&val).unwrap())
     }
 
-    fn event_node(name: &str, fields: &[(&str, &str)], etf: &str) -> serde_json::Value {
+    fn event_node(name: &str, fields: &[(&str, &str)], _etf: &str) -> serde_json::Value {
         let fields_map: serde_json::Map<String, serde_json::Value> = fields
             .iter()
             .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
@@ -741,7 +741,6 @@ mod tests {
             "kind": "event",
             "name": name,
             "schema": {"fields": fields_map, "optional_fields": []},
-            "event_time_field": etf,
         })
     }
 
@@ -848,7 +847,6 @@ mod tests {
                     "kind": "event",
                     "name": "Transaction",
                     "schema": {"fields": {"event_time": "i64", "amount": "f64", "merchant_id": "str"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "table",
@@ -940,8 +938,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_missing_event_time_field_returns_400() {
+        // Plan 12.6-06 D-03 hard rip: legacy `event_time_field` JSON key now
+        // raises a structured 400 with `unknown_field_event_time_v0` (not the
+        // pre-pivot "missing field" validation).  Stale fixtures get rejected
+        // at the JSON-prelude layer (`pre_check_legacy_event_time_keys`).
         let (r, _) = test_router();
-        // event_time_field = "ts" but schema has no "ts" field
         let payload = serde_json::json!({
             "nodes": [{
                 "kind": "event",
@@ -952,11 +953,11 @@ mod tests {
         });
         let (status, body) = post(r, json_body(payload), Some("application/json")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"]["code"], "invalid_registration");
+        assert_eq!(body["error"]["code"], "unknown_field_event_time_v0");
         let path = body["error"]["path"].as_str().unwrap();
         assert!(
-            path.contains("ts") || path.contains("event_time"),
-            "path should mention ts or event_time_field: {path}"
+            path.contains("event_time_field"),
+            "path should mention event_time_field: {path}"
         );
     }
 
@@ -973,7 +974,6 @@ mod tests {
                     "kind": "event",
                     "name": "Src",
                     "schema": {"fields": {"event_time": "i64", "x": "f64"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "derivation",
@@ -1015,7 +1015,6 @@ mod tests {
                 "kind": "event",
                 "name": "_beava_internal",
                 "schema": {"fields": {"event_time": "i64"}, "optional_fields": []},
-                "event_time_field": "event_time"
             }]
         });
         let (status, body) = post(r, json_body(payload), Some("application/json")).await;
@@ -1343,7 +1342,6 @@ mod tests {
                 "user_id": "str",
                 "amount": "f64"
             }, "optional_fields": []},
-            "event_time_field": "event_time"
         })
     }
 
@@ -1522,7 +1520,6 @@ mod tests {
                     "kind": "event",
                     "name": "A",
                     "schema": {"fields": {"event_time": "i64", "amount": "f64"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "derivation",
@@ -1701,13 +1698,17 @@ mod tests {
     #[tokio::test]
     async fn execute_register_validation_failure_returns_validation_failed() {
         let reg = Arc::new(Registry::new());
-        // event_time_field = "ts" but schema has no "ts" field
+        // Plan 12.6-06 D-03 hard rip: pre-pivot the test asserted on the
+        // "event_time_field references missing schema field" error path.
+        // Post-pivot that validation rule is gone (event_time_field deleted).
+        // Use the bad-name path instead — same goal: payload that fails the
+        // structural validator returns ValidationFailed with first_error_path
+        // pointing at the offending node.
         let payload = parse_payload(serde_json::json!({
             "nodes": [{
                 "kind": "event",
-                "name": "A",
+                "name": "1bad", // bad pattern (digit-leading)
                 "schema": {"fields": {"x": "f64"}, "optional_fields": []},
-                "event_time_field": "ts"
             }]
         }));
         let outcome = execute_register(&reg, payload).await;
@@ -1720,7 +1721,7 @@ mod tests {
             } => {
                 assert_eq!(version, 0);
                 assert!(
-                    first_error_path.contains("event_time") || first_error_path.contains("ts"),
+                    first_error_path.contains("name"),
                     "path: {first_error_path}"
                 );
                 assert!(all_errors_count >= 1);
@@ -1740,13 +1741,11 @@ mod tests {
                     "kind": "event",
                     "name": "_beava_one",
                     "schema": {"fields": {"event_time": "i64"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "event",
                     "name": "_beava_two",
                     "schema": {"fields": {"event_time": "i64"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 }
             ]
         }));

@@ -426,9 +426,7 @@ async fn post_dev_apply_events(
     // Step 6: bump query_time_ms (Plan 12.6-06: post-Path-X this is fed by
     // server now_ms — see DevAggState.query_time_ms doc-comment).
     if now_ms > 0 {
-        dev_state
-            .query_time_ms
-            .fetch_max(now_ms, Ordering::Relaxed);
+        dev_state.query_time_ms.fetch_max(now_ms, Ordering::Relaxed);
     }
 
     (

@@ -15,8 +15,7 @@
             "score":      "f64"
           },
           "optional_fields": []
-        },
-        "event_time_field": "event_time"
+        }
       },
       {
         "kind": "derivation",

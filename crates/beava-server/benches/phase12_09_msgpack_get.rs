@@ -80,7 +80,6 @@ fn setup_warm_app_state(
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

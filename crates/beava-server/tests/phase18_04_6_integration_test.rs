@@ -171,7 +171,6 @@ async fn test_serve_loop_uses_mio_not_tokio() {
                     "fields": { "event_time": "i64", "user_id": "str" },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

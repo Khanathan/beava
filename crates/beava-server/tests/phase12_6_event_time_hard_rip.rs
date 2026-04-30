@@ -79,8 +79,7 @@ async fn push_payload_with_event_time_ms_returns_400_unknown_field() {
         status, 400,
         "push with event_time_ms must return 400 (got {status}): body={text}"
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::Null);
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let code = parsed
         .get("error")
         .and_then(|e| e.get("code"))
@@ -150,8 +149,7 @@ async fn register_payload_with_legacy_event_time_field_returns_400_unknown_field
         status, 400,
         "register with event_time_field must return 400 (got {status}): body={text}"
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::Null);
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let code = parsed
         .get("error")
         .and_then(|e| e.get("code"))
@@ -195,8 +193,7 @@ async fn register_payload_with_legacy_tolerate_delay_ms_returns_400_unknown_fiel
         status, 400,
         "register with tolerate_delay_ms must return 400 (got {status}): body={text}"
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::Value::Null);
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let code = parsed
         .get("error")
         .and_then(|e| e.get("code"))

@@ -96,7 +96,6 @@ async fn v18_serve_data_plane_http_push_returns_200() {
                     "fields": { "event_time": "i64", "user_id": "str" },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

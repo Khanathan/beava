@@ -36,7 +36,6 @@ fn txn_descriptor() -> serde_json::Value {
             "user_id": "str",
             "amount": "f64"
         }, "optional_fields": []},
-        "event_time_field": "event_time",
     })
 }
 
@@ -62,7 +61,6 @@ fn click_descriptor() -> serde_json::Value {
             "event_time": "i64",
             "user_id": "str",
         }, "optional_fields": []},
-        "event_time_field": "event_time",
     })
 }
 

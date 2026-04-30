@@ -29,8 +29,7 @@
             "ssn_hash": "str"
           },
           "optional_fields": []
-        },
-        "event_time_field": "event_time"
+        }
       },
       {
         "kind": "event",
@@ -47,8 +46,7 @@
             "lon": "f64"
           },
           "optional_fields": []
-        },
-        "event_time_field": "event_time"
+        }
       },
       {
         "kind": "event",
@@ -67,8 +65,7 @@
             "dob_hash": "str"
           },
           "optional_fields": []
-        },
-        "event_time_field": "event_time"
+        }
       },
       {
         "kind": "event",
@@ -86,8 +83,7 @@
             "success": "i64"
           },
           "optional_fields": []
-        },
-        "event_time_field": "event_time"
+        }
       },
       {
         "kind": "event",
@@ -102,8 +98,7 @@
             "reason_code": "str"
           },
           "optional_fields": []
-        },
-        "event_time_field": "event_time"
+        }
       },
       {
         "kind": "derivation",

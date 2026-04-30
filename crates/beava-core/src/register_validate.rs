@@ -232,9 +232,7 @@ pub fn pre_check_removed_ops(body: &serde_json::Value) -> Option<FeatureRemovedE
 /// (locked 2026-04-30): event_time / watermarks / joins / PIT removed from v0
 /// permanently. Reviving any of these requires explicit user override + a new
 /// ADR.
-pub fn pre_check_legacy_event_time_keys(
-    body: &serde_json::Value,
-) -> Option<FeatureRemovedError> {
+pub fn pre_check_legacy_event_time_keys(body: &serde_json::Value) -> Option<FeatureRemovedError> {
     let nodes = body.get("nodes")?.as_array()?;
     for (node_idx, node) in nodes.iter().enumerate() {
         // Path prefix uses the node `name` if present, otherwise just the index.
@@ -1509,7 +1507,9 @@ mod tests_structural {
     fn collects_multiple_errors() {
         // 3 nodes each with independent errors:
         // node 0: bad name
-        // node 1: bad event_time_field
+        // node 1: empty event schema (Plan 12.6-06: was "bad event_time_field"
+        //        pre-pivot; the event_time_field validation rule was deleted
+        //        with the field itself per D-03 hard rip)
         // node 2: empty derivation schema
         let mut fields = BTreeMap::new();
         fields.insert("event_time".to_string(), FieldType::I64);
@@ -1527,12 +1527,10 @@ mod tests_structural {
             name_arc: Arc::from(""),
             apply_field_names: vec![],
         });
-        let mut fields2 = BTreeMap::new();
-        fields2.insert("x".to_string(), FieldType::F64);
         let node1 = PayloadNode::Event(EventDescriptor {
-            name: "GoodName".to_string(),
+            name: "EmptySchema".to_string(),
             schema: EventSchema {
-                fields: fields2,
+                fields: BTreeMap::new(), // empty → triggers EventSchemaEmpty
                 optional_fields: vec![],
             },
             dedupe_key: None,

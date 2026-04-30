@@ -727,7 +727,6 @@ mod tests {
                     "kind": "event",
                     "name": "Transaction",
                     "schema": {"fields": {"event_time": "i64", "user_id": "str", "amount": "f64"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "derivation",
@@ -763,7 +762,6 @@ mod tests {
                     "kind": "event",
                     "name": "SaleEvent",
                     "schema": {"fields": {"event_time": "i64", "merchant_id": "str"}, "optional_fields": []},
-                    "event_time_field": "event_time"
                 },
                 {
                     "kind": "derivation",

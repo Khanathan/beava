@@ -23,7 +23,6 @@ async fn register_txn_with_dedupe(ts: &beava_server::testing::TestServer, window
                 },
                 "optional_fields": []
             },
-            "event_time_field": "event_time",
             "dedupe_key": "txn_id",
             "dedupe_window_ms": window_ms,
         },

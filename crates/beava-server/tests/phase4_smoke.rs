@@ -113,7 +113,6 @@ fn transaction_event_payload() -> serde_json::Value {
                 "fields": {"event_time": "i64", "amount": "f64"},
                 "optional_fields": []
             },
-            "event_time_field": "event_time"
         }]
     })
 }
@@ -129,7 +128,6 @@ fn transaction_plus_filter_payload(deriv_name: &str, filter_expr: &str) -> serde
                     "fields": {"event_time": "i64", "amount": "f64"},
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -273,7 +271,6 @@ async fn sc2_with_columns_adds_derived_field_visible_downstream() {
                     "fields": {"event_time": "i64", "amount": "f64"},
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -378,7 +375,6 @@ async fn sc3_chained_ops_filter_select_with_columns_cast_schema_propagates() {
                     "fields": {"event_time": "i64", "amount": "f64"},
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -472,7 +468,6 @@ async fn sc5_malformed_predicate_returns_400_with_path_http() {
                     "fields": {"event_time": "i64", "amount": "f64"},
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

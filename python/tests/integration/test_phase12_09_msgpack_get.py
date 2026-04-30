@@ -49,7 +49,6 @@ def _register_payload() -> dict[str, Any]:
                     },
                     "optional_fields": [],
                 },
-                "event_time_field": "event_time",
             },
             {
                 "kind": "derivation",

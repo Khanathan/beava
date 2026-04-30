@@ -261,11 +261,9 @@ class EventSource(_EventOpsMixin):
                 },
                 "optional_fields": [n for n, s in self._schema.items() if s.optional],
             },
-            "event_time_field": self._event_time_field,
             "dedupe_key": self._dedupe_key,
             "dedupe_window_ms": self._dedupe_window_ms,
             "keep_events_for_ms": self._keep_events_for_ms,
-            "tolerate_delay_ms": self._tolerate_delay_ms,
         }
 
     def __repr__(self) -> str:

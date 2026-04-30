@@ -132,9 +132,7 @@ impl ApplyShard {
                     // structured error code (unknown_field_event_time_v0 /
                     // unknown_field_tolerate_delay_v0) per D-03 hard-rip.
                     if let Some(removed) =
-                        beava_core::register_validate::pre_check_legacy_event_time_keys(
-                            &json_value,
-                        )
+                        beava_core::register_validate::pre_check_legacy_event_time_keys(&json_value)
                     {
                         let body = serde_json::json!({
                             "error": {
@@ -676,13 +674,12 @@ impl ApplyShard {
                     .iter()
                     .any(|f| f == field_name)
             {
-                let code: &'static str = if field_name == "event_time"
-                    || field_name == "event_time_ms"
-                {
-                    "unknown_field_event_time_v0"
-                } else {
-                    "unknown_field_v0"
-                };
+                let code: &'static str =
+                    if field_name == "event_time" || field_name == "event_time_ms" {
+                        "unknown_field_event_time_v0"
+                    } else {
+                        "unknown_field_v0"
+                    };
                 return GlueResponse::PushError {
                     code,
                     registry_version,

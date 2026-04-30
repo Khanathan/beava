@@ -26,7 +26,6 @@ fn sketch_pipeline_payload() -> serde_json::Value {
                     "device_id": "str",
                     "category": "str"
                 }, "optional_fields": []},
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

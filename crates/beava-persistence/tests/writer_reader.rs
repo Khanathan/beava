@@ -84,18 +84,20 @@ fn segment_header_magic_mismatch() {
 
 #[test]
 fn segment_header_bad_version() {
+    // Plan 12.6-06 D-03 hard rip: FORMAT_VERSION bumped 1 → 2. v1 records
+    // are now the "wrong version" path; pre-pivot WALs are dev artifacts.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wal-feedface.log");
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(b"BEAVAWAL").unwrap();
-    f.write_all(&2u32.to_le_bytes()).unwrap(); // wrong version
+    f.write_all(&1u32.to_le_bytes()).unwrap(); // pre-pivot v1 (now unsupported)
     f.write_all(&42u64.to_le_bytes()).unwrap();
     f.write_all(&7u32.to_le_bytes()).unwrap();
     drop(f);
 
     match WalReader::open(&path) {
-        Err(PersistError::UnsupportedVersion(v)) => assert_eq!(v, 2),
-        other => panic!("expected UnsupportedVersion(2), got {other:?}"),
+        Err(PersistError::UnsupportedVersion(v)) => assert_eq!(v, 1),
+        other => panic!("expected UnsupportedVersion(1), got {other:?}"),
     }
 }
 
@@ -187,13 +189,16 @@ fn torn_last_record_is_eof() {
 
 #[test]
 fn unknown_record_type_errors() {
+    // Plan 12.6-06 D-03 hard rip: hand-written header uses post-pivot
+    // FORMAT_VERSION=2 so the reader proceeds past the header and surfaces
+    // the bad record_type byte.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(format!("wal-{:016x}.log", 100u64));
 
     // Hand-write a valid header + a record with record_type=0xFF
     let mut buf: Vec<u8> = Vec::new();
     buf.extend_from_slice(b"BEAVAWAL");
-    buf.extend_from_slice(&1u32.to_le_bytes());
+    buf.extend_from_slice(&2u32.to_le_bytes()); // post-pivot FORMAT_VERSION
     buf.extend_from_slice(&100u64.to_le_bytes());
     buf.extend_from_slice(&1u32.to_le_bytes());
 

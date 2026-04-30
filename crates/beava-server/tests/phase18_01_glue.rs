@@ -31,7 +31,6 @@ fn register_payload_bytes() -> Bytes {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

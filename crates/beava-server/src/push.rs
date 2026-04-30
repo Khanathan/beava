@@ -318,9 +318,7 @@ pub async fn execute_push(
         .next_event_id
         .fetch_max(ack_lsn, Ordering::Relaxed);
     if now > 0 {
-        app.dev_agg
-            .query_time_ms
-            .fetch_max(now, Ordering::Relaxed);
+        app.dev_agg.query_time_ms.fetch_max(now, Ordering::Relaxed);
     }
 
     // Phase 11.5 D-10/D-12 — record this LSN as a stream event so a future

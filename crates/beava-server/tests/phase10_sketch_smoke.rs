@@ -26,7 +26,6 @@ fn sketch_pipeline_payload() -> serde_json::Value {
                     "device_id": "str",
                     "category": "str"
                 }, "optional_fields": []},
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
@@ -149,7 +148,6 @@ async fn phase10_register_rejects_bloom_member_with_window() {
                 "kind": "event",
                 "name": "Tx",
                 "schema": {"fields": {"event_time": "i64", "user_id": "str", "device_id": "str"}, "optional_fields": []},
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",

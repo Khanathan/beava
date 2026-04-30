@@ -39,10 +39,17 @@ class Transaction:
 
 
 def _apply(http_url: str, source: str, event_time_ms: int, row: dict[str, Any]) -> None:
-    """POST /dev/apply_events and assert 200."""
+    """POST /dev/apply_events and assert 200.
+
+    Plan 12.6-06 D-03 hard rip: the legacy `event_time_ms` request body field
+    has been removed; the apply path uses server-side wall-clock at dispatch.
+    The function parameter is kept for caller compatibility but no longer sent
+    on the wire.
+    """
+    _ = event_time_ms  # kept for caller compat, no longer sent
     resp = httpx.post(
         f"{http_url}/dev/apply_events",
-        json={"source": source, "event_time_ms": event_time_ms, "row": row},
+        json={"source": source, "row": row},
         timeout=10.0,
     )
     assert resp.status_code == 200, f"apply_events failed: {resp.text}"

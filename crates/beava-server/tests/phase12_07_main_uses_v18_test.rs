@@ -150,7 +150,6 @@ async fn register_pipeline(http_port: u16) {
                     },
                     "optional_fields": []
                 },
-                "event_time_field": "event_time"
             },
             {
                 "kind": "derivation",
