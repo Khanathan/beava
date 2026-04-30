@@ -1,8 +1,16 @@
-//! OpNode enum: the 11 transformation operators that can appear in a derivation's `ops` list.
+//! OpNode enum: the 9 transformation operators that can appear in a derivation's `ops` list.
 //!
 //! Phase 2 stores these verbatim — no execution, no expression parsing.
 //! Phase 4 evaluates Filter/Select/etc. server-side.
 //! Phase 5 resolves GroupBy.agg.op against the operator catalogue.
+//!
+//! **Phase 12.6 (2026-04-30):** `Join` (with its `JoinType` enum) and `Union`
+//! variants permanently removed per `project_redis_shaped_no_event_time_ever`
+//! commitment. Reviving either requires explicit user override + a new ADR.
+//! The register-time validator emits structured error codes
+//! (`feature_removed_no_joins_v0` / `feature_removed_no_unions_v0`) for stale
+//! Python SDK fixtures or hand-rolled JSON DAGs that include `{"op":"join"}`
+//! / `{"op":"union"}` — see `register_validate::pre_check_removed_ops`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,14 +25,6 @@ pub struct AggSpec {
     /// Per-operator params; Phase 2 treats this as opaque JSON.
     #[serde(default)]
     pub params: serde_json::Value,
-}
-
-/// Join modality for the Join operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JoinType {
-    Inner,
-    Left,
 }
 
 // ─── OpNode ───────────────────────────────────────────────────────────────────
@@ -67,18 +67,11 @@ pub enum OpNode {
         keys: Vec<String>,
         agg: BTreeMap<String, AggSpec>,
     },
-
-    /// Temporal or static join with another stream/table. Phase 12 executes.
-    Join {
-        other: String,
-        on: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        within_ms: Option<u64>,
-        join_type: JoinType,
-    },
-
-    /// Union with one or more other streams. Phase 12 executes.
-    Union { others: Vec<String> },
+    // Phase 12.6 (2026-04-30): Join + Union variants permanently removed
+    // per project_redis_shaped_no_event_time_ever. JSON-prelude shim
+    // `register_validate::pre_check_removed_ops` rejects stale fixtures
+    // with structured error codes feature_removed_no_joins_v0 /
+    // feature_removed_no_unions_v0.
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -219,49 +212,12 @@ mod tests {
         assert_eq!(back, op);
     }
 
-    // Test 5: Join with within_ms=Some round-trips; None case omits the field
-    #[test]
-    fn round_trip_join_with_within_ms() {
-        let join_with = OpNode::Join {
-            other: "M".to_string(),
-            on: vec!["merchant_id".to_string()],
-            within_ms: Some(5000),
-            join_type: JoinType::Left,
-        };
-        let j = serde_json::to_string(&join_with).unwrap();
-        let back: OpNode = serde_json::from_str(&j).unwrap();
-        assert_eq!(back, join_with);
-
-        let join_without = OpNode::Join {
-            other: "M".to_string(),
-            on: vec!["k".to_string()],
-            within_ms: None,
-            join_type: JoinType::Inner,
-        };
-        let j = serde_json::to_string(&join_without).unwrap();
-        // within_ms must NOT appear when None
-        assert!(
-            !j.contains("within_ms"),
-            "within_ms=None must be skipped in JSON, got: {j}"
-        );
-        assert_eq!(
-            j,
-            r#"{"op":"join","other":"M","on":["k"],"join_type":"inner"}"#
-        );
-        let back: OpNode = serde_json::from_str(&j).unwrap();
-        assert_eq!(back, join_without);
-    }
-
-    // Test 6: Union round-trip
-    #[test]
-    fn round_trip_union() {
-        let op = OpNode::Union {
-            others: vec!["EventA".to_string(), "EventB".to_string()],
-        };
-        let j = serde_json::to_string(&op).unwrap();
-        let back: OpNode = serde_json::from_str(&j).unwrap();
-        assert_eq!(back, op);
-    }
+    // Tests 5 (Join round-trip) and 6 (Union round-trip) deleted in Phase 12.6
+    // Plan 04 — joins and unions permanently removed per
+    // project_redis_shaped_no_event_time_ever (2026-04-30). The new
+    // join_op_unknown_variant_after_phase_12_6_removal and
+    // union_op_unknown_variant_after_phase_12_6_removal tests below pin the
+    // post-removal contract.
 
     // Test 7: Unknown op variant is rejected
     #[test]
@@ -323,18 +279,10 @@ mod tests {
         );
     }
 
-    // Test 12: Join without join_type is rejected (required field)
-    #[test]
-    fn join_type_required_rejected() {
-        let result: Result<OpNode, _> =
-            serde_json::from_str(r#"{"op":"join","other":"M","on":["k"]}"#);
-        assert!(result.is_err(), "expected Err for join without join_type");
-        let msg = result.unwrap_err().to_string().to_lowercase();
-        assert!(
-            msg.contains("join_type") || msg.contains("missing field"),
-            "error should mention 'join_type', got: {msg}"
-        );
-    }
+    // Test 12 (join_type required-field rejection) deleted in Phase 12.6 Plan
+    // 04 — joins permanently removed per project_redis_shaped_no_event_time_ever
+    // (2026-04-30). The post-removal serde-rejection contract is pinned by
+    // join_op_unknown_variant_after_phase_12_6_removal below.
 
     // ── Phase 12.6 Plan 04: Join/Union variant removal ────────────────────────
     //
@@ -350,9 +298,8 @@ mod tests {
     // Test 13: {"op":"join"} payload must NOT deserialize as OpNode (post-removal).
     #[test]
     fn join_op_unknown_variant_after_phase_12_6_removal() {
-        let result: Result<OpNode, _> = serde_json::from_str(
-            r#"{"op":"join","other":"E","on":["x"],"join_type":"inner"}"#,
-        );
+        let result: Result<OpNode, _> =
+            serde_json::from_str(r#"{"op":"join","other":"E","on":["x"],"join_type":"inner"}"#);
         assert!(
             result.is_err(),
             "post-Phase-12.6 OpNode must not accept {{op:join}}; \
@@ -369,8 +316,7 @@ mod tests {
     // Test 14: {"op":"union"} payload must NOT deserialize as OpNode (post-removal).
     #[test]
     fn union_op_unknown_variant_after_phase_12_6_removal() {
-        let result: Result<OpNode, _> =
-            serde_json::from_str(r#"{"op":"union","others":["E2"]}"#);
+        let result: Result<OpNode, _> = serde_json::from_str(r#"{"op":"union","others":["E2"]}"#);
         assert!(
             result.is_err(),
             "post-Phase-12.6 OpNode must not accept {{op:union}}; \

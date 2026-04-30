@@ -863,17 +863,19 @@ fn validate_expressions(
             union_schemas(upstream_schemas)
         };
 
-        // Check for UnsupportedOp ops (GroupBy/Join/Union) — treat as pass-through.
+        // Check for UnsupportedOp ops (GroupBy) — treat as pass-through.
         // Filter them out before calling OpChain::compile so we don't get spurious errors.
         // Phase 4 treats these as warnings; register succeeds.
-        let has_unsupported = deriv.ops.iter().any(|op| {
-            matches!(
-                op,
-                crate::op_node::OpNode::GroupBy { .. }
-                    | crate::op_node::OpNode::Join { .. }
-                    | crate::op_node::OpNode::Union { .. }
-            )
-        });
+        //
+        // Phase 12.6 (2026-04-30): OpNode::Join / OpNode::Union arms removed.
+        // The JSON-prelude shim `pre_check_removed_ops` runs at the dispatch
+        // layer BEFORE strict RegisterPayload deserialize and emits structured
+        // error codes feature_removed_no_joins_v0 / feature_removed_no_unions_v0
+        // — joins/unions never reach this point.
+        let has_unsupported = deriv
+            .ops
+            .iter()
+            .any(|op| matches!(op, crate::op_node::OpNode::GroupBy { .. }));
 
         if has_unsupported {
             // Log a warning (at build time this is a tracing warn; tests won't see it,
@@ -881,7 +883,7 @@ fn validate_expressions(
             tracing::warn!(
                 kind = "register.rule10.unsupported_op",
                 derivation = %deriv.name,
-                "derivation contains GroupBy/Join/Union ops which are not validated in Phase 4 \
+                "derivation contains GroupBy ops which are not validated in Phase 4 \
                  (pass-through)"
             );
             propagated_schemas.push((deriv.name.clone(), deriv.schema.clone()));
