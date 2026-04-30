@@ -5,9 +5,10 @@
 //!
 //! The hand-rolled event loop (in `beava-runtime-core`) parses raw bytes from
 //! TCP and HTTP connections into typed `WireRequest` values. This module is
-//! the bridge: it takes those requests and calls the same wire-agnostic
-//! `execute_push`, `execute_register`, and feature-query functions that the
-//! existing tokio/axum handlers call. No business logic lives here.
+//! the bridge: it takes those requests and calls the wire-agnostic helpers
+//! (`apply_shard::dispatch_*_sync`, `register::register_outcome_to_glue`,
+//! `temporal_http::*_via_mio`, `feature_query::parse_entity_key`). No
+//! business logic lives here.
 //!
 //! # Architecture (D-10, 18-CONTEXT.md)
 //!
@@ -23,13 +24,9 @@
 //!   per-client oneshot. This file is single-threaded for Plan 18-01.
 
 use crate::feature_query::{parse_entity_key, value_to_json};
-use crate::push::{execute_push, PushOutcome};
-use crate::register::{execute_register_with_wal, RegisterPayload};
 use crate::AppState;
-use beava_persistence::SyncMode;
 use beava_runtime_core::wal_buffer::WalBufferRing;
 use beava_runtime_core::wal_lsn::WalLsn;
-use beava_runtime_core::wire_request::WireRequest;
 use bytes::Bytes;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -141,243 +138,10 @@ pub enum GlueResponse {
     Unsupported,
 }
 
-/// Dispatch a `WireRequest` to the appropriate handler and return a `GlueResponse`.
-///
-/// This is an async function because `execute_push` and `execute_register_with_wal`
-/// are async (they drive the WAL sink channel). In Plan 18-02, the WAL calls
-/// become synchronous `std::io::Write` — at that point this function can become
-/// synchronous too. Until then, callers on the tokio runtime (including tests)
-/// can await directly.
-///
-/// # TODO(phase-18-followup): replace tokio WAL calls with sync Write
-pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> GlueResponse {
-    match req {
-        // ─── Ping ─────────────────────────────────────────────────────────────
-        WireRequest::Ping => GlueResponse::Pong {
-            registry_version: app.dev_agg.registry.version() as u32,
-        },
-
-        // ─── Register ─────────────────────────────────────────────────────────
-        WireRequest::Register { payload } => {
-            // Plan 12.6-04: JSON-prelude shim — intercept removed ops
-            // (`{"op":"join"}` / `{"op":"union"}`) BEFORE strict
-            // RegisterPayload deserialize so the rejection path is
-            // independent of whether the OpNode variants still exist.
-            // Per CONTEXT.md §Implementation Decisions / Bucket 5.
-            if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                if let Some(removed) =
-                    beava_core::register_validate::pre_check_removed_ops(&json_value)
-                {
-                    let body = serde_json::json!({
-                        "error": {
-                            "code": removed.code,
-                            "path": removed.path,
-                            "reason": removed.reason,
-                        },
-                        "registry_version": app.dev_agg.registry.version(),
-                    });
-                    return GlueResponse::Register {
-                        http_status: 400,
-                        body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
-                        tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
-                    };
-                }
-                // Plan 12.6-06: legacy event-time JSON-key strict-deny shim.
-                // See apply_shard.rs::dispatch_one Register arm for rationale.
-                if let Some(removed) =
-                    beava_core::register_validate::pre_check_legacy_event_time_keys(&json_value)
-                {
-                    let body = serde_json::json!({
-                        "error": {
-                            "code": removed.code,
-                            "path": removed.path,
-                            "reason": removed.reason,
-                        },
-                        "registry_version": app.dev_agg.registry.version(),
-                    });
-                    return GlueResponse::Register {
-                        http_status: 400,
-                        body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
-                        tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
-                    };
-                }
-            }
-            // Plan 12.6-01: parse + dispatch to the shared
-            // `execute_register_with_wal`, then funnel the outcome through
-            // `register_outcome_to_glue` so the HTTP / TCP encoders emit
-            // bytes identical to the legacy axum `map_outcome_to_http`.
-            let reg_payload: RegisterPayload = match serde_json::from_slice(&payload) {
-                Ok(p) => p,
-                Err(e) => {
-                    let (path, reason) = crate::register::format_serde_error_public(&e);
-                    let body = serde_json::json!({
-                        "error": {
-                            "code": "invalid_registration",
-                            "path": path,
-                            "reason": reason,
-                        },
-                        "registry_version": app.dev_agg.registry.version(),
-                    });
-                    return GlueResponse::Register {
-                        http_status: 400,
-                        body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
-                        tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
-                    };
-                }
-            };
-            let outcome =
-                execute_register_with_wal(&app.dev_agg.registry, reg_payload, &app.wal_sink).await;
-            let (http_status, body, tcp_op) = crate::register::register_outcome_to_glue(outcome);
-            GlueResponse::Register {
-                http_status,
-                body,
-                tcp_op,
-            }
-        }
-
-        // ─── TCP push ─────────────────────────────────────────────────────────
-        WireRequest::TcpPush {
-            event_name, body, ..
-        }
-        | WireRequest::HttpPush {
-            event_name, body, ..
-        } => dispatch_push(app, &event_name, body, SyncMode::Periodic).await,
-
-        WireRequest::HttpPushSync {
-            event_name, body, ..
-        } => dispatch_push(app, &event_name, body, SyncMode::PerEvent).await,
-
-        WireRequest::HttpPushBatch {
-            event_name, body, ..
-        } => {
-            // Batch push: body is a JSON array of event objects.
-            // TODO(phase-18-followup): implement batch dispatch properly.
-            // For now, treat as a single push for scaffold correctness.
-            dispatch_push(app, &event_name, body, SyncMode::Periodic).await
-        }
-
-        // ─── GET single feature/key ───────────────────────────────────────────
-        // Plan 12-09: HTTP path always passes CT_JSON (D-D — HTTP /get is JSON-only).
-        WireRequest::HttpGetSingle { feature, key } => {
-            dispatch_get_single(app, &feature, &key, beava_core::wire::CT_JSON)
-        }
-
-        // ─── GET batch ────────────────────────────────────────────────────────
-        WireRequest::HttpGet { body } => dispatch_get_batch(app, &body, beava_core::wire::CT_JSON),
-
-        // ─── Upsert / delete / retract ────────────────────────────────────────
-        // Plan 12.6-14: bridge to the shared `temporal_http::*_via_mio`
-        // helpers (same impl as the sync apply path in `apply_shard`).
-        WireRequest::HttpUpsert { table, body } => {
-            let (status, body_bytes) =
-                crate::temporal_http::upsert_via_mio(app, &table, &body).await;
-            GlueResponse::TemporalResponse {
-                http_status: status,
-                body: Bytes::from(body_bytes),
-            }
-        }
-        WireRequest::HttpDelete { table, body } => {
-            let (status, body_bytes) =
-                crate::temporal_http::delete_via_mio(app, &table, &body).await;
-            GlueResponse::TemporalResponse {
-                http_status: status,
-                body: Bytes::from(body_bytes),
-            }
-        }
-        WireRequest::HttpRetract { body } => {
-            let (status, body_bytes) = crate::temporal_http::retract_via_mio(app, &body).await;
-            GlueResponse::TemporalResponse {
-                http_status: status,
-                body: Bytes::from(body_bytes),
-            }
-        }
-        WireRequest::HttpTableGet { table, query } => {
-            let (status, body_bytes) = crate::temporal_http::table_get_via_mio(app, &table, &query);
-            GlueResponse::TemporalResponse {
-                http_status: status,
-                body: Bytes::from(body_bytes),
-            }
-        }
-        WireRequest::HttpUnsupportedMediaType { received, path } => {
-            GlueResponse::HttpUnsupportedMediaType { received, path }
-        }
-
-        // Plan 12-07: HTTP /health on the legacy axum path is mounted via
-        // tower (http.rs); HttpHealth here is a fallback for any caller that
-        // routes a parsed mio-shape request through this async path.
-        WireRequest::HttpHealth => GlueResponse::HealthOk,
-
-        // Plan 12.6-01: /ready and /registry on the data-plane port (mio
-        // path).  Mirror the admin sidecar's response shape — back-compat
-        // for TestServer-using tests that poll `ts.base_url() + /ready` and
-        // call `ts.get_json("/registry")`.
-        WireRequest::HttpReady => GlueResponse::ReadyOk,
-        WireRequest::HttpRegistry => {
-            // Plan 12.6-14: dev_endpoints gating. Match legacy axum where
-            // GET /registry returns 404 unless BEAVA_DEV_ENDPOINTS=1
-            // (post-Plan-12.6-01 the flag lives on AppState; the env-var
-            // path is wired up at server construction time).
-            if !app.dev_endpoints_enabled() {
-                GlueResponse::HttpRouteNotFound {
-                    path: "/registry".to_owned(),
-                }
-            } else {
-                let dump = crate::registry_debug::build_registry_dump(&app.dev_agg.registry);
-                let body = serde_json::to_vec(&dump).unwrap_or_default();
-                GlueResponse::RegistrySnapshot {
-                    body: Bytes::from(body),
-                }
-            }
-        }
-        // Plan 12.6-01: route-level errors (404 / 405).
-        WireRequest::HttpNotFound { path } => GlueResponse::HttpRouteNotFound { path },
-        WireRequest::HttpMethodNotAllowed { method, path } => {
-            GlueResponse::HttpMethodNotAllowed { method, path }
-        }
-
-        // Plan 12-07: TCP GET/MGET/GET_MULTI dispatch only via the mio-side
-        // ApplyShard sync path (apply_shard.rs). The legacy async path here is
-        // admin-only post-Phase-18; route the new variants to Unsupported to
-        // preserve exhaustiveness without dragging the sync GET helpers into
-        // the async path.
-        WireRequest::Unknown { .. }
-        | WireRequest::ParseError { .. }
-        | WireRequest::TcpGet { .. }
-        | WireRequest::TcpMGet { .. }
-        | WireRequest::TcpGetMulti { .. } => GlueResponse::Unsupported,
-    }
-}
-
-// ─── Push helper ──────────────────────────────────────────────────────────────
-
-async fn dispatch_push(
-    app: &Arc<AppState>,
-    event_name: &str,
-    body: Bytes,
-    sync_mode: SyncMode,
-) -> GlueResponse {
-    match execute_push(app, event_name, &body, sync_mode).await {
-        PushOutcome::Ok { ack, .. } => GlueResponse::PushAck {
-            ack_lsn: ack.ack_lsn,
-            registry_version: ack.registry_version,
-        },
-        PushOutcome::IdempotentReplay { .. } => GlueResponse::PushReplay {
-            registry_version: app.dev_agg.registry.version() as u32,
-            ack_lsn: None,
-            cached_body: None,
-        },
-        PushOutcome::Error {
-            code,
-            registry_version,
-            ..
-        } => GlueResponse::PushError {
-            code,
-            registry_version,
-        },
-    }
-}
-
 // ─── Query helpers ────────────────────────────────────────────────────────────
+//
+// Plan 12.6-07: legacy async `dispatch_wire_request` deleted. The mio data
+// plane uses the sync helpers below via `apply_shard::ApplyShard`.
 
 fn dispatch_get_single(
     app: &Arc<AppState>,

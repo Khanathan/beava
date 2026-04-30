@@ -1,8 +1,10 @@
 //! Graceful shutdown signal listener.
 //!
-//! Returns a future that completes when SIGTERM or SIGINT is received. Passed to
-//! `axum::serve(...).with_graceful_shutdown(...)` so in-flight requests drain before
-//! the listener closes.
+//! Returns a future that completes when SIGTERM or SIGINT is received. Passed
+//! to `ServerV18::serve_with_dirs(...)` and the tokio admin-sidecar router
+//! (the latter binds via `BoundAdminServer::bind` internally on the tokio
+//! admin port). The mio data plane reads the same future to gate its accept
+//! loop.
 
 use tokio::signal::unix::{signal, SignalKind};
 

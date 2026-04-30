@@ -61,11 +61,6 @@ path = "tests/phase6_push.rs"
 required-features = ["testing"]
 
 [[test]]
-name = "phase6_crash"
-path = "tests/phase6_crash.rs"
-required-features = ["testing"]
-
-[[test]]
 name = "phase6_smoke"
 path = "tests/phase6_smoke.rs"
 required-features = ["testing"]
@@ -83,11 +78,6 @@ required-features = ["testing"]
 [[test]]
 name = "phase7_restart_cycle"
 path = "tests/phase7_restart_cycle.rs"
-required-features = ["testing"]
-
-[[test]]
-name = "phase18_01_glue"
-path = "tests/phase18_01_glue.rs"
 required-features = ["testing"]
 
 [[test]]
@@ -207,10 +197,6 @@ required-features = ["testing"]
 [[test]]
 name = "phase12_6_legacy_axum_killed"
 path = "tests/phase12_6_legacy_axum_killed.rs"
-
-[[bin]]
-name = "phase6_crash_probe"
-path = "src/bin/phase6_crash_probe.rs"
 
 [lib]
 name = "beava_server"
