@@ -64,6 +64,50 @@
     "test_status": "phase11_smoke regression still deterministic-fail — folded into Phase 12.6 TestServerV18 migration",
     "binary_status": "target/release/{beava, beava-bench-v18} from prior session (pre-pivot); will be rebuilt during 12.6 execution"
   },
-  "next_action_recommended": "/gsd-discuss-phase 12.6 — gather scope-specific decisions for v0 surface reduction. Discuss should surface gray areas: (a) TestServerV18 harness shape — drop-in replacement vs new test pattern; (b) wire schema bump strategy — new version handle old+new for one release vs hard cutover; (c) dead-code threshold for 'sweep complete' (cargo-deadcode % target); (d) smoke-test fate per file (migrate vs delete vs replicate elsewhere); (e) REQUIREMENTS sweep depth (touch every event_time/join reference vs just the SDK-JOIN section); (f) docs touch scope (beava.dev guide pages, recipes — some require website work alongside); (g) phase-12-joins branch handling during merge — joins plumbing is now dead architecture; (h) plan ordering — kill axum first vs strip event-time first vs interleave",
+  "open_product_questions_to_resolve_before_ship": [
+    {
+      "id": "Q1-dataframe-similarity",
+      "topic": "Python dataframe API similarity",
+      "what": "Users should be able to use the Beava API for dataframe-style work. Specifically: SDK chain should feel like pandas/polars idioms where it makes sense (filter/select/with_columns/cast/fillna already polars-shaped) so a data scientist familiar with dataframes can use Beava without learning a foreign API.",
+      "why_now": "v0 audience is Priya YC fintech CTO + her data-scientist team. If the API feels like 'yet another streaming framework' instead of 'pandas-but-real-time', adoption stalls. Existing memory `project_pandas_mapping_revisit` already flagged that the beava.dev homepage uses simplified `events.agg(key=, window=, ...)` form that doesn't match real decorator API.",
+      "open_aspects": [
+        "Gap analysis — actual SDK shape vs pandas/polars idioms (what feels natural, what doesn't)",
+        "Aggregation chain shape — `events.group_by(...).agg(...)` (current) vs simpler `events.agg(group_by=, ...)` for common cases",
+        "Eager-vs-deferred mental model — pandas/polars are eager (df.assign read immediately); Beava is register-then-push (deferred). How do we frame this difference in docs without confusing dataframe-native users?",
+        "DataFrame interop — does `app.get(...)` return something that can be `pd.DataFrame.from_records(...)`-friendly? FeatureResult shape question.",
+        "Recipe parity — every pandas recipe (group_by/rolling/agg) should have a Beava equivalent in docs"
+      ],
+      "phase_target": "Phase 13 docs/SDK polish, possibly with API touchpoints in Phase 12.6 if gaps surface"
+    },
+    {
+      "id": "Q2-schema-evolution-ux",
+      "topic": "Schema evolution UX (additive + warn/block on destructive)",
+      "what": "Users need clear UX for: (a) adding new fields — works seamlessly via additive registration; (b) REMOVING fields — server should warn AND block on destructive changes with a clear, human-readable explanation (currently 409 with structured JSON); (c) adding new pipelines/derivations — works additively. The 'warn and block' part is the polish gap.",
+      "why_now": "v0 launch will hit this on day one. Users iterating on features will try to remove a field; if the error is just `409 {error: {code: 'destructive_change', diff: {...}}}`, that's friction. Want: clear human-readable message + optional preview mode + obvious recovery path (e.g. 'rename the descriptor + re-register' or 'use force=True after explicit confirmation' — TBD).",
+      "open_aspects": [
+        "Error message format — 409 body shape: structured JSON only, or also a `human_message` field?",
+        "Preview mode — `app.validate(*descriptors, against_server=True)` that returns the diff WITHOUT registering? Or HTTP `POST /register/dry-run`?",
+        "Force-override — does v0 allow `force=True` to bypass destructive-change block (with explicit acknowledgment) or is the only path 'rename + re-register'?",
+        "Adding new pipeline UX — should be friction-free; currently is per additive registration. Validate this end-to-end with a real dataframe-style add-derivation flow.",
+        "Warning vs error distinction — is there a class of changes that should warn-not-block (e.g. type widening int→f64)? Out-of-scope for v0?"
+      ],
+      "phase_target": "Phase 12.6 (server-side error message work since wire schema is bumping anyway) + Phase 13 SDK polish (preview mode + docs)"
+    },
+    {
+      "id": "Q3-recovery-benchmark",
+      "topic": "Recovery benchmark — finalize an easy-to-run reproducible bench",
+      "what": "Users (and CI) should be able to easily run a recovery benchmark to validate the ≤ 30s RTO at 10GB state on NVMe target. Currently the target is documented but there's no reproducible harness. Need: a `beava-bench-recovery` (or similar) binary or script that loads N entities, snapshots, replays WAL, and reports RTO + memory + replay rate.",
+      "why_now": "v0 launch will get questioned on durability claims. 'Show me' is the right answer — provide a one-command bench. Also: the same harness validates that recovery works correctly post-Phase-12.6 (after wire schema bump + WAL record schema bump, recovery must handle both old + new schemas for one release cycle, or hard cutover).",
+      "open_aspects": [
+        "Harness shape — new `beava-bench-recovery` binary, or a flag on `beava-bench-v18`?",
+        "Workload knobs — entity count, feature count per entity, WAL size, on-disk vs tmpfs, fsync mode (Periodic vs PerEvent)",
+        "Output format — same row format as `.planning/throughput-baselines.md` for consistency, or separate `recovery-baselines.md`?",
+        "CI integration — does this run in CI on every PR, or only on phase-13 ship-gate runs?",
+        "Schema-version handoff testing — recovery harness should also test old-schema-WAL → new-schema-replay path during the Phase 12.6 wire bump"
+      ],
+      "phase_target": "Phase 13 perf-gate work (alongside throughput rebaseline + Hetzner sweep)"
+    }
+  ],
+  "next_action_recommended": "/gsd-discuss-phase 12.6 — gather scope-specific decisions for v0 surface reduction. Discuss should surface gray areas: (a) TestServerV18 harness shape — drop-in replacement vs new test pattern; (b) wire schema bump strategy — new version handle old+new for one release vs hard cutover; (c) dead-code threshold for 'sweep complete' (cargo-deadcode % target); (d) smoke-test fate per file (migrate vs delete vs replicate elsewhere); (e) REQUIREMENTS sweep depth (touch every event_time/join reference vs just the SDK-JOIN section); (f) docs touch scope (beava.dev guide pages, recipes — some require website work alongside); (g) phase-12-joins branch handling during merge — joins plumbing is now dead architecture; (h) plan ordering — kill axum first vs strip event-time first vs interleave; (i) does Phase 12.6 also touch the destructive-schema-change error UX (Q2 in open_product_questions) or does that defer to Phase 13?",
   "context_notes": "User explicitly framed v0 polish as the most important thing. Phase 12.6 (surface reduction) + Phase 13 minimum (packaging + quickstart + readme + website final) is the polish path. Plan 12-10 push-and-get DEFERRED (\"we probably dont need B for now\"). phase11_smoke folds into 12.6's TestServerV18 migration. Don't auto-advance — let user open Phase 12.6 discuss fresh next session with full attention. The architectural commitment is FINAL — no more pivot-shaped questions next session, only scope-shaped questions about how to execute the locked direction. If next session surfaces a request to revisit any of the permanent architectural decisions (event-time, joins, watermarks, PIT), surface it as an explicit override request requiring a new ADR."
 }
