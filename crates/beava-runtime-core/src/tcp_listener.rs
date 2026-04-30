@@ -746,8 +746,17 @@ pub fn parse_wire_request(
 
     let req = match frame.op {
         OP_PING => WireRequest::Ping,
-        OP_REGISTER => WireRequest::Register {
-            payload: frame.payload,
+        // Plan 12.6-15: TCP register accepts CT_JSON only (matches legacy
+        // axum register handler `is_json_content_type`). Other content
+        // types surface as `unsupported_content_type` via ParseError —
+        // the apply-shard dispatcher classifies it as a TcpError.
+        OP_REGISTER => match frame.content_type {
+            CT_JSON => WireRequest::Register {
+                payload: frame.payload,
+            },
+            other => WireRequest::ParseError {
+                reason: format!("unsupported content_type for register: {other:#04x}"),
+            },
         },
         OP_PUSH => {
             match frame.content_type {

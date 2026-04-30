@@ -55,8 +55,13 @@ pub enum RingItem {
 /// glue layer dep-only on `beava-runtime-core`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseErrorKind {
-    /// Wire-protocol framing error on the TCP path.
+    /// Wire-protocol framing error on the TCP path (generic).
     TcpFrame,
+    /// Plan 12.6-15: declared frame length exceeded the
+    /// `tcp_max_frame_bytes` limit. Carries `(declared, limit)` so the
+    /// apply path can frame `frame_too_large` with the precise limit
+    /// (criterion 7).
+    TcpFrameTooLarge { declared: u32, limit: u32 },
     /// HTTP/1.1 protocol violation.
     HttpProtocol,
 }

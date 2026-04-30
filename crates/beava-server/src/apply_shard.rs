@@ -453,8 +453,42 @@ impl ApplyShard {
                 GlueResponse::HttpMethodNotAllowed { method, path }
             }
 
-            WireRequest::Unknown { .. } | WireRequest::ParseError { .. } => {
-                GlueResponse::Unsupported
+            // Plan 12.6-15: known-but-deferred opcodes get rich op_not_implemented
+            // error frames; truly unknown ones get unknown_op. Both keep the
+            // connection open (criterion 5).
+            WireRequest::Unknown { op } => {
+                use beava_core::wire::OP_PUSH_SYNC;
+                if op == OP_PUSH_SYNC {
+                    GlueResponse::TcpError {
+                        code: "op_not_implemented",
+                        message: format!(
+                            "opcode {op:#06x} (push_sync) is reserved for Phase 12 and not yet implemented",
+                        ),
+                        extras: serde_json::json!({"op": op}),
+                    }
+                } else {
+                    GlueResponse::TcpError {
+                        code: "unknown_op",
+                        message: format!("opcode {op:#06x} is not recognised by this server"),
+                        extras: serde_json::json!({"op": op}),
+                    }
+                }
+            }
+            // Plan 12.6-15: ParseError now distinguishes content-type rejections
+            // (carrying the special prefix) from generic parse errors. Anything
+            // matching the unsupported-content-type prefix is surfaced as a
+            // dedicated TcpError so the criterion-bonus_msgpack test passes
+            // (`error.code == "unsupported_content_type"`).
+            WireRequest::ParseError { reason } => {
+                if reason.starts_with("unsupported content_type") {
+                    GlueResponse::TcpError {
+                        code: "unsupported_content_type",
+                        message: reason,
+                        extras: serde_json::json!({}),
+                    }
+                } else {
+                    GlueResponse::Unsupported
+                }
             }
         }
     }

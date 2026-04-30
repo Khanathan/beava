@@ -1291,6 +1291,15 @@ fn dispatch_one_ring_item(
             let slot_u64 = slot_idx as u64;
             let w = (slot_u64 as usize) % n_workers;
             let resp = match kind {
+                // Plan 12.6-15: oversize frames get the rich `frame_too_large`
+                // error frame with `limit` field (criterion 7).
+                ParseErrorKind::TcpFrameTooLarge { declared, limit } => GlueResponse::TcpError {
+                    code: "frame_too_large",
+                    message: format!(
+                        "declared frame length {declared} exceeds limit {limit}",
+                    ),
+                    extras: serde_json::json!({"limit": limit, "declared": declared}),
+                },
                 ParseErrorKind::TcpFrame => GlueResponse::PushError {
                     code: "frame_error",
                     registry_version: 0,
@@ -2161,6 +2170,20 @@ fn drain_channel_until_workers_done(
                         if let Some(client) = slot.as_mut() {
                             use crate::runtime_core_glue::GlueResponse;
                             client.output_queue.push_back(match kind {
+                                // Plan 12.6-15: rich frame_too_large frame
+                                // (criterion 7).
+                                ParseErrorKind::TcpFrameTooLarge { declared, limit } => {
+                                    GlueResponse::TcpError {
+                                        code: "frame_too_large",
+                                        message: format!(
+                                            "declared frame length {declared} exceeds limit {limit}",
+                                        ),
+                                        extras: serde_json::json!({
+                                            "limit": limit,
+                                            "declared": declared,
+                                        }),
+                                    }
+                                }
                                 ParseErrorKind::TcpFrame => GlueResponse::PushError {
                                     code: "frame_error",
                                     registry_version: 0,
@@ -2344,6 +2367,30 @@ fn encode_glue_response_tcp(
         }
         GlueResponse::QueryNotFound { code } => {
             let body = serde_json::json!({"error": {"code": code}});
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        }
+        // Plan 12.6-15: rich TCP error frame (op_not_implemented, unknown_op,
+        // unsupported_content_type, frame_too_large). Body shape:
+        // `{"error": {"code": <code>, "message": <msg>, ...extras}}` —
+        // matches phase2_5_smoke criterion-5/7/bonus_msgpack expectations.
+        GlueResponse::TcpError {
+            code,
+            message,
+            extras,
+        } => {
+            // Merge `extras` into the error object so callers can carry
+            // structured fields like `frame_too_large.limit` without
+            // proliferating GlueResponse variants.
+            let mut error_obj = serde_json::Map::new();
+            error_obj.insert("code".to_string(), serde_json::json!(code));
+            error_obj.insert("message".to_string(), serde_json::json!(message));
+            if let serde_json::Value::Object(extras_obj) = extras {
+                for (k, v) in extras_obj {
+                    error_obj.insert(k.clone(), v.clone());
+                }
+            }
+            let body = serde_json::json!({"error": serde_json::Value::Object(error_obj)});
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }

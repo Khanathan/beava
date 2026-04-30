@@ -374,12 +374,21 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
         }
 
         // Clean up clients that were marked closed during read/write.
+        // Plan 12.6-15: flush any pending write_buf before close —
+        // without this, inline-encoded error frames (frame_too_large)
+        // are lost when the close cleanup runs in the same loop
+        // iteration as the parse error.
         let closed: Vec<u64> = clients
             .iter()
             .filter(|(_, c)| c.closed)
             .map(|(&s, _)| s)
             .collect();
         for slot in closed {
+            if let Some(client) = clients.get_mut(&slot) {
+                if !client.write_buf.is_empty() {
+                    flush_write_buf(slot, client, &mut backend);
+                }
+            }
             clients.remove(&slot);
             backend.close(slot);
         }
@@ -389,6 +398,32 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
             break;
         }
     }
+}
+
+/// Plan 12.6-15: inline-encode a `frame_too_large` error frame into the
+/// client's `write_buf`. Used by the parse-error branch (criterion 7) — the
+/// connection MUST close after the frame, so we can't take the apply→worker
+/// round-trip without racing against the close-cleanup loop.
+///
+/// Wire format mirrors `encode_glue_response_tcp`'s TcpError arm.
+fn inline_encode_frame_too_large(write_buf: &mut bytes::BytesMut, declared: u32, limit: u32) {
+    use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE};
+    use bytes::BufMut;
+    let body = serde_json::json!({
+        "error": {
+            "code": "frame_too_large",
+            "message": format!("declared frame length {declared} exceeds limit {limit}"),
+            "limit": limit,
+            "declared": declared,
+        },
+    });
+    let payload = serde_json::to_vec(&body).unwrap_or_default();
+    // Frame: [u32 length BE][u16 op BE][u8 ct][payload]
+    let frame_len = 2 + 1 + payload.len() as u32;
+    write_buf.put_u32(frame_len);
+    write_buf.put_u16(OP_ERROR_RESPONSE);
+    write_buf.put_u8(CT_JSON);
+    write_buf.extend_from_slice(&payload);
 }
 
 /// Parse frames from a client's `read_buf` and push `RingItem`s to `read_tx`.
@@ -432,9 +467,19 @@ fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingIte
     let slot_u32 = slot as u32;
     let mut sent: usize = 0;
 
+    // Plan 12.6-15: max_frame_bytes for TCP frame decode. Driven by
+    // BEAVA_TCP_MAX_FRAME_BYTES env var (`TestServer.tcp_max_frame_bytes`
+    // builder maps to this) so tests can pin a 1024-byte limit and
+    // exercise the `frame_too_large` path. Default 4 MiB matches the
+    // legacy axum bound.
+    let tcp_max_frame_bytes: u32 = std::env::var("BEAVA_TCP_MAX_FRAME_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4 * 1024 * 1024);
+
     match client.proto {
         WorkerProto::Tcp => loop {
-            match parse_wire_request(&mut client.read_buf, 4 * 1024 * 1024) {
+            match parse_wire_request(&mut client.read_buf, tcp_max_frame_bytes) {
                 Ok(Some(req)) => {
                     let parsed_row = body_to_row(&req);
                     if read_tx
@@ -451,11 +496,40 @@ fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingIte
                     sent += 1;
                 }
                 Ok(None) => break,
-                Err(_) => {
+                Err(e) => {
+                    // Plan 12.6-15: distinguish frame_too_large (criterion 7)
+                    // from generic frame parse errors so the apply path can
+                    // emit the rich error frame with `limit` field and
+                    // close the connection per spec.
+                    //
+                    // For frame_too_large specifically: the connection MUST
+                    // close after the error frame (criterion 7 contract).
+                    // Inline-write the error frame into client.write_buf
+                    // BEFORE marking closed — the apply→worker→write
+                    // round-trip would race against the close cleanup
+                    // loop and drop the frame. This mirrors legacy
+                    // tcp.rs's behavior (write error inline + shutdown).
+                    let kind = match e {
+                        beava_core::wire::FrameError::TooLarge {
+                            declared_len,
+                            limit,
+                        } => {
+                            inline_encode_frame_too_large(
+                                &mut client.write_buf,
+                                declared_len,
+                                limit,
+                            );
+                            ParseErrorKind::TcpFrameTooLarge {
+                                declared: declared_len,
+                                limit,
+                            }
+                        }
+                        _ => ParseErrorKind::TcpFrame,
+                    };
                     if read_tx
                         .send(RingItem::ParseError {
                             slot_idx: slot_u32,
-                            kind: ParseErrorKind::TcpFrame,
+                            kind,
                         })
                         .is_ok()
                     {

@@ -164,8 +164,15 @@ impl TestServerBuilder {
 
     /// Phase 2.5: override the max frame bytes for the TCP listener.
     /// Default: 4 MiB. Use a small value for oversize-frame smoke tests.
+    ///
+    /// Plan 12.6-15: also sets `BEAVA_TCP_MAX_FRAME_BYTES` so the mio
+    /// `parse_wire_request` worker reads the same limit (the legacy
+    /// `cfg.tcp.max_frame_bytes` field is preserved for source-compat
+    /// but the active mio path is env-driven). Process-global; tests
+    /// shouldn't run two TestServers with different limits in parallel.
     pub fn tcp_max_frame_bytes(mut self, bytes: u32) -> Self {
         self.cfg.tcp.max_frame_bytes = bytes;
+        std::env::set_var("BEAVA_TCP_MAX_FRAME_BYTES", bytes.to_string());
         self
     }
 

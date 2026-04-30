@@ -116,6 +116,27 @@ pub enum GlueResponse {
     /// shape (so the `success_criterion_5_malformed_returns_400_with_path`
     /// assertion at `error.code == "unsupported_media_type"` passes).
     HttpUnsupportedMediaType { received: String, path: String },
+    /// Plan 12.6-15: rich TCP error frame.
+    ///
+    /// Body shape: `{"error": {"code": <code>, "message": <msg>, ...extras}}`.
+    /// `extras` is a JSON object merged into the error body — used to carry
+    /// `frame_too_large.limit` (criterion 7) etc. without proliferating
+    /// variants.
+    ///
+    /// Three concrete uses today:
+    /// - `op_not_implemented` — known-but-deferred opcode (e.g. OP_PUSH_SYNC,
+    ///   reserved for Phase 12). Connection stays open.
+    /// - `unknown_op` — opcode the server doesn't recognise. Connection
+    ///   stays open.
+    /// - `unsupported_content_type` — OP_REGISTER with a content_type byte
+    ///   the server can't parse (e.g. CT_MSGPACK). Connection stays open.
+    /// - `frame_too_large` — frame length exceeded `tcp_max_frame_bytes`.
+    ///   Connection MUST be closed by the listener after the error frame.
+    TcpError {
+        code: &'static str,
+        message: String,
+        extras: serde_json::Value,
+    },
     /// Unrecognised request type — caller maps to 404 / error frame.
     Unsupported,
 }
