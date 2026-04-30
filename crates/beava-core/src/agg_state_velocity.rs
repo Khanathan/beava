@@ -11,7 +11,7 @@
 //! - `ValueChangeCountState`     — AGG-VEL-08 (count of value flips)
 //! - `ZScoreState`               — AGG-Z-01 (current_value - mean) / stddev
 //!
-//! D-06 (Phase 5 CONTEXT): no wall-clock reads — event_time_ms only.
+//! D-06 (Phase 5 CONTEXT): no wall-clock reads — now_ms only.
 
 use crate::row::{Row, Value};
 use serde::{Deserialize, Serialize};
@@ -39,13 +39,7 @@ pub struct RateOfChangeState {
 }
 
 impl RateOfChangeState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -55,17 +49,17 @@ impl RateOfChangeState {
         };
         if !self.initialized {
             self.last_value = x;
-            self.last_t = event_time_ms;
+            self.last_t = now_ms;
             self.initialized = true;
             return;
         }
-        let dt = event_time_ms - self.last_t;
+        let dt = now_ms - self.last_t;
         if dt > 0 {
             self.current_rate = (x - self.last_value) / dt as f64;
             self.has_rate = true;
         }
         self.last_value = x;
-        self.last_t = event_time_ms;
+        self.last_t = now_ms;
     }
 
     pub fn query(&self) -> Value {
@@ -91,28 +85,22 @@ pub struct InterArrivalStatsState {
 }
 
 impl InterArrivalStatsState {
-    pub fn update(
-        &mut self,
-        _row: &Row,
-        event_time_ms: i64,
-        _field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, _row: &Row, now_ms: i64, _field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
         if !self.initialized {
-            self.last_t = event_time_ms;
+            self.last_t = now_ms;
             self.initialized = true;
             return;
         }
-        let gap = (event_time_ms - self.last_t).max(0) as f64;
+        let gap = (now_ms - self.last_t).max(0) as f64;
         self.n += 1;
         let delta = gap - self.mean;
         self.mean += delta / self.n as f64;
         let delta2 = gap - self.mean;
         self.m2 += delta * delta2;
-        self.last_t = event_time_ms;
+        self.last_t = now_ms;
     }
 
     pub fn query(&self) -> Value {
@@ -152,7 +140,7 @@ impl BurstCountState {
     pub fn update(
         &mut self,
         _row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
         sub_window_ms: u64,
@@ -167,10 +155,8 @@ impl BurstCountState {
         if self.bucket_epoch.len() != 64 {
             self.bucket_epoch = vec![i64::MIN; 64];
         }
-        let epoch = event_time_ms.div_euclid(sub_window_ms as i64) * sub_window_ms as i64;
-        let idx = (event_time_ms
-            .div_euclid(sub_window_ms as i64)
-            .rem_euclid(64)) as usize;
+        let epoch = now_ms.div_euclid(sub_window_ms as i64) * sub_window_ms as i64;
+        let idx = (now_ms.div_euclid(sub_window_ms as i64).rem_euclid(64)) as usize;
         self.initialized = true;
         if self.bucket_epoch[idx] != epoch {
             self.buckets[idx] = 0;
@@ -203,13 +189,7 @@ pub struct DeltaFromPrevState {
 }
 
 impl DeltaFromPrevState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        _event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, _now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -238,7 +218,7 @@ impl DeltaFromPrevState {
 
 // ─── TrendState ──────────────────────────────────────────────────────────────
 
-/// AGG-VEL-05: slope of online linear regression of (event_time_ms, value).
+/// AGG-VEL-05: slope of online linear regression of (now_ms, value).
 ///
 /// Uses the closed-form OLS: slope = (n * Σxy - Σx * Σy) / (n * Σx² - (Σx)²).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -252,13 +232,7 @@ pub struct TrendState {
 }
 
 impl TrendState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -266,7 +240,7 @@ impl TrendState {
         let Some(y) = numeric_from_row(row, fname) else {
             return;
         };
-        let x = event_time_ms as f64;
+        let x = now_ms as f64;
         self.n += 1;
         self.sum_x += x;
         self.sum_y += y;
@@ -305,7 +279,7 @@ impl TrendState {
 
 // ─── TrendResidualState ──────────────────────────────────────────────────────
 
-/// AGG-VEL-06: current_value - (slope * event_time_ms + intercept).
+/// AGG-VEL-06: current_value - (slope * now_ms + intercept).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrendResidualState {
     pub trend: TrendState,
@@ -315,13 +289,7 @@ pub struct TrendResidualState {
 }
 
 impl TrendResidualState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -329,9 +297,9 @@ impl TrendResidualState {
         let Some(y) = numeric_from_row(row, fname) else {
             return;
         };
-        self.trend.update(row, event_time_ms, field, where_matched);
+        self.trend.update(row, now_ms, field, where_matched);
         self.last_value = y;
-        self.last_t = event_time_ms;
+        self.last_t = now_ms;
         self.initialized = true;
     }
 
@@ -368,7 +336,7 @@ impl OutlierCountState {
     pub fn update(
         &mut self,
         row: &Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
         sigma: f64,
@@ -419,13 +387,7 @@ pub struct ValueChangeCountState {
 }
 
 impl ValueChangeCountState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        _event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, _now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -463,13 +425,7 @@ pub struct ZScoreState {
 }
 
 impl ZScoreState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        _event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, _now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }

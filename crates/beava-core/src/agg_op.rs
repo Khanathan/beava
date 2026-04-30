@@ -724,95 +724,82 @@ impl AggOp {
     ///   buffer/geo ops which carry their own field refs in state)
     /// - `where_matched`: pre-evaluated predicate result (Plan 05-02 wires this
     ///   from an Expr evaluator; here callers set it directly)
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         match self {
-            AggOp::Count(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Sum(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Avg(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Min(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Max(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Variance(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::StdDev(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::CountDistinct(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Percentile(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::TopK(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::BloomMember(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Entropy(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Windowed(w) => w.update(row, event_time_ms, field, where_matched),
+            AggOp::Count(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Sum(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Avg(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Min(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Max(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Variance(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::StdDev(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Ratio(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::CountDistinct(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Percentile(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::TopK(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::BloomMember(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Entropy(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Windowed(w) => w.update(row, now_ms, field, where_matched),
             // Phase 8 — point/ordinal
-            AggOp::First(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Last(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::FirstN(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::LastN(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Lag(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::First(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Last(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::FirstN(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::LastN(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Lag(s) => s.update(row, now_ms, field, where_matched),
             // Phase 8 — recency markers
             AggOp::FirstSeen(s)
             | AggOp::LastSeen(s)
             | AggOp::Age(s)
             | AggOp::HasSeen(s)
-            | AggOp::TimeSince(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::TimeSinceLastN(s) => s.update(row, event_time_ms, field, where_matched),
+            | AggOp::TimeSince(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::TimeSinceLastN(s) => s.update(row, now_ms, field, where_matched),
             // Phase 8 — streak
-            AggOp::Streak(s) | AggOp::MaxStreak(s) => {
-                s.update(row, event_time_ms, field, where_matched)
-            }
-            AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Streak(s) | AggOp::MaxStreak(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::NegativeStreak(s) => s.update(row, now_ms, field, where_matched),
             // Phase 8 — windowed recency
-            AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::FirstSeenInWindow(s) => s.update(row, now_ms, field, where_matched),
             // Phase 9 decay
-            AggOp::Ewma(op) => {
-                op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
-            }
-            AggOp::EwVar(op) => {
-                op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
-            }
+            AggOp::Ewma(op) => op
+                .state
+                .update(row, now_ms, field, where_matched, op.half_life_ms),
+            AggOp::EwVar(op) => op
+                .state
+                .update(row, now_ms, field, where_matched, op.half_life_ms),
             AggOp::EwZScore(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+                    .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
             AggOp::DecayedSum(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+                    .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
             AggOp::DecayedCount(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+                    .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
-            AggOp::Twa(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Twa(s) => s.update(row, now_ms, field, where_matched),
             // Phase 9 velocity
-            AggOp::RateOfChange(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::InterArrivalStats(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::RateOfChange(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::InterArrivalStats(s) => s.update(row, now_ms, field, where_matched),
             AggOp::BurstCount(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.sub_window_ms)
+                    .update(row, now_ms, field, where_matched, op.sub_window_ms)
             }
-            AggOp::DeltaFromPrev(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Trend(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::TrendResidual(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::OutlierCount(op) => {
-                op.state
-                    .update(row, event_time_ms, field, where_matched, op.sigma)
-            }
-            AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::DeltaFromPrev(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Trend(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::TrendResidual(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::OutlierCount(op) => op.state.update(row, now_ms, field, where_matched, op.sigma),
+            AggOp::ValueChangeCount(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::ZScore(s) => s.update(row, now_ms, field, where_matched),
             // ── Phase 11 ────────────────────────────────────────────────
             AggOp::Histogram(s) => s.update(row, field, where_matched),
-            AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
-            AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),
-            AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::HourOfDayHistogram(s) => s.update(now_ms, where_matched),
+            AggOp::DowHourHistogram(s) => s.update(now_ms, where_matched),
+            AggOp::SeasonalDeviation(s) => s.update(row, now_ms, field, where_matched),
             AggOp::EventTypeMix(s) => s.update(row, field, where_matched),
             AggOp::MostRecentN(s) => s.update(row, field, where_matched),
             AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
-            AggOp::GeoVelocity(s) => s.update(row, event_time_ms, where_matched),
+            AggOp::GeoVelocity(s) => s.update(row, now_ms, where_matched),
             AggOp::GeoDistance(s) => s.update(row, where_matched),
             AggOp::GeoSpread(s) => s.update(row, where_matched),
             AggOp::DistanceFromHome(s) => s.update(row, where_matched),
@@ -830,7 +817,7 @@ impl AggOp {
     pub fn update_with_row(
         &mut self,
         row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         field: Option<&str>,
         where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
     ) {
@@ -843,14 +830,14 @@ impl AggOp {
             AggOp::Windowed(w) => {
                 // Windowed delegates bucket routing to WindowedOp::update_with_row,
                 // which threads the predicate into each bucket's inner AggOp.
-                w.update_with_row(row, event_time_ms, field, where_expr);
+                w.update_with_row(row, now_ms, field, where_expr);
             }
             _ => {
                 // All other ops (including Ratio): pass where_matched directly.
                 // RatioState::update already implements "gate numerator only"
                 // semantics — it increments total unconditionally and matching
                 // only when where_matched is true.
-                self.update(row, event_time_ms, field, where_matched);
+                self.update(row, now_ms, field, where_matched);
             }
         }
     }
@@ -877,7 +864,7 @@ impl AggOp {
     pub fn update_with_extracted(
         &mut self,
         pre_val: Option<&Value>,
-        event_time_ms: i64,
+        now_ms: i64,
         where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
         row: &Row,
         field: Option<&str>,
@@ -892,7 +879,7 @@ impl AggOp {
         };
         self.update_with_extracted_no_where(
             pre_val,
-            event_time_ms,
+            now_ms,
             row,
             field,
             field_idx,
@@ -921,7 +908,7 @@ impl AggOp {
     pub(crate) fn update_with_extracted_no_where(
         &mut self,
         pre_val: Option<&Value>,
-        event_time_ms: i64,
+        now_ms: i64,
         row: &Row,
         field: Option<&str>,
         field_idx: u8,
@@ -939,31 +926,29 @@ impl AggOp {
                     field_idx,
                     lat_idx,
                     lon_idx,
-                    event_time_ms,
+                    now_ms,
                     where_matched,
                 );
             }
             // Fieldless ops: pre_val is None, where_matched gates the update.
-            AggOp::Count(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Ratio(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Count(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Ratio(s) => s.update(row, now_ms, field, where_matched),
             AggOp::FirstSeen(s)
             | AggOp::LastSeen(s)
             | AggOp::Age(s)
             | AggOp::HasSeen(s)
-            | AggOp::TimeSince(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::TimeSinceLastN(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Streak(s) | AggOp::MaxStreak(s) => {
-                s.update(row, event_time_ms, field, where_matched)
-            }
-            AggOp::NegativeStreak(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::FirstSeenInWindow(s) => s.update(row, event_time_ms, field, where_matched),
+            | AggOp::TimeSince(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::TimeSinceLastN(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Streak(s) | AggOp::MaxStreak(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::NegativeStreak(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::FirstSeenInWindow(s) => s.update(row, now_ms, field, where_matched),
             // Geo ops: Plan 19.2-06 (D-01) — use index-based fast path when lat_idx is
             // resolved; fall back to row-based update when lat_idx == FIELD_IDX_NONE.
             AggOp::GeoVelocity(s) => {
                 if lat_idx != FIELD_IDX_NONE {
-                    s.update_at(extracted, lat_idx, lon_idx, event_time_ms, where_matched)
+                    s.update_at(extracted, lat_idx, lon_idx, now_ms, where_matched)
                 } else {
-                    s.update(row, event_time_ms, where_matched)
+                    s.update(row, now_ms, where_matched)
                 }
             }
             AggOp::GeoDistance(s) => {
@@ -988,53 +973,46 @@ impl AggOp {
                 }
             }
             // Histogram ops: no field, time-based.
-            AggOp::HourOfDayHistogram(s) => s.update(event_time_ms, where_matched),
-            AggOp::DowHourHistogram(s) => s.update(event_time_ms, where_matched),
+            AggOp::HourOfDayHistogram(s) => s.update(now_ms, where_matched),
+            AggOp::DowHourHistogram(s) => s.update(now_ms, where_matched),
             // Decay / velocity ops with field access — pre_val path.
-            AggOp::Ewma(op) => {
-                op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
-            }
-            AggOp::EwVar(op) => {
-                op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
-            }
+            AggOp::Ewma(op) => op
+                .state
+                .update(row, now_ms, field, where_matched, op.half_life_ms),
+            AggOp::EwVar(op) => op
+                .state
+                .update(row, now_ms, field, where_matched, op.half_life_ms),
             AggOp::EwZScore(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+                    .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
             AggOp::DecayedSum(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+                    .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
             AggOp::DecayedCount(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.half_life_ms)
+                    .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
-            AggOp::Twa(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::RateOfChange(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::InterArrivalStats(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::Twa(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::RateOfChange(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::InterArrivalStats(s) => s.update(row, now_ms, field, where_matched),
             AggOp::BurstCount(op) => {
                 op.state
-                    .update(row, event_time_ms, field, where_matched, op.sub_window_ms)
+                    .update(row, now_ms, field, where_matched, op.sub_window_ms)
             }
-            AggOp::DeltaFromPrev(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::Trend(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::TrendResidual(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::OutlierCount(op) => {
-                op.state
-                    .update(row, event_time_ms, field, where_matched, op.sigma)
-            }
-            AggOp::ValueChangeCount(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::ZScore(s) => s.update(row, event_time_ms, field, where_matched),
-            AggOp::SeasonalDeviation(s) => s.update(row, event_time_ms, field, where_matched),
+            AggOp::DeltaFromPrev(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::Trend(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::TrendResidual(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::OutlierCount(op) => op.state.update(row, now_ms, field, where_matched, op.sigma),
+            AggOp::ValueChangeCount(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::ZScore(s) => s.update(row, now_ms, field, where_matched),
+            AggOp::SeasonalDeviation(s) => s.update(row, now_ms, field, where_matched),
             // Phase 11 structural outputs using row-based field access — fall back.
             AggOp::Histogram(s) => s.update(row, field, where_matched),
             // Plan 19.2-05 (D-04b): EventTypeMix migrated to update_at, consuming
             // the pre-extracted Value from the ExtractedFields array. No row.get scan.
-            AggOp::EventTypeMix(s) => {
-                s.update_at(extracted, field_idx, event_time_ms, where_matched)
-            }
+            AggOp::EventTypeMix(s) => s.update_at(extracted, field_idx, now_ms, where_matched),
             AggOp::MostRecentN(s) => s.update(row, field, where_matched),
             AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
             // Field-bearing ops with update_pre — hot path.

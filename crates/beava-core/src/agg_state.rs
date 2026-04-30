@@ -3,7 +3,7 @@
 //! Each state struct tracks the running value for exactly one (feature, entity)
 //! slot. State is updated via `update()` and queried via `query()` / per-op
 //! query helpers. No syscalls, no wall clock, no random sources — pure
-//! deterministic state transitions on `event_time_ms`.
+//! deterministic state transitions on `now_ms`.
 //!
 //! # Requirements traceability
 //! - AGG-CORE-01: CountState
@@ -14,7 +14,7 @@
 //! - AGG-CORE-06: VarianceState (+ StdDev query)
 //! - AGG-CORE-07: RatioState
 //!
-//! D-06: no wall-clock reads in apply paths — event_time_ms only.
+//! D-06: no wall-clock reads in apply paths — now_ms only.
 //! D-06: Welford online algorithm for variance — deterministic, numerically
 //!       stable, combinable across tumbling buckets.
 
@@ -78,7 +78,7 @@ impl CountState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
@@ -106,7 +106,7 @@ impl SumState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -156,7 +156,7 @@ impl AvgState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -205,7 +205,7 @@ impl MinState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -263,7 +263,7 @@ impl MaxState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -334,7 +334,7 @@ impl VarianceState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -407,7 +407,7 @@ impl RatioState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
@@ -439,7 +439,7 @@ impl FirstState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -483,7 +483,7 @@ impl LastState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -538,7 +538,7 @@ impl FirstNState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -588,7 +588,7 @@ impl LastNState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -655,7 +655,7 @@ impl LagState {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -705,9 +705,9 @@ impl LagState {
 /// wraps the state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SeenState {
-    /// event_time_ms of the first matching event, or None.
+    /// now_ms of the first matching event, or None.
     pub first_ms: Option<i64>,
-    /// event_time_ms of the most recent matching event, or None.
+    /// now_ms of the most recent matching event, or None.
     pub last_ms: Option<i64>,
 }
 
@@ -715,7 +715,7 @@ impl SeenState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        event_time_ms: i64,
+        now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
@@ -723,9 +723,9 @@ impl SeenState {
             return;
         }
         if self.first_ms.is_none() {
-            self.first_ms = Some(event_time_ms);
+            self.first_ms = Some(now_ms);
         }
-        self.last_ms = Some(event_time_ms);
+        self.last_ms = Some(now_ms);
     }
 
     pub fn query_first_seen(&self) -> Value {
@@ -762,7 +762,7 @@ impl SeenState {
 }
 
 /// AGG-RECENCY-time_since_last_n — keeps a bounded ring of the last n
-/// matching event_time_ms values; query returns ms-since the n-th most recent.
+/// matching now_ms values; query returns ms-since the n-th most recent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimeSinceLastNState {
     pub n: u32,
@@ -780,7 +780,7 @@ impl TimeSinceLastNState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        event_time_ms: i64,
+        now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
@@ -790,7 +790,7 @@ impl TimeSinceLastNState {
         if self.times_ms.len() == self.n as usize {
             self.times_ms.pop_front();
         }
-        self.times_ms.push_back(event_time_ms);
+        self.times_ms.push_back(now_ms);
     }
 
     /// Returns ms since the n-th most recent matching event (i.e. the oldest
@@ -818,7 +818,7 @@ impl StreakState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
@@ -850,7 +850,7 @@ impl NegativeStreakState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
@@ -887,14 +887,14 @@ impl FirstSeenInWindowState {
     pub fn update(
         &mut self,
         _row: &crate::row::Row,
-        event_time_ms: i64,
+        now_ms: i64,
         _field: Option<&str>,
         where_matched: bool,
     ) {
         if !where_matched {
             return;
         }
-        self.last_ms = Some(event_time_ms);
+        self.last_ms = Some(now_ms);
     }
     pub fn query(&self, query_time_ms: i64) -> Value {
         match self.last_ms {
@@ -1027,7 +1027,7 @@ impl CountDistinctStateWrap {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -1079,7 +1079,7 @@ impl PercentileStateWrap {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -1130,7 +1130,7 @@ impl TopKStateWrap {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -1215,7 +1215,7 @@ impl BloomMemberStateWrap {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {
@@ -1315,7 +1315,7 @@ impl EntropyStateWrap {
     pub fn update(
         &mut self,
         row: &crate::row::Row,
-        _event_time_ms: i64,
+        _now_ms: i64,
         field: Option<&str>,
         where_matched: bool,
     ) {

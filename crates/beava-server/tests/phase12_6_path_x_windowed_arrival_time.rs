@@ -124,10 +124,7 @@ async fn path_x_bucketing_is_on_arrival_not_event_time() {
 
     // Query the rolling 60s count for u1.
     let resp = ts
-        .post_json(
-            "/get",
-            &json!({"keys": ["u1"], "features": ["cnt"]}),
-        )
+        .post_json("/get", &json!({"keys": ["u1"], "features": ["cnt"]}))
         .await
         .expect("post /get");
     assert_eq!(

@@ -637,17 +637,19 @@ impl ApplyShard {
             }
         }
 
-        // 5. Extract event_time_ms from Row.
-        let event_time_ms = descriptor
-            .event_time_field
-            .as_deref()
-            .and_then(|f| row.get(f))
-            .and_then(|v| match v {
-                beava_core::row::Value::I64(i) => Some(*i),
-                beava_core::row::Value::Datetime(i) => Some(*i),
-                _ => None,
-            })
-            .unwrap_or(now_ms as i64);
+        // 5. Plan 12.6-05 Path X: time source = server wall-clock at dispatch.
+        //
+        // Per `project_redis_shaped_no_event_time_ever` and CONTEXT D-03,
+        // the apply path no longer reads `event_time` from the row body.
+        // `now_ms` (computed above as the wall-clock at this dispatch) is
+        // the single time source threaded into the operator surface — both
+        // for windowed bucketing and for `max_event_time_ms.fetch_max`
+        // below (which Plan 12.6-06 will rename to a now-aligned name once
+        // the `event_time_ms` wire field + EventDescriptor.event_time_field
+        // are deleted).
+        //
+        // Pre-Path-X this read `descriptor.event_time_field.read(row).unwrap_or(now_ms)`.
+        let now_ms_i64: i64 = now_ms as i64;
         let t_validate = t0.map(|t| t.elapsed());
 
         // 6. Serialize WAL payload — v=2 binary format.
@@ -658,6 +660,11 @@ impl ApplyShard {
         // Plan 18-10: the `body` Bytes is the EXACT raw client bytes passed
         // through from parse_msgpack_envelope / parse_json_envelope (zero-copy
         // from wire to disk). No re-serialise on this path.
+        //
+        // Plan 12.6-05 Path X: the `et_ms` byte slot continues to receive an
+        // 8-byte BE u64 timestamp; post-Path-X this is the server arrival-time
+        // `now_ms` rather than a body-derived event_time. Plan 12.6-06 will
+        // formally rename the slot and bump the WAL schema version.
         let name_bytes = event_name.as_bytes();
         let name_len = name_bytes.len() as u16;
         let body_len = body.len() as u32;
@@ -667,7 +674,7 @@ impl ApplyShard {
         payload_bytes.push(0x02u8); // v = 2
         payload_bytes.push(body_format); // body_format (CT_JSON=0x01 or CT_MSGPACK=0x02)
         payload_bytes.extend_from_slice(&registry_version.to_be_bytes()); // u32 rv
-        payload_bytes.extend_from_slice(&(event_time_ms as u64).to_be_bytes()); // u64 et_ms
+        payload_bytes.extend_from_slice(&now_ms.to_be_bytes()); // u64 et_ms (Path X = server now_ms)
         payload_bytes.extend_from_slice(&name_len.to_be_bytes()); // u16 name_len
         payload_bytes.extend_from_slice(name_bytes); // name bytes
         payload_bytes.extend_from_slice(&body_len.to_be_bytes()); // u32 body_len
@@ -679,12 +686,17 @@ impl ApplyShard {
         let t_wal_append = t0.map(|t| t.elapsed());
 
         // 8. Apply to aggregations under the table lock (uncontended on apply thread).
+        //
+        // Plan 12.6-05 Path X: the i64 time-source threaded into
+        // `apply_event_to_aggregations` is the server `now_ms_i64`, NOT a
+        // body-derived event_time. This is the keystone of the windowed-op
+        // arrival-time semantics swap (no event-time anywhere downstream).
         {
             let mut tables = self.state.dev_agg.state_tables.lock();
             apply_event_to_aggregations(
                 event_name,
                 &row,
-                event_time_ms,
+                now_ms_i64,
                 ack_lsn,
                 &self.state.dev_agg.registry,
                 &mut tables,
@@ -693,15 +705,25 @@ impl ApplyShard {
         let t_agg = t0.map(|t| t.elapsed());
 
         // 9. Bump monotonic event counters.
+        //
+        // Plan 12.6-05 Path X: `max_event_time_ms` is fed `now_ms` (server
+        // wall-clock at apply) rather than a body-derived event_time. The
+        // field name is misleading post-Path-X — Plan 12.6-06 renames it to
+        // a now-aligned identifier once the EventDescriptor.event_time_field
+        // and the WAL schema slot are formally retired. Keeping the write
+        // means the GET path's `compute_query_time_ms` (and the equivalent
+        // logic in `runtime_core_glue.rs`) continues to surface a meaningful
+        // query_time for windowed-op queries; removing it would silently
+        // break ~30 tests that depend on a non-zero query time.
         self.state
             .dev_agg
             .next_event_id
             .fetch_max(ack_lsn, Ordering::Relaxed);
-        if event_time_ms > 0 {
+        if now_ms > 0 {
             self.state
                 .dev_agg
                 .max_event_time_ms
-                .fetch_max(event_time_ms as u64, Ordering::Relaxed);
+                .fetch_max(now_ms, Ordering::Relaxed);
         }
         let t_bk_counters = t0.map(|t| t.elapsed());
 

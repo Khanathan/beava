@@ -113,15 +113,15 @@ impl WindowedOp {
 
     /// Compute the bucket index (slot 0..64) for an event time.
     ///
-    /// Uses `div_euclid` so negative event_time_ms yields a non-negative index.
+    /// Uses `div_euclid` so negative now_ms yields a non-negative index.
     ///
     /// Phase 19.1-04 note: this is now a pure mathematical function returning
     /// `floor(t / bucket_ms) mod 64`. It is no longer used to address physical
     /// storage slots (the SmallVec is keyed by epoch_ms, not slot index), but
     /// is kept as a public API for tests and external callers that reason
     /// about bucket-collision behavior at the 64-slot abstraction level.
-    pub fn bucket_index(&self, event_time_ms: i64) -> usize {
-        ((event_time_ms.div_euclid(self.bucket_ms as i64)) as usize) % 64
+    pub fn bucket_index(&self, now_ms: i64) -> usize {
+        ((now_ms.div_euclid(self.bucket_ms as i64)) as usize) % 64
     }
 
     /// Compute the bucket epoch (start time in ms, inclusive) for an event.
@@ -130,8 +130,8 @@ impl WindowedOp {
     /// Two events at times `t1` and `t2` share a bucket iff
     /// `bucket_epoch(t1) == bucket_epoch(t2)`.
     #[inline]
-    pub fn bucket_epoch(&self, event_time_ms: i64) -> i64 {
-        event_time_ms.div_euclid(self.bucket_ms as i64) * self.bucket_ms as i64
+    pub fn bucket_epoch(&self, now_ms: i64) -> i64 {
+        now_ms.div_euclid(self.bucket_ms as i64) * self.bucket_ms as i64
     }
 
     /// Find the position in `self.buckets` for a given epoch, if any.
@@ -158,18 +158,12 @@ impl WindowedOp {
     }
 
     /// Update the windowed state with one event row.
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
-        let epoch = self.bucket_epoch(event_time_ms);
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
+        let epoch = self.bucket_epoch(now_ms);
         if let Some(pos) = self.position_for_epoch(epoch) {
             self.buckets[pos]
                 .1
-                .update(row, event_time_ms, field, where_matched);
+                .update(row, now_ms, field, where_matched);
             return;
         }
         // New epoch — evict-then-push if at cap.
@@ -177,7 +171,7 @@ impl WindowedOp {
             self.evict_oldest_bucket();
         }
         let mut new_op = Box::new(fresh_op(self.inner_kind, &self.sketch_params));
-        new_op.update(row, event_time_ms, field, where_matched);
+        new_op.update(row, now_ms, field, where_matched);
         self.buckets.push((epoch, new_op));
     }
 
@@ -191,22 +185,22 @@ impl WindowedOp {
     pub fn update_with_row(
         &mut self,
         row: &Row,
-        event_time_ms: i64,
+        now_ms: i64,
         field: Option<&str>,
         where_expr: Option<&std::sync::Arc<crate::expr::Expr>>,
     ) {
-        let epoch = self.bucket_epoch(event_time_ms);
+        let epoch = self.bucket_epoch(now_ms);
         if let Some(pos) = self.position_for_epoch(epoch) {
             self.buckets[pos]
                 .1
-                .update_with_row(row, event_time_ms, field, where_expr);
+                .update_with_row(row, now_ms, field, where_expr);
             return;
         }
         if self.buckets.len() >= self.max_buckets {
             self.evict_oldest_bucket();
         }
         let mut new_op = Box::new(fresh_op(self.inner_kind, &self.sketch_params));
-        new_op.update_with_row(row, event_time_ms, field, where_expr);
+        new_op.update_with_row(row, now_ms, field, where_expr);
         self.buckets.push((epoch, new_op));
     }
 
@@ -242,7 +236,7 @@ impl WindowedOp {
         field_idx: u8,
         lat_idx: u8,
         lon_idx: u8,
-        event_time_ms: i64,
+        now_ms: i64,
         where_matched: bool,
     ) {
         // Pull pre-extracted Value once at the outer level (no per-bucket
@@ -256,11 +250,11 @@ impl WindowedOp {
         // reasons but ignore content for windowable kinds (Count/Ratio etc.).
         let empty_row = crate::row::Row::new();
 
-        let epoch = self.bucket_epoch(event_time_ms);
+        let epoch = self.bucket_epoch(now_ms);
         if let Some(pos) = self.position_for_epoch(epoch) {
             self.buckets[pos].1.update_with_extracted_no_where(
                 pre_val,
-                event_time_ms,
+                now_ms,
                 &empty_row,
                 None,
                 field_idx,
@@ -278,7 +272,7 @@ impl WindowedOp {
         let mut new_op = Box::new(fresh_op(self.inner_kind, &self.sketch_params));
         new_op.update_with_extracted_no_where(
             pre_val,
-            event_time_ms,
+            now_ms,
             &empty_row,
             None,
             field_idx,
@@ -865,7 +859,7 @@ mod tests {
         let mut op2 = WindowedOp::new(AggKind::Count, window_ms);
         let r = empty_row();
 
-        // Deterministic pseudo-event stream: event_time_ms = i * 97 (prime step, mod window)
+        // Deterministic pseudo-event stream: now_ms = i * 97 (prime step, mod window)
         for i in 0..1000_i64 {
             let t = (i * 97) % (window_ms as i64 * 2);
             op1.update(&r, t, None, true);
@@ -1123,17 +1117,20 @@ mod tests {
     // ── Plan 12.6-05 Path X: time-source rename guard ─────────────────────
     //
     // Per `project_redis_shaped_no_event_time_ever` and CONTEXT D-03, the
-    // windowed-op surface must read a server-side `now_ms` parameter on every
-    // fold (not `event_time_ms` from the event body). This audit asserts the
-    // public API uses `now_ms: i64` and never `event_time_ms: i64`.
+    // windowed-op surface must read a server-clock parameter on every fold
+    // (the post-Path-X name is `now_ms`, not the body event-time name).
+    // This audit asserts the public API uses the post-Path-X parameter name
+    // and never the pre-Path-X one.
     //
     // Comments and doc-comments are stripped so historical references (in
     // module docs / inline notes) do not falsely trigger.
+    //
+    // Forbidden tokens are reconstructed from chunked components at runtime
+    // so this test source does not contain the literal it forbids — i.e.
+    // the test does not match itself.
     #[test]
     fn windowed_op_signatures_use_now_ms_param_name() {
         let src = include_str!("agg_windowed.rs");
-        // Strip line and block comments. Crude but sufficient: any line whose
-        // trimmed prefix begins with `//` or `///` is dropped before the grep.
         let stripped: String = src
             .lines()
             .filter(|line| {
@@ -1142,22 +1139,25 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        // Build the forbidden tokens at runtime so this test source itself
-        // does not trip the assertions.
-        let forbidden_typed = format!("event_time_ms: {}", "i64");
-        let forbidden_typed_us = format!("_event_time_ms: {}", "i64");
-        let required_typed = format!("now_ms: {}", "i64");
+        // Reconstruct the forbidden token via chunk concat so this file
+        // does not contain the literal pre-Path-X parameter.
+        let forbidden = ["event", "_time_ms: ", "i64"].concat();
+        let forbidden_us = ["_event", "_time_ms: ", "i64"].concat();
+        let required = ["now", "_ms: ", "i64"].concat();
         assert!(
-            stripped.contains(required_typed.as_str()),
-            "Path X invariant: agg_windowed.rs must declare `now_ms: i64` somewhere"
+            stripped.contains(required.as_str()),
+            "Path X invariant: agg_windowed.rs must declare `<{}>` somewhere",
+            required
         );
         assert!(
-            !stripped.contains(forbidden_typed.as_str()),
-            "Path X invariant: agg_windowed.rs must not contain `event_time_ms: i64` parameter"
+            !stripped.contains(forbidden.as_str()),
+            "Path X invariant: agg_windowed.rs must not contain pre-Path-X param `<{}>`",
+            forbidden
         );
         assert!(
-            !stripped.contains(forbidden_typed_us.as_str()),
-            "Path X invariant: agg_windowed.rs must not contain `_event_time_ms: i64` parameter"
+            !stripped.contains(forbidden_us.as_str()),
+            "Path X invariant: agg_windowed.rs must not contain pre-Path-X param `<{}>`",
+            forbidden_us
         );
     }
 }

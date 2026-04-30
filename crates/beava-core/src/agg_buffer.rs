@@ -130,7 +130,7 @@ fn fmt_edge(v: f64) -> String {
 
 // ─── HourOfDayHistogramState (AGG-BUFFER-02) ─────────────────────────────────
 
-/// 24-bin hour-of-day histogram. Bin index = `(event_time_ms / 3_600_000) mod 24`.
+/// 24-bin hour-of-day histogram. Bin index = `(now_ms / 3_600_000) mod 24`.
 /// Labels are zero-padded `"00".."23"` (UTC).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HourOfDayHistogramState {
@@ -138,11 +138,11 @@ pub struct HourOfDayHistogramState {
 }
 
 impl HourOfDayHistogramState {
-    pub fn update(&mut self, event_time_ms: i64, where_matched: bool) {
+    pub fn update(&mut self, now_ms: i64, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let h = hour_of_day_index(event_time_ms);
+        let h = hour_of_day_index(now_ms);
         self.counts[h] = self.counts[h].saturating_add(1);
     }
 
@@ -158,8 +158,8 @@ impl HourOfDayHistogramState {
 /// Hour-of-day index `0..24` (UTC) for an event time in ms-since-epoch.
 /// Negative values are normalised by `rem_euclid` so pre-1970 events still
 /// map to a valid hour.
-pub(crate) fn hour_of_day_index(event_time_ms: i64) -> usize {
-    let hours = event_time_ms.div_euclid(3_600_000);
+pub(crate) fn hour_of_day_index(now_ms: i64) -> usize {
+    let hours = now_ms.div_euclid(3_600_000);
     hours.rem_euclid(24) as usize
 }
 
@@ -184,11 +184,11 @@ impl Default for DowHourHistogramState {
 const DAY_LABELS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 impl DowHourHistogramState {
-    pub fn update(&mut self, event_time_ms: i64, where_matched: bool) {
+    pub fn update(&mut self, now_ms: i64, where_matched: bool) {
         if !where_matched {
             return;
         }
-        let idx = dow_hour_index(event_time_ms);
+        let idx = dow_hour_index(now_ms);
         self.counts[idx] = self.counts[idx].saturating_add(1);
     }
 
@@ -208,11 +208,11 @@ impl DowHourHistogramState {
 }
 
 /// (day-of-week, hour) → flat index `0..168`. Mon=0, Sun=6.
-pub(crate) fn dow_hour_index(event_time_ms: i64) -> usize {
+pub(crate) fn dow_hour_index(now_ms: i64) -> usize {
     // Unix epoch (1970-01-01) was a Thursday → day 3 in Mon=0 ordering.
-    let days = event_time_ms.div_euclid(86_400_000);
+    let days = now_ms.div_euclid(86_400_000);
     let dow = (days + 3).rem_euclid(7) as usize;
-    let hour = hour_of_day_index(event_time_ms);
+    let hour = hour_of_day_index(now_ms);
     dow * 24 + hour
 }
 
@@ -238,13 +238,7 @@ pub struct HourBucket {
 }
 
 impl SeasonalDeviationState {
-    pub fn update(
-        &mut self,
-        row: &Row,
-        event_time_ms: i64,
-        field: Option<&str>,
-        where_matched: bool,
-    ) {
+    pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         if !where_matched {
             return;
         }
@@ -252,7 +246,7 @@ impl SeasonalDeviationState {
         let Some(v) = numeric_from_row(row, fname) else {
             return;
         };
-        let h = hour_of_day_index(event_time_ms);
+        let h = hour_of_day_index(now_ms);
         let bucket = &mut self.per_hour[h];
         bucket.n += 1;
         bucket.sum += v;
@@ -390,7 +384,7 @@ impl EventTypeMixState {
         &mut self,
         extracted: &ExtractedFields,
         field_idx: u8,
-        _event_time_ms: i64,
+        _now_ms: i64,
         where_matched: bool,
     ) {
         if !where_matched {

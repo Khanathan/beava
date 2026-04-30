@@ -9,7 +9,7 @@
 //!
 //! ## D-06 determinism invariants
 //!
-//! This function is a **pure function** of `(source_name, row, event_time_ms,
+//! This function is a **pure function** of `(source_name, row, now_ms,
 //! registry state, prior agg state)`.  No wall-clock reads.  No random sources.
 //! Safe for WAL replay (SC4).
 //!
@@ -129,7 +129,7 @@ pub fn per_kind_latest() -> &'static PerKindSnapshot {
 pub(crate) fn legacy_apply_event_to_aggregations(
     source_name: &str,
     row: &Row,
-    event_time_ms: i64,
+    now_ms: i64,
     _event_id: u64,
     registry: &Registry,
     state_tables: &mut StateTables,
@@ -198,7 +198,7 @@ pub(crate) fn legacy_apply_event_to_aggregations(
             // path — yielding the same result either way.
             entity_row[i].update_with_extracted(
                 pre_val,
-                event_time_ms,
+                now_ms,
                 feat.descriptor.where_expr.as_ref(),
                 row,
                 feat.descriptor.field.as_deref(),
@@ -224,7 +224,7 @@ pub(crate) fn legacy_apply_event_to_aggregations(
 ///      aggregation (continue to the next).
 ///    - Look up or initialise the entity row in the aggregation's
 ///      `AggStateTable`.
-///    - For each feature: call `AggOp::update_with_row(row, event_time_ms,
+///    - For each feature: call `AggOp::update_with_row(row, now_ms,
 ///      field, where_expr)`.
 ///
 /// # `event_id` parameter
@@ -237,12 +237,12 @@ pub(crate) fn legacy_apply_event_to_aggregations(
 ///
 /// # No wall-clock reads
 ///
-/// `event_time_ms` is the only time source.  Wall-clock reads are forbidden
+/// `now_ms` is the only time source.  Wall-clock reads are forbidden
 /// in this function (D-06).
 pub fn apply_event_to_aggregations(
     source_name: &str,
     row: &Row,
-    event_time_ms: i64,
+    now_ms: i64,
     _event_id: u64, // Phase 5: unused. Phase 6 WAL populates via D-08.
     registry: &Registry,
     state_tables: &mut StateTables,
@@ -434,7 +434,7 @@ pub fn apply_event_to_aggregations(
             };
             entity_row[i].update_with_extracted(
                 pre_val,
-                event_time_ms,
+                now_ms,
                 feat.descriptor.where_expr.as_ref(),
                 row,
                 feat.descriptor.field.as_deref(),
@@ -494,17 +494,17 @@ pub fn apply_event_to_aggregations(
         // negligible: writes at most once per event (trace-gated), reads at
         // HTTP scrape rate (~1 Hz from /debug/op-cost).
         //
-        // D-06 compliance: we use `event_time_ms` (the event's logical time,
+        // D-06 compliance: we use `now_ms` (the event's logical time,
         // already passed in as the canonical time source) instead of a
-        // wall-clock read. For live workloads event_time_ms ≈ wall-clock ms;
+        // wall-clock read. For live workloads now_ms ≈ wall-clock ms;
         // it is deterministic for WAL replay. Note: the trace path itself
         // uses `Instant::now()` for duration measurement, but Instant is a
         // monotonic clock that does not affect replay determinism (it is
         // not stored in the WAL or entity state).
         let snap = per_kind_latest();
-        if event_time_ms > 0 {
+        if now_ms > 0 {
             snap.captured_at_ms
-                .store(event_time_ms as u64, std::sync::atomic::Ordering::Relaxed);
+                .store(now_ms as u64, std::sync::atomic::Ordering::Relaxed);
         }
         {
             let mut data = snap.data.lock();
@@ -946,7 +946,7 @@ mod tests {
 
     /// A07: event_id has no observable effect in Phase 5.
     ///
-    /// Apply the SAME (row, event_time_ms) twice — once with event_id=0 and
+    /// Apply the SAME (row, now_ms) twice — once with event_id=0 and
     /// once with event_id=99 — into two independent state_table instances.
     /// The resulting state must be identical.
     #[test]
