@@ -1,69 +1,69 @@
 {
   "version": "1.0",
-  "timestamp": "2026-04-30T00:00:00Z",
-  "session_summary": "Plans 12-08 + 12-09 shipped on v2/greenfield (HEAD 6c3e5ad). 27 commits across both plans + tracking + roadmap park note. Read-path investigation completed via 3 parallel agents; Layers 1+2 (read response_batch bypass + Darwin EVFILT_USER) PARKED for post-v0. User pivoted away from perf chasing to correctness + ship-readiness.",
-  "phase": "12",
-  "phase_dir": ".planning/phases/12-server-side-async-push-coalescing",
-  "next_focus": "correctness + functional completeness + ship-readiness",
+  "timestamp": "2026-04-30T13:35:11.840Z",
+  "session_summary": "No-event-time architectural pivot. v0 simplifies dramatically: Beava is Redis with stateful operators, processing-time only — no event-time anywhere, no watermarks, no joins (any kind), no PIT. Five answered design questions locked the shape. Five phase dirs archived (14 streaming-correctness, 14.1 streaming-modifiability, 15 event-time-PIT, 15-snapshot-io-off-main-thread, 14-per-stream-locks-dashmap-concurrency). New permanent memory `project_redis_shaped_no_event_time_ever` written; `project_stateful_architecture` Decision 2 (PIT) marked SUPERSEDED. ROADMAP retitled Phase 12, archived 12.5/14/14.1/15, reworked 17, inserted NEW Phase 12.6 (v0 surface reduction — biggest v0 blocker) and NEW Phase 25 (session windows — v0.1+). PROJECT/REQUIREMENTS/STATE/CORRECTNESS-PATH all swept to match. Single doc-only commit `2d58d80`. No code changes.",
+  "context": "default",
+  "phase": null,
+  "phase_dir": null,
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused",
+  "next_focus": "v0 polish via Phase 12.6 surface reduction (architectural cleanup) → Phase 13 minimum subset (packaging + quickstart + readme + website final) → ship",
   "next_focus_doc": ".planning/CORRECTNESS-PATH.md",
   "completed_this_session": [
-    {"item": "Plan 12-08 execute", "result": "apply-loop overhead reduction shipped; orchestration 1095→75 ns/event = 14.6× speedup; fraud-team/tcp +10.9%, fraud-team/http +82%; 11 TDD-paired commits + 1 fmt + tracking", "commits": "adde5e6..c6471bd + 75daa42 (fmt drift)"},
-    {"item": "Plan 12-09 execute", "result": "TCP /get msgpack default; HTTP unchanged; D-A..D-E locked decisions honored; STRETCH miss documented (~2-3% codec lift vs 40% predicted); 14 TDD-paired commits + SUMMARY", "commits": "ba8fead..98e305b"},
-    {"item": "Read-path 3-agent investigation", "result": "Identified 4 layers of read-path optimization (response_batch bypass, EVFILT_USER, json! removal, dispatch loop cleanup); reports preserved at /tmp/read-{encode,dispatch,transport}-overhead.md", "decision": "PARKED for post-v0"},
-    {"item": "Throughput-cap empirical verification", "result": "Confirmed Apple-M4 fraud-team /get_batch caps at ~220k r/s (server-side, not bench-bound); apply at ~10% CPU during saturation; gap dominated by inter-event coordination latency"},
-    {"item": "BATCH_SIZE_FLUSH=1 experiment", "result": "Both reads and writes regressed; confirmed Mach port wake cost on Darwin is the binding constraint, not convoy clustering; reverted"},
-    {"item": "Multi-process bench scaling test", "result": "1 process × RW=128 = 197k r/s; 2 procs × RW=128 = 213k aggregate; 4 procs × RW=64 = 222k aggregate. Server-side cap, not bench-side"},
-    {"item": "Roadmap park note for Layers 1+2", "result": "Documented in ROADMAP.md as deferred until post-Hetzner-baseline; commits 6c3e5ad"}
+    {"item": "Resumed from prior HANDOFF (2026-04-30T00 → consumed and renamed to HANDOFF.consumed-2026-04-30-am.json)"},
+    {"item": "Identified Phase 14 dir collision: `14-per-stream-locks-dashmap-concurrency` (pre-pivot stale work) vs `14-streaming-correctness` (canonical roadmap entry); archived stale dir + verified resolver"},
+    {"item": "Reviewed all 4 streaming-correctness plans + surfaced D-08 drift (Phase 13.3 RefCell/borrow_mut narrative dead — apply path is now ServerV18 mio); identified 8 drift items (3 critical/medium, 5 minor)"},
+    {"item": "User cascade pivot decisions: defer Phase 14 → defer all joins → remove all watermarks (permanent) → remove event-time entirely (permanent) → session windows are simple incremental → mio is the only hot-path entry"},
+    {"item": "Answered 5 design questions: (Q1) event_time_ms REMOVED from wire entirely [user override of recommend-keep]; (Q2) windowed ops switch to now_ms() server clock — Path X preserves 55-op catalogue; (Q3) session windows close on BOTH lazy-on-query AND flip-on-next-event-after-gap; (Q4) latest closed session retained per (entity, feature); (Q5) bv.union deferred with joins to v0.1+"},
+    {"item": "Memory updates: NEW project_redis_shaped_no_event_time_ever.md (permanent commitment); MODIFIED project_stateful_architecture.md (Decision 2 PIT marked SUPERSEDED); UPDATED MEMORY.md index"},
+    {"item": "Archived 5 phase dirs via git mv to `.planning/phases/_archived-*`: 14-streaming-correctness, 14.1-streaming-modifiability, 15-event-time-pit, 15-snapshot-io-off-main-thread, 14-per-stream-locks-dashmap-concurrency"},
+    {"item": "Updated PROJECT.md (What This Is + Core Value + Requirements + Out of Scope + Constraints + Key Decisions); REQUIREMENTS.md (SDK-JOIN/JOIN-EXTRA/UNION-RECONCILE/SRV-APPLY-08/TEST-07/SDK-DEC-08 removed; many event_time refs swapped to now_ms(); SDK-SESSION-01 stub added); ROADMAP.md (Phase 12 retitled, 12.5/14/14.1/15 archived, 17 reworked, NEW 12.6 + 25 inserted); STATE.md (architectural pivot block + revised v0 critical path); CORRECTNESS-PATH.md (P0 list rewritten — Phase 14 bug class disappears with event-time itself)"},
+    {"item": "Single doc-only commit 2d58d80 — 32 files changed, 231/129 inserts/deletes; no code changes"}
   ],
-  "drafted_for_review": [
-    {"doc": ".planning/CORRECTNESS-PATH.md", "summary": "Prioritized P0/P1/P2/P3 list of remaining v0 work. P0 = Phase 14 streaming bug + phase11_smoke regression. P1 = Plan 12-10 push-and-get + Phase 12-01..06 follow-up + Phase 14.1. P2 = Phase 13 Hetzner sweep with shard scaling + docs/packaging + metric wiring. P3 = post-v0 polish."}
-  ],
-  "key_questions_user_asked_this_session": [
-    {"q": "Why is Hetzner box performance so low?", "a": "Three factors: (1) Apple-M4's per-core single-thread perf is ~2× older EPYC KVM cores; Beava's apply is single-threaded so single-thread perf dominates. (2) KVM virtualization overhead ~10-15%. (3) Bench-side glibc mmap_lock contention hits 19% of CPU at saturated push (not server-side issue). Recommendation: use Hetzner CCX (dedicated cores) or AWS Graviton3 c7g.4xlarge for Phase 13 sweep."},
-    {"q": "Can we do shard benchmark on 16 CPU?", "a": "Yes — recommended as part of Phase 13 Hetzner sweep. Test 1/2/4/8 Beava instances, each on different ports, key%N sharded at bench-side, aggregate sustained_eps. Validates project_no_sharded_apply commitment. ~1-2 hours implementation + ~2-4 hours data. Strong v0 marketing data point if scaling is near-linear."},
-    {"q": "Are we good on read/write throughput? Should we focus on correctness?", "a": "YES, pivot to correctness. Reads (210k r/s fraud-team) + writes (110k EPS fraud-team / 700k EPS small) are competitive. Apply is at 100% efficiency for fraud-team push (architectural ceiling). Layer 1-2 fixes give 1.5-2× more on reads but are diminishing returns. The remaining v0 work is correctness (Phase 14 streaming bug), functional completeness (Plan 12-10 push-and-get + 12-01..06 follow-up), and ship-readiness (Phase 13 docs/packaging)."}
+  "drafted_for_review": [],
+  "key_locked_decisions_carried_forward": [
+    {"decision": "Permanent: no event-time anywhere in Beava — ever", "memory": "project_redis_shaped_no_event_time_ever", "implication": "All future plans/discussions must respect this. Reviving requires explicit user override + new ADR."},
+    {"decision": "Permanent: no watermarks, no late-event correction, no PIT temporal store, no joins (event↔event/event↔table/table↔table)", "memory": "project_redis_shaped_no_event_time_ever", "implication": "Same — supersedes earlier `project_stateful_architecture` Decision 2"},
+    {"decision": "mio data plane is the only hot-path entry; legacy axum scheduled for removal in Phase 12.6", "memory": "project_redis_shaped_no_event_time_ever", "implication": "All push/get/upsert/delete dispatches via apply_shard.rs::dispatch_*_sync; tokio sidecar only for admin endpoints"},
+    {"decision": "Session windows replace event-time grouping for activity aggregation", "session": "2026-04-30", "implication": "New Phase 25 in ROADMAP (v0.1+); 5-7 plans; not v0 ship-blocker"},
+    {"decision": "event_time_ms REMOVED from wire entirely (push payload + WAL schema bump)", "session": "2026-04-30", "implication": "Phase 12.6 includes wire schema version bump + Python SDK update + tests + recipes; existing clients sending event_time_ms will get a register/push error post-12.6"},
+    {"decision": "Path X: 14+ windowed ops switch to server-side now_ms() (preserves 55-op catalogue)", "session": "2026-04-30", "implication": "Phase 12.6 swap is mechanical — read now_ms() instead of event_time_ms in WindowedOp::update across all ops"},
+    {"decision": "Phase 12.6 scope expanded to include dead-code sweep + redundancy sweep + mio-only enforcement", "session": "2026-04-30", "implication": "12-15 plans expected; ~3-4 weeks; biggest single v0 blocker"}
   ],
   "remaining_work_priority": [
-    {"priority": "P0", "item": "Phase 14 — streaming silent-data-loss bug in agg_windowed", "next_action": "/gsd-discuss-phase 14"},
-    {"priority": "P0", "item": "phase11_smoke regression — was flaky, now deterministic-fail", "next_action": "/gsd-debug investigate v[\"a\"].as_f64() failure at phase11_smoke.rs:235"},
-    {"priority": "P1", "item": "Plan 12-10 — push-and-get on mio HTTP+TCP", "next_action": "/gsd-execute-phase 12 (PLAN.md ready, GlueResponse shape unblocked by 12-09)"},
-    {"priority": "P1", "item": "Phase 12-01..06 follow-up", "next_action": "Continue on .claude/worktrees/phase-12-followup"},
-    {"priority": "P1", "item": "Phase 14.1 streaming opt-in modifiability", "next_action": "After Phase 14 lands"},
-    {"priority": "P2", "item": "Phase 13 Hetzner sweep + shard-scaling validation", "next_action": "Scope as Plan 13.x; use CCX-class Hetzner or AWS Graviton3"},
-    {"priority": "P2", "item": "Phase 13 docs + packaging (PyPI, Docker, GitHub releases, quickstart)", "next_action": "Incremental, minimum-viable subset"},
-    {"priority": "P2", "item": "Phase 13 metric-counter wiring + cold-entity GC", "next_action": "Continue on .claude/worktrees/phase-13-followup"},
-    {"priority": "P3", "item": "Plan 12-11 RecyclableBytes wrapper (conditional)", "next_action": "Re-evaluate after Phase 13 samply"},
-    {"priority": "P3", "item": "Plan 12-12 read-path Layers 1+2 (parked)", "next_action": "/gsd-plan-phase 12-12 post-Hetzner-baseline if measurements justify"},
-    {"priority": "P3", "item": "Phase 15 event-time PIT temporal store", "next_action": "Depends on Phase 14.1"},
-    {"priority": "P3", "item": "Phase 18 wrap (SUMMARY + verification + worktree archival)", "next_action": "Housekeeping ~30 min"}
+    {"priority": "P0", "item": "Phase 12.6 — v0 surface reduction (NEW; biggest v0 blocker)", "next_action": "/gsd-discuss-phase 12.6 (gather scope decisions: TestServerV18 design, dead-code threshold, smoke-test fate, REQUIREMENTS sweep depth, wire schema bump strategy, docs touch scope)"},
+    {"priority": "P0", "item": "phase11_smoke regression — fold into 12.6 TestServerV18 migration", "next_action": "Will be handled inline during 12.6 — no separate /gsd-debug needed unless 12.6 surfaces it as standalone"},
+    {"priority": "P1", "item": "Plan 12-10 push-and-get on mio HTTP+TCP — DEFERRED per user (\"we probably dont need B for now\")", "next_action": "Ignore for now; revisit only if surfaces as needed in 12.6 or beyond"},
+    {"priority": "P1", "item": "Phase 12-01..06 follow-up — DESCOPED post-pivot (joins/union plans dropped)", "next_action": "Continue on .claude/worktrees/phase-12-followup; skip any join/union plans; may overlap with 12.6"},
+    {"priority": "P1", "item": "Phase 13 minimum subset for v0 ship (packaging + quickstart + readme + website final + concept docs + metric wiring)", "next_action": "Scope after 12.6 lands; may interleave parts in parallel with 12.6 execution"},
+    {"priority": "P2", "item": "Phase 13 Hetzner sweep + shard-scaling validation", "next_action": "Scope as Plan 13.x; CCX-class Hetzner or AWS Graviton3 c7g.4xlarge"},
+    {"priority": "P2", "item": "Phase 13 docs proper (concepts.md / operators.md / http-api.md / architecture.md)", "next_action": "Some can interleave with 12.6 work; full polish post-12.6"},
+    {"priority": "P3", "item": "Phase 25 session window operator family", "next_action": "/gsd-discuss-phase 25 post-12.6"},
+    {"priority": "P3", "item": "Phase 18 wrap (SUMMARY + verification + worktree archival)", "next_action": "Folded into 12.6 dead-code/redundancy sweep"},
+    {"priority": "P3", "item": "Read-path Layers 1+2 (parked)", "next_action": "Re-evaluate post-Hetzner-baseline if measurements justify"}
   ],
   "session_artifacts": [
-    {"path": ".planning/CORRECTNESS-PATH.md", "purpose": "Drafted correctness roadmap for user review next session"},
-    {"path": "/tmp/read-encode-overhead.md", "purpose": "Read-path encode investigation (json! macro removal, BTreeMap→Vec, hand-rolled writer)"},
-    {"path": "/tmp/read-dispatch-loop.md", "purpose": "Dispatch-loop investigation (compiled_aggregation, parse_entity_key cache, feat_name.clone)"},
-    {"path": "/tmp/read-transport-overhead.md", "purpose": "Transport investigation (inline write, EVFILT_USER, response_batch bypass)"},
-    {"path": "/tmp/parse-investigation.md", "purpose": "BatchGetBody parse cost analysis (23 allocations per parse)"},
-    {"path": "/tmp/throughput-gap.md", "purpose": "Bench-side vs server-side throughput-gap analysis"},
-    {"path": "/tmp/server-prof.json.gz", "purpose": "samply trace at 159k r/s read saturation (symbols stripped — debug rebuild needed for re-analysis)"},
-    {"path": "/tmp/beava-trace.log", "purpose": "BEAVA_TRACE_APPLY_TIMING per-event breakdown for /get_batch + push events"}
+    {"path": ".planning/PROJECT.md", "purpose": "Updated to reflect no-event-time architectural pivot — What This Is, Core Value, Requirements, Out of Scope, Constraints, Key Decisions"},
+    {"path": ".planning/ROADMAP.md", "purpose": "Phase 12 retitled, 12.5/14/14.1/15 archived, 17 reworked, NEW 12.6 + 25 inserted; Total + insertion narrative rewritten"},
+    {"path": ".planning/REQUIREMENTS.md", "purpose": "SDK-JOIN-01..05 removed; JOIN-EXTRA/UNION-RECONCILE removed; SRV-APPLY-08/TEST-07/SDK-DEC-08 removed; AGG-POINT-02/06/07/08 + SRV-APPLY-03/04 + SRV-DUR-03 swapped event_time → now_ms(); SDK-SESSION-01 stub added; EVENT-TIME-RESTORE-01 marked permanently rejected"},
+    {"path": ".planning/STATE.md", "purpose": "Architectural pivot block added; v0 critical path revised — Plan 12-10 → Phase 12.6 → Phase 13 ship"},
+    {"path": ".planning/CORRECTNESS-PATH.md", "purpose": "P0 list rewritten — Phase 14 bug item REMOVED (bug class disappears with event-time itself); Phase 12.6 inserted as biggest v0 blocker; phase11_smoke regression remains; Phase 14.1/15 removed; Phase 25 added to v0.1+"},
+    {"path": "/Users/petrpan26/.claude/projects/-Users-petrpan26-work-tally/memory/project_redis_shaped_no_event_time_ever.md", "purpose": "NEW permanent architectural commitment memory — supersedes PIT/join portions of project_stateful_architecture and event-time portions of project_v2_architecture"},
+    {"path": "/Users/petrpan26/.claude/projects/-Users-petrpan26-work-tally/memory/project_stateful_architecture.md", "purpose": "Decision 2 (PIT joins) marked SUPERSEDED 2026-04-30; Decisions 1 (table retraction) + 3 (handcrafted backends) remain live"}
   ],
   "infrastructure_state": {
     "branch": "v2/greenfield",
-    "head": "6c3e5ad",
-    "commits_this_session": 27,
+    "head": "2d58d80",
+    "commits_this_session": 1,
     "uncommitted_files": [
-      {"path": "beava-design-system/project/ui_kits/learn/*", "status": "modified", "note": "pre-existing (website work); not relevant to phase 12"},
-      {"path": "beava-website/project/guide/index.html", "status": "modified", "note": "pre-existing"},
-      {"path": "Various .planning/advanced-recipes/, /Launch_beava-bench_*.trace/, etc.", "status": "untracked", "note": "pre-existing"}
+      {"path": "beava-design-system/project/ui_kits/learn/*", "status": "modified", "note": "pre-existing (website work); not relevant to this pivot"},
+      {"path": "beava-website/project/guide/index.html + various .planning/advanced-recipes/, /Launch_beava-bench_*.trace/", "status": "untracked", "note": "pre-existing"}
     ],
-    "test_status": "43/44 workspace tests PASS; phase11_smoke::all_eleven_ops_round_trip_through_http now deterministic-fail (3/3 reruns) — flagged as P0 in CORRECTNESS-PATH",
-    "binary_status": "target/release/{beava, beava-bench-v18} built post-12-09; symbols stripped (Cargo.toml strip='symbols'); rebuild with RUSTFLAGS='-C debuginfo=2' for samply re-analysis"
+    "test_status": "phase11_smoke regression still deterministic-fail — folded into Phase 12.6 TestServerV18 migration",
+    "binary_status": "target/release/{beava, beava-bench-v18} from prior session (pre-pivot); will be rebuilt during 12.6 execution"
   },
-  "key_locked_decisions_carried_forward": [
-    {"decision": "Single apply thread forever", "memory": "project_no_sharded_apply", "implication": "Beava's per-instance throughput ceiling = single apply thread; horizontal scale via multi-instance Redis-cluster pattern"},
-    {"decision": "mio data plane only, no tokio dual-runtime", "memory": "project_phase18_no_dual_runtime", "implication": "All data-plane work goes through ServerV18 / mio; tokio retained for admin endpoints only"},
-    {"decision": "Read-path Layers 1+2 parked", "session": "2026-04-29", "implication": "Post-v0 perf polish; revisit after Phase 13 Hetzner samply"}
-  ],
-  "next_action_recommended": "Review .planning/CORRECTNESS-PATH.md → choose top priority (suggest Phase 14 streaming bug or Plan 12-10 push-and-get) → /gsd-resume-work to load context for that phase",
-  "context_notes": "User explicitly said: 'park the phase 1 and 2' (referring to read-path Layers 1+2). 'Sounds good draft the correctness path and pause the work so I can continue reviewing correctness in the next session.' Pause is intentional — let user review CORRECTNESS-PATH.md fresh, then pick what to tackle. Do not auto-advance."
+  "next_action_recommended": "/gsd-discuss-phase 12.6 — gather scope-specific decisions for v0 surface reduction. Discuss should surface gray areas: (a) TestServerV18 harness shape — drop-in replacement vs new test pattern; (b) wire schema bump strategy — new version handle old+new for one release vs hard cutover; (c) dead-code threshold for 'sweep complete' (cargo-deadcode % target); (d) smoke-test fate per file (migrate vs delete vs replicate elsewhere); (e) REQUIREMENTS sweep depth (touch every event_time/join reference vs just the SDK-JOIN section); (f) docs touch scope (beava.dev guide pages, recipes — some require website work alongside); (g) phase-12-joins branch handling during merge — joins plumbing is now dead architecture; (h) plan ordering — kill axum first vs strip event-time first vs interleave",
+  "context_notes": "User explicitly framed v0 polish as the most important thing. Phase 12.6 (surface reduction) + Phase 13 minimum (packaging + quickstart + readme + website final) is the polish path. Plan 12-10 push-and-get DEFERRED (\"we probably dont need B for now\"). phase11_smoke folds into 12.6's TestServerV18 migration. Don't auto-advance — let user open Phase 12.6 discuss fresh next session with full attention. The architectural commitment is FINAL — no more pivot-shaped questions next session, only scope-shaped questions about how to execute the locked direction. If next session surfaces a request to revisit any of the permanent architectural decisions (event-time, joins, watermarks, PIT), surface it as an explicit override request requiring a new ADR."
 }
