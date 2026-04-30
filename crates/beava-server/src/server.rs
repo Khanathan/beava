@@ -2239,10 +2239,23 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
         }
-        GlueResponse::PushReplay { registry_version } => {
-            let body = serde_json::json!({"replay": true, "registry_version": registry_version});
-            let b = serde_json::to_vec(&body).unwrap_or_default();
-            encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
+        GlueResponse::PushReplay {
+            registry_version,
+            cached_body,
+        } => {
+            // Plan 12.6-15: byte-identical replay (success criterion #2). When
+            // `cached_body` is `Some(bytes)`, those bytes ARE the original
+            // /push response body — frame them verbatim. When `None` (TCP
+            // legacy fallback / no cache hit body), synthesise a generic
+            // `{replay: true, registry_version: …}` envelope.
+            if let Some(cached) = cached_body {
+                encode_tcp_frame_bytes(OP_PUSH, CT_JSON, cached, buf);
+            } else {
+                let body =
+                    serde_json::json!({"replay": true, "registry_version": registry_version});
+                let b = serde_json::to_vec(&body).unwrap_or_default();
+                encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
+            }
         }
         // Plan 12.6-01: register response (success and error paths funnel
         // through here). `body` is pre-serialised by
@@ -2303,9 +2316,22 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version, "idempotent_replay": false});
             (200, serde_json::to_vec(&body).unwrap_or_default())
         }
-        GlueResponse::PushReplay { registry_version } => {
-            let body = serde_json::json!({"idempotent_replay": true, "registry_version": registry_version});
-            (200, serde_json::to_vec(&body).unwrap_or_default())
+        GlueResponse::PushReplay {
+            registry_version,
+            cached_body,
+        } => {
+            // Plan 12.6-15: byte-identical replay (success criterion #2).
+            // The cached `Bytes` IS the verbatim original /push response
+            // body (e.g. `{ack_lsn:N, idempotent_replay:false,
+            // registry_version:V}`); pass it through unchanged. When
+            // `None` (TCP / cache miss), synthesise the legacy generic
+            // `{idempotent_replay: true, registry_version: V}` shape.
+            if let Some(cached) = cached_body {
+                (200, cached.to_vec())
+            } else {
+                let body = serde_json::json!({"idempotent_replay": true, "registry_version": registry_version});
+                (200, serde_json::to_vec(&body).unwrap_or_default())
+            }
         }
         // Plan 12.6-01: HTTP /register response — body is pre-serialised
         // by `register::register_outcome_to_glue` to match the legacy
@@ -2493,10 +2519,21 @@ fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wi
             let b = serde_json::to_vec(&body).unwrap_or_default();
             beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
         }
-        GlueResponse::PushReplay { registry_version } => {
-            let body = serde_json::json!({"replay": true, "registry_version": registry_version});
-            let b = serde_json::to_vec(&body).unwrap_or_default();
-            beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
+        GlueResponse::PushReplay {
+            registry_version,
+            cached_body,
+        } => {
+            // Plan 12.6-15: byte-identical replay — see encode_glue_response_tcp
+            // for the live encoder. This dead-code helper mirrors the same
+            // shape for compile-correctness.
+            if let Some(cached) = cached_body {
+                beava_core::wire::Frame::new(OP_PUSH, CT_JSON, cached)
+            } else {
+                let body =
+                    serde_json::json!({"replay": true, "registry_version": registry_version});
+                let b = serde_json::to_vec(&body).unwrap_or_default();
+                beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
+            }
         }
         // Plan 12.6-01: register response (body pre-serialised by
         // `register::register_outcome_to_glue`); both success and error

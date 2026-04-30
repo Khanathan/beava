@@ -56,8 +56,16 @@ pub enum GlueResponse {
     },
     /// Push accepted; `ack_lsn` is the WAL LSN.
     PushAck { ack_lsn: u64, registry_version: u32 },
-    /// Push idempotent-replay; identical to the original ACK.
-    PushReplay { registry_version: u32 },
+    /// Push idempotent-replay.
+    ///
+    /// Plan 12.6-15: `cached_body` carries the byte-identical response from
+    /// the original push (success criterion #2 byte-identical replay). When
+    /// `None`, the encoder synthesises a generic `{replay: true, ...}`
+    /// envelope (legacy fallback for TCP and tests with no cache hit body).
+    PushReplay {
+        registry_version: u32,
+        cached_body: Option<Bytes>,
+    },
     /// Push rejected (unknown event, schema failure, etc.)
     PushError {
         code: &'static str,
@@ -289,6 +297,7 @@ async fn dispatch_push(
         },
         PushOutcome::IdempotentReplay { .. } => GlueResponse::PushReplay {
             registry_version: app.dev_agg.registry.version() as u32,
+            cached_body: None,
         },
         PushOutcome::Error {
             code,

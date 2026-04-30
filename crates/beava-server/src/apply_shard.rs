@@ -585,8 +585,14 @@ impl ApplyShard {
             .and_then(|k| extract_dedupe_str_from_row(&row, k));
 
         if let (Some(_), Some(ref key_str)) = (descriptor.dedupe_key.as_ref(), &dedupe_str) {
-            if let Some(_cached) = self.state.idem_cache.get(event_name, key_str, now_ms) {
-                return GlueResponse::PushReplay { registry_version };
+            if let Some(cached) = self.state.idem_cache.get(event_name, key_str, now_ms) {
+                // Plan 12.6-15: byte-identical replay (success criterion #2).
+                // The cached `Bytes` IS the original /push response body —
+                // pass it through to the encoder verbatim.
+                return GlueResponse::PushReplay {
+                    registry_version,
+                    cached_body: Some(cached),
+                };
             }
         }
 
