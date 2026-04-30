@@ -45,15 +45,19 @@ async fn register_txn_with_dedupe(ts: &beava_server::testing::TestServer, window
 #[tokio::test]
 async fn phase6_criterion_1_durability_invariant() {
     // Durability invariant (kill-before-fsync = no record / kill-after-ACK =
-    // record present) is exercised by `phase6_crash.rs` which owns the
-    // subprocess lifecycle. This test asserts the crash-test file is present
-    // as a documentation guardrail.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    // record present) was historically exercised by `phase6_crash.rs` which
+    // owned the axum-server subprocess lifecycle. Plan 12.6-07 deleted that
+    // file along with the legacy axum data plane; the equivalent crash-recovery
+    // coverage on the mio data plane is provided by `phase18_*` tests +
+    // `wal_env_var_tunables.rs`. This test now asserts that mio-side
+    // crash-recovery harness still exists post-12.6-07.
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mio_recovery = manifest_dir
         .join("tests")
-        .join("phase6_crash.rs");
+        .join("phase18_02_inline_wal_test.rs");
     assert!(
-        path.exists(),
-        "phase6_crash.rs must exist to cover criterion #1 (durability)"
+        mio_recovery.exists(),
+        "mio-side crash-recovery harness (phase18_02_inline_wal_test.rs) must exist post-12.6-07 (replaces deleted phase6_crash.rs)"
     );
 }
 

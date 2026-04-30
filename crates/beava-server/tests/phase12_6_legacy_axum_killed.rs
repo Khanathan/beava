@@ -37,10 +37,13 @@ fn workspace_root() -> PathBuf {
 #[test]
 fn legacy_axum_files_deleted() {
     let root = workspace_root();
+    // Files that must be DELETED post-Plan-12.6-07 (mio is the sole data-plane runtime).
+    // http_admin.rs is intentionally KEPT — it is the canonical tokio admin sidecar
+    // (`BoundAdminServer`) that ServerV18 binds at `cfg.admin_addr`. See Plan 07 SUMMARY
+    // §Deviations.
     for path in [
         "crates/beava-server/src/push.rs",
         "crates/beava-server/src/http.rs",
-        "crates/beava-server/src/http_admin.rs",
         "crates/beava-server/src/push_and_get.rs",
     ] {
         let p = root.join(path);
@@ -49,6 +52,12 @@ fn legacy_axum_files_deleted() {
             "{path} must be deleted post-Plan-12.6-07 (mio is the sole data-plane runtime)"
         );
     }
+    // Positive assertion: http_admin.rs MUST exist as the admin sidecar.
+    let admin = root.join("crates/beava-server/src/http_admin.rs");
+    assert!(
+        admin.exists(),
+        "crates/beava-server/src/http_admin.rs must exist — it is the canonical tokio admin sidecar bound by ServerV18 (per Plan-12.6-07 SUMMARY §Deviations)"
+    );
 }
 
 #[test]
