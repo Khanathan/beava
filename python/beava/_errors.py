@@ -13,6 +13,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Plan 12.6-08 (no-event-time pivot, 2026-04-30): event_time_field_invalid
+# kind removed; the SDK no longer issues it because the @bv.event decorator
+# rejects event_time field declarations at decorator time (TypeError).
 VALIDATION_ERROR_KINDS: frozenset[str] = frozenset({
     "cycle",
     "missing_upstream",
@@ -20,7 +23,6 @@ VALIDATION_ERROR_KINDS: frozenset[str] = frozenset({
     "bad_return_type",
     "unknown_field_type",
     "table_key_invalid",
-    "event_time_field_invalid",
     "registration_conflict",
     "duplicate_name",
 })

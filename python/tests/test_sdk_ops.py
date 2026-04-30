@@ -30,7 +30,7 @@ from beava._tables import TableDerivation
 class Transaction:
     amount: float
     kind: str
-    event_time: int
+    ts: int
 
 
 @bv.table(key="user_id")
@@ -59,10 +59,10 @@ def test_filter_returns_new_derivation() -> None:
 
 
 def test_select_returns_new_derivation() -> None:
-    d1 = Transaction.select("amount", "event_time")
+    d1 = Transaction.select("amount", "ts")
     assert d1 is not Transaction
     assert isinstance(d1, EventDerivation)
-    assert d1.ops == [{"op": "select", "fields": ["amount", "event_time"]}]
+    assert d1.ops == [{"op": "select", "fields": ["amount", "ts"]}]
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ def test_chained_ops_append_to_ops_list() -> None:
     filter_only = Transaction.filter(bv.col("amount") > 0)
     assert len(filter_only.ops) == 1  # sanity pre-condition
 
-    d3 = filter_only.select("amount", "event_time").with_columns(
+    d3 = filter_only.select("amount", "ts").with_columns(
         is_big=bv.col("amount") > 500
     )
 
@@ -165,7 +165,7 @@ def test_chained_ops_append_to_ops_list() -> None:
 
 def test_source_reference_preserved_through_chain() -> None:
     d1 = Transaction.filter(bv.col("amount") > 0)
-    d2 = d1.select("amount", "event_time")
+    d2 = d1.select("amount", "ts")
     d3 = d2.with_columns(is_big=bv.col("amount") > 500)
     # Can trace back to the original source through the upstream chain.
     assert d3.upstream is d2

@@ -18,15 +18,17 @@ from beava._tables import TableSource
 
 
 def _make_event(name: str, upstreams: list[str] | None = None) -> EventSource:
-    """Return a minimal EventSource with a single str field."""
+    """Return a minimal EventSource with a single str field.
+
+    Post-Plan-12.6-08: EventSource no longer accepts event_time_field /
+    tolerate_delay_ms parameters per the no-event-time pivot.
+    """
     src = EventSource(
         name=name,
         schema={"x": FieldSpec(name="x", py_type=str, optional=False)},
-        event_time_field=None,
         dedupe_key=None,
         dedupe_window_ms=None,
         keep_events_for_ms=None,
-        tolerate_delay_ms=None,
     )
     if upstreams is not None:
         src._upstreams = upstreams  # type: ignore[assignment]
@@ -216,12 +218,12 @@ def test_validate_returns_validation_error_instances() -> None:
     a = _make_derivation("X", upstreams=["Unknown"])
     errs = validate_descriptors([a])
     assert all(isinstance(e, ValidationError) for e in errs)
+    # Plan 12.6-08: event_time_field_invalid removed per no-event-time pivot.
     assert errs[0].kind in {
         "cycle",
         "missing_upstream",
         "duplicate_name",
         "unknown_field_type",
-        "event_time_field_invalid",
         "table_key_invalid",
         "bad_return_type",
         "schema_mismatch",

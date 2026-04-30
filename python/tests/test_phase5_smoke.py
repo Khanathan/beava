@@ -32,7 +32,8 @@ pytestmark = pytest.mark.phase5
 
 @bv.event
 class Transaction:
-    event_time: int
+    # Plan 12.6-08: event_time field removed from class form per the
+    # no-event-time pivot. The server stamps wall-clock arrival time.
     user_id: str
     amount: float
     status: str

@@ -31,26 +31,28 @@ from beava._validate import topo_sort, validate_descriptors
 # -- event sources (3) --
 
 
+# Plan 12.6-08: event_time field removed from fixtures per the no-event-time
+# pivot. The server stamps wall-clock arrival time on every push.
 @bv.event
 class BenchTx:
     user_id: str
     amount: float
     status: str
-    event_time: int
+    ts: int
 
 
 @bv.event
 class BenchLogin:
     user_id: str
     ip: str
-    event_time: int
+    ts: int
 
 
 @bv.event
 class BenchPageView:
     user_id: str
     url: str
-    event_time: int
+    ts: int
 
 
 # -- event derivations (3): filter → with_columns → select chain on BenchTx --
