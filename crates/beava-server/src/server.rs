@@ -2234,28 +2234,41 @@ fn encode_glue_response_tcp(
             ack_lsn,
             registry_version,
         } => {
-            let body =
-                serde_json::json!({"ack_lsn": ack_lsn, "registry_version": registry_version});
+            // Plan 12.6-15: include `idempotent_replay: false` flag so phase8
+            // TCP push tests can discriminate between fresh ack and dedupe
+            // replay. Matches legacy axum TCP encoder shape.
+            let body = serde_json::json!({
+                "ack_lsn": ack_lsn,
+                "idempotent_replay": false,
+                "registry_version": registry_version,
+            });
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
         }
         GlueResponse::PushReplay {
             registry_version,
-            cached_body,
+            ack_lsn,
+            cached_body: _,
         } => {
-            // Plan 12.6-15: byte-identical replay (success criterion #2). When
-            // `cached_body` is `Some(bytes)`, those bytes ARE the original
-            // /push response body — frame them verbatim. When `None` (TCP
-            // legacy fallback / no cache hit body), synthesise a generic
-            // `{replay: true, registry_version: …}` envelope.
-            if let Some(cached) = cached_body {
-                encode_tcp_frame_bytes(OP_PUSH, CT_JSON, cached, buf);
-            } else {
-                let body =
-                    serde_json::json!({"replay": true, "registry_version": registry_version});
-                let b = serde_json::to_vec(&body).unwrap_or_default();
-                encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
-            }
+            // Plan 12.6-15: TCP idempotent-replay body. TCP has no
+            // replay header (HTTP gets `X-Beava-Idempotent-Replay: 1`);
+            // the body flag `idempotent_replay: true` IS the
+            // discriminator. Include the cached `ack_lsn` so callers can
+            // assert `ack1.ack_lsn == ack2.ack_lsn` (dedupe replay LSN
+            // identity per phase8_tcp_push expectations).
+            let body = match ack_lsn {
+                Some(lsn) => serde_json::json!({
+                    "ack_lsn": lsn,
+                    "idempotent_replay": true,
+                    "registry_version": registry_version,
+                }),
+                None => serde_json::json!({
+                    "idempotent_replay": true,
+                    "registry_version": registry_version,
+                }),
+            };
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
         }
         // Plan 12.6-01: register response (success and error paths funnel
         // through here). `body` is pre-serialised by
@@ -2266,8 +2279,17 @@ fn encode_glue_response_tcp(
         GlueResponse::Register { body, tcp_op, .. } => {
             encode_tcp_frame_bytes(*tcp_op, CT_JSON, body, buf);
         }
-        GlueResponse::PushError { code, .. } => {
-            let body = serde_json::json!({"code": code});
+        GlueResponse::PushError {
+            code,
+            registry_version,
+        } => {
+            // Plan 12.6-15: TCP error-frame body must match legacy axum
+            // shape — `{"error": {"code": "..."}}`, not `{"code": "..."}`.
+            // phase8_tcp_push tests assert on `body["error"]["code"]`.
+            let body = serde_json::json!({
+                "error": {"code": code},
+                "registry_version": registry_version,
+            });
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
@@ -2323,13 +2345,14 @@ fn encode_glue_response_http(
         }
         GlueResponse::PushReplay {
             registry_version,
+            ack_lsn: _,
             cached_body,
         } => {
             // Plan 12.6-15: byte-identical replay (success criterion #2).
             // The cached `Bytes` IS the verbatim original /push response
             // body (e.g. `{ack_lsn:N, idempotent_replay:false,
             // registry_version:V}`); pass it through unchanged. When
-            // `None` (TCP / cache miss), synthesise the legacy generic
+            // `None` (cache miss), synthesise the legacy generic
             // `{idempotent_replay: true, registry_version: V}` shape.
             //
             // Plan 12.6-15: also emit the `x-beava-idempotent-replay: 1`
@@ -2532,19 +2555,23 @@ fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wi
         }
         GlueResponse::PushReplay {
             registry_version,
-            cached_body,
+            ack_lsn,
+            cached_body: _,
         } => {
-            // Plan 12.6-15: byte-identical replay — see encode_glue_response_tcp
-            // for the live encoder. This dead-code helper mirrors the same
-            // shape for compile-correctness.
-            if let Some(cached) = cached_body {
-                beava_core::wire::Frame::new(OP_PUSH, CT_JSON, cached)
-            } else {
-                let body =
-                    serde_json::json!({"replay": true, "registry_version": registry_version});
-                let b = serde_json::to_vec(&body).unwrap_or_default();
-                beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
-            }
+            // Plan 12.6-15: dead-code helper — mirror live encoder shape.
+            let body = match ack_lsn {
+                Some(lsn) => serde_json::json!({
+                    "ack_lsn": lsn,
+                    "idempotent_replay": true,
+                    "registry_version": registry_version,
+                }),
+                None => serde_json::json!({
+                    "idempotent_replay": true,
+                    "registry_version": registry_version,
+                }),
+            };
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
         }
         // Plan 12.6-01: register response (body pre-serialised by
         // `register::register_outcome_to_glue`); both success and error

@@ -585,13 +585,20 @@ impl ApplyShard {
             .and_then(|k| extract_dedupe_str_from_row(&row, k));
 
         if let (Some(_), Some(ref key_str)) = (descriptor.dedupe_key.as_ref(), &dedupe_str) {
-            if let Some(cached) = self.state.idem_cache.get(event_name, key_str, now_ms) {
-                // Plan 12.6-15: byte-identical replay (success criterion #2).
-                // The cached `Bytes` IS the original /push response body —
-                // pass it through to the encoder verbatim.
+            if let Some((cached_ack_lsn, cached_body)) = self
+                .state
+                .idem_cache
+                .get_with_ack_lsn(event_name, key_str, now_ms)
+            {
+                // Plan 12.6-15: byte-identical replay (HTTP success
+                // criterion #2). HTTP encoder emits `cached_body` verbatim;
+                // TCP encoder uses `ack_lsn` to build a `{ack_lsn,
+                // idempotent_replay: true, …}` body (TCP has no replay
+                // header — the body flag IS the discriminator).
                 return GlueResponse::PushReplay {
                     registry_version,
-                    cached_body: Some(cached),
+                    ack_lsn: Some(cached_ack_lsn),
+                    cached_body: Some(cached_body),
                 };
             }
         }

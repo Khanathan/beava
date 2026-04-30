@@ -47,6 +47,20 @@ impl IdemCache {
         Some(entry.response_bytes.clone())
     }
 
+    /// Plan 12.6-15: lookup that returns both the cached body bytes AND the
+    /// `ack_lsn` of the original push. The TCP push encoder needs the
+    /// ack_lsn to frame the dedupe-replay body
+    /// (`{ack_lsn, idempotent_replay: true, registry_version}`); HTTP
+    /// already gets it from the verbatim cached body.
+    pub fn get_with_ack_lsn(&self, stream: &str, key: &str, now_ms: u64) -> Option<(u64, Bytes)> {
+        let g = self.inner.read();
+        let entry = g.get(&(stream.to_string(), key.to_string()))?;
+        if entry.expires_at_ms <= now_ms {
+            return None;
+        }
+        Some((entry.ack_lsn, entry.response_bytes.clone()))
+    }
+
     pub fn put(&self, stream: String, key: String, entry: CachedEntry) {
         self.inner.write().insert((stream, key), entry);
     }

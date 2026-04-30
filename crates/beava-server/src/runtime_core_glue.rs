@@ -59,11 +59,13 @@ pub enum GlueResponse {
     /// Push idempotent-replay.
     ///
     /// Plan 12.6-15: `cached_body` carries the byte-identical response from
-    /// the original push (success criterion #2 byte-identical replay). When
-    /// `None`, the encoder synthesises a generic `{replay: true, ...}`
-    /// envelope (legacy fallback for TCP and tests with no cache hit body).
+    /// the original push (HTTP success criterion #2 byte-identical replay).
+    /// `ack_lsn` is the original push's ack — used by the TCP encoder to
+    /// build a `{ack_lsn, idempotent_replay: true, ...}` envelope (TCP has
+    /// no idempotent-replay header; the body flag IS the discriminator).
     PushReplay {
         registry_version: u32,
+        ack_lsn: Option<u64>,
         cached_body: Option<Bytes>,
     },
     /// Push rejected (unknown event, schema failure, etc.)
@@ -297,6 +299,7 @@ async fn dispatch_push(
         },
         PushOutcome::IdempotentReplay { .. } => GlueResponse::PushReplay {
             registry_version: app.dev_agg.registry.version() as u32,
+            ack_lsn: None,
             cached_body: None,
         },
         PushOutcome::Error {
