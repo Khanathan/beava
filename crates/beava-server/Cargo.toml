@@ -198,6 +198,11 @@ required-features = ["testing"]
 name = "phase12_6_legacy_axum_killed"
 path = "tests/phase12_6_legacy_axum_killed.rs"
 
+# ─── Plan 12.6-10 — mio-only architectural test (single hot-path entry) ─────
+[[test]]
+name = "phase12_6_mio_only_dataplane"
+path = "tests/phase12_6_mio_only_dataplane.rs"
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
