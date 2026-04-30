@@ -1143,6 +1143,40 @@ mod tests {
     use crate::schema::{EventSchema, FieldType};
     use std::collections::BTreeMap;
 
+    /// Phase 12.6 Plan 06 (Task 2.a / RED) — guards the D-03 hard-rip surface
+    /// at the EventDescriptor level. Reads the source via `include_str!` and
+    /// asserts the post-rip tokens are absent. RED today because EventDescriptor
+    /// still declares `event_time_field`/`tolerate_delay_ms`. Flips GREEN once
+    /// Task 2.b deletes those fields.
+    ///
+    /// **Forbidden tokens are reconstructed at runtime via chunked `concat`** so
+    /// the test source itself does not contain the literals it forbids — same
+    /// pattern as Plan 05's agg_windowed RED test (otherwise a future
+    /// `sed -i s/event_time_field//g` rename would corrupt this test).
+    #[test]
+    fn event_descriptor_has_no_event_time_field_phase_12_6_06() {
+        let src = include_str!("registry.rs");
+        // Strip line comments so doc-comments mentioning the historical
+        // field name don't false-positive the assertion.
+        let stripped: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| !l.trim_start().starts_with("///"))
+            .filter(|l| !l.trim_start().starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let forbidden_etf = ["event", "_time_field:"].concat();
+        let forbidden_tdm = ["tolerate", "_delay_ms:"].concat();
+        assert!(
+            !stripped.contains(&forbidden_etf),
+            "Phase 12.6 Plan 06 D-03: EventDescriptor must not declare an `{forbidden_etf}` field after the hard rip. Found in registry.rs source."
+        );
+        assert!(
+            !stripped.contains(&forbidden_tdm),
+            "Phase 12.6 Plan 06 D-03: EventDescriptor must not declare a `{forbidden_tdm}` field after the hard rip. Found in registry.rs source."
+        );
+    }
+
     fn make_event_schema() -> EventSchema {
         let mut fields = BTreeMap::new();
         fields.insert("card_id".to_string(), FieldType::Str);

@@ -429,6 +429,34 @@ async fn post_dev_apply_events(
 mod tests {
     use super::*;
     use crate::http::{router, ReadinessFlag};
+
+    /// Phase 12.6 Plan 06 (Task 2.a / RED) — guards the D-03 hard-rip surface
+    /// at the AppState level. Reads the source via `include_str!` and asserts
+    /// the post-rip tokens are absent. RED today because DevAggState still
+    /// declares `max_event_time_ms` (and apply_shard / recovery still write
+    /// to it). Flips GREEN once Task 2.b renames the field to `query_time_ms`
+    /// (or deletes it entirely) and propagates the rename.
+    ///
+    /// **Forbidden token is reconstructed at runtime via chunked `concat`** so
+    /// the test source itself does not contain the literal it forbids — same
+    /// pattern as Plan 05's agg_windowed RED test.
+    #[test]
+    fn dev_agg_state_has_no_max_event_time_ms_phase_12_6_06() {
+        let src = include_str!("registry_debug.rs");
+        let stripped: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| !l.trim_start().starts_with("///"))
+            .filter(|l| !l.trim_start().starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let forbidden_field = ["max", "_event_time_ms"].concat();
+        assert!(
+            !stripped.contains(&forbidden_field),
+            "Phase 12.6 Plan 06 D-03: DevAggState must not carry a `{forbidden_field}` field/atomic after the hard rip. Found in registry_debug.rs source."
+        );
+    }
+
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
     use beava_core::op_node::OpNode;
