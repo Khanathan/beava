@@ -1,0 +1,69 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-04-30T00:00:00Z",
+  "session_summary": "Plans 12-08 + 12-09 shipped on v2/greenfield (HEAD 6c3e5ad). 27 commits across both plans + tracking + roadmap park note. Read-path investigation completed via 3 parallel agents; Layers 1+2 (read response_batch bypass + Darwin EVFILT_USER) PARKED for post-v0. User pivoted away from perf chasing to correctness + ship-readiness.",
+  "phase": "12",
+  "phase_dir": ".planning/phases/12-server-side-async-push-coalescing",
+  "next_focus": "correctness + functional completeness + ship-readiness",
+  "next_focus_doc": ".planning/CORRECTNESS-PATH.md",
+  "completed_this_session": [
+    {"item": "Plan 12-08 execute", "result": "apply-loop overhead reduction shipped; orchestration 1095→75 ns/event = 14.6× speedup; fraud-team/tcp +10.9%, fraud-team/http +82%; 11 TDD-paired commits + 1 fmt + tracking", "commits": "adde5e6..c6471bd + 75daa42 (fmt drift)"},
+    {"item": "Plan 12-09 execute", "result": "TCP /get msgpack default; HTTP unchanged; D-A..D-E locked decisions honored; STRETCH miss documented (~2-3% codec lift vs 40% predicted); 14 TDD-paired commits + SUMMARY", "commits": "ba8fead..98e305b"},
+    {"item": "Read-path 3-agent investigation", "result": "Identified 4 layers of read-path optimization (response_batch bypass, EVFILT_USER, json! removal, dispatch loop cleanup); reports preserved at /tmp/read-{encode,dispatch,transport}-overhead.md", "decision": "PARKED for post-v0"},
+    {"item": "Throughput-cap empirical verification", "result": "Confirmed Apple-M4 fraud-team /get_batch caps at ~220k r/s (server-side, not bench-bound); apply at ~10% CPU during saturation; gap dominated by inter-event coordination latency"},
+    {"item": "BATCH_SIZE_FLUSH=1 experiment", "result": "Both reads and writes regressed; confirmed Mach port wake cost on Darwin is the binding constraint, not convoy clustering; reverted"},
+    {"item": "Multi-process bench scaling test", "result": "1 process × RW=128 = 197k r/s; 2 procs × RW=128 = 213k aggregate; 4 procs × RW=64 = 222k aggregate. Server-side cap, not bench-side"},
+    {"item": "Roadmap park note for Layers 1+2", "result": "Documented in ROADMAP.md as deferred until post-Hetzner-baseline; commits 6c3e5ad"}
+  ],
+  "drafted_for_review": [
+    {"doc": ".planning/CORRECTNESS-PATH.md", "summary": "Prioritized P0/P1/P2/P3 list of remaining v0 work. P0 = Phase 14 streaming bug + phase11_smoke regression. P1 = Plan 12-10 push-and-get + Phase 12-01..06 follow-up + Phase 14.1. P2 = Phase 13 Hetzner sweep with shard scaling + docs/packaging + metric wiring. P3 = post-v0 polish."}
+  ],
+  "key_questions_user_asked_this_session": [
+    {"q": "Why is Hetzner box performance so low?", "a": "Three factors: (1) Apple-M4's per-core single-thread perf is ~2× older EPYC KVM cores; Beava's apply is single-threaded so single-thread perf dominates. (2) KVM virtualization overhead ~10-15%. (3) Bench-side glibc mmap_lock contention hits 19% of CPU at saturated push (not server-side issue). Recommendation: use Hetzner CCX (dedicated cores) or AWS Graviton3 c7g.4xlarge for Phase 13 sweep."},
+    {"q": "Can we do shard benchmark on 16 CPU?", "a": "Yes — recommended as part of Phase 13 Hetzner sweep. Test 1/2/4/8 Beava instances, each on different ports, key%N sharded at bench-side, aggregate sustained_eps. Validates project_no_sharded_apply commitment. ~1-2 hours implementation + ~2-4 hours data. Strong v0 marketing data point if scaling is near-linear."},
+    {"q": "Are we good on read/write throughput? Should we focus on correctness?", "a": "YES, pivot to correctness. Reads (210k r/s fraud-team) + writes (110k EPS fraud-team / 700k EPS small) are competitive. Apply is at 100% efficiency for fraud-team push (architectural ceiling). Layer 1-2 fixes give 1.5-2× more on reads but are diminishing returns. The remaining v0 work is correctness (Phase 14 streaming bug), functional completeness (Plan 12-10 push-and-get + 12-01..06 follow-up), and ship-readiness (Phase 13 docs/packaging)."}
+  ],
+  "remaining_work_priority": [
+    {"priority": "P0", "item": "Phase 14 — streaming silent-data-loss bug in agg_windowed", "next_action": "/gsd-discuss-phase 14"},
+    {"priority": "P0", "item": "phase11_smoke regression — was flaky, now deterministic-fail", "next_action": "/gsd-debug investigate v[\"a\"].as_f64() failure at phase11_smoke.rs:235"},
+    {"priority": "P1", "item": "Plan 12-10 — push-and-get on mio HTTP+TCP", "next_action": "/gsd-execute-phase 12 (PLAN.md ready, GlueResponse shape unblocked by 12-09)"},
+    {"priority": "P1", "item": "Phase 12-01..06 follow-up", "next_action": "Continue on .claude/worktrees/phase-12-followup"},
+    {"priority": "P1", "item": "Phase 14.1 streaming opt-in modifiability", "next_action": "After Phase 14 lands"},
+    {"priority": "P2", "item": "Phase 13 Hetzner sweep + shard-scaling validation", "next_action": "Scope as Plan 13.x; use CCX-class Hetzner or AWS Graviton3"},
+    {"priority": "P2", "item": "Phase 13 docs + packaging (PyPI, Docker, GitHub releases, quickstart)", "next_action": "Incremental, minimum-viable subset"},
+    {"priority": "P2", "item": "Phase 13 metric-counter wiring + cold-entity GC", "next_action": "Continue on .claude/worktrees/phase-13-followup"},
+    {"priority": "P3", "item": "Plan 12-11 RecyclableBytes wrapper (conditional)", "next_action": "Re-evaluate after Phase 13 samply"},
+    {"priority": "P3", "item": "Plan 12-12 read-path Layers 1+2 (parked)", "next_action": "/gsd-plan-phase 12-12 post-Hetzner-baseline if measurements justify"},
+    {"priority": "P3", "item": "Phase 15 event-time PIT temporal store", "next_action": "Depends on Phase 14.1"},
+    {"priority": "P3", "item": "Phase 18 wrap (SUMMARY + verification + worktree archival)", "next_action": "Housekeeping ~30 min"}
+  ],
+  "session_artifacts": [
+    {"path": ".planning/CORRECTNESS-PATH.md", "purpose": "Drafted correctness roadmap for user review next session"},
+    {"path": "/tmp/read-encode-overhead.md", "purpose": "Read-path encode investigation (json! macro removal, BTreeMap→Vec, hand-rolled writer)"},
+    {"path": "/tmp/read-dispatch-loop.md", "purpose": "Dispatch-loop investigation (compiled_aggregation, parse_entity_key cache, feat_name.clone)"},
+    {"path": "/tmp/read-transport-overhead.md", "purpose": "Transport investigation (inline write, EVFILT_USER, response_batch bypass)"},
+    {"path": "/tmp/parse-investigation.md", "purpose": "BatchGetBody parse cost analysis (23 allocations per parse)"},
+    {"path": "/tmp/throughput-gap.md", "purpose": "Bench-side vs server-side throughput-gap analysis"},
+    {"path": "/tmp/server-prof.json.gz", "purpose": "samply trace at 159k r/s read saturation (symbols stripped — debug rebuild needed for re-analysis)"},
+    {"path": "/tmp/beava-trace.log", "purpose": "BEAVA_TRACE_APPLY_TIMING per-event breakdown for /get_batch + push events"}
+  ],
+  "infrastructure_state": {
+    "branch": "v2/greenfield",
+    "head": "6c3e5ad",
+    "commits_this_session": 27,
+    "uncommitted_files": [
+      {"path": "beava-design-system/project/ui_kits/learn/*", "status": "modified", "note": "pre-existing (website work); not relevant to phase 12"},
+      {"path": "beava-website/project/guide/index.html", "status": "modified", "note": "pre-existing"},
+      {"path": "Various .planning/advanced-recipes/, /Launch_beava-bench_*.trace/, etc.", "status": "untracked", "note": "pre-existing"}
+    ],
+    "test_status": "43/44 workspace tests PASS; phase11_smoke::all_eleven_ops_round_trip_through_http now deterministic-fail (3/3 reruns) — flagged as P0 in CORRECTNESS-PATH",
+    "binary_status": "target/release/{beava, beava-bench-v18} built post-12-09; symbols stripped (Cargo.toml strip='symbols'); rebuild with RUSTFLAGS='-C debuginfo=2' for samply re-analysis"
+  },
+  "key_locked_decisions_carried_forward": [
+    {"decision": "Single apply thread forever", "memory": "project_no_sharded_apply", "implication": "Beava's per-instance throughput ceiling = single apply thread; horizontal scale via multi-instance Redis-cluster pattern"},
+    {"decision": "mio data plane only, no tokio dual-runtime", "memory": "project_phase18_no_dual_runtime", "implication": "All data-plane work goes through ServerV18 / mio; tokio retained for admin endpoints only"},
+    {"decision": "Read-path Layers 1+2 parked", "session": "2026-04-29", "implication": "Post-v0 perf polish; revisit after Phase 13 Hetzner samply"}
+  ],
+  "next_action_recommended": "Review .planning/CORRECTNESS-PATH.md → choose top priority (suggest Phase 14 streaming bug or Plan 12-10 push-and-get) → /gsd-resume-work to load context for that phase",
+  "context_notes": "User explicitly said: 'park the phase 1 and 2' (referring to read-path Layers 1+2). 'Sounds good draft the correctness path and pause the work so I can continue reviewing correctness in the next session.' Pause is intentional — let user review CORRECTNESS-PATH.md fresh, then pick what to tackle. Do not auto-advance."
+}

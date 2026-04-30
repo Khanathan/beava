@@ -2,7 +2,7 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Plan 12-09 SHIPPED 2026-04-29 — TCP /get msgpack default (HTTP unchanged); GlueResponse::QueryResult{body,format} threaded; Python SDK App.get on tcp:// defaults to msgpack; D-A..D-E locked decisions honored; STRETCH miss documented (~2-3% codec lift vs predicted 40%; integer-leaf fixture not representative); next is Plan 12-10 (push-and-get; depends on 12-09's GlueResponse shape — now unblocked) or Plan 12-11 (RecyclableBytes wrapper, conditional)
+status: Plans 12-08 + 12-09 SHIPPED 2026-04-29; read-path Layers 1+2 PARKED post-v0; pivoted to correctness + ship-readiness path. Next session: review .planning/CORRECTNESS-PATH.md → choose top P0/P1 (suggest Phase 14 streaming bug, phase11_smoke regression debug, or Plan 12-10 push-and-get).
 last_updated: "2026-04-29T12:30:00.000Z"
 progress:
   total_phases: 34
