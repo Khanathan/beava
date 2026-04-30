@@ -184,26 +184,17 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     // HTTP always carries JSON bodies (content_type = CT_JSON = 0x01).
     use beava_core::wire::CT_JSON;
 
-    // Plan 12.6-14: enforce application/json on POST endpoints. Match the
-    // legacy axum register handler `is_json_content_type` semantics:
-    //   - missing header  → 415
-    //   - "application/json" or "application/json; charset=utf-8" → OK
-    //   - anything else (including "text/plain") → 415
-    // The 415 surfaces via WireRequest::HttpUnsupportedMediaType so the
-    // encoder emits the structured body legacy callers assert on.
-    let is_post = method.eq_ignore_ascii_case("POST");
-    let post_needs_json = matches!(
-        route,
-        Route::Push { .. }
-            | Route::PushSync { .. }
-            | Route::PushBatch { .. }
-            | Route::Get
-            | Route::Upsert { .. }
-            | Route::Delete { .. }
-            | Route::Retract
-            | Route::Register
-    );
-    if is_post && post_needs_json {
+    // Plan 12.6-14: enforce application/json on POST /register only —
+    // matches legacy axum `register::post_register` which had the
+    // `is_json_content_type` check. Other POST endpoints in legacy axum
+    // did not validate Content-Type and just attempted JSON parse,
+    // returning 400 on failure. Replicating that posture here keeps
+    // every existing test (event_loop_smoke / phase8_tcp_push wire
+    // shape / phase18_07_push_and_get) untouched while turning the
+    // phase2_smoke success_criterion_5 415 contract green.
+    let is_register_post =
+        method.eq_ignore_ascii_case("POST") && matches!(route, Route::Register);
+    if is_register_post {
         let ct_ok = match &content_type_header {
             None => false,
             Some(ct) => is_json_content_type(ct),
