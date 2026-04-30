@@ -10,6 +10,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::NamedTempFile;
 
+/// Plan 12.6-15: serialize tests that spawn the full beava binary —
+/// concurrent subprocess boots stress macOS launch-budget under default
+/// cargo-test parallelism, leading to flaky assertions on the override-port
+/// bind window.
+static CLI_SUBPROCESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn beava_bin() -> &'static str {
     env!("CARGO_BIN_EXE_beava")
 }
@@ -65,6 +71,7 @@ fn unique_snapshot_dir() -> std::path::PathBuf {
 
 #[test]
 fn loads_valid_config_starts_and_prints_banner() {
+    let _guard = CLI_SUBPROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let port = free_port();
     let mut f = NamedTempFile::new().expect("tempfile");
     writeln!(f, "listen_addr: \"127.0.0.1:{port}\"\nlog_level: info").unwrap();
@@ -118,6 +125,7 @@ fn missing_config_errors_with_path_in_message() {
 
 #[test]
 fn env_var_overrides_listen_addr() {
+    let _guard = CLI_SUBPROCESS_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let port = free_port();
     let override_port = free_port();
     let mut f = NamedTempFile::new().expect("tempfile");
@@ -138,10 +146,18 @@ fn env_var_overrides_listen_addr() {
         .spawn()
         .expect("spawn server");
 
-    std::thread::sleep(Duration::from_millis(300));
-
-    // Verify the override port is actually listening (the server bound to it).
-    let is_bound = std::net::TcpStream::connect(format!("127.0.0.1:{override_port}")).is_ok();
+    // Plan 12.6-15: poll-until-bind instead of fixed 300 ms sleep. macOS
+    // launch jitter under parallel cargo-test workloads can push first-bind
+    // beyond 300 ms — the original test was flaky 1/3 runs.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut is_bound = false;
+    while std::time::Instant::now() < deadline {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{override_port}")).is_ok() {
+            is_bound = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
