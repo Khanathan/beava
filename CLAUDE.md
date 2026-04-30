@@ -75,6 +75,16 @@ git log --format='%s' <base>..<head> | grep -E '^(test|feat|fix|refactor):'
 **Retroactive coverage landed in Phase 5.5:** Phase 2.5 frame codec, Phase 3 SDK REGISTER compile (Python), Phase 4 expr parse/eval/op-chain, Phase 5 AggOp::update / WindowedOp fold / apply_event_to_aggregations.
 
 **End-to-end throughput regression contract (added Phase 7.5, enforced Phase 8 onward):** Every phase from Phase 8 onward MUST include a **throughput run** task that re-runs `crates/beava-bench` against the small/medium/large pipelines (plus any phase-specific operator-family variant) and appends a row per `(pipeline-shape, transport)` tuple to `.planning/throughput-baselines.md`. Same 10% warn / 25% block thresholds apply, measured against the **simple-fraud (small) shape** of the most recent prior baseline in the same hw-class. Plan-checker contract: a Phase 8+ plan without a "throughput run" task whose `files_modified` includes `.planning/throughput-baselines.md` is rejected. The harness lives at `crates/beava-bench/`; baselines are NOT a substitute for the per-phase criterion microbench (`perf-baselines.md`) — both gates apply.
+
+### mio-only Hot-Path Invariant (locked Phase 12.6)
+
+**Rule:** The mio event loop is the only data-plane runtime. All push/get/upsert/delete/retract dispatches go through `crates/beava-server/src/apply_shard.rs::dispatch_*_sync` (specifically `dispatch_one` → `dispatch_push_sync`). The only legitimate callers of `apply_event_to_aggregations` are `apply_shard.rs` (mio data plane) and `recovery.rs` (cold-path WAL replay on boot). axum is restricted to the ServerV18 admin sidecar in `crates/beava-server/src/http_admin.rs::BoundAdminServer`, bound on a separate port (`cfg.admin_addr`) for `/health`, `/ready`, `/metrics`, `/registry` only.
+
+**Why:** Locked architectural commitments — `project_phase18_no_dual_runtime` (single hot-path entry; admin endpoints stay on tokio) + `project_redis_shaped_no_event_time_ever` (Redis-shaped, processing-time only, no dual stack). New code MUST NOT introduce a parallel data-plane runtime, a third caller of `apply_event_to_aggregations`, or `axum::*` symbols (Router/Json/Extension/extract/routing/http/body/response/middleware) outside `http_admin.rs`.
+
+**How enforced:** `crates/beava-server/tests/phase12_6_mio_only_dataplane.rs` walks the workspace at test runtime and fails if either invariant is violated. CI runs the test on every PR via `cargo test --workspace`. Companion: `crates/beava-server/tests/phase12_6_legacy_axum_killed.rs` (Plan 12.6-07) asserts the legacy axum files and symbols stay deleted.
+
+**Reviving a second data-plane runtime requires:** explicit user override + new ADR overturning `project_phase18_no_dual_runtime`.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
