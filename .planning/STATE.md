@@ -179,7 +179,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 | Branch / worktree | HEAD | What landed | What's left |
 |---|---|---|---|
-| `phase-12-joins` | `d541971` | Plan 12-02 (WAL replay for `TableUpsert/Delete/Retract`) + path-rewrites for 01/03/04/05/06 | Plans 12-01, 12-03, 12-04, 12-05, 12-06 on `phase-12-followup` worktree |
+| `phase-12-joins` | `d541971` | Plan 12-02 (WAL replay for `TableUpsert/Delete/Retract`) + path-rewrites for 01/03/04/05/06 | **ABANDONED 2026-04-30 per Phase 12.6-09** — joins removed permanently per `project_redis_shaped_no_event_time_ever`. Plan 12-02 (TableUpsert/Delete/Retract WAL replay) is non-join work; if revived, cherry-pick onto `v2/greenfield`, do NOT merge from this branch. Non-join survivors (Plans 12-01/03/04/05/06) tracked separately on `phase-12-followup`. |
 | `phase-13-ship` | `2ef5afc` | Plan 13-01 (`/metrics` Prometheus + middleware), Plan 13-03 (`env_var_overrides` hermetic fix) | Plans 13-02, 13-04, metric-counter wiring on `phase-13-followup` worktree |
 
 ## Remaining Work (priority order)
@@ -260,6 +260,24 @@ Feature authoring as composable Python code that ships to production unchanged. 
 .claude/worktrees/phase-13-followup     (base: phase-13-ship    @ 2ef5afc)
 .claude/worktrees/phase-13.2-followup   (base: phase-13.2-coalesce — ABANDONED; do not merge)
 ```
+
+### Worktree map post-Phase-12.6 (2026-04-30, recorded by Plan 12.6-09)
+
+Post-architectural-pivot worktree fates. Plan 12.6-09 audits and records each branch's status:
+
+| Worktree / branch | Status | Rationale |
+|---|---|---|
+| `phase-12-joins` (HEAD `d541971`) | **ABANDONED 2026-04-30 per Phase 12.6-09** | Joins removed permanently per `project_redis_shaped_no_event_time_ever`. Phase 12.6-04 deletes joins as architecture. Plan 12-02 (WAL replay for `TableUpsert/Delete/Retract`) is non-join work; if revived, cherry-pick onto `v2/greenfield` directly, do NOT merge from this branch. |
+| `phase-12-followup` (off `phase-12-joins`) | **REBASE PENDING** | Off-branch dependency on `phase-12-joins` is now stale (parent ABANDONED). Either rebase onto `v2/greenfield` (preferred — preserves Plans 12-01/03/04/05/06 survivors) or abandon and recreate the followup branch fresh off `v2/greenfield`. |
+| `phase-13-followup` (off `phase-13-ship` @ `2ef5afc`) | **KEEP** | Plans 13-02 (cold-entity GC sweep), 13-04 (perf gate), and metric-counter wiring still active per Phase 13 critical path. |
+| `phase-13.1-perf-fix` | **KEEP** (already merged) | Phase 13.1 fsync regression fix landed; worktree may be cleaned up by Phase 13 lifecycle pass — not Phase 12.6's scope. |
+| `phase-13-ship` | **KEEP** | Base branch for `phase-13-followup`; Plans 13-01 / 13-03 already merged to `v2/greenfield`. |
+| `phase-13.2-followup` (off `phase-13.2-coalesce`) | **ABANDONED** (already noted line 261; Phase 12.6-09 confirms) | Phase 13.2 superseded by Phase 13.3 (which itself was rejected); branch is dead. |
+| `phase-13.3-lockless-apply` | **ARCHIVED-REJECTED 2026-04-26** (already noted line 213; Phase 12.6-09 confirms + adds banners to `.planning/phases/13.3-lockless-apply/*.md`) | Single-threaded data plane locked per `project_no_sharded_apply`. Worktree was deleted 2026-04-26; planning files retained for historical reference and now banner-stamped. |
+| `phase-15-event-time-pit` | **ARCHIVED 2026-04-30** (per no-event-time pivot) | Event-time gone permanently per `project_redis_shaped_no_event_time_ever`. Worktree may stay on disk for historical reference; do not check out for new work. Phase dir already moved to `.planning/phases/_archived-15-event-time-pit-killed-no-event-time/` per ROADMAP line 57. |
+| `phase-16-sdk-source-annotation` | **NEEDS REASSESSMENT** | Phase 16 reworked 2026-04-30 (`tolerate_delay_ms` + `modifiable=True` references removed by no-event-time pivot; remaining `@bv.source` + `app.upsert/delete` scope is intact). Worktree status pending Phase 13 sweep — defer revisit. |
+
+**Section ownership note:** Plan 12.6-09 owns this worktree-status sub-block. Plan 12.6-13 (Wave 8) owns the phase-progress block + Current Focus line. The Phase 12.5 dir banners + this map were added together in `docs(12.6-09)` GREEN commit.
 
 ## Blockers
 
