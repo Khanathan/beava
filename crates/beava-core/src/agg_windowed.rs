@@ -1119,4 +1119,45 @@ mod tests {
             "agg_windowed.rs must not use rand crate (D-06 determinism invariant)"
         );
     }
+
+    // ── Plan 12.6-05 Path X: time-source rename guard ─────────────────────
+    //
+    // Per `project_redis_shaped_no_event_time_ever` and CONTEXT D-03, the
+    // windowed-op surface must read a server-side `now_ms` parameter on every
+    // fold (not `event_time_ms` from the event body). This audit asserts the
+    // public API uses `now_ms: i64` and never `event_time_ms: i64`.
+    //
+    // Comments and doc-comments are stripped so historical references (in
+    // module docs / inline notes) do not falsely trigger.
+    #[test]
+    fn windowed_op_signatures_use_now_ms_param_name() {
+        let src = include_str!("agg_windowed.rs");
+        // Strip line and block comments. Crude but sufficient: any line whose
+        // trimmed prefix begins with `//` or `///` is dropped before the grep.
+        let stripped: String = src
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("//") || trimmed.starts_with("///"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Build the forbidden tokens at runtime so this test source itself
+        // does not trip the assertions.
+        let forbidden_typed = format!("event_time_ms: {}", "i64");
+        let forbidden_typed_us = format!("_event_time_ms: {}", "i64");
+        let required_typed = format!("now_ms: {}", "i64");
+        assert!(
+            stripped.contains(required_typed.as_str()),
+            "Path X invariant: agg_windowed.rs must declare `now_ms: i64` somewhere"
+        );
+        assert!(
+            !stripped.contains(forbidden_typed.as_str()),
+            "Path X invariant: agg_windowed.rs must not contain `event_time_ms: i64` parameter"
+        );
+        assert!(
+            !stripped.contains(forbidden_typed_us.as_str()),
+            "Path X invariant: agg_windowed.rs must not contain `_event_time_ms: i64` parameter"
+        );
+    }
 }
