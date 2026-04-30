@@ -99,6 +99,33 @@ impl ApplyShard {
             // deferred to Plan 18-06 (currently the legacy WalSink path handles
             // durability for /register; the mio path calls it without WAL for now).
             WireRequest::Register { payload } => {
+                // Plan 12.6-04: JSON-prelude shim — intercept removed ops
+                // (`{"op":"join"}` / `{"op":"union"}`) BEFORE strict
+                // RegisterPayload deserialize so the rejection path is
+                // independent of whether the OpNode variants still exist.
+                // Per CONTEXT.md §Implementation Decisions / Bucket 5,
+                // emits structured error codes (feature_removed_no_joins_v0 /
+                // feature_removed_no_unions_v0) instead of opaque serde
+                // "unknown variant" errors after the variant deletion.
+                if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                    if let Some(removed) =
+                        beava_core::register_validate::pre_check_removed_ops(&json_value)
+                    {
+                        let body = serde_json::json!({
+                            "error": {
+                                "code": removed.code,
+                                "path": removed.path,
+                                "reason": removed.reason,
+                            },
+                            "registry_version": self.state.dev_agg.registry.version(),
+                        });
+                        return GlueResponse::Register {
+                            http_status: 400,
+                            body: bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                            tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
+                        };
+                    }
+                }
                 // Plan 12.6-01: parse + dispatch on the apply thread, then
                 // funnel the outcome through `register_outcome_to_glue`
                 // so wire bytes match the legacy axum
