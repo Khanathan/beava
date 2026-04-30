@@ -2308,6 +2308,11 @@ fn encode_glue_response_http(
 ) {
     use crate::runtime_core_glue::GlueResponse;
 
+    // Plan 12.6-15: extra response headers (e.g. `x-beava-idempotent-replay: 1`
+    // on PushReplay). Empty when no extras apply; appended verbatim to the
+    // standard HTTP response header block below.
+    let mut extra_headers = String::new();
+
     let (status, body_bytes): (u16, Vec<u8>) = match resp {
         GlueResponse::PushAck {
             ack_lsn,
@@ -2326,6 +2331,11 @@ fn encode_glue_response_http(
             // registry_version:V}`); pass it through unchanged. When
             // `None` (TCP / cache miss), synthesise the legacy generic
             // `{idempotent_replay: true, registry_version: V}` shape.
+            //
+            // Plan 12.6-15: also emit the `x-beava-idempotent-replay: 1`
+            // response header (legacy axum push handler did this; the
+            // mio path was missing it pre-Plan-15).
+            extra_headers.push_str("X-Beava-Idempotent-Replay: 1\r\n");
             if let Some(cached) = cached_body {
                 (200, cached.to_vec())
             } else {
@@ -2422,10 +2432,11 @@ fn encode_glue_response_http(
     };
 
     let header = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Runtime: hand-rolled\r\nConnection: keep-alive\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Runtime: hand-rolled\r\nConnection: keep-alive\r\n{}\r\n",
         status,
         status_text,
-        body_bytes.len()
+        body_bytes.len(),
+        extra_headers,
     );
     buf.extend_from_slice(header.as_bytes());
     buf.extend_from_slice(&body_bytes);

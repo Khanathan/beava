@@ -318,19 +318,34 @@ async fn push_persisted_to_wal() {
     // Flush via shutdown so WAL is durable.
     ts.shutdown().await.expect("shutdown");
 
-    // Open the WAL with a WalReader; expect at least 1 Event record whose
-    // payload JSON contains "alice".
-    let records = beava_persistence::WalReader::read_all(&wal_dir).expect("read WAL");
+    // Plan 12.6-15: under the locked mio data-plane architecture, push events
+    // are persisted to hand-rolled *.wal files (WalBufferRing → WalWriter),
+    // not the legacy beava-persistence *.log segments (WalSink). Verify
+    // durability by reading the *.wal segment(s) and grepping for the event
+    // payload bytes.
+    let wal_files: Vec<std::path::PathBuf> = std::fs::read_dir(&wal_dir)
+        .expect("read wal dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wal"))
+        .collect();
     assert!(
-        !records.is_empty(),
-        "at least one WAL record expected, got {}",
-        records.len()
+        !wal_files.is_empty(),
+        "at least one *.wal segment expected after push, got 0 in {wal_dir:?}"
     );
-    let found = records.iter().any(|r| {
-        matches!(r.record_type, beava_persistence::RecordType::Event)
-            && String::from_utf8_lossy(&r.payload).contains("alice")
-    });
-    assert!(found, "WAL must contain the alice event payload");
+    let mut found = false;
+    for f in &wal_files {
+        let data = std::fs::read(f).expect("read wal segment");
+        if String::from_utf8_lossy(&data).contains("alice") {
+            found = true;
+            break;
+        }
+    }
+    assert!(
+        found,
+        "hand-rolled WAL must contain the alice event payload across {} segments",
+        wal_files.len()
+    );
 }
 
 #[tokio::test]
