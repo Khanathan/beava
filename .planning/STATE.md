@@ -94,7 +94,13 @@ progress:
 
 ## Core Value
 
-Feature authoring as composable Python code that ships to production unchanged. Users write `@bv.event` / `@bv.table(key=...)` / `bv.col(...)` / `.filter().group_by().agg()` / `.join()` / `bv.union(...)` / `app.register(...)` / `app.push(...)` / `app.get(...)`, deploy unchanged.
+Feature authoring as composable Python code that ships to production unchanged. Users write `@bv.event` / `@bv.table(key=...)` / `bv.col(...)` / `.filter().group_by().agg()` / `app.register(...)` / `app.push(...)` / `app.get(...)`, deploy unchanged. Semantics: Redis-shaped, processing-time only (no event-time, no joins, no watermarks — locked 2026-04-30 per `project_redis_shaped_no_event_time_ever`).
+
+## Architectural pivot 2026-04-30 — no event-time / no joins / no watermarks (PERMANENT)
+
+**Locked.** State is `f(arrival-order events, query time)`. mio data plane is the only hot-path entry. Phases 14, 14.1, 15 archived. Phase 12 retitled "push/get API completion (joins/unions REMOVED)". Phase 17 reworked. Phase 12.5 archived (superseded by Plan 12-10). NEW Phase 12.6 inserted (v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + windowed-op time-source swap + join/union removal + REQUIREMENTS sweep + mio-only enforcement). NEW Phase 25 inserted (session window operator family — v0.1+).
+
+**v0 critical path post-pivot:** Plan 12-10 (push-and-get on mio) → Phase 12.6 (surface reduction) → Phase 13 (docs + packaging + ship). Phase 25 (session windows) is v0.1+. Phases 14/14.1/15 are dead architecture — do not unarchive without explicit user override + new ADR.
 
 ## Current Focus
 
@@ -106,7 +112,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Phase 18 wrap also closed (main.rs migration was the last item that wasn't verification-only):** main.rs now boots ServerV18; `BEAVA_DEV_ENDPOINTS` retained on legacy `Server` for `phase6_crash_probe` + `TestServer` only. Phase 18 SUMMARY + worktree archival decision remain TBD as housekeeping.
 
-**Next: v0 critical path:** Plan 12-08 (push-and-get over mio HTTP+TCP, supersedes Phase 12.5's axum-shaped plans) OR Phase 14 (streaming correctness — silent data-loss bug in agg_windowed). Both v0-blocking.
+**Next: v0 critical path (post-2026-04-30 pivot):** Plan 12-10 (push-and-get on mio HTTP+TCP, supersedes archived Phase 12.5) → **Phase 12.6 (NEW — v0 surface reduction)** → Phase 13 ship. Phase 14 streaming-correctness ARCHIVED (no longer a v0 blocker — bucket-reset bug class disappears with event-time itself).
 
 ---
 

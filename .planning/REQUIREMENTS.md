@@ -10,13 +10,13 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 ### SDK-DEC — Python SDK decorators (source declarations)
 
 - [ ] **SDK-DEC-01**: `@bv.event` decorator accepts a class with type-hinted fields; extracts schema (types, optional flags, Field metadata); stores as an `EventSource` descriptor
-- [ ] **SDK-DEC-02**: `@bv.event` class form accepts optional `keep_events_for` (duration string) and `tolerate_delay` (duration string) parameters
+- [ ] **SDK-DEC-02**: `@bv.event` class form accepts optional `keep_events_for` (duration string) parameter. (`tolerate_delay` REMOVED 2026-04-30 per no-event-time pivot.)
 - [ ] **SDK-DEC-03**: `@bv.event` function form: function with upstream-class parameters returns an `Event` / `EventDerivation`; decorator invokes the function once at registration with upstream descriptors and captures the result
 - [ ] **SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator accepts string or list primary key, optional TTL duration; validates key fields exist in schema
 - [ ] **SDK-DEC-05**: `@bv.table` function form: returns a `Table`/`TableDerivation`; upstream descriptors passed as typed parameters
 - [ ] **SDK-DEC-06**: Schema extraction supports `str`, `f64`/`float`, `i64`/`int`, `bool`, `bytes`, `datetime` field types; rejects unsupported types at decorator time with a clear error message
 - [ ] **SDK-DEC-07**: `bv.Optional[T]` marks a field nullable; `bv.Field(desc=..., default=...)` attaches per-field metadata
-- [ ] **SDK-DEC-08**: `@bv.event` MAY declare an `event_time: int` (ms since epoch) or `event_time: datetime` field; if declared, decorator validates the type; if omitted, the server stamps wall-clock on receipt (devex-first default). See PROJECT.md §Key Decisions and Phase 3 CONTEXT.md D-07
+- ~~**SDK-DEC-08**: `event_time` field on `@bv.event`~~ — REMOVED 2026-04-30 per no-event-time pivot. Server-side `now_ms()` is the only time source; events have no event-time field on the wire. See PROJECT.md §Key Decisions.
 - [ ] **SDK-DEC-09**: `@bv.event` accepts optional `dedupe_key` + `dedupe_window` for stream-level deduplication at push time
 
 ### SDK-COL — Expression DSL (`bv.col`)
@@ -75,13 +75,13 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 ### AGG-POINT — Point / ordinal aggregations
 
 - [ ] **AGG-POINT-01**: `bv.first(field)` — first observed value; preserves field type
-- [ ] **AGG-POINT-02**: `bv.last(field)` — most recent value by event_time; preserves field type
+- [ ] **AGG-POINT-02**: `bv.last(field)` — most recent value by arrival order; preserves field type
 - [ ] **AGG-POINT-03**: `bv.first_n(field, n)` — first N values; list output
 - [ ] **AGG-POINT-04**: `bv.last_n(field, n)` — last N values; list output
 - [ ] **AGG-POINT-05**: `bv.lag(field, n)` — value n events ago; preserves field type
-- [ ] **AGG-POINT-06**: `bv.first_seen()` — first-seen event_time timestamp; int output (millis)
-- [ ] **AGG-POINT-07**: `bv.last_seen()` — last-seen event_time timestamp; int output
-- [ ] **AGG-POINT-08**: `bv.age()` — ms since first_seen (computed at read time against current event_time); int output
+- [ ] **AGG-POINT-06**: `bv.first_seen()` — first-seen server arrival timestamp `now_ms()`; int output (millis)
+- [ ] **AGG-POINT-07**: `bv.last_seen()` — last-seen server arrival timestamp `now_ms()`; int output
+- [ ] **AGG-POINT-08**: `bv.age()` — ms since first_seen (computed at read time against current `now_ms()`); int output
 - [ ] **AGG-POINT-09**: `bv.has_seen(where=...)` — boolean ever-matched; bool output
 - [ ] **AGG-POINT-10**: `bv.time_since(where=...)` — ms since last matching event; int or null
 - [ ] **AGG-POINT-11**: `bv.time_since_last_n(where=..., n=...)` — ms since kth most recent matching event
@@ -137,13 +137,16 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 
 - [ ] **AGG-Z-01**: `bv.z_score(field, baseline_window=..., current=...)` — current event's value vs rolling mean/stddev baseline; float
 
-### SDK-JOIN — Joins and unions
+### SDK-JOIN — REMOVED 2026-04-30
 
-- [ ] **SDK-JOIN-01**: `event1.join(event2, on=..., within=..., type="inner"|"left")` — windowed event↔event join; returns `EventDerivation`; `within` is a required duration string
-- [ ] **SDK-JOIN-02**: `event.join(table, on=..., type="inner"|"left")` — stream-table enrichment; `within` forbidden; returns `EventDerivation`
-- [ ] **SDK-JOIN-03**: `table.join(other_table, on=..., type="inner"|"left")` — table-table join; v0 enforces `on` keys equal both tables' full key lists; returns `TableDerivation`
-- [ ] **SDK-JOIN-04**: Join output schema: left wins on field-name collision; right's colliding fields get `_right` suffix; join keys retained in output
-- [ ] **SDK-JOIN-05**: `bv.union(*events)` — concatenates events; requires field-by-field schema identity (names + types + nullability); users align via `.cast()` / `.fillna()` upstream if needed
+All join + union requirements removed permanently per `project_redis_shaped_no_event_time_ever`. Joins of any shape (event↔event, event↔table, table↔table) are not part of v0+. `bv.union(*events)` deferred with joins to v0.1+. See PROJECT.md → Out of Scope. Phases 14, 14.1, 15 (event-time / watermark / PIT) archived to `_archived-*` directories.
+
+- ~~**SDK-JOIN-01..04**: joins~~ — REMOVED
+- ~~**SDK-JOIN-05**: `bv.union(*events)`~~ — DEFERRED v0.1+
+
+### SDK-SESSION — Session windows (v0.1)
+
+- [ ] **SDK-SESSION-01**: `bv.session(gap_ms=..., inner=bv.<op>(...))` — activity-based grouping; opens session on first event, increments inner per event within `gap_ms`, closes on `now_ms() - last_event_ms > gap_ms` (lazy-on-query) AND flips on next event after gap; latest closed session retained per (entity, feature)
 
 ### SDK-APP — Python `App` client
 
@@ -205,18 +208,18 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 
 - [ ] **SRV-APPLY-01**: Single-thread apply loop: one dedicated OS thread receives pushed events via SPSC from HTTP accept, updates per-entity state, no locks on hot path
 - [ ] **SRV-APPLY-02**: Each event's apply runs every registered derivation affected by that event's source (via registry DAG)
-- [ ] **SRV-APPLY-03**: `Windowed<Op>` wrapper: uniform event-time bucketing, default cap 64 buckets, width = `ceil(window_ms / 64)`
-- [ ] **SRV-APPLY-04**: Lazy bucket rollover: on each apply, evict expired buckets based on current event_time
+- [ ] **SRV-APPLY-03**: `Windowed<Op>` wrapper: uniform processing-time bucketing (server-side `now_ms()`, NOT event_time per 2026-04-30 pivot), default cap 64 buckets, width = `ceil(window_ms / 64)`
+- [ ] **SRV-APPLY-04**: Lazy bucket rollover: on each apply, evict expired buckets based on current `now_ms()`
 - [ ] **SRV-APPLY-05**: "Lifetime" mode when `window` omitted — one bucket, no rollover
 - [ ] **SRV-APPLY-06**: Expression evaluator parses `to_expr_string()` canonical form into AST; evaluates per-event in-place with zero allocations on the hot path
 - [ ] **SRV-APPLY-07**: Stateless ops chain compiled at registration time into a sequence of row transformations; executed per event before aggregations see it
-- [ ] **SRV-APPLY-08**: Join support: stream-stream windowed buffer per (join_key, side) with time-indexed eviction; stream-table current-row lookup
+- ~~**SRV-APPLY-08**: Join support~~ — REMOVED 2026-04-30 per no-event-time pivot
 
 ### SRV-DUR — Durability
 
 - [ ] **SRV-DUR-01**: Per-instance append-only WAL file with group-commit fsync every 1–5ms or 1MB (whichever first)
 - [ ] **SRV-DUR-02**: `/push` ACK returns only after event's LSN has been fsynced
-- [ ] **SRV-DUR-03**: WAL format: header with `registry_version`, `stream_id`, `event_time`, entity key(s), event body; sufficient for full state rebuild
+- [ ] **SRV-DUR-03**: WAL format: header with `registry_version`, `stream_id`, `recv_ts_ms` (server arrival), entity key(s), event body; sufficient for full state rebuild. (`event_time` field DROPPED in Phase 12.6 wire schema bump per no-event-time pivot.)
 - [ ] **SRV-DUR-04**: WAL rotation: old segments truncated past the latest snapshot's covered LSN
 - [ ] **SRV-DUR-05**: Stream-level idempotency: `dedupe_key` + `dedupe_window` stored at registration; duplicate request within TTL replays byte-identical response, no state mutation
 
@@ -259,13 +262,13 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - [ ] **TEST-04**: DAG validation tests: cycles, missing deps, schema mismatches, additive-conflict diff correctness
 - [ ] **TEST-05**: Crash-recovery test: kill process mid-push; restart; verify state equals pre-crash + replayed WAL
 - [ ] **TEST-06**: Python SDK tests hit real beava instance over HTTP; cover register + push + push_sync + push_many + get + mget + fork
-- [ ] **TEST-07**: Join tests: event↔event, event↔table, table↔table across window boundaries
+- ~~**TEST-07**: Join tests~~ — REMOVED 2026-04-30 per no-event-time pivot
 
 ### DOC — Documentation
 
 - [ ] **DOC-01**: `docs/quickstart.md` — `pip install beava` → first feature in under 5 minutes with ≤ 20 lines of Python
 - [ ] **DOC-02**: `docs/operators.md` — every operator with example, parameters, return shape, use case
-- [ ] **DOC-03**: `docs/concepts.md` — event vs table, stateless ops, aggregations, joins, unions
+- [ ] **DOC-03**: `docs/concepts.md` — event vs table, stateless ops, aggregations, session windows, processing-time semantics (joins/unions/event-time NOT covered — removed permanently per 2026-04-30 architectural pivot)
 - [ ] **DOC-04**: `docs/http-api.md` — wire protocol for non-Python users with `curl` examples
 - [ ] **DOC-05**: `docs/architecture.md` — single-thread apply loop, WAL + snapshot, memory sizing, recovery
 - [ ] **DOC-06**: `README.md` has 3-command smoke demo
@@ -299,8 +302,9 @@ Deferred to future release.
 - **BACKFILL-01**: Branch/replay/promote/discard workflow for validating new feature definitions
 - **XENT-01**: Cross-entity operators (`co_occurrence_count`, `graph_degree`) requiring cross-shard coordination
 - **HA-01**: Read replicas, commercial-tier HA with WAL shipping
-- **JOIN-EXTRA-01**: `right` / `full` / `outer` joins; partial-key table-table joins
-- **UNION-RECONCILE-01**: `bv.union` with implicit schema reconciliation / coercions
+- ~~**JOIN-EXTRA-01**~~ — REMOVED 2026-04-30 (all joins removed; this item is now redundant)
+- ~~**UNION-RECONCILE-01**~~ — REMOVED 2026-04-30 (union deferred with joins; reconciliation question moot)
+- **EVENT-TIME-RESTORE-01**: Re-introduce `event_time_ms` semantics + watermarks + late-event handling — REJECTED permanently 2026-04-30; documented for posterity. Future requests require explicit user override + new ADR overturning `project_redis_shaped_no_event_time_ever`.
 - **PLUGIN-01**: User-defined operators via Rust plugin ABI
 - **SQL-01**: SQL-shaped query DSL on top of the registry
 

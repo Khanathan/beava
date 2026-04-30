@@ -2,11 +2,11 @@
 
 ## What This Is
 
-Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources, `@bv.table` snapshots, and derived features (aggregations, joins, unions, stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP/JSON (curl-testable, LB/WAF-compatible) and a custom-framed TCP fast-path (low-latency SDK-to-server), maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, dual HTTP+TCP wire), and a richer operator catalogue.
+Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources, `@bv.table` snapshots, and derived features (aggregations, session windows, stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP/JSON (curl-testable, LB/WAF-compatible) and a custom-framed TCP fast-path (low-latency SDK-to-server), maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, dual HTTP+TCP wire, processing-time semantics only — no event-time / no watermarks / no joins), and a richer operator catalogue.
 
 ## Core Value
 
-**Feature authoring as composable Python code that ships to production unchanged.** A data scientist writes `@bv.event`, `.filter(...)`, `group_by("user").agg(...)`, `@bv.table(key=..., ttl=...)`, `.join(...)`, registers with `app.register()`, and their feature definitions run at live fraud-serving latency. Every architectural decision serves this: the Python SDK is the blessed UX, the HTTP wire is the contract, JSON is transport only, all state lives in RAM for correctness-by-construction, and the server binary is a single Rust artifact a single operator can run.
+**Feature authoring as composable Python code that ships to production unchanged.** A data scientist writes `@bv.event`, `.filter(...)`, `group_by("user").agg(...)`, `@bv.table(key=..., ttl=...)`, registers with `app.register()`, and their feature definitions run at live fraud-serving latency. Every architectural decision serves this: the Python SDK is the blessed UX, the HTTP wire is the contract, JSON is transport only, all state lives in RAM for correctness-by-construction, the server binary is a single Rust artifact a single operator can run, and semantics are Redis-shaped (processing-time only — state is a function of arrival-order events plus query time; no event-time discipline burden on users).
 
 ## Requirements
 
@@ -22,9 +22,9 @@ Grouped by theme. Every entry is a hypothesis until shipped + used in production
 - Decorators: `@bv.event`, `@bv.table(key=..., ttl=...)` in both class and function forms
 - Stateless ops on Event/Table: `.filter .select .drop .rename .with_columns .map .cast .fillna`
 - Expression DSL: `bv.col("x")` with `+ - * /`, `< > <= >= == !=`, `& | ~`, `.isnull()`, `.cast()`
-- Aggregations via `event.group_by(keys).agg(name=bv.<op>(...), ...)` producing a Table
-- Joins: event↔event windowed, event↔table enrichment, table↔table key-matched
-- `bv.union(e1, e2, ...)` for schema-strict event merging
+- Aggregations via `event.group_by(keys).agg(name=bv.<op>(...), ...)` producing a Table; windowed ops use server-side `now_ms()` (processing-time)
+- Session windows for activity-based grouping (`bv.session(gap_ms=..., inner=...)`); replace event-time-bucketed windows for activity grouping; v0.1+
+- (Joins + `bv.union` deferred to v0.1+ alongside event-time work; not in v0 scope)
 - Registration: `app.register(*descriptors)` — DAG topological sort, cycle detection, schema propagation, additive-only with version bump
 - Push: `app.push(Event, dict)` async fire-and-forget; `app.push_sync(Event, dict)` returns `FeatureResult`; `app.push_many(Event, [dicts])` batched
 - Table upsert: `app.push(Table, key, dict)`; `app.delete(Table, key)` tombstones
@@ -97,8 +97,9 @@ Listed with reasoning to prevent re-adding.
 - **Protobuf / schema-registry wire** — custom framed binary is OK (see Wire format) but no Protobuf/FlatBuffers/Avro dependency in OSS.
 - **Operator implementation by user Rust code** — v0 ships only the built-in catalogue. Plugin ABI deferred.
 - **Multi-tenancy / per-tenant quotas** — beava is single-tenant by design.
-- **Partial-key joins (tables), right/full/outer joins** — v0 enforces set-equal keys + `inner`/`left` only, matching v1.
-- **Union with schema reconciliation** — `bv.union` in v0 requires field-by-field schema identity; users call `.cast()`/`.fillna()` to align upstream. Matches v1.
+- **All joins (event↔event, table↔table, stream↔table)** — Removed permanently from v0 architecture per `project_redis_shaped_no_event_time_ever` (locked 2026-04-30). v0.1+ may revisit, but joins of any shape are not part of Beava's core semantics. Users compose via push/get patterns.
+- **`bv.union(*events)`** — Deferred with joins to v0.1+. Users multiplex client-side for v0.
+- **Event-time / watermarks / PIT temporal store** — Removed permanently. State is a function of `(arrival-order events, query time)`. No `event_time_ms` on the wire, no `tolerate_delay_ms`, no `event_time_field` decorator, no `as_of=` join syntax. Late events are an undefined concept; `agg_windowed` operators index by server-side `now_ms()`. Phases 14, 14.1, 15 archived 2026-04-30 (`.planning/phases/_archived-*`).
 
 ## Context
 
@@ -131,12 +132,12 @@ v1's ceilings (why rebuild): measured ~10K EPS/core on complex workloads due to 
 
 ## Constraints
 
-- **Tech stack:** Rust server (axum + tokio current_thread, single worker thread for apply loop); Python SDK over HTTP using `requests` or equivalent
+- **Tech stack:** Rust server (hand-rolled mio data plane via ServerV18 — single OS thread for apply loop; tokio sidecar for admin endpoints only on a separate port); Python SDK over HTTP using `requests` or equivalent + framed-TCP fast-path
 - **Architecture:** Single process, single thread for apply. In-memory state. WAL + periodic snapshot. No cross-process coordination.
 - **Wire format:** Dual transport. (1) HTTP/1.1 + JSON on the default port — curl-compatible, language-agnostic. (2) Custom framed TCP on a second port — `[u32 length][u16 op][u32 request_id][payload bytes]`, same JSON payload body for v0 (MessagePack/custom encoding is v0.x territory). Python SDK chooses via URL scheme (`http://` vs `tcp://`). Full opcode table designed up front (register/ping/push/push_sync/push_many/get/mget/set/mset); handlers wired as their feature phases land. No Protobuf, no FlatBuffers.
 - **Performance:** ≥ 3M events/sec single-thread apply; P99 batch-get < 10ms
 - **Memory:** Linear in `entities × aggregations × bytes/agg`. Users size the box. No SSD overflow.
-- **API compatibility:** Python SDK conceptually mirrors v1 shapes (class and function decorators, `.agg()`, `.join()`, `bv.col`) — explicit breaking change from v1: `@bv.stream` renamed to `@bv.event`. Wire is dual (HTTP/JSON + custom-framed TCP); v1's TCP framing is NOT reused (v2 uses the simpler `[len][op][req_id][payload]` frame)
+- **API compatibility:** Python SDK conceptually mirrors v1 shapes (class and function decorators, `.agg()`, `bv.col`) — explicit breaking changes from v1: `@bv.stream` renamed to `@bv.event`; `.join()` / `bv.union` / `as_of=` / `tolerate_delay_ms` / `event_time_field` removed (all event-time + join machinery deleted permanently). Wire is dual (HTTP/JSON + custom-framed TCP); v1's TCP framing is NOT reused (v2 uses the simpler `[len][op][content_type][payload]` frame, Redis-style strict-FIFO correlation, no `request_id`)
 - **Registration:** Additive-only with monotonic version bumps; no in-place mutation of registered descriptors
 - **Licensing:** Apache 2.0 OSS for v0. HA / replication / cross-region for commercial tier later.
 - **Timeline:** Target v0 engineering-complete in 8–12 weeks from Phase 1 kickoff
@@ -149,8 +150,8 @@ Locked. Each is load-bearing for phase planning.
 |----------|-----------|---------|
 | Python SDK is the canonical authoring UX | v1 validated this shape; feature engineers live in Python; Feast/Tecton/Chronon converged on it | — Pending ship |
 | Wire format is dual: HTTP/JSON + custom-framed TCP | HTTP: curl-testable, LB/WAF/CDN-compatible, serverless-friendly. TCP: low-latency SDK fast-path without HTTP header overhead. Same JSON payload body; no Protobuf | — Pending ship |
-| Devex-first naming (plain English over streaming jargon) | Surfaced terms that made devs google ("lateness", "idempotency", "watermark") replaced with plain forms (tolerate_delay, dedupe_key/window, keep_events_for). Table mode "append" → "upsert" to describe the real semantic. Zero-config defaults (5s tolerate_delay, 7d keep_events_for, 24h dedupe_window) baked in — `@bv.event` works without a single soft knob set | — Pending ship (retroactive to Phase 2 wire on 2026-04-23; see commit 26daa41) |
-| event_time field is optional on @bv.event | If the user omits event_time_field on an EventDescriptor, server stamps wall-clock time on push receipt. Tables still REQUIRE an explicit `key`. Keeps the time axis explicit where it shapes the contract (aggregations, windows) while getting simple logging-style events to zero-config. | — Pending ship |
+| Devex-first naming (plain English over streaming jargon) | "lateness"/"watermark" → DEAD per no-event-time pivot 2026-04-30; "idempotency" → `dedupe_key`/`dedupe_window` retained; table mode "append" → "upsert" retained; zero-config defaults (`keep_events_for`, `dedupe_window`) baked in. | — Pending ship |
+| Redis-shaped semantics — no event-time, no watermarks, no joins, ever | Locked 2026-04-30. State = f(arrival-order events, query time). Simpler operational model + matches Redis-cluster scaling story + eliminates whole class of correctness bugs. See `project_redis_shaped_no_event_time_ever`. Session windows replace event-time grouping for activity aggregation. | — Locked permanently |
 | TCP frame: `[u32 length][u16 op][u8 content_type][payload]` | Simpler than v1's framing. No request_id — Redis-style strict-FIFO correlation on a connection. `content_type` byte: 0x01 JSON (v0), 0x02 MessagePack (reserved for Phase 6/12 hot-path), 0xFFFF = error_response opcode. Opcode table designed up front in Phase 2.5 so later phases only fill in handlers | — Pending ship |
 | beava-core stays WASM-portable (syscall-free invariant) | Every phase's core compute code (expression parser/evaluator, registry, ops, aggregations, sketches) lives in `beava-core` and has zero fs/net/syscall deps. Only `beava-server` + `beava-persistence` (WAL/snapshot) touch the outside world. Free constraint today; unlocks v0.1+ browser-WASM npm library + edge-compute WASM without a big refactor. Codified 2026-04-23 | — Pending ship (enforced Phase 4+) |
 | Interactive tutorial via hosted playground (Phase 13) | v0.1+ gets a true in-browser WASM runtime. For v0, interactive tutorial = `playground.beava.dev` hosted server + JS in the docs page calling real HTTP. Users see real `registry_version` bumps, real validation errors, real feature values. ~$10-20/mo infra; zero new beava code. Fits naturally in Phase 13 docs milestone | — Pending ship Phase 13 |
@@ -162,9 +163,9 @@ Locked. Each is load-bearing for phase planning.
 | Single process, single thread (not TPC) | Correctness-by-construction for atomic operators; simplest mental model; horizontal scale via independent processes | — Pending ship |
 | In-memory state only (no RocksDB/fjall) | Eliminates the serialization overhead that ceilinged v1 at 10K EPS/core | — Pending ship |
 | WAL + periodic snapshots for durability | Redis RDB+AOF pattern; well-understood; bounded RTO | — Pending ship |
-| Uniform event-time bucketing, cap 64 buckets | Replay-deterministic; DGIM exponential rejected | — Pending ship |
-| No timers, no emit pipeline, no CEP operators in v0 | Scope discipline; land the aggregation + ops + joins surface first | — Pending ship |
-| 40+ operator catalogue (vs v1's 15) | Coverage of EWMA/velocity/geo/recency/sketches/buffers that v1 users asked for | — Pending ship |
+| Uniform processing-time bucketing, cap 64 buckets | Replay-deterministic; bucket time-source switched from `event_time_ms` → server-side `now_ms()` per 2026-04-30 pivot. DGIM exponential rejected. | — Pending ship |
+| No timers, no emit pipeline, no CEP operators in v0 | Scope discipline; land the aggregation + ops surface first | — Pending ship |
+| 55-operator catalogue (vs v1's 15) — preserved through no-event-time pivot via Path X (server-clock time source) | Coverage of EWMA/velocity/geo/recency/sketches/buffers that v1 users asked for | — Pending ship |
 | Python SDK lands early (Phase 3) | Dogfoods the decorator DSL against Phase 2.5's dual-wire server while building primitives in later phases. SDK uses clean-room impl referencing v1 python/beava/ only for shape (no source copy). `bv.App()` with no URL auto-spawns a local beava subprocess on ephemeral ports — closes the "pip install + also install the server" gap for notebook users | — Pending ship |
 | `bv.fork()` supported for scoped local experimentation | Matches v1 Phase 39 feature; high devex value | — Pending ship |
 | Commercial tier (HA, replicas, cross-region) explicitly out of OSS | Clean OSS/commercial product-tier split for monetization | — Pending ship |

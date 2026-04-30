@@ -10,18 +10,20 @@
 
 ## North Star
 
-Feature authoring as composable Python code that ships to production unchanged. v0 ships the v1 Python SDK shape (`@bv.event` / `@bv.table` / `bv.col` / `.filter / .select / ... / .group_by().agg()` / `.join` / `bv.union` / `app.register` / `app.push` / `app.get` / `bv.fork`) on a new single-thread in-memory HTTP runtime with a 40+ operator catalogue.
+Feature authoring as composable Python code that ships to production unchanged. v0 ships a streamlined Python SDK shape (`@bv.event` / `@bv.table` / `bv.col` / `.filter / .select / ... / .group_by().agg()` / `app.register` / `app.push` / `app.get` / `bv.fork`) on a hand-rolled mio data plane with a 55-operator catalogue. Semantics are Redis-shaped: processing-time only, no event-time anywhere, no joins. Session windows replace event-time grouping for activity-based aggregation (v0.1+).
 
 ## Architecture (locked, do not revisit in phases)
 
-- **Runtime:** Single Rust process, single OS thread for the apply loop (plus auxiliary threads for WAL fsync, HTTP accept, snapshot writer)
+- **Runtime:** Single Rust process, single OS thread for the apply loop via hand-rolled mio data plane (ServerV18). Tokio sidecar for admin endpoints only on a separate port. Auxiliary threads for WAL fsync (single writer+fsync thread), HTTP accept, snapshot writer.
+- **Hot-path entry:** **mio is the only data-plane entry point.** All push/get/upsert/delete traffic dispatches through `apply_shard.rs::dispatch_*_sync`. Legacy axum (`Server`, `push.rs`, `http.rs`, `http_admin.rs`) scheduled for removal in Phase 12.6.
+- **Semantics:** Redis-shaped, processing-time only. No event-time anywhere. No watermarks. No joins (event↔event, event↔table, table↔table all removed permanently). No `bv.union` in v0. State is `f(arrival-order events, query time)`. Late-event question is undefined — there are no late events. Locked 2026-04-30; see `project_redis_shaped_no_event_time_ever`.
 - **State:** In-memory only (no RocksDB, no fjall, no tiered storage)
 - **Durability:** WAL file per instance with 1–5ms group-commit fsync; periodic snapshots (default 30s) of in-memory state
 - **Recovery:** Load latest snapshot + replay WAL from snapshot LSN
-- **Wire:** HTTP/1.1 + JSON only; endpoints `POST /register`, `POST /push/{event}`, `POST /push-sync/{event}`, `POST /push-batch/{event}`, `POST /push-table/{table}`, `POST /delete-table/{table}`, `POST /get`, `GET /get/{feature}/{key}`, `POST /set`, `POST /mset`, `/metrics`, `/health`, `/ready`
-- **Authoring UX:** Python SDK with v1-shaped decorator DSL, expression DSL, stateless ops, aggregation framework, joins, unions
+- **Wire:** HTTP/1.1 + JSON + framed-TCP (`[u32 len][u16 op][u8 content_type][payload]`, Redis-style strict-FIFO correlation, no `request_id`); endpoints `POST /register`, `POST /push/{event}`, `POST /push-sync/{event}`, `POST /push-batch/{event}`, `POST /push-and-get/{event}`, `POST /push-table/{table}`, `POST /delete-table/{table}`, `POST /get`, `GET /get/{feature}/{key}`, `POST /set`, `POST /mset`, `/metrics`, `/health`, `/ready`. **`event_time_ms` removed from wire in Phase 12.6** (was: optional field on push payload; now: server-side `now_ms()` is the only time source).
+- **Authoring UX:** Python SDK with streamlined decorator DSL, expression DSL, stateless ops, aggregation framework, session windows (v0.1+). No join API. No union API.
 - **Registration:** Additive-only with monotonic `registry_version` bumps; removals/changes return 409 with structured diff
-- **Operator catalogue:** 40+ built-in aggregation operators spanning core, sketch, point, decay, velocity, recency, bounded-buffer, and geo families
+- **Operator catalogue:** 55 built-in aggregation operators spanning core, sketch, point, decay, velocity, recency, bounded-buffer, and geo families. Windowed ops index by server-side `now_ms()` (Path X) — preserved through the no-event-time pivot.
 
 ## Phase Overview
 
@@ -43,20 +45,35 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 10 | Sketch operators | count_distinct (HLL), percentile (UDDSketch), top_k (SpaceSaving), bloom_member, entropy | 5 | ✅ **COMPLETE** |
 | 11 | Bounded-buffer + geo operators | histogram, hour_of_day/dow_hour histograms, seasonal_deviation, event_type_mix, most_recent_n, reservoir_sample, geo_velocity, geo_distance, geo_spread, unique_cells, geo_entropy, distance_from_home | 13 | ✅ **COMPLETE** |
 | 11.5 | Temporal tables + retraction primitive | MVCC storage for `@bv.table(temporal=True, retention=...)`; `app.retract(event_id)` scoped to table upserts/deletes; wires `as_of=...` kwarg that Phase 12 joins consume; stream retraction deferred to v1 but event-IDs land now | ~10 | ✅ **COMPLETE** |
-| 12 | Joins + unions + push/get API completion | Event↔event windowed join, event↔table enrichment (incl. event-time PIT against temporal tables), table↔table join, `bv.union`; `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` wired end-to-end | 13 | 🟡 **PARTIAL** (1/6 plans on `phase-12-joins`; 5 plans pending on `phase-12-followup` worktree) |
-| 12.5 | `push_and_get` combined endpoint | Single-round-trip `POST /push-and-get/{event}` and `OP_PUSH_AND_GET` (TCP) that applies a push and queries features atomically under one writer borrow. Read-your-writes by construction; ~2× latency win on fraud-decisioning hot path; `push_sync_and_get` parity for acks=all | ~8 | 📋 **PLANNED** (3 plans landed; executor pending merge round) |
+| 12 | push/get API completion (joins/unions REMOVED) | `push_sync` + `push_many` + `push_table` + `delete_table` + `set` + `mset` + `mget` + `get_multi` + `push_and_get` (Plan 12-10) wired end-to-end on the mio data plane. **Joins + unions removed permanently 2026-04-30** per `project_redis_shaped_no_event_time_ever`. | 8 | 🟡 **PARTIAL** — Plans 12-07/08/09 SHIPPED; Plan 12-10 written-not-executed; multi-key + table ops on `phase-12-followup` worktree |
+| 12.5 | ~~`push_and_get` combined endpoint~~ | Superseded by Plan 12-10 in Phase 12. | — | ❌ **ARCHIVED 2026-04-30** — superseded by Plan 12-10 (push-and-get on mio HTTP+TCP); axum-shaped 12.5 plans are dead code |
+| 12.6 | v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + mio-only enforcement | Remove legacy axum (`Server`, `push.rs`, `http.rs`, `http_admin.rs` ~3500 LOC) + migrate ~10 smoke tests to TestServerV18 harness; strip `event_time_ms` from wire (push payload + WAL record schema bump); remove `tolerate_delay_ms` + `event_time_field` decorator + `DEFAULT_TOLERATE_DELAY_MS` + `AppState.max_event_time_ms` global; switch 14+ windowed operators to `now_ms()` server clock (Path X — preserves catalogue); delete `OpNode::Join` + `JoinType` + `OpNode::Union` + Python SDK helpers; register-time validator rejects join/union payloads with structured error; sweep dead code (cargo-deadcode + manual audit) and collapse redundant code paths (one apply path: mio); REQUIREMENTS.md sweep; documentation sweep (beava.dev guide pages, recipes, API docs). Single hot-path entry through `apply_shard.rs::dispatch_*_sync` enforced. | 8+ | 📋 **PLANNED — V0 BLOCKER** (insert 2026-04-30 from no-event-time pivot; ~12-15 plans across 3-4 weeks) |
 | 13 | Observability + performance + docs + packaging + `bv.fork` + playground | `/metrics`, structured logs, perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get, SDK polish, docs, hosted interactive tutorial at playground.beava.dev, PyPI, GitHub Releases, Docker, `beava fork` subcommand | ~18 | 🟡 **PARTIAL** (2/8 plans on `phase-13-ship`; cold-entity GC + perf gate + metric wiring pending on `phase-13-followup` worktree; docs/fork/packaging/playground deferred to v0.0.x point releases per Phase 13 CONTEXT D-16) |
 | 13.1 | Perf regression fix — fsync off the runtime thread | `spawn_blocking` for WAL fsync; restored 17k EPS at parallel=64 on macOS | 1 | ✅ **COMPLETE** |
 | ~~13.2~~ | ~~Batch coalescing~~ | ~~ApplyConfig 6-knob + ApplyBuffer skeleton~~ | — | ❌ **ABANDONED** — superseded by Phase 13.3 (RefCell + LocalSet, simpler/faster Redis-shaped approach). Branch `phase-13.2-coalesce` is not to be merged; ApplyBuffer primitive is not reused. |
 | ~~13.3~~ | ~~Lockless apply via RefCell + LocalSet~~ | ~~Replace apply-state Mutex with single-thread `RefCell` + `LocalSet`~~ | ~~~4~~ | ❌ **REJECTED 2026-04-26** — locked architectural decision: Beava commits to a single-threaded data plane forever (Redis-cluster pattern). Per-instance ceiling = single apply thread; users scale out via multiple Beava instances sharded at entity-key level. Worktree `phase-13.3-lockless-apply` archived (deleted 2026-04-26). Plans 13.3-01..04 in `.planning/phases/13.3-lockless-apply/` retained for historical reference. |
-| 14 | Streaming semantics — Chunk A (correctness) | Per-stream watermark state + front-door drop of events older than `max_event_time - tolerate_delay_ms`; `beava_events_dropped_late_total{stream}` counter + rate-limited log; bucket widening `bucket_ms = (window + tolerate_delay) / 64` to fix the `agg_windowed` bucket-reset silent data-loss bug; register-time validator `tolerate_delay ≤ window`; WAL replay reconstructs watermark. **Watermark**: per-stream, default `tolerate_delay_ms = 5000`. **Drop policy**: silent + metric + rate-limited log. **No modifiability / no retraction on apply path in this phase** — that is Phase 14.1. | ~400 LoC | 📋 **PLANNED** (split from original Phase 14 on 2026-04-24 so the bucket-reset bug fix ships independently of opt-in modifiability) |
-| 14.1 | Streaming semantics — Chunk B (opt-in modifiability) | `@bv.event(modifiable=True, modification_log_depth=16)` schema addition on source events; per-(entity, feature) K-event log lazy-allocated only for Tier 3 (order-sensitive) operators; insert-replay path for out-of-order events within tolerance; Tier 3 operator state redesign to replay from snapshot (ewma, streak, velocity, geo_velocity, etc.); basic retraction-impact analyzer for STREAM sources with human-readable warning codes (`BV-W-AGG-APPROX-MODIFIABLE`, `BV-W-AGG-REJECT-MODIFIABLE`, `BV-W-AGG-SUBTRACTIVE-OK`); docs pages at `beava.dev/w/`. Terminology: "retraction" renamed to "modifiable" / "change or delete" in all user-facing prose. | ~800 LoC + ~200 LoC analyzer | 📋 **PLANNED** |
-| 15 | Event-time PIT temporal store | Temporal chain keyed by `(event_time_ms, lsn)` composite (LSN is tiebreaker); out-of-order upserts self-heal by slotting into event_time position; naturally commutative under any arrival order; retention axis shifts wall-time → event-time; retention DERIVED from watermark (`derived_retention_ms = max(S.tolerate_delay for streams S joining this table)`) with optional user override for longer retract horizons; `GET /table?as_of=...` moved behind `BEAVA_DEV_ENDPOINTS=1` (no public historical-extraction surface in v0); register-time diagnostic when new join grows derived retention; snapshot format bump. **Must land before Phase 12 Plan 04** so the stream↔table join call site uses `lookup_at_event_time(key, event.event_time_ms)` from day one — zero rework. | ~350 LoC | 📋 **PLANNED — blocks Phase 12 Plan 04** |
-| 16 | SDK surface v0 ergonomics — explicit `@bv.source` + `app.upsert/delete` | Explicit `@bv.source` annotation on class-form `@bv.event` / `@bv.table` (derivations keep inferred-by-form contract); `app.upsert(T, {...})` + `app.delete(T, key={...})` verbs replace/complement `app.push_table` + `app.delete_table`; register-time enforcement (class-form without `@bv.source` errors; function-form with `@bv.source` errors; `app.upsert` on derivation → 400 `cannot_push_to_derivation`); `tolerate_delay_ms` + `modifiable=True` attach only to source-decorated things; derivations inherit from root source. Warning code `BV-W-SOURCE-NOT-ANNOTATED`. | ~250 LoC | 📋 **PLANNED** (before v0 ship-gate tag so public surface is stable) |
-| 17 | Table aggregation with tiered modifiability (v0.1) | Unlock `@bv.table(temporal=True).group_by(...).agg(...)` with tiered semantics: **Tier C** (exact propagation) count / sum / avg / variance / histograms / ewma-subtractive; **Tier A** (best-effort, bounded drift) HLL — exact in ExactArray/HashSet modes, approximate only once promoted above 1024 — UDDSketch / TopK / CMS / Bloom / entropy; **Tier B** (deterministic-reject) min / max / first / last / streak / lag / first_n / last_n / time_since. Extended retraction-impact analyzer covers TABLE sources; runtime metric `beava_feature_promoted_to_approx_total{feature}`. Depends on Phase 14.1 (modifiability machinery) + Phase 15 (event-time temporal store). | ~650 LoC | 📋 **PLANNED (v0.1)** — ships post-v0 ship-gate; SDK currently returns `SDK-AGG-05 TypeError` on `@bv.table(...).group_by(...)` |
+| ~~14~~ | ~~Streaming semantics — Chunk A (correctness)~~ | Watermark + drop + bucket widening | — | ❌ **ARCHIVED 2026-04-30** — killed by no-event-time pivot per `project_redis_shaped_no_event_time_ever`. Dir: `.planning/phases/_archived-14-streaming-correctness-killed-no-event-time/` |
+| ~~14.1~~ | ~~Streaming semantics — Chunk B (opt-in modifiability)~~ | Modifiable streams + retraction-impact analyzer | — | ❌ **ARCHIVED 2026-04-30** — depended on Phase 14 watermark; dead. Dir: `.planning/phases/_archived-14.1-streaming-modifiability-killed-no-event-time/` |
+| ~~15~~ | ~~Event-time PIT temporal store~~ | `(event_time_ms, lsn)` composite chain | — | ❌ **ARCHIVED 2026-04-30** — event-time gone permanently. Dir: `.planning/phases/_archived-15-event-time-pit-killed-no-event-time/` |
+| 16 | SDK surface v0 ergonomics — explicit `@bv.source` + `app.upsert/delete` | Explicit `@bv.source` annotation on class-form `@bv.event` / `@bv.table` (derivations keep inferred-by-form contract); `app.upsert(T, {...})` + `app.delete(T, key={...})` verbs replace/complement `app.push_table` + `app.delete_table`; register-time enforcement (class-form without `@bv.source` errors; function-form with `@bv.source` errors; `app.upsert` on derivation → 400 `cannot_push_to_derivation`); derivations inherit from root source. Warning code `BV-W-SOURCE-NOT-ANNOTATED`. (Note 2026-04-30: `tolerate_delay_ms` + `modifiable=True` references in original goal removed by no-event-time pivot.) | ~250 LoC | 📋 **PLANNED** (before v0 ship-gate tag so public surface is stable) |
+| 17 | Table aggregation tiered modifiability (v0.1) — REWORKED scope | Unlock `@bv.table.group_by(...).agg(...)` with **Tier C** (exact propagation) count/sum/avg/variance/histograms/ewma-subtractive; **Tier B** (deterministic-reject on retract) min/max/first/last/streak/lag/etc. Tier A (best-effort approximation) DEFERRED post-Phase-17 since the analyzer infrastructure depended on archived Phase 14.1. **No event-time-driven retention sweep** (Phase 15 dependency dead). Retention is arrival-LSN-age based per `project_stateful_architecture` Decision 1. Runtime metric `beava_feature_promoted_to_approx_total{feature}` deferred. | ~400 LoC (descoped from 650) | 📋 **PLANNED (v0.1)** — REWORKED 2026-04-30; ships post-v0 ship-gate |
 | 18 | Redis-shaped hand-rolled hot path | 2/2 | Complete   | 2026-04-26 |
+| 25 | Session window operator family (v0.1+) | New AggKind: `bv.session(gap_ms=..., inner=bv.<op>(...))` — activity-based grouping; opens session on first event, increments inner per event, closes on `now_ms() - last_event_ms > gap_ms` (lazy-on-query) AND flips on next event after gap; latest closed session retained per (entity, feature). Inner ops: full set (count/sum/avg/sketch/decay/etc.). Per-entity state machine: open/closed flag + last_event_ms + accumulated inner. WAL replay deterministic (arrival order). New criterion microbench + throughput rebaseline. Replaces event-time-grouped windowed activity aggregation that the no-event-time pivot eliminated. | ~600 LoC | 📋 **PLANNED (v0.1)** — added 2026-04-30 from no-event-time pivot; not v0 ship-blocker (users can compose count/sum with processing-time windowed ops for v0 demos) |
 
-**Total:** 26 phases (Phase 2.5 inserted 2026-04-23 for dual HTTP+TCP wire; Phase 5.5 inserted 2026-04-23 for perf harness + retroactive baselines + per-phase regression gates; Phase 11.5 inserted 2026-04-23 for temporal tables + retraction primitive required by PIT stream↔table joins; Phase 7.5 inserted 2026-04-23 for end-to-end throughput harness + per-phase throughput-run convention; Phase 6.1 inserted 2026-04-24 to split async-durability out of the Phase 6 acks=all path; Phase 12.5 inserted 2026-04-24 for the `push_and_get` combined endpoint (single-RT atomic push+query); Phase 13.1 inserted 2026-04-24 for the fsync-off-runtime regression fix; Phase 13.3 inserted 2026-04-24 as the canonical apply-lock removal, replacing the abandoned 13.2 coalesce spike; Phase 14 added 2026-04-24 as streaming-semantics correctness (Chunk A — watermark + drop + bucket widening); Phase 14.1 added 2026-04-24 as opt-in modifiability (Chunk B — `@bv.event(modifiable=True)` + per-(entity,feature) K-event log + Tier 3 op replay + human-readable warning analyzer); Phase 15 added 2026-04-24 as event-time PIT temporal store (chain keyed by `(event_time, lsn)` composite; retention derived from watermark; `GET /table?as_of=...` moved behind dev gate; blocks Phase 12 Plan 04 by design); Phase 16 added 2026-04-24 as SDK surface v0 ergonomics (`@bv.source` explicit annotation + `app.upsert/delete` verbs); Phase 17 added 2026-04-24 as v0.1 table aggregation with tiered modifiability (Subtractive-exact / Approximate-best-effort / Deterministic-reject) and extended warning analyzer; Phase 18 added 2026-04-24 as the Redis-shaped hand-rolled hot path (replaces tokio on apply + wire path; 6 stages with HARD Linux-Xeon ≥3M EPS/core ship-gate at Stage 18.5). All further perf-optimization phases (sharding / io_uring / binary schema format) are deliberately held pending Phase 14 — they would re-architect around semantics that aren't yet correct). Terminology: "retraction" renamed to "modifiable" / "change or delete" in user-facing prose; internal type names (`Retracted` variant etc.) preserved as implementation detail. ~179 requirements mapped, ~88 success criteria.
+**Total active phases:** 24 (post-2026-04-30 pivot). 
+
+**Insertion / archive history:**
+- Phase 2.5 inserted 2026-04-23 (dual HTTP+TCP wire); Phase 5.5 inserted 2026-04-23 (perf harness + retroactive baselines + regression gates); Phase 11.5 inserted 2026-04-23 (temporal tables + retraction primitive); Phase 7.5 inserted 2026-04-23 (end-to-end throughput harness + per-phase ledger convention)
+- Phase 6.1 inserted 2026-04-24 (async-durability split); Phase 13.1 inserted 2026-04-24 (fsync regression fix); Phase 13.3 inserted 2026-04-24 (canonical apply-lock removal — REJECTED 2026-04-26 per `project_no_sharded_apply`)
+- Phase 12.5 inserted 2026-04-24 — ARCHIVED 2026-04-30 (superseded by Plan 12-10 in Phase 12)
+- Phases 14 / 14.1 / 15 added 2026-04-24 (streaming-correctness watermark + opt-in modifiability + event-time PIT) — **ALL ARCHIVED 2026-04-30 per no-event-time architectural pivot**
+- Phase 16 added 2026-04-24 (SDK surface v0 ergonomics — `@bv.source` + `app.upsert/delete`)
+- Phase 17 added 2026-04-24 (v0.1 table aggregation tiered modifiability) — REWORKED 2026-04-30 (Tier A deferred; Tier B/C only; no event-time-driven retention)
+- Phase 18 added 2026-04-24 (Redis-shaped hand-rolled hot path — landed 2026-04-26)
+- **Phase 12.6 inserted 2026-04-30** (v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + windowed-op time-source swap + join/union removal + REQUIREMENTS sweep + mio-only enforcement)
+- **Phase 25 inserted 2026-04-30** (session window operator family — replaces event-time-grouped windowed activity aggregation; v0.1 territory)
+
+**Architectural commitments locked 2026-04-30** (see `project_redis_shaped_no_event_time_ever`): no event-time anywhere; no watermarks; no joins; no PIT; processing-time-only semantics; mio-only data-plane entry; `event_time_ms` removed from wire; windowed operators switch to server-side `now_ms()` (Path X — preserves 55-op catalogue). Terminology drift: "tolerate_delay_ms" / "watermark" / "as_of=" / "join" — all dead. ~165 requirements mapped (descoped from 179), ~80 success criteria.
 
 **Phase 1 status:** ✅ **COMPLETE** on commits `b100e51`..`c21b6b7`. Cargo workspace, axum HTTP server, `/health` + `/ready` stubs, graceful shutdown, integration TestServer harness — all gates green. See `.planning/phases/01-foundation/01-SUMMARY.md`, `.planning/phases/01-foundation/01-VERIFICATION.md`.
 
@@ -65,7 +82,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 - **Phases 1 → 2 → 3 → 4 → 5 → 6 → 7 → 7.5** are strictly sequential — each depends on the one before. Phase 5 is where the apply loop first runs real aggregations; Phases 6–7 harden durability around it; Phase 7.5 builds the throughput harness on top of stable durability so EPS numbers reflect production shape (WAL fsync + snapshot/recovery in the path).
 - **Phases 8 / 9 / 10 / 11** can run in parallel after Phase 7.5 — each operator family attaches to the existing apply loop + registry + window infra, touching independent operator modules. Recommended: sequence 8 → 9 → 10 → 11 unless explicitly running parallel worktrees. Each must include a "throughput run" task that re-runs the Phase 7.5 harness with that family's operators added to the medium/large pipelines and appends the result to `.planning/throughput-baselines.md`.
 - **Phase 11.5** (temporal tables + retraction) depends on 7 (needs WAL + snapshot); can run parallel with 8–11 since it touches its own table-storage module. MUST ship before Phase 12 because joins consume the `as_of=...` kwarg. Throughput run measures upsert/retract path against the temporal-table workload variant.
-- **Phase 12** (joins/unions + push/get completion) depends on 7 AND 11.5; can overlap with 8–11 since joins live in their own module. Throughput run adds the join-shape pipeline (event↔table enrichment) to the harness.
+- **Phase 12** (push/get API completion — joins/unions REMOVED 2026-04-30) depends on 7. Originally also depended on 11.5 for "temporal join resolution" — that dependency is dead. Throughput run adds multi-key push/get + push-and-get pipeline shapes to the harness.
 - **Phase 13** waits on everything for the final three-shape perf gate (simple fraud / complex fraud / recommendations ≥ 3M EPS) + `/metrics` + docs sign-off. By Phase 13 the throughput-baselines ledger has ~6 rows showing how EPS evolved phase-by-phase.
 
 ## Dependency graph
@@ -372,43 +389,87 @@ Feature authoring as composable Python code that ships to production unchanged. 
 6. Memory budget: temporal storage ≤ N× non-temporal equivalent for retention window R; measured in Phase 13 perf gate
 7. Throughput run: harness re-run with a temporal-table workload variant (upsert-heavy + occasional retract) appended; row added to `.planning/throughput-baselines.md`; baseline table-write throughput captured for the first time
 
-### Phase 12: Joins + unions + push/get API completion — 🟡 PARTIAL
+### Phase 12: push/get API completion (joins/unions REMOVED 2026-04-30) — 🟡 PARTIAL
 
 **Status:** Plan 12-02 shipped on branch `phase-12-joins` @ `d541971` (WAL replay for `TableUpsert/Delete/Retract`). Plans 12-01, 12-03, 12-04, 12-05, 12-06 pending on worktree `.claude/worktrees/phase-12-followup`. **Plan 12-07 SHIPPED 2026-04-29** on `v2/greenfield` (production-ready /get on HTTP+TCP through mio apply_shard + main.rs migration to ServerV18 + `dispatch_get_batch` real impl replacing the Plan 18-01 stub + `OP_GET_RESPONSE = 0x0023` allocated + `/health` shim on mio HTTP listener; 22 TDD-paired tasks, 35 new tests; simple-fraud TCP +8.0% vs 19.4 baseline; `python/benches/read_bench.py` runs end-to-end at 1000/1000 OK / p99=1.81 ms; closes the Phase 18 main.rs-migration deferral). **Plan 12-08 SHIPPED 2026-04-29** on `v2/greenfield` @ `c6471bd` (apply-loop overhead reduction; 11 TDD-paired tasks across 6 waves; orchestration 1095→75 ns/event = 14.6×; fraud-team/tcp +10.9%, fraud-team/http +82%; small/tcp regression-gate +1.9% PASS; pool design landed as simpler `acquire/encode/extend/release` rather than RecyclableBytes wrapper per plan's escape hatch; Hetzner Linux baseline + samply trace pending Phase 13 sweep). **Plan 12-09 SHIPPED 2026-04-29** on `v2/greenfield` @ `98e305b` (TCP /get msgpack body+response; HTTP unchanged; 14 TDD-paired tasks across 8 waves; D-A..D-E locked decisions honored; Python SDK `App.get` on tcp:// defaults to msgpack; STRETCH miss documented — ~2-3% codec lift on Apple-M4 microbench vs predicted 40%; integer-leaf fixture not representative of heavy-sketch case; cost-model gap documented per `feedback_cost_model_from_flamegraph`). **Plan 12-10 SCOPED** — push-and-get over mio HTTP+TCP (supersedes Phase 12.5 axum plans; now unblocked by 12-09's GlueResponse shape). **Plan 12-11 SKETCHED 2026-04-29** (chat-only — RecyclableBytes wrapper follow-up; CONDITIONAL on post-12-08 samply showing residual memcpy worth harvesting; user routed to formalize via /gsd-plan-phase after Phase 13 Hetzner sweep). Recommended ordering next: 12-10; 12-11 optional after if samply justifies.
 
-**PARKED 2026-04-29 — Read-path optimization Layers 1 & 2** (deferred until post-v0 ship). Investigated 2026-04-29 via 3 parallel agents (reports at `/tmp/read-encode-overhead.md`, `/tmp/read-dispatch-loop.md`, `/tmp/read-transport-overhead.md`). Combined ~150-200 LOC, est. 1.6-2× lift on read throughput. Layer 1 = reads bypass response_batch (per-client direct write, ~50-70 LOC). Layer 2 = inline write before set_writable + EVFILT_USER on Darwin (~110 LOC). User decision: park for now; pivot to correctness (Phase 14 streaming bug) + functional completeness (Plan 12-10) + ship-readiness (Phase 13 docs/packaging). Re-evaluate after Phase 13 Hetzner samply confirms which lifts deliver real value on production hardware. Best routed via `/gsd-plan-phase 12-12` post-Hetzner-baseline.
+**PARKED 2026-04-29 — Read-path optimization Layers 1 & 2** (deferred until post-v0 ship). Investigated 2026-04-29 via 3 parallel agents (reports at `/tmp/read-encode-overhead.md`, `/tmp/read-dispatch-loop.md`, `/tmp/read-transport-overhead.md`). Combined ~150-200 LOC, est. 1.6-2× lift on read throughput. Layer 1 = reads bypass response_batch (per-client direct write, ~50-70 LOC). Layer 2 = inline write before set_writable + EVFILT_USER on Darwin (~110 LOC). User decision: park for now; pivot to correctness + ship-readiness. Re-evaluate after Phase 13 Hetzner samply confirms which lifts deliver real value on production hardware. Best routed via `/gsd-plan-phase 12-12` post-Hetzner-baseline. (NOTE 2026-04-30: original "pivot to correctness (Phase 14 streaming bug)" rationale is dead — Phase 14 archived by no-event-time pivot. Current critical path is Plan 12-10 → Phase 12.6 → Phase 13.)
 
-**Goal:** Joins (event↔event windowed, event↔table enrichment, table↔table) and `bv.union` implemented end-to-end. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi` wired. Joins against temporal tables use the `as_of=...` kwarg from Phase 11.5 to resolve event-time PIT lookups.
+**Goal (post-2026-04-30 pivot):** Push/get API completion. `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi`, `push_and_get` (Plan 12-10) wired end-to-end on the mio data plane. **Joins + unions REMOVED permanently** per `project_redis_shaped_no_event_time_ever` — original goal of "Joins (event↔event/event↔table/table↔table) + `bv.union` implemented end-to-end" is dead architecture. `as_of=...` PIT join syntax is dead.
 
-**Depends on:** Phase 7 and Phase 11.5 (for temporal join resolution). **Parallelizable with 8, 9, 10, 11.**
+**Depends on:** Phase 7. (Phase 11.5 dependency for "temporal join resolution" is dead — joins removed.) **Parallelizable with 8, 9, 10, 11.**
 
-**Requirements:** SDK-JOIN-01, SDK-JOIN-02, SDK-JOIN-03, SDK-JOIN-04, SDK-JOIN-05, SDK-APP-04 through SDK-APP-14, SRV-API-03 through SRV-API-10, SRV-APPLY-08 — 13 REQ-IDs (some may overlap with Phase 3).
+**Requirements (post-pivot):** SDK-APP-04 through SDK-APP-14, SRV-API-03 through SRV-API-10. SDK-JOIN-01..05 + SRV-APPLY-08 REMOVED 2026-04-30.
 
-**Success criteria:**
-1. Event↔event windowed join: every (L, R) pair with same join key within window emitted exactly once; old events drop
-2. Event↔table join: enrichment against current table row; value changes visible after upsert
-3. Table↔table join: key-matched; schema collision handled with `_right` suffix
-4. `bv.union` produces concatenated stream; field-mismatch detected at registration
+**Success criteria (post-pivot):**
+1. ~~Event↔event windowed join~~ — REMOVED
+2. ~~Event↔table join~~ — REMOVED
+3. ~~Table↔table join~~ — REMOVED
+4. ~~`bv.union` schema-strict~~ — REMOVED (deferred v0.1+)
 5. All push/get API variants pass end-to-end Python SDK tests against a real server
-6. Throughput run: harness re-run with a join-shape pipeline (event↔table enrichment) appended to medium/large; row added to `.planning/throughput-baselines.md`; this is the last incremental data point before Phase 13's three-shape ship gate
+6. Throughput run: harness re-run with the post-pivot pipeline shapes (multi-key push/get, push-and-get) appended; row added to `.planning/throughput-baselines.md`
 
-### Phase 12.5: `push_and_get` combined endpoint — 📋 PLANNED
+### Phase 12.5: `push_and_get` combined endpoint — ❌ ARCHIVED 2026-04-30
 
-**Status:** 3 plans landed in `.planning/phases/12.5-push-and-get/` (12.5-CONTEXT.md + 12.5-01/02/03-PLAN.md). Executor pending — sits behind the Phase 12/13 merge round and Phase 13.3 lockless-apply landing.
+**Status:** ARCHIVED — superseded by **Plan 12-10** in Phase 12 which delivers push-and-get on the mio HTTP+TCP data plane. The original axum-shaped 12.5 plans (`12.5-CONTEXT.md` + `12.5-01/02/03-PLAN.md` in `.planning/phases/12.5-push-and-get/`) are dead code; do not execute. Plan 12-10's PLAN.md is the canonical source going forward.
 
-**Goal:** Add a single-round-trip combined push + feature-query endpoint that applies a push and queries features for an entity key **atomically** under the same single-writer borrow scope. Read-your-writes by construction, ~2× latency win on the flagship fraud-decisioning hot path, zero change to throughput.
+**Why archived:** 12.5 plans assumed legacy axum hot path. Plan 12-07 migrated production to ServerV18 (mio data plane). Plan 12-10 was scoped on top of 12-09's `GlueResponse::QueryResult { body, format }` shape and supersedes 12.5 entirely.
 
-**Depends on:** Phase 12 (push/get API completion — combined endpoint reuses the same `/push` and `/get` plumbing). Phase 13.3 helps but is not strictly required (atomic borrow is independent of Mutex removal).
+### Phase 12.6: v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + mio-only enforcement — 📋 PLANNED — V0 BLOCKER
+
+**Status:** Inserted 2026-04-30 from no-event-time architectural pivot. Single biggest v0-ship-blocker after Plan 12-10 lands. Estimated 12-15 plans across 3-4 weeks.
+
+**Goal:** Collapse the v0 surface to exactly what `project_redis_shaped_no_event_time_ever` defines as the architecture, and sweep all dead code that supported the now-removed event-time / join / legacy-axum paths.
+
+**Depends on:** Plan 12-10 (push-and-get on mio) ideally landed first so the legacy axum kill doesn't have to migrate the push-and-get path through a half-finished mio impl.
+
+**Scope:**
+
+1. **Legacy axum kill** (~3500 LOC):
+   - Delete `crates/beava-server/src/server.rs` (2540 LOC — legacy `Server` struct + axum router)
+   - Delete `crates/beava-server/src/push.rs` (legacy axum push handler — `apply_event_to_aggregations` call site at :302)
+   - Delete `crates/beava-server/src/http.rs`, `crates/beava-server/src/http_admin.rs`
+   - Delete `crates/beava-server/src/runtime_core_glue::dispatch_wire_request` (legacy async path retained "for tests and admin callers" — gone with the tests)
+   - Delete `BEAVA_DEV_ENDPOINTS` env-var paths
+   - Migrate `phase6_crash_probe`, `TestServer`, ~10 smoke tests (`phase6_smoke`, `phase6_1_crash`, `phase7_smoke`, `phase7_restart_cycle`, `phase10_sketch_smoke`, `phase10_sketch_recovery`, `phase11_smoke`, `phase18_07_*`, `phase12_07_main_uses_v18_test`) to a new `TestServerV18` harness; or remove tests whose coverage is replicated elsewhere
+
+2. **Event-time strip** (wire schema bump):
+   - Remove `event_time_ms` from push payload schema (HTTP JSON + framed-TCP) + Python SDK + curl recipes + tests
+   - Remove `EventDescriptor.tolerate_delay_ms` field + `DEFAULT_TOLERATE_DELAY_MS` constant + `@bv.event(event_time_field=...)` decorator + `@bv.event(tolerate_delay=...)` decorator
+   - Remove `AppState.max_event_time_ms` global atomic (no consumer once event-time gone)
+   - WAL record format bumps schema version to drop `event_time` field; recovery handles old vs new schema
+
+3. **Windowed-op time-source swap (Path X)** — switch all 14+ windowed operators (`agg_windowed.rs` + decay + velocity + recency + bounded-buffer + geo) from reading event_time_ms to reading server-side `now_ms()`. "Rolling 60s sum" still means 60s of arrival-time. Catalogue stays at 55 ops.
+
+4. **Join + union removal**:
+   - Delete `OpNode::Join { other, on, within_ms, join_type }` from `crates/beava-core/src/op_node.rs:71-78`
+   - Delete `JoinType { Inner, Left }` enum (`op_node.rs:25-28`, `schema_propagate.rs:1296` reference)
+   - Delete `OpNode::Union { others }` (`op_node.rs:81`)
+   - Delete Python SDK join/union helpers (`python/beava/_*.py`)
+   - Delete `schema_propagate.rs` join/union branches
+   - Register-time validator: reject any DAG containing residual join/union references with error code `feature_removed_no_joins_v0` / `feature_removed_no_unions_v0`
+
+5. **Dead code + redundancy sweep**:
+   - `cargo-deadcode` (or equivalent) scan across workspace
+   - Manual audit for redundant code paths (legacy push.rs vs apply_shard.rs::dispatch_push_sync; multiple WAL replay paths in recovery.rs; bench harness `beava-bench` vs `bench-v18` consolidation)
+   - Sweep `phase-13.3-lockless-apply` worktree archival (already noted in STATE.md as TBD)
+   - Sweep dead `phase-{N}-followup` worktrees if their work merged or got abandoned
+
+6. **mio-only hot-path enforcement**:
+   - Architectural test: assert `apply_shard.rs::dispatch_*_sync` is the only file that calls `apply_event_to_aggregations` post-axum-kill (recovery.rs replay still calls it directly — that's fine, replay is not a hot path)
+   - Document in CLAUDE.md as a locked invariant
+   - Tokio sidecar restricted to admin endpoints on a separate port
+
+7. **REQUIREMENTS.md sweep** + documentation sweep (beava.dev guide pages, recipes, API docs all need event-time + join references stripped)
 
 **Success criteria:**
-1. `POST /push-and-get/{event_name}` with `{row, query}` body returns 200 with `{ack_lsn, registry_version, features, warnings?}` — push commits AND features reflect the newly-pushed event atomically (read-your-writes)
-2. `POST /push-sync-and-get/{event_name}` returns ONLY after WAL fsync completes (acks=all parity with `/push-sync`)
-3. TCP `OP_PUSH_AND_GET (0x0015)` and `OP_PUSH_SYNC_AND_GET (0x0016)` expose the same behavior with CT_JSON payloads; strict-FIFO connection semantics preserved; response op echoes request op
-4. Python SDK `app.push_and_get(EventType, row={...}, entity_key={...}, features=[...], sync=False)` returns a `(ack, features_dict)` tuple; `sync=True` uses the acks=all path
-5. Unknown feature in `query.features` returns 200 with that feature mapped to `null` and the feature name added to `warnings[]`; the push itself still commits and ack_lsn is returned
-6. Latency on simple-fraud shape (1 push + 3 feature reads) on Apple-M4 LAN loopback: P50 < 300μs end-to-end over HTTP; baseline row appended to `.planning/perf-baselines.md` and `.planning/throughput-baselines.md`
-
-**Out of scope (deferred to v0.1):** `push_and_get_multi` (push 1, query N keys), `push_many_and_get` (batch push + 1 query). `/metrics` wiring inherits Phase 13 once 13-05 ships per-endpoint counter middleware. CT_JSON only in v0 (parity with `OP_PUSH`).
+1. `cargo test --workspace --all-features` passes with the legacy axum files deleted
+2. `cargo build --workspace` clean with zero references to `event_time_ms` (per push payload), `tolerate_delay_ms`, `event_time_field`, `OpNode::Join`, `OpNode::Union`, `JoinType`
+3. `grep -rn "axum::" crates/beava-server/src/` returns zero matches (or only on the admin sidecar)
+4. cargo-deadcode reports < N% dead code (set N during plan-phase based on baseline)
+5. Wire schema version bumped + WAL record schema version bumped; recovery handles both v(N-1) (with event_time) and v(N) (without) for one release cycle, then drops compat
+6. Throughput rebaseline: simple-fraud + fraud-team.json zipfian shapes still PASS (no regression > 5% from no-event-time path simplification — actually expect a small lift from removed code in hot path)
+7. SUMMARY + VERIFICATION docs land in `.planning/phases/12.6-v0-surface-reduction/`
 
 ### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship — 🟡 PARTIAL
 
@@ -460,38 +521,57 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 Per-instance throughput ceiling at v0 ship time: ~470–520k EPS for simple-fraud msgpack TCP on M4 (saturated, p=16/pd=256). For higher aggregate, scale-out via multiple Beava instances.
 
-### Phase 14.1: Streaming semantics — Chunk B (opt-in modifiability) — 📋 PLANNED
+### Phase 14.1: Streaming semantics — Chunk B — ❌ ARCHIVED 2026-04-30
 
-**Status:** Plans landed 2026-04-24. Depends on Phase 14 (watermark + drop + bucket widening).
+**Status:** Killed by no-event-time architectural pivot (`project_redis_shaped_no_event_time_ever`). Depended on Phase 14 watermark; both archived together.
 
-**Goal:** Ship opt-in `@bv.event(modifiable=True, modification_log_depth=16)` + per-(entity,feature) K-event log lazy-allocated for Tier 3 operators + register-time retraction-impact analyzer (BV-W-AGG-APPROX-MODIFIABLE / REJECT-MODIFIABLE / SUBTRACTIVE-OK) + Tier 3 operator state redesign (replay_from_log helpers) + WAL-replay-via-replay recovery (Option B, no new WAL record variant) + snapshot format v3.
+**Original goal (now dead):** opt-in `@bv.event(modifiable=True)` + per-(entity,feature) modification log + retraction-impact analyzer + Tier 3 operator state redesign. With event-time gone, streams have no out-of-order events to replay; modifiability becomes meaningless. Table retraction via explicit `app.retract(event_id)` survives (per `project_stateful_architecture` Decision 1).
 
-**Depends on:** Phase 14 (watermark + tolerance window), Phase 13.3 (lockless apply borrow_mut scope).
+**Original artifacts preserved at:** `.planning/phases/_archived-14.1-streaming-modifiability-killed-no-event-time/` (CONTEXT + 6 plans). Do not execute.
 
-**Plans:** 6 plans
-- [ ] 14.1-01-PLAN.md — Schema: `modifiable` + `modification_log_depth` on EventDescriptor + Python SDK kwargs + register-time bounds validator
-- [ ] 14.1-02-PLAN.md — `ModificationLog` ring buffer + `AggKind::tier()` classifier + `EntityRow` max_event_time_ms + lazy mod_logs slots
-- [ ] 14.1-03-PLAN.md — `retraction_analyzer.rs` + register response warnings/errors arrays + Python `BeavaRetractionWarning` + docs stubs at beava.dev/w/
-- [ ] 14.1-04-PLAN.md — Tier 3 `replay_from_log` helpers across decay/velocity/state/geo + proptest sorted-vs-shuffled equivalence (SC4)
-- [ ] 14.1-05-PLAN.md — `apply_with_modifiability` fast/slow-path + push.rs wire-up + snapshot format v3 + WAL replay preserves mod state + end-to-end smoke
-- [ ] 14.1-06-PLAN.md — Criterion microbench (mod=false ≤ 5 ns; mod=true slow-path ≤ 5 µs) + promotion/eviction metrics + beava-bench throughput rows + SUMMARY + VERIFICATION
+### ~~Phase 14: Streaming semantics — Chunk A~~ — ❌ ARCHIVED 2026-04-30
 
-**Success criteria:** see `.planning/phases/14.1-streaming-modifiability/14.1-CONTEXT.md` (SC1–SC8).
+**Status:** Killed by no-event-time architectural pivot. Watermark + late-event drop + `agg_windowed` bucket-widening machinery all dead. The bucket-reset silent-data-loss bug class disappears with event-time itself.
 
-### Phase 15: Event-time PIT temporal store — 📋 PLANNED
+**Original artifacts preserved at:** `.planning/phases/_archived-14-streaming-correctness-killed-no-event-time/` (CONTEXT + 4 plans). Do not execute.
 
-**Status:** Plans landed 2026-04-24. Blocks Phase 12 Plan 04.
+### Phase 15: Event-time PIT temporal store — ❌ ARCHIVED 2026-04-30
 
-**Goal:** Swap the Phase-11.5 LSN-keyed MVCC chain to a `(event_time_ms, lsn)` composite key so stream↔table joins resolve point-in-time against event-time, out-of-order upserts self-heal without replay, retention derives from the DAG watermark, and `GET /table?as_of=...` moves behind the dev gate.
+**Status:** Killed by no-event-time architectural pivot. The `(event_time_ms, lsn)` composite chain, watermark-derived retention sweep, and `GET /table?as_of=...` dev gate are all dead. PIT joins are dead (joins themselves removed).
 
-**Depends on:** Phase 11.5 (MVCC + retraction primitive), Phase 14 (watermark state must exist before sweep can use it).
+**Phase 11.5's LSN-keyed MVCC chain remains** — table retraction via explicit `app.retract(event_id)` still uses LSN-based MVCC. Retention is arrival-LSN-age based, not event-time-age based.
 
-**Plans:** 3 plans
-- [ ] 15-01-PLAN.md — Core chain refactor: `(event_time, lsn)` composite + `lookup_at_event_time` + retraction preserved
-- [ ] 15-02-PLAN.md — Registry DAG walk for `derived_retention_ms` + event-time sweep + `BV-I-RETENTION-GROWTH` diagnostic
-- [ ] 15-03-PLAN.md — HTTP dev-gating + `event_time_field` enforcement + snapshot v2 + criterion bench + SUMMARY + VERIFICATION
+**Original artifacts preserved at:** `.planning/phases/_archived-15-event-time-pit-killed-no-event-time/` (CONTEXT + 3 plans). Do not execute.
 
-**Success criteria:** see `.planning/phases/15-event-time-pit/15-CONTEXT.md` (SC1–SC7).
+### Phase 25: Session window operator family (v0.1+) — 📋 PLANNED
+
+**Status:** Inserted 2026-04-30 from no-event-time architectural pivot. Replaces event-time-grouped windowed activity aggregation that was eliminated. **Not v0 ship-blocker** (users can compose count/sum with processing-time windowed ops for v0 demos).
+
+**Goal:** Add a session-window aggregation primitive — activity-based grouping, processing-time only, no event-time. Per (entity, feature): open session on first event, increment inner per event within `gap_ms`, close on `now_ms() - last_event_ms > gap_ms`. New AggKind variant + per-entity state machine + WAL replay.
+
+**Locked decisions (from 2026-04-30 discussion):**
+- D-01: SDK shape — `bv.session(gap_ms=..., inner=bv.<op>(...))`. Inner ops cover the full op set (count/sum/avg/sketch/decay/etc. — same surface as windowed ops).
+- D-02: Close semantics — **both** lazy-on-query (`now_ms() - last_event_ms > gap_ms` reads as closed) AND flip-on-next-event-after-gap (next event explicitly closes the previous session and opens a new one). Deterministic state for downstream consumers + correct read-side semantics.
+- D-03: Retention — **latest closed session only** per (entity, feature). Fixed memory. Users wanting history compose with `count(session(...))` etc.
+- D-04: WAL replay — deterministic in arrival order; session state replays correctly because gap-based close is purely a function of `now_ms()` advance + arrival sequence.
+- D-05: No event-time — uses server-side `now_ms()` exclusively (consistent with `project_redis_shaped_no_event_time_ever`).
+
+**Depends on:** Phase 12.6 (event-time strip needs to land first; session windows assume `now_ms()` time source already in place for the rest of the operator catalogue).
+
+**Plans (estimated):** 5-7 plans
+- 25-01: AggKind::Session variant + per-entity SessionState struct + open/closed flag plumbing
+- 25-02: SDK decorator (`bv.session(...)`) + register-time validation
+- 25-03: Close-on-next-event-after-gap state machine + lazy-on-query computation
+- 25-04: WAL replay determinism test + recovery correctness
+- 25-05: Criterion microbench (open/close/increment paths < 50 ns/event) + throughput rebaseline row
+- 25-06: SUMMARY + VERIFICATION + docs
+
+**Success criteria:**
+1. `bv.session(gap_ms=N, inner=bv.count())` returns the count of events in the latest closed session per entity
+2. Both close paths (lazy-on-query, flip-on-event) produce the same observable behavior in tests
+3. WAL replay reproduces session state byte-identically
+4. Per-event session-state update cost < 50 ns on Apple-M4
+5. Throughput on simple-fraud × session-window pipeline within 5% of pre-session baseline
 
 ### Phase 18: Redis-shaped hand-rolled hot path — 🔄 IN PROGRESS
 
