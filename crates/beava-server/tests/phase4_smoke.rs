@@ -1,12 +1,107 @@
 //! Phase 4 Rust-side acceptance gate — ROADMAP SC1/SC2/SC3/SC5 smoke over HTTP + TCP.
 //! Python-side coverage of SC1..SC5 + the SC4 client/server equivalence proptest lives in Plan 04-07.
 
+use beava_core::registry::Registry;
 use beava_core::row::{Row, Value};
 use beava_core::wire::{OP_ERROR_RESPONSE, OP_REGISTER};
 use beava_server::testing::{TestServer, TestServerBuilder};
 use serde_json::json;
+use std::sync::Arc;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Plan 12.6-15: white-box replacement for the legacy `POST /dev/apply_ops`
+/// endpoint. Runs the compiled OpChain for `derivation` against a JSON row
+/// in-process — same shape as the legacy axum handler. Returns
+/// `{"kept": bool}` for dropped rows and `{"kept": true, "row": {...}}`
+/// for kept rows.
+fn apply_ops_white_box(
+    registry: &Arc<Registry>,
+    derivation: &str,
+    json_row: &serde_json::Value,
+) -> serde_json::Value {
+    let chain = registry
+        .compiled_chain(derivation)
+        .unwrap_or_else(|| panic!("compiled_chain({derivation}) must exist after register"));
+
+    // JSON → Row<Value>. Same conversion table as registry_debug::json_to_value.
+    let mut row = Row::new();
+    if let Some(obj) = json_row.as_object() {
+        for (field, jv) in obj {
+            let v = match jv {
+                serde_json::Value::Null => Value::Null,
+                serde_json::Value::Bool(b) => Value::Bool(*b),
+                serde_json::Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        Value::I64(i)
+                    } else if let Some(f) = n.as_f64() {
+                        Value::F64(f)
+                    } else {
+                        Value::Null
+                    }
+                }
+                serde_json::Value::String(s) => Value::Str(s.clone().into()),
+                _ => Value::Null,
+            };
+            row = row.with_field(field.as_str(), v);
+        }
+    }
+
+    match chain.apply(row) {
+        None => json!({"kept": false}),
+        Some(updated_row) => {
+            let mut obj = serde_json::Map::new();
+            for (field, v) in updated_row.0 {
+                let jv = match v {
+                    Value::Null => serde_json::Value::Null,
+                    Value::Bool(b) => serde_json::Value::Bool(b),
+                    Value::I64(n) => serde_json::Value::Number(n.into()),
+                    Value::F64(f) => serde_json::Number::from_f64(f)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null),
+                    Value::Str(s) => serde_json::Value::String(s.into_string()),
+                    Value::Bytes(_) => serde_json::Value::Null,
+                    Value::Datetime(ms) => serde_json::Value::Number(ms.into()),
+                    Value::Json(j) => j,
+                    Value::List(items) => serde_json::Value::Array(
+                        items
+                            .into_iter()
+                            .map(|item| match item {
+                                Value::I64(n) => serde_json::Value::Number(n.into()),
+                                Value::F64(f) => serde_json::Number::from_f64(f)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::Null),
+                                Value::Str(s) => serde_json::Value::String(s.into_string()),
+                                Value::Bool(b) => serde_json::Value::Bool(b),
+                                Value::Null => serde_json::Value::Null,
+                                _ => serde_json::Value::Null,
+                            })
+                            .collect(),
+                    ),
+                    Value::Map(m) => serde_json::Value::Object(
+                        m.into_iter()
+                            .map(|(k, v)| {
+                                let jv = match v {
+                                    Value::I64(n) => serde_json::Value::Number(n.into()),
+                                    Value::F64(f) => serde_json::Number::from_f64(f)
+                                        .map(serde_json::Value::Number)
+                                        .unwrap_or(serde_json::Value::Null),
+                                    Value::Str(s) => serde_json::Value::String(s.into_string()),
+                                    Value::Bool(b) => serde_json::Value::Bool(b),
+                                    Value::Null => serde_json::Value::Null,
+                                    _ => serde_json::Value::Null,
+                                };
+                                (k, jv)
+                            })
+                            .collect(),
+                    ),
+                };
+                obj.insert(field.into_string(), jv);
+            }
+            json!({"kept": true, "row": serde_json::Value::Object(obj)})
+        }
+    }
+}
 
 /// Payload for registering a Transaction event with {event_time: i64, amount: f64}.
 fn transaction_event_payload() -> serde_json::Value {
@@ -77,30 +172,22 @@ async fn sc1_http_filter_rejects_failing_events() {
     );
 
     // Row below threshold → should be dropped.
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "BigTx", "row": {"event_time": 1000, "amount": 50.0}}),
-        )
-        .await
-        .expect("apply_ops post");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "BigTx",
+        &json!({"event_time": 1000, "amount": 50.0}),
+    );
     assert_eq!(
         apply_body["kept"], false,
         "amount=50 < 100 should be dropped: {apply_body:#}"
     );
 
     // Row above threshold → should be kept.
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "BigTx", "row": {"event_time": 1000, "amount": 150.0}}),
-        )
-        .await
-        .expect("apply_ops post");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "BigTx",
+        &json!({"event_time": 1000, "amount": 150.0}),
+    );
     assert_eq!(
         apply_body["kept"], true,
         "amount=150 > 100 should be kept: {apply_body:#}"
@@ -135,31 +222,23 @@ async fn sc1_tcp_filter_rejects_failing_events() {
         "version must bump to 1: {tcp_body:#}"
     );
 
-    // Row below threshold → dropped (verify via HTTP /dev/apply_ops).
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "BigTxTcp", "row": {"event_time": 1, "amount": 50.0}}),
-        )
-        .await
-        .expect("apply_ops");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    // Row below threshold → dropped (verify via white-box compiled chain).
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "BigTxTcp",
+        &json!({"event_time": 1, "amount": 50.0}),
+    );
     assert_eq!(
         apply_body["kept"], false,
         "amount=50 < 100 should be dropped: {apply_body:#}"
     );
 
     // Row above threshold → kept.
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "BigTxTcp", "row": {"event_time": 1, "amount": 200.0}}),
-        )
-        .await
-        .expect("apply_ops");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "BigTxTcp",
+        &json!({"event_time": 1, "amount": 200.0}),
+    );
     assert_eq!(
         apply_body["kept"], true,
         "amount=200 > 100 should be kept: {apply_body:#}"
@@ -251,32 +330,24 @@ async fn sc2_with_columns_adds_derived_field_visible_downstream() {
         "downstream derivation referencing is_big must register successfully"
     );
 
-    // /dev/apply_ops on TaggedTx → is_big should be true for amount=1000.
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "TaggedTx", "row": {"event_time": 1, "amount": 1000.0}}),
-        )
-        .await
-        .expect("apply_ops");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    // White-box on TaggedTx → is_big should be true for amount=1000.
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "TaggedTx",
+        &json!({"event_time": 1, "amount": 1000.0}),
+    );
     assert_eq!(apply_body["kept"], true);
     assert_eq!(
         apply_body["row"]["is_big"], true,
         "amount=1000 > 500 → is_big must be true: {apply_body:#}"
     );
 
-    // /dev/apply_ops on OnlyBig → is_big=true row is kept.
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "OnlyBig", "row": {"event_time": 1, "amount": 1000.0, "is_big": true}}),
-        )
-        .await
-        .expect("apply_ops onlybig");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    // White-box on OnlyBig → is_big=true row is kept.
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "OnlyBig",
+        &json!({"event_time": 1, "amount": 1000.0, "is_big": true}),
+    );
     assert_eq!(
         apply_body["kept"], true,
         "is_big=true row should pass OnlyBig filter: {apply_body:#}"
@@ -351,15 +422,11 @@ async fn sc3_chained_ops_filter_select_with_columns_cast_schema_propagates() {
     );
 
     // apply_ops with amount=1000 (passes filter, is_big → cast to 1).
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "ChainedDeriv", "row": {"event_time": 10, "amount": 1000.0}}),
-        )
-        .await
-        .expect("apply_ops pass");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "ChainedDeriv",
+        &json!({"event_time": 10, "amount": 1000.0}),
+    );
     assert_eq!(
         apply_body["kept"], true,
         "amount=1000 > 0 should pass filter: {apply_body:#}"
@@ -374,15 +441,11 @@ async fn sc3_chained_ops_filter_select_with_columns_cast_schema_propagates() {
     );
 
     // apply_ops with amount=-5.0 (fails filter → dropped).
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "ChainedDeriv", "row": {"event_time": 10, "amount": -5.0}}),
-        )
-        .await
-        .expect("apply_ops fail");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "ChainedDeriv",
+        &json!({"event_time": 10, "amount": -5.0}),
+    );
     assert_eq!(
         apply_body["kept"], false,
         "amount=-5 < 0 should be dropped: {apply_body:#}"
@@ -543,33 +606,25 @@ async fn phase4_compiled_chain_is_retrievable_post_register() {
         "in-process apply: amount=50 < 100 should be dropped"
     );
 
-    // Compare in-process result with /dev/apply_ops response for the same row.
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "BigTx", "row": {"event_time": 1000, "amount": 150.0}}),
-        )
-        .await
-        .expect("apply_ops");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    // Compare in-process result with white-box helper response for the same row.
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "BigTx",
+        &json!({"event_time": 1000, "amount": 150.0}),
+    );
     assert_eq!(
         apply_body["kept"], true,
-        "/dev/apply_ops must agree with in-process chain.apply for passing row: {apply_body:#}"
+        "white-box apply must agree with in-process chain.apply for passing row: {apply_body:#}"
     );
 
-    let resp = ts
-        .post_json(
-            "/dev/apply_ops",
-            &json!({"derivation": "BigTx", "row": {"event_time": 1000, "amount": 50.0}}),
-        )
-        .await
-        .expect("apply_ops drop");
-    assert_eq!(resp.status().as_u16(), 200);
-    let apply_body: serde_json::Value = resp.json().await.expect("json");
+    let apply_body = apply_ops_white_box(
+        ts.registry(),
+        "BigTx",
+        &json!({"event_time": 1000, "amount": 50.0}),
+    );
     assert_eq!(
         apply_body["kept"], false,
-        "/dev/apply_ops must agree with in-process chain.apply for dropping row: {apply_body:#}"
+        "white-box apply must agree with in-process chain.apply for dropping row: {apply_body:#}"
     );
 
     ts.shutdown().await.expect("shutdown");
