@@ -105,7 +105,8 @@ pub enum PropagationError {
         op_index: usize,
         parse_error: ParseError,
     },
-    /// An op is not supported in Phase 4 (GroupBy / Join / Union).
+    /// An op is not supported in Phase 4 — only GroupBy emits this in v0
+    /// (Join + Union were permanently removed in Phase 12.6, 2026-04-30).
     UnsupportedOp { op_index: usize, op: &'static str },
 }
 
@@ -152,17 +153,18 @@ pub fn propagate_schema(
             OpNode::Fillna { defaults } => {
                 apply_fillna_schema(op_index, defaults, &mut current, &mut errors);
             }
+            // Phase 12.6 (2026-04-30): the Join + Union match arms were deleted
+            // per project_redis_shaped_no_event_time_ever (variants gone from
+            // the enum). The JSON-prelude shim
+            // register_validate::pre_check_removed_ops intercepts those payloads
+            // BEFORE the strict OpNode deserialize, emitting structured codes
+            // feature_removed_no_joins_v0 / feature_removed_no_unions_v0.
             OpNode::GroupBy { .. } => {
                 errors.push(PropagationError::UnsupportedOp {
                     op_index,
                     op: "group_by",
                 });
-            } // Phase 12.6 (2026-04-30): OpNode::Join + OpNode::Union arms
-              // removed — variants deleted from the enum per
-              // project_redis_shaped_no_event_time_ever. JSON-prelude shim
-              // register_validate::pre_check_removed_ops intercepts join/union
-              // BEFORE the OpNode strict deserialize, emitting structured codes
-              // feature_removed_no_joins_v0 / feature_removed_no_unions_v0.
+            }
         }
         per_step.push(current.clone());
     }
