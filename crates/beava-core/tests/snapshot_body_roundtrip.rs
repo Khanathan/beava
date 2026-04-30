@@ -230,7 +230,7 @@ fn snapshot_body_empty_roundtrip() {
         registry: RegistryDescriptorsOnly::default(),
         state_tables: BTreeMap::new(),
         next_event_id: 0,
-        max_event_time_ms: 0,
+        query_time_ms: 0,
     };
     let bytes = body.encode().expect("encode");
     let decoded = SnapshotBody::decode(&bytes).expect("decode");
@@ -238,7 +238,7 @@ fn snapshot_body_empty_roundtrip() {
     assert_eq!(decoded.registry, RegistryDescriptorsOnly::default());
     assert!(decoded.state_tables.is_empty());
     assert_eq!(decoded.next_event_id, 0);
-    assert_eq!(decoded.max_event_time_ms, 0);
+    assert_eq!(decoded.query_time_ms, 0);
     // Byte-equivalence confirms deterministic encoding.
     let reencoded = decoded.encode().expect("re-encode");
     assert_eq!(bytes, reencoded);
@@ -251,7 +251,7 @@ fn snapshot_body_version_mismatch_rejected() {
         registry: RegistryDescriptorsOnly::default(),
         state_tables: BTreeMap::new(),
         next_event_id: 0,
-        max_event_time_ms: 0,
+        query_time_ms: 0,
     };
     let bytes = bincode::serialize(&body).expect("raw encode");
     match SnapshotBody::decode(&bytes) {
@@ -297,11 +297,9 @@ fn snapshot_body_registry_descriptors_preserved() {
         Arc::new(EventDescriptor {
             name: "Txn".to_string(),
             schema: small_event_schema(),
-            event_time_field: None,
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 1,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -312,11 +310,9 @@ fn snapshot_body_registry_descriptors_preserved() {
         Arc::new(EventDescriptor {
             name: "Login".to_string(),
             schema: small_event_schema(),
-            event_time_field: None,
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 2,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -418,7 +414,7 @@ fn snapshot_body_state_tables_full_roundtrip() {
     let decoded = SnapshotBody::decode(&bytes).expect("decode");
 
     assert_eq!(decoded.next_event_id, 12);
-    assert_eq!(decoded.max_event_time_ms, 4567);
+    assert_eq!(decoded.query_time_ms, 4567);
     assert_eq!(decoded.state_tables.len(), 2);
     for node in ["agg_a", "agg_b"] {
         let entries = decoded.state_tables.get(node).expect("node present");

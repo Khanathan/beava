@@ -21,7 +21,12 @@ use crate::Lsn;
 /// Magic bytes at the start of every snapshot header.
 pub const SNAPSHOT_MAGIC: [u8; 8] = *b"BEAVASNP";
 /// Snapshot format version emitted by this build.
-pub const SNAPSHOT_FORMAT_VERSION: u16 = 1;
+///
+/// **Plan 12.6-06 (D-03 hard rip):** bumped 1 → 2 alongside the snapshot body
+/// format bump (max_event_time_ms field renamed to query_time_ms). v1 headers
+/// fail with `UnsupportedVersion(1)` — pre-pivot snapshots are dev artifacts
+/// per CONTEXT D-03 hard-rip; no migration path.
+pub const SNAPSHOT_FORMAT_VERSION: u16 = 2;
 /// Fixed serialized size of `SnapshotHeader`.
 pub const SNAPSHOT_HEADER_SIZE: usize = 52;
 /// File extension used for committed snapshots.

@@ -14,7 +14,15 @@ use crate::error::PersistError;
 use crate::{Lsn, RecordType, WalRecord};
 
 /// Format version emitted by this implementation.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// **Plan 12.6-06 (D-03 hard rip):** bumped 1 → 2 alongside the deletion of
+/// the `event_time` byte slot in the per-record payload (apply_shard.rs's
+/// hand-rolled v=2 binary records carry server `now_ms` instead of a
+/// body-derived event timestamp). v1 records fail with the existing
+/// `SchemaVersionMismatch` path on recovery — per CONTEXT D-03 there is no
+/// migration shim; pre-pivot WALs are dev artifacts that operators clear
+/// before booting the new binary.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Magic bytes at the head of every WAL segment file.
 pub const MAGIC: [u8; 8] = *b"BEAVAWAL";

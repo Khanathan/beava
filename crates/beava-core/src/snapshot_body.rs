@@ -23,7 +23,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Monotonic format version for snapshot body evolution.
-pub const SNAPSHOT_BODY_FORMAT_VERSION: u16 = 1;
+///
+/// **Plan 12.6-06 (D-03 hard rip):** bumped 1 → 2 alongside the rename of
+/// `max_event_time_ms` → `query_time_ms`. v1 bodies fail with
+/// `UnsupportedVersion(1)` on recovery — pre-pivot snapshots are dev artifacts
+/// that operators clear before booting the new binary; there is no migration
+/// shim per CONTEXT D-03 hard-rip.
+pub const SNAPSHOT_BODY_FORMAT_VERSION: u16 = 2;
 
 /// Per-aggregation-node serialized state: ordered list of (entity, ops).
 pub type SerializedStateTables = BTreeMap<String, Vec<(EntityKey, Vec<AggOp>)>>;
@@ -72,7 +78,12 @@ pub struct SnapshotBody {
     pub state_tables: SerializedStateTables,
     /// Scalar counters preserved across restart.
     pub next_event_id: u64,
-    pub max_event_time_ms: i64,
+    /// Plan 12.6-06 (D-03 hard rip): renamed from `max_event_time_ms`.
+    /// Stores the latest server-side wall-clock the snapshotter saw — the
+    /// post-pivot time-source for windowed-op GET queries (`compute_query_time_ms`).
+    /// The wire schema is no longer event-time-aware; this field carries
+    /// `now_ms` rather than a body-derived event timestamp.
+    pub query_time_ms: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -91,7 +102,7 @@ impl SnapshotBody {
         registry: &RegistryInner,
         state_tables: &StateTables,
         next_event_id: u64,
-        max_event_time_ms: i64,
+        query_time_ms: i64,
     ) -> Self {
         // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by
         // agg_id. Walk registry.compiled_aggregations (sorted-by-name BTreeMap)
@@ -114,7 +125,7 @@ impl SnapshotBody {
             registry: RegistryDescriptorsOnly::from(registry),
             state_tables: serialized_tables,
             next_event_id,
-            max_event_time_ms,
+            query_time_ms,
         }
     }
 
@@ -140,7 +151,7 @@ impl SnapshotBody {
             self.registry,
             self.state_tables,
             self.next_event_id,
-            self.max_event_time_ms,
+            self.query_time_ms,
         )
     }
 }

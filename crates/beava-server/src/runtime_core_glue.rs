@@ -402,7 +402,7 @@ fn dispatch_get_single(
     let query_time_ms = {
         let raw = app
             .dev_agg
-            .max_event_time_ms
+            .query_time_ms
             .load(std::sync::atomic::Ordering::Acquire);
         if raw == 0 {
             // Fall back to wall clock when no events have been pushed yet.
@@ -632,7 +632,7 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes, body_format: u8) -> Glu
     let query_time_ms = {
         let raw = app
             .dev_agg
-            .max_event_time_ms
+            .query_time_ms
             .load(std::sync::atomic::Ordering::Acquire);
         if raw == 0 {
             0i64

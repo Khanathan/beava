@@ -729,7 +729,7 @@ impl ApplyShard {
         // the apply path no longer reads `event_time` from the row body.
         // `now_ms` (computed above as the wall-clock at this dispatch) is
         // the single time source threaded into the operator surface — both
-        // for windowed bucketing and for `max_event_time_ms.fetch_max`
+        // for windowed bucketing and for `query_time_ms.fetch_max`
         // below (which Plan 12.6-06 will rename to a now-aligned name once
         // the `event_time_ms` wire field + EventDescriptor.event_time_field
         // are deleted).
@@ -792,7 +792,7 @@ impl ApplyShard {
 
         // 9. Bump monotonic event counters.
         //
-        // Plan 12.6-05 Path X: `max_event_time_ms` is fed `now_ms` (server
+        // Plan 12.6-05 Path X: `query_time_ms` is fed `now_ms` (server
         // wall-clock at apply) rather than a body-derived event_time. The
         // field name is misleading post-Path-X — Plan 12.6-06 renames it to
         // a now-aligned identifier once the EventDescriptor.event_time_field
@@ -808,7 +808,7 @@ impl ApplyShard {
         if now_ms > 0 {
             self.state
                 .dev_agg
-                .max_event_time_ms
+                .query_time_ms
                 .fetch_max(now_ms, Ordering::Relaxed);
         }
         let t_bk_counters = t0.map(|t| t.elapsed());

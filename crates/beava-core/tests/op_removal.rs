@@ -35,11 +35,9 @@ fn make_event_descriptor(name: &str, fields: &[(&str, FieldType)]) -> EventDescr
     EventDescriptor {
         name: name.to_string(),
         schema: make_event_schema_fields(fields),
-        event_time_field: None,
         dedupe_key: None,
         dedupe_window_ms: None,
         keep_events_for_ms: None,
-        tolerate_delay_ms: None,
         registered_at_version: 0,
         name_arc: Arc::from(""),
         apply_field_names: vec![],

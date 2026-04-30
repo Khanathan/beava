@@ -102,12 +102,12 @@ async fn do_snapshot(
     // additive on RegistryBump records).
     let snapshot_lsn = wal_sink.durable_lsn();
     let next_event_id = app_state.dev_agg.next_event_id.load(Ordering::Relaxed);
-    let max_event_time_ms = app_state.dev_agg.max_event_time_ms.load(Ordering::Relaxed) as i64;
+    let query_time_ms = app_state.dev_agg.query_time_ms.load(Ordering::Relaxed) as i64;
 
     let body = {
         let registry_snap = app_state.dev_agg.registry.snapshot();
         let tables = app_state.dev_agg.state_tables.lock();
-        SnapshotBody::from_live(&registry_snap, &tables, next_event_id, max_event_time_ms)
+        SnapshotBody::from_live(&registry_snap, &tables, next_event_id, query_time_ms)
     };
     let registry_version = body.registry.version;
     let encoded = body

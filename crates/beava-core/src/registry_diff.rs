@@ -63,6 +63,11 @@ pub struct ConflictDetail {
 pub enum DiffReason {
     KindMismatch,
     SchemaMismatch,
+    /// Plan 12.6-06 D-03 hard rip: pre-pivot variant — emitted when an
+    /// `event_time_field` value differed between current and submitted
+    /// EventDescriptor. The diff classifier no longer raises this; the field
+    /// is gone from EventDescriptor. Variant kept for wire-codec stability.
+    #[allow(dead_code)]
     EventTimeFieldMismatch,
     PrimaryKeyMismatch,
     TtlMismatch,
@@ -178,20 +183,15 @@ fn classify_event_diff(
     current: &EventDescriptor,
     submitted: &EventDescriptor,
 ) -> (DiffReason, String) {
-    // Priority order: schema → event_time_field → dedupe_key → ttl fields → fallback
+    // Priority order: schema → dedupe_key → ttl fields → fallback
+    //
+    // Plan 12.6-06 D-03 hard rip: `event_time_field` and `tolerate_delay_ms`
+    // were deleted from EventDescriptor — the diff routine no longer compares
+    // them (they aren't on the struct).  Stale fixtures get rejected at the
+    // JSON-prelude layer before reaching this classifier.
 
     if let Some(detail) = describe_field_diff_event(&current.schema, &submitted.schema) {
         return (DiffReason::SchemaMismatch, detail);
-    }
-
-    if current.event_time_field != submitted.event_time_field {
-        return (
-            DiffReason::EventTimeFieldMismatch,
-            format!(
-                "event_time_field changed from {:?} to {:?}",
-                current.event_time_field, submitted.event_time_field
-            ),
-        );
     }
 
     if current.dedupe_key != submitted.dedupe_key {
@@ -220,16 +220,6 @@ fn classify_event_diff(
             format!(
                 "keep_events_for_ms changed from {:?} to {:?}",
                 current.keep_events_for_ms, submitted.keep_events_for_ms
-            ),
-        );
-    }
-
-    if current.tolerate_delay_ms != submitted.tolerate_delay_ms {
-        return (
-            DiffReason::TtlMismatch,
-            format!(
-                "tolerate_delay_ms changed from {:?} to {:?}",
-                current.tolerate_delay_ms, submitted.tolerate_delay_ms
             ),
         );
     }
@@ -413,11 +403,9 @@ mod tests {
             Arc::new(EventDescriptor {
                 name: name.to_string(),
                 schema,
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -441,11 +429,9 @@ mod tests {
         PayloadNode::Event(EventDescriptor {
             name: name.to_string(),
             schema,
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -610,28 +596,11 @@ mod tests {
         assert!(details.contains("y") && details.contains("removed"));
     }
 
-    // Test 7
-    #[test]
-    fn event_time_field_mismatch() {
-        let schema = simple_event_schema();
-        let current = registry_with_event("A", schema.clone());
-
-        // Same schema but different event_time_field
-        let payload = vec![PayloadNode::Event(EventDescriptor {
-            name: "A".to_string(),
-            schema,
-            event_time_field: Some("ts".to_string()), // changed
-            dedupe_key: None,
-            dedupe_window_ms: None,
-            keep_events_for_ms: None,
-            tolerate_delay_ms: None,
-            registered_at_version: 0,
-            name_arc: Arc::from(""),
-            apply_field_names: vec![],
-        })];
-        let diff = compute_diff(&current, &payload);
-        assert_eq!(diff.changed[0].reason, DiffReason::EventTimeFieldMismatch);
-    }
+    // Test 7 (Plan 12.6-06 D-03 hard rip): the pre-pivot
+    // `event_time_field_mismatch` test is deleted — `event_time_field` is no
+    // longer on EventDescriptor, so the diff classifier doesn't compare it.
+    // Stale fixtures get rejected at the JSON-prelude layer
+    // (`pre_check_legacy_event_time_keys`), not at the diff layer.
 
     // Test 8
     #[test]
@@ -659,11 +628,9 @@ mod tests {
         let payload = vec![PayloadNode::Event(EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: Some(1001),
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -857,11 +824,9 @@ mod tests {
             Arc::new(EventDescriptor {
                 name: "existingB".to_string(),
                 schema: schema.clone(),
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -872,11 +837,9 @@ mod tests {
             Arc::new(EventDescriptor {
                 name: "existingD".to_string(),
                 schema: schema.clone(),
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -911,11 +874,9 @@ mod tests {
             Arc::new(EventDescriptor {
                 name: "X".to_string(),
                 schema: schema.clone(),
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -926,11 +887,9 @@ mod tests {
             Arc::new(EventDescriptor {
                 name: "Z".to_string(),
                 schema: schema.clone(),
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -963,11 +922,9 @@ mod tests {
         let payload = vec![PayloadNode::Event(EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 99,
             name_arc: Arc::from(""), // server-assigned, should be ignored
             apply_field_names: vec![],
@@ -1022,11 +979,9 @@ mod proptests {
                         fields: extra_fields,
                         optional_fields: vec![],
                     },
-                    event_time_field: Some("event_time".to_string()),
                     dedupe_key: None,
                     dedupe_window_ms: None,
                     keep_events_for_ms: None,
-                    tolerate_delay_ms: None,
                     registered_at_version: 0,
                     name_arc: Arc::from(""),
                     apply_field_names: vec![],

@@ -40,15 +40,11 @@ pub struct EventDescriptor {
     pub name: String,
     pub schema: EventSchema,
     #[serde(default)]
-    pub event_time_field: Option<String>,
-    #[serde(default)]
     pub dedupe_key: Option<String>,
     #[serde(default)]
     pub dedupe_window_ms: Option<u64>,
     #[serde(default)]
     pub keep_events_for_ms: Option<u64>,
-    #[serde(default)]
-    pub tolerate_delay_ms: Option<u64>,
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
@@ -78,14 +74,18 @@ impl EventDescriptor {
     /// Compare two descriptors field-by-field, EXCLUDING `registered_at_version`.
     /// Used by the diff engine (Plan 03) to detect conflicts without false positives
     /// from version stamps.
+    ///
+    /// Plan 12.6-06 D-03 hard-rip: `event_time_field` and `tolerate_delay_ms`
+    /// fields are gone (deleted from EventDescriptor). The equivalence relation
+    /// is therefore narrower than pre-pivot — two descriptors with the same
+    /// (name, schema, dedupe, retention) are now equivalent regardless of any
+    /// pre-pivot event-time / tolerance configuration.
     pub fn equiv_ignoring_version(&self, other: &Self) -> bool {
         self.name == other.name
             && self.schema == other.schema
-            && self.event_time_field == other.event_time_field
             && self.dedupe_key == other.dedupe_key
             && self.dedupe_window_ms == other.dedupe_window_ms
             && self.keep_events_for_ms == other.keep_events_for_ms
-            && self.tolerate_delay_ms == other.tolerate_delay_ms
     }
 }
 
@@ -1146,15 +1146,16 @@ mod tests {
     /// Phase 12.6 Plan 06 (Task 2.a / RED) — guards the D-03 hard-rip surface
     /// at the EventDescriptor level. Reads the source via `include_str!` and
     /// asserts the post-rip tokens are absent. RED today because EventDescriptor
-    /// still declares `event_time_field`/`tolerate_delay_ms`. Flips GREEN once
-    /// Task 2.b deletes those fields.
+    /// still declares the legacy fields. Flips GREEN once Task 2.b deletes
+    /// those fields.
     ///
     /// **Forbidden tokens are reconstructed at runtime via chunked `concat`** so
     /// the test source itself does not contain the literals it forbids — same
-    /// pattern as Plan 05's agg_windowed RED test (otherwise a future
-    /// `sed -i s/event_time_field//g` rename would corrupt this test).
+    /// pattern as Plan 05's agg_windowed RED test. Function name is also
+    /// chunk-friendly (avoids `event_time_field` / `tolerate_delay_ms` as a
+    /// substring) so the include_str grep doesn't flag the test on itself.
     #[test]
-    fn event_descriptor_has_no_event_time_field_phase_12_6_06() {
+    fn event_descriptor_post_d03_has_no_legacy_decorator_keys() {
         let src = include_str!("registry.rs");
         // Strip line comments so doc-comments mentioning the historical
         // field name don't false-positive the assertion.
@@ -1190,6 +1191,13 @@ mod tests {
     }
 
     // Test 1: EventDescriptor JSON round-trip (Transaction from 02-CONTEXT.md)
+    //
+    // Plan 12.6-06 D-03 hard-rip: legacy `event_time_field` / `tolerate_delay_ms`
+    // keys deleted from the fixture JSON. Per project_redis_shaped_no_event_time_ever
+    // these keys never round-trip the post-pivot descriptor. (The strict-deny
+    // shim in register_validate::pre_check_legacy_event_time_keys catches
+    // them at the dispatch layer; this test exercises the type-level
+    // round-trip without those keys.)
     #[test]
     fn event_descriptor_json_round_trip() {
         let json = r#"{
@@ -1198,25 +1206,20 @@ mod tests {
                 "fields": {
                     "card_id": "str",
                     "amount": "f64",
-                    "merchant_id": "str",
-                    "event_time": "i64"
+                    "merchant_id": "str"
                 },
                 "optional_fields": []
             },
-            "event_time_field": "event_time",
             "dedupe_key": "request_id",
             "dedupe_window_ms": 86400000,
-            "keep_events_for_ms": 604800000,
-            "tolerate_delay_ms": 5000
+            "keep_events_for_ms": 604800000
         }"#;
 
         let desc: EventDescriptor = serde_json::from_str(json).unwrap();
         assert_eq!(desc.name, "Transaction");
-        assert_eq!(desc.event_time_field, Some("event_time".to_string()));
         assert_eq!(desc.dedupe_key, Some("request_id".to_string()));
         assert_eq!(desc.dedupe_window_ms, Some(86_400_000));
         assert_eq!(desc.keep_events_for_ms, Some(604_800_000));
-        assert_eq!(desc.tolerate_delay_ms, Some(5000));
         assert_eq!(desc.registered_at_version, 0); // defaulted
         assert_eq!(desc.schema.fields.get("amount"), Some(&FieldType::F64));
 
@@ -1356,11 +1359,9 @@ mod tests {
         let a = EventDescriptor {
             name: "A".to_string(),
             schema: schema.clone(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 1,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1387,11 +1388,9 @@ mod tests {
         let event_a = EventDescriptor {
             name: "Transaction".to_string(),
             schema: schema.clone(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1538,11 +1537,9 @@ mod tests {
         let event_a = EventDescriptor {
             name: "A".to_string(),
             schema,
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1564,11 +1561,9 @@ mod tests {
         let e1 = EventDescriptor {
             name: "E1".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1579,11 +1574,9 @@ mod tests {
         let e2 = EventDescriptor {
             name: "E2".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1605,11 +1598,9 @@ mod tests {
         let event_a = EventDescriptor {
             name: "A".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1626,11 +1617,9 @@ mod tests {
         let event_b = EventDescriptor {
             name: "B".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1661,11 +1650,9 @@ mod tests {
         let event = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1775,11 +1762,9 @@ mod tests {
         let event_a = EventDescriptor {
             name: "EvA".to_string(),
             schema: make_event_schema(),
-            event_time_field: None,
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1844,11 +1829,9 @@ mod tests {
         let event_b = EventDescriptor {
             name: "EvB".to_string(),
             schema: make_event_schema(),
-            event_time_field: None,
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1931,11 +1914,9 @@ mod tests {
         let event = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -2025,11 +2006,9 @@ mod tests {
         let event = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""), // server overwrites at install; value here is a placeholder
             apply_field_names: vec![],
@@ -2075,11 +2054,9 @@ mod tests {
         let event = EventDescriptor {
             name: "Click".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""), // overwritten server-side at apply_registration
             apply_field_names: vec![],
@@ -2145,11 +2122,9 @@ mod tests {
             EventDescriptor {
                 name: name.to_string(),
                 schema: make_event_schema(),
-                event_time_field: None,
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 0,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -2333,11 +2308,9 @@ mod tests {
         let event_txn = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![], // <-- this is what the resolver must populate
@@ -2457,11 +2430,9 @@ mod tests {
         let event_txn = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],

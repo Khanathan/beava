@@ -181,7 +181,7 @@ pub async fn execute_push_and_get(
     // Query features. The push has already applied — state_tables contains
     // the just-pushed event. Lock scope spans the entire query batch.
     let query_time_ms = {
-        let raw = app.dev_agg.max_event_time_ms.load(Ordering::Acquire);
+        let raw = app.dev_agg.query_time_ms.load(Ordering::Acquire);
         if raw == 0 {
             0i64
         } else {

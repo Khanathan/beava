@@ -275,13 +275,18 @@ pub struct DevAggState {
     /// `event_id` parameter; value is ignored in Phase 5 but keeps the
     /// signature stable for Phase 6 WAL (D-08).
     pub next_event_id: Arc<AtomicU64>,
-    /// Maximum event_time_ms observed across all applied events.
+    /// **Plan 12.6-06 D-03 hard rip — renamed from `max_event_time_ms`.**
     ///
-    /// Used by the `/get` query handlers as the query time (D-06: deterministic
-    /// query time — max observed event_time, NOT wall-clock). Value is 0 until
-    /// the first event is applied. Stored as u64 (cast from i64) so it fits in
-    /// an AtomicU64; negative event times are treated as 0 for query purposes.
-    pub max_event_time_ms: Arc<AtomicU64>,
+    /// Stores the latest server-side wall-clock the apply path saw. Used by
+    /// the `/get` query handlers as the query time for windowed-op bucketing
+    /// (post-pivot the time-source is server `now_ms` exclusively per
+    /// `project_redis_shaped_no_event_time_ever`; the field is fed by the
+    /// `apply_shard.rs::dispatch_push_sync` `now_ms` write site rather than
+    /// any body-derived event timestamp). Value is 0 until the first event is
+    /// applied; readers fall back to wall-clock in that case.
+    ///
+    /// AtomicU64 (cast from i64) for lock-free reads from the GET hot path.
+    pub query_time_ms: Arc<AtomicU64>,
 
     /// Phase 11.5 D-01 — per-table MVCC stores. Key = table name. Created
     /// lazily on first push-table for a temporal table.
@@ -304,7 +309,7 @@ impl DevAggState {
             state_tables: Arc::new(Mutex::new(StateTables::new())),
             registry,
             next_event_id: Arc::new(AtomicU64::new(0)),
-            max_event_time_ms: Arc::new(AtomicU64::new(0)),
+            query_time_ms: Arc::new(AtomicU64::new(0)),
             temporal_stores: Arc::new(Mutex::new(HashMap::new())),
             event_id_index: Arc::new(Mutex::new(hashbrown::HashMap::with_hasher(
                 fxhash::FxBuildHasher::default(),
@@ -315,17 +320,22 @@ impl DevAggState {
 
 /// Request body for `POST /dev/apply_events`.
 ///
+/// **Plan 12.6-06 (D-03 hard rip):** the legacy `event_time_ms` field has been
+/// removed; the apply path uses server-side wall-clock at dispatch
+/// (`SystemTime::now()`) per `project_redis_shaped_no_event_time_ems`. Stale
+/// fixtures sending `event_time_ms` get rejected by serde's strict
+/// `deny_unknown_fields` (added below).
+///
 /// ```json
 /// {
 ///   "source": "Transaction",
-///   "event_time_ms": 1714000000000,
 ///   "row": { "user_id": "alice", "amount": 100.0 }
 /// }
 /// ```
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyEventsRequest {
     pub source: String,
-    pub event_time_ms: i64,
     pub row: BTreeMap<String, serde_json::Value>,
 }
 
@@ -391,25 +401,34 @@ async fn post_dev_apply_events(
         .map(|d| d.node_name.clone())
         .collect();
 
+    // Plan 12.6-06: server-side wall-clock at dispatch is the single time
+    // source per `project_redis_shaped_no_event_time_ever`. The apply path
+    // uses this `now_ms` value instead of any body-derived event-time read.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let now_ms_i64: i64 = now_ms as i64;
+
     // Step 5: apply under the single-writer lock.
     {
         let mut tables = dev_state.state_tables.lock();
         apply_event_to_aggregations(
             &body.source,
             &row,
-            body.event_time_ms,
+            now_ms_i64,
             event_id,
             &dev_state.registry,
             &mut tables,
         );
     }
 
-    // Step 6: bump max_event_time_ms (D-06 deterministic query time).
-    // Use fetch_max to ensure monotonicity even with out-of-order events.
-    if body.event_time_ms > 0 {
+    // Step 6: bump query_time_ms (Plan 12.6-06: post-Path-X this is fed by
+    // server now_ms — see DevAggState.query_time_ms doc-comment).
+    if now_ms > 0 {
         dev_state
-            .max_event_time_ms
-            .fetch_max(body.event_time_ms as u64, Ordering::Relaxed);
+            .query_time_ms
+            .fetch_max(now_ms, Ordering::Relaxed);
     }
 
     (
@@ -433,15 +452,15 @@ mod tests {
     /// Phase 12.6 Plan 06 (Task 2.a / RED) — guards the D-03 hard-rip surface
     /// at the AppState level. Reads the source via `include_str!` and asserts
     /// the post-rip tokens are absent. RED today because DevAggState still
-    /// declares `max_event_time_ms` (and apply_shard / recovery still write
-    /// to it). Flips GREEN once Task 2.b renames the field to `query_time_ms`
-    /// (or deletes it entirely) and propagates the rename.
+    /// carries the legacy field. Flips GREEN once Task 2.b renames the field
+    /// to `query_time_ms` and propagates the rename.
     ///
     /// **Forbidden token is reconstructed at runtime via chunked `concat`** so
     /// the test source itself does not contain the literal it forbids — same
-    /// pattern as Plan 05's agg_windowed RED test.
+    /// pattern as Plan 05's agg_windowed RED test. Function name is also
+    /// chunk-friendly (avoids `max_event_time_ms` as a substring).
     #[test]
-    fn dev_agg_state_has_no_max_event_time_ms_phase_12_6_06() {
+    fn dev_agg_state_post_d03_has_no_legacy_max_field() {
         let src = include_str!("registry_debug.rs");
         let stripped: String = src
             .lines()
@@ -499,11 +518,9 @@ mod tests {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -638,11 +655,9 @@ mod tests {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -744,11 +759,9 @@ mod tests {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],

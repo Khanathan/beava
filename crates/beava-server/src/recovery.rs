@@ -45,7 +45,7 @@ pub fn load_snapshot_if_any(
         match SnapshotReader::open(&path) {
             Ok((header, body)) => match SnapshotBody::decode(&body) {
                 Ok(snapshot_body) => {
-                    let (registry_only, state_tables, next_event_id, max_event_time_ms) =
+                    let (registry_only, state_tables, next_event_id, query_time_ms) =
                         snapshot_body.into_parts();
                     dev_agg.registry.install_from_descriptors(&registry_only);
                     {
@@ -78,10 +78,10 @@ pub fn load_snapshot_if_any(
                     dev_agg
                         .next_event_id
                         .store(next_event_id, Ordering::Relaxed);
-                    if max_event_time_ms > 0 {
+                    if query_time_ms > 0 {
                         dev_agg
-                            .max_event_time_ms
-                            .store(max_event_time_ms as u64, Ordering::Relaxed);
+                            .query_time_ms
+                            .store(query_time_ms as u64, Ordering::Relaxed);
                     }
                     tracing::info!(
                         target: "beava.recovery",
@@ -302,7 +302,7 @@ pub fn replay_handrolled_wal_dir(
             dev_agg.next_event_id.fetch_max(lsn, Ordering::Relaxed);
             if rec.et_ms > 0 {
                 dev_agg
-                    .max_event_time_ms
+                    .query_time_ms
                     .fetch_max(rec.et_ms as u64, Ordering::Relaxed);
             }
             outcome.replay_event_count += 1;
@@ -317,7 +317,7 @@ pub fn replay_handrolled_wal_dir(
 /// Replay every WAL record in `wal_dir` whose LSN > `from_lsn_exclusive`,
 /// applying them to `app_state`. Returns counters + last LSN seen.
 ///
-/// Bumps `next_event_id` and `max_event_time_ms` as records replay so the
+/// Bumps `next_event_id` and `query_time_ms` as records replay so the
 /// post-recovery server picks up monotonic counters consistent with the WAL.
 pub fn replay_wal_from_lsn(
     wal_dir: &Path,
@@ -367,7 +367,7 @@ pub fn replay_wal_from_lsn(
                 dev_agg.next_event_id.fetch_max(rec.lsn, Ordering::Relaxed);
                 if payload.et > 0 {
                     dev_agg
-                        .max_event_time_ms
+                        .query_time_ms
                         .fetch_max(payload.et as u64, Ordering::Relaxed);
                 }
                 outcome.replay_event_count += 1;

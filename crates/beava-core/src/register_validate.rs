@@ -15,7 +15,7 @@
 use crate::op_chain::OpChain;
 use crate::registry::{EventDescriptor, RegistryInner, TableDescriptor};
 use crate::registry_diff::PayloadNode;
-use crate::schema::{validate_descriptor_name, DescriptorNameError, FieldType};
+use crate::schema::{validate_descriptor_name, DescriptorNameError};
 use crate::schema_propagate::{PropagationError, Schema};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -33,7 +33,19 @@ pub enum ErrorCode {
     NameBadPattern,
     NameEmpty,
     NameTooLong,
+    /// Plan 12.6-06 D-03 hard rip: pre-pivot variant — emitted when the
+    /// `event_time_field` decorator referenced an unknown schema field. The
+    /// validator no longer raises this; stale fixtures get rejected at the
+    /// JSON-prelude layer (`pre_check_legacy_event_time_keys`) before the
+    /// validator runs. Variant kept for wire-codec stability and to avoid an
+    /// `ErrorCode` discriminant shift.
+    #[allow(dead_code)]
     EventTimeFieldMissing,
+    /// Plan 12.6-06 D-03 hard rip: pre-pivot variant — emitted when the
+    /// `event_time_field` decorator referenced a field of the wrong type
+    /// (non-i64). Same posture as `EventTimeFieldMissing` — variant kept,
+    /// no longer raised.
+    #[allow(dead_code)]
     EventTimeFieldWrongType,
     EventSchemaEmpty,
     TablePrimaryKeyEmpty,
@@ -483,51 +495,18 @@ fn validate_node_name(i: usize, node: &PayloadNode, errors: &mut Vec<ValidationE
 // ─── Rule 3: event schema validation ─────────────────────────────────────────
 
 fn validate_event(i: usize, e: &EventDescriptor, errors: &mut Vec<ValidationError>) {
-    // If event_time_field is Some, it must exist in schema with I64 type.
-    // If None, server will stamp wall-clock time on push (skip existence+type checks).
-    if let Some(ref etf) = e.event_time_field {
-        match e.schema.fields.get(etf) {
-            None => {
-                errors.push(ValidationError {
-                    code: ErrorCode::EventTimeFieldMissing,
-                    path: path_field(i, &format!("schema.fields.{etf}")),
-                    reason: format!("event_time_field '{etf}' does not exist in schema.fields"),
-                });
-            }
-            Some(ft) if *ft != FieldType::I64 => {
-                errors.push(ValidationError {
-                    code: ErrorCode::EventTimeFieldWrongType,
-                    path: path_field(i, &format!("schema.fields.{etf}")),
-                    reason: format!("event_time_field '{etf}' must be type i64, got {ft:?}"),
-                });
-            }
-            _ => {}
-        }
-
-        // When event_time_field is Some, schema must have ≥1 non-event_time field.
-        let non_ts_count = e
-            .schema
-            .fields
-            .keys()
-            .filter(|k| k.as_str() != etf.as_str())
-            .count();
-        if non_ts_count == 0 {
-            errors.push(ValidationError {
-                code: ErrorCode::EventSchemaEmpty,
-                path: path_field(i, "schema.fields"),
-                reason: "event schema must have at least one field besides event_time_field"
-                    .to_string(),
-            });
-        }
-    } else {
-        // No event_time_field → schema must be non-empty (any fields OK).
-        if e.schema.fields.is_empty() {
-            errors.push(ValidationError {
-                code: ErrorCode::EventSchemaEmpty,
-                path: path_field(i, "schema.fields"),
-                reason: "event schema must have at least one field".to_string(),
-            });
-        }
+    // Plan 12.6-06 D-03 hard rip: `event_time_field` deleted from
+    // EventDescriptor — windowed-op bucketing now uses server-side wall-clock
+    // exclusively per `project_redis_shaped_no_event_time_ever`. Stale
+    // fixtures sending `event_time_field` get rejected at the JSON-prelude
+    // layer (`pre_check_legacy_event_time_keys`) before reaching this
+    // validator. Schema must be non-empty (any fields OK).
+    if e.schema.fields.is_empty() {
+        errors.push(ValidationError {
+            code: ErrorCode::EventSchemaEmpty,
+            path: path_field(i, "schema.fields"),
+            reason: "event schema must have at least one field".to_string(),
+        });
     }
 
     // Rule 9: dedupe_key
@@ -1024,11 +1003,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1156,11 +1133,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1179,11 +1154,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1202,11 +1175,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1226,11 +1197,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1245,78 +1214,27 @@ mod tests_structural {
         assert_ok(vec![minimal_event("T")]);
     }
 
-    #[test]
-    fn rule3_fail_event_time_field_missing() {
-        let mut fields = BTreeMap::new();
-        fields.insert("x".to_string(), FieldType::F64);
-        // event_time_field="ts" but no "ts" in schema
-        let node = PayloadNode::Event(EventDescriptor {
-            name: "T".to_string(),
-            schema: EventSchema {
-                fields,
-                optional_fields: vec![],
-            },
-            event_time_field: Some("ts".to_string()),
-            dedupe_key: None,
-            dedupe_window_ms: None,
-            keep_events_for_ms: None,
-            tolerate_delay_ms: None,
-            registered_at_version: 0,
-            name_arc: Arc::from(""),
-            apply_field_names: vec![],
-        });
-        assert_err_contains(
-            vec![node],
-            ErrorCode::EventTimeFieldMissing,
-            "nodes[0].schema.fields.ts",
-        );
-    }
-
-    #[test]
-    fn rule3_fail_event_time_field_wrong_type() {
-        let mut fields = BTreeMap::new();
-        fields.insert("event_time".to_string(), FieldType::Str); // wrong type
-        fields.insert("x".to_string(), FieldType::F64);
-        let node = PayloadNode::Event(EventDescriptor {
-            name: "T".to_string(),
-            schema: EventSchema {
-                fields,
-                optional_fields: vec![],
-            },
-            event_time_field: Some("event_time".to_string()),
-            dedupe_key: None,
-            dedupe_window_ms: None,
-            keep_events_for_ms: None,
-            tolerate_delay_ms: None,
-            registered_at_version: 0,
-            name_arc: Arc::from(""),
-            apply_field_names: vec![],
-        });
-        let errs = validate_payload(&empty_current(), vec![node]).expect_err("expected Err");
-        let e = errs
-            .iter()
-            .find(|e| e.code == ErrorCode::EventTimeFieldWrongType)
-            .unwrap();
-        assert!(e.path.contains("schema.fields.event_time"));
-        assert!(e.reason.to_lowercase().contains("i64") && e.reason.to_lowercase().contains("str"));
-    }
+    // Plan 12.6-06 D-03 hard rip: tests `rule3_fail_event_time_field_missing`
+    // and `rule3_fail_event_time_field_wrong_type` deleted — `event_time_field`
+    // is gone from EventDescriptor (and the validator no longer checks it).
+    // The strict-deny path on stale `event_time_field` JSON keys lives in
+    // `register_validate::pre_check_legacy_event_time_keys` and is exercised
+    // by `phase12_6_event_time_hard_rip.rs`.
 
     #[test]
     fn rule3_fail_event_schema_empty() {
-        // Only event_time field — no non-event_time fields
-        let mut fields = BTreeMap::new();
-        fields.insert("event_time".to_string(), FieldType::I64);
+        // Schema with zero fields fails. Post-Plan-12.6-06 the rule is "fields
+        // must be non-empty" — pre-pivot rule was "must have ≥1 non-event_time
+        // field" (the special-case is gone with event_time_field deletion).
         let node = PayloadNode::Event(EventDescriptor {
             name: "T".to_string(),
             schema: EventSchema {
-                fields,
+                fields: BTreeMap::new(),
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1342,11 +1260,9 @@ mod tests_structural {
                 },
                 optional_fields: vec![],
             },
-            event_time_field: None,
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1527,11 +1443,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: Some("request_id".to_string()),
             dedupe_window_ms: Some(1000),
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1550,11 +1464,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: Some("missing".to_string()),
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1577,11 +1489,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: Some(0), // zero = non-positive
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1610,11 +1520,9 @@ mod tests_structural {
                 fields: fields.clone(),
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1627,11 +1535,9 @@ mod tests_structural {
                 fields: fields2,
                 optional_fields: vec![],
             },
-            event_time_field: Some("ts".to_string()), // missing
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1681,11 +1587,9 @@ mod tests_structural {
                     fields,
                     optional_fields: vec![],
                 },
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -1722,11 +1626,9 @@ mod tests_structural {
                     fields: fields.clone(),
                     optional_fields: vec![],
                 },
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -1740,11 +1642,9 @@ mod tests_structural {
                     fields,
                     optional_fields: vec![],
                 },
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -1888,11 +1788,9 @@ mod tests_structural {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -2191,11 +2089,9 @@ mod tests_structural {
                     fields: fields.clone(),
                     optional_fields: vec![],
                 },
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -2209,11 +2105,9 @@ mod tests_structural {
                     fields,
                     optional_fields: vec![],
                 },
-                event_time_field: Some("event_time".to_string()),
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
-                tolerate_delay_ms: None,
                 registered_at_version: 1,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],

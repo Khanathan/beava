@@ -31,11 +31,9 @@ fn make_event_with_schema(name: &str, schema: EventSchema) -> EventDescriptor {
     EventDescriptor {
         name: name.to_string(),
         schema,
-        event_time_field: None,
         dedupe_key: None,
         dedupe_window_ms: None,
         keep_events_for_ms: None,
-        tolerate_delay_ms: None,
         registered_at_version: 0,
         name_arc: Arc::from(""),
         apply_field_names: vec![],

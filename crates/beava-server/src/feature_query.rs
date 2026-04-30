@@ -281,7 +281,7 @@ pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<E
 /// This keeps queries deterministic — the same input event stream always
 /// produces the same outputs regardless of when the query executes.
 fn compute_query_time_ms(dev_agg_state: &DevAggState) -> i64 {
-    dev_agg_state.max_event_time_ms.load(Ordering::Acquire) as i64
+    dev_agg_state.query_time_ms.load(Ordering::Acquire) as i64
 }
 
 /// Convert a `beava_core::row::Value` to a `serde_json::Value`.
@@ -401,11 +401,9 @@ mod tests {
                 fields,
                 optional_fields: vec![],
             },
-            event_time_field: Some("event_time".to_string()),
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
-            tolerate_delay_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -489,7 +487,7 @@ mod tests {
     }
 
     /// Push N events to the dev state with the given user_id and amount.
-    /// Also bumps `max_event_time_ms` so query handlers see the correct query time.
+    /// Also bumps `query_time_ms` so query handlers see the correct query time.
     fn push_events(
         dev_state: &DevAggState,
         source: &str,
@@ -517,9 +515,9 @@ mod tests {
                 &dev_state.registry,
                 &mut tables,
             );
-            // Bump max_event_time_ms so GET /get query handlers use deterministic time.
+            // Bump query_time_ms so GET /get query handlers use deterministic time.
             dev_state
-                .max_event_time_ms
+                .query_time_ms
                 .fetch_max(event_time_ms as u64, Ordering::Relaxed);
         }
     }

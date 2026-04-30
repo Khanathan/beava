@@ -245,20 +245,24 @@ pub async fn execute_push(
         }
     }
 
-    // 5. Extract event_time_ms.
-    let event_time_ms = descriptor
-        .event_time_field
-        .as_deref()
-        .and_then(|f| obj.get(f))
-        .and_then(|jv| jv.as_i64())
-        .unwrap_or(now as i64);
+    // 5. Plan 12.6-06 D-03 hard rip + Plan 12.6-05 Path X: time-source is
+    //    server `now_ms` exclusively per `project_redis_shaped_no_event_time_ever`.
+    //    The legacy `descriptor.event_time_field` read has been removed; the
+    //    apply path now threads `now_ms_i64` everywhere instead of a
+    //    body-derived event timestamp.
+    let now_ms_i64: i64 = now as i64;
 
     // 6. Serialize the WAL payload.
+    //    `et` byte slot continues to receive an i64 timestamp, but post-Path-X
+    //    that value is server `now_ms` rather than body event-time. The slot
+    //    name is preserved for WAL forward-compat (legacy WalSink format
+    //    rather than the hand-rolled v=2 binary records); a future plan may
+    //    rename the JSON key.
     let payload = serde_json::json!({
         "v": 1,
         "rv": registry_version,
         "s": event_name,
-        "et": event_time_ms,
+        "et": now_ms_i64,
         "b": parsed,
     });
     let payload_bytes = match serde_json::to_vec(&payload) {
@@ -302,7 +306,7 @@ pub async fn execute_push(
         apply_event_to_aggregations(
             event_name,
             &row,
-            event_time_ms,
+            now_ms_i64,
             ack_lsn,
             &app.dev_agg.registry,
             &mut tables,
@@ -313,10 +317,10 @@ pub async fn execute_push(
     app.dev_agg
         .next_event_id
         .fetch_max(ack_lsn, Ordering::Relaxed);
-    if event_time_ms > 0 {
+    if now > 0 {
         app.dev_agg
-            .max_event_time_ms
-            .fetch_max(event_time_ms as u64, Ordering::Relaxed);
+            .query_time_ms
+            .fetch_max(now, Ordering::Relaxed);
     }
 
     // Phase 11.5 D-10/D-12 — record this LSN as a stream event so a future
