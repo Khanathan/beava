@@ -203,6 +203,11 @@ name = "phase12_08_bytes_pool_test"
 path = "tests/phase12_08_bytes_pool_test.rs"
 required-features = ["testing"]
 
+# ─── Plan 12.6-07 — legacy axum data-plane kill ──────────────────────────────
+[[test]]
+name = "phase12_6_legacy_axum_killed"
+path = "tests/phase12_6_legacy_axum_killed.rs"
+
 [[bin]]
 name = "phase6_crash_probe"
 path = "src/bin/phase6_crash_probe.rs"
