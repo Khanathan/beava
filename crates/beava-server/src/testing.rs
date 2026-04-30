@@ -136,9 +136,10 @@ impl TestServerBuilder {
         self
     }
 
-    /// Enable the GET /registry dev endpoint on the spawned server.
-    /// Passes `dev_endpoints=true` directly to `Server::bind` — no env-var
-    /// mutation needed, so no lock is held across the await.
+    /// Enable the GET /registry dev endpoint on the spawned server's data
+    /// plane. Plan 12.6-07: production data-plane `/registry` is permanently
+    /// 404; this builder sets `AppState.dev_endpoints` post-spawn so tests
+    /// can observe registry contents over the data-plane HTTP listener.
     pub fn dev_endpoints(mut self, enabled: bool) -> Self {
         self.dev_endpoints = enabled;
         self
@@ -272,10 +273,9 @@ impl TestServerBuilder {
         let registry = sv18.registry();
         let snapshot_trigger = sv18.snapshot_trigger_handle();
         let app_state = sv18.app_state();
-        // Plan 12.6-14: apply the builder's `dev_endpoints` flag to the
+        // Plan 12.6-07: apply the builder's `dev_endpoints` flag to the
         // shared AppState so `/registry` on the mio data plane gates
-        // identically to the legacy axum `BEAVA_DEV_ENDPOINTS=1`
-        // toggle. (Default false; `.dev_endpoints(true)` flips it.)
+        // correctly. (Default false; `.dev_endpoints(true)` flips it on.)
         app_state
             .dev_endpoints
             .store(self.dev_endpoints, std::sync::atomic::Ordering::Relaxed);

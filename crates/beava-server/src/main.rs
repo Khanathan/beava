@@ -1,9 +1,10 @@
 //! Beava v2 server entry point.
 //!
-//! Wiring order (Plan 12-07 — production binary now boots `ServerV18`,
-//! the mio data-plane runtime; legacy `Server` is retained only for
-//! `phase6_crash_probe` + `TestServer` per memory `project_phase18_no_dual_runtime`):
+//! Plan 12.6-07: legacy axum `Server` deleted. ServerV18 (mio) is the SOLE
+//! data-plane runtime per `project_phase18_no_dual_runtime`. Admin endpoints
+//! mount via `BoundAdminServer` on `cfg.admin_addr` (default 127.0.0.1:8090).
 //!
+//! Wiring order:
 //! 1. Parse CLI
 //! 2. Load config (YAML + `BEAVA_*` env overrides + validation)
 //! 3. Init JSON logging (so steps 4+ log structured)
@@ -12,13 +13,6 @@
 //!    inside ServerV18::serve_with_dirs and never touches tokio).
 //! 5. Bind ServerV18 (data-plane HTTP + TCP listeners + admin axum sidecar)
 //! 6. serve_with_dirs with SIGTERM/SIGINT graceful shutdown
-//!
-//! Note: `BEAVA_DEV_ENDPOINTS=1` is a Phase 1-era flag for the legacy
-//! `Server` axum path. Production binary post-Plan-12-07 uses `ServerV18`
-//! (mio); admin endpoints are always mounted via `BoundAdminServer` on
-//! `cfg.admin_addr` (default `127.0.0.1:8090`). The legacy gate is
-//! preserved in `Server::bind` for the `phase6_crash_probe` binary and
-//! `TestServer` (`crates/beava-server/src/testing.rs:76`).
 
 use anyhow::{Context, Result};
 use beava_server::{banner, cli::Cli, logging, shutdown::shutdown_signal, ServerV18};

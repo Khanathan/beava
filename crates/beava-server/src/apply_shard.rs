@@ -829,11 +829,14 @@ impl ApplyShard {
 
         // 11. Cache on dedupe path.
         if let Some(key_str) = dedupe_str {
-            let ack = crate::push::PushAck {
-                ack_lsn,
-                idempotent_replay: false,
-                registry_version,
-            };
+            // Plan 12.6-07: legacy `crate::push::PushAck` deleted along with
+            // the legacy axum router. Inline the wire shape here — same JSON
+            // body as the legacy struct.
+            let ack = serde_json::json!({
+                "ack_lsn": ack_lsn,
+                "idempotent_replay": false,
+                "registry_version": registry_version,
+            });
             let response_bytes = serde_json::to_vec(&ack)
                 .map(Bytes::from)
                 .unwrap_or_default();

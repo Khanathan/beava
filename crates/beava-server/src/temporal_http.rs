@@ -31,14 +31,6 @@
 
 use crate::registry_debug::EventIdEntry;
 use crate::AppState;
-use axum::{
-    body::Bytes,
-    extract::{Path, State},
-    http::{header, StatusCode, Uri},
-    response::Response,
-    routing::{get, post},
-    Router,
-};
 use beava_core::registry::TableDescriptor;
 use beava_core::row::{Row, Value};
 use beava_core::temporal::RetractError;
@@ -74,23 +66,9 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn error_response(status: StatusCode, body: serde_json::Value) -> Response {
-    let bytes = serde_json::to_vec(&body).unwrap_or_default();
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(bytes))
-        .unwrap()
-}
-
-fn ok_response(body: serde_json::Value) -> Response {
-    let bytes = serde_json::to_vec(&body).unwrap_or_default();
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(bytes))
-        .unwrap()
-}
+// Plan 12.6-07: legacy axum `error_response` / `ok_response` helpers
+// deleted along with the four axum handlers below. Mio dispatch uses the
+// `*_via_mio` helpers which return `(u16, Vec<u8>)` directly.
 
 /// D-03 byte encoding of the entity key from the table descriptor and a
 /// JSON object body. v0: single-field primary keys only.
@@ -179,16 +157,12 @@ struct PushTableAck {
     registry_version: u32,
 }
 
-/// Plan 12.6-14: pure helper that performs an upsert against `AppState`,
-/// returning the HTTP status code and a pre-serialised body.  Shared
-/// between the legacy axum `upsert_handler` (kept here for the legacy
-/// router) and the mio data-plane dispatch (called from
-/// `apply_shard.rs::dispatch_one`).
+/// Pure helper that performs an upsert against `AppState`, returning the
+/// HTTP status code and a pre-serialised body. Called from
+/// `apply_shard.rs::dispatch_one` on the mio data plane.
 ///
-/// Mirrors the axum handler exactly — same JSON parse, same WAL append,
-/// same MVCC apply, same event_id_index update, same response shape
-/// (`{"ack_lsn", "registry_version"}` on success; `{"error":...}` on
-/// failure).  Async because `wal_sink.append_record` is async; the mio
+/// Returns `{"ack_lsn", "registry_version"}` on success; `{"error":...}`
+/// on failure. Async because `wal_sink.append_record` is async; the mio
 /// path runs this on a temp current-thread tokio runtime (same approach
 /// as the existing register dispatch on the apply thread).
 pub async fn upsert_via_mio(
@@ -328,133 +302,6 @@ pub async fn upsert_via_mio(
     (200, serde_json::to_vec(&ack).unwrap_or_default())
 }
 
-/// `POST /upsert/{table_name}` handler (renamed from push-table per Phase 16 D-09).
-async fn upsert_handler(
-    State(app): State<Arc<AppState>>,
-    Path(table_name): Path<String>,
-    body_bytes: Bytes,
-) -> Response {
-    let registry_version = app.dev_agg.registry.version() as u32;
-
-    // 1. Parse JSON.
-    let parsed: JsonValue = match serde_json::from_slice(&body_bytes) {
-        Ok(v) => v,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid_json", "registry_version": registry_version}),
-            );
-        }
-    };
-    let obj = match parsed.as_object() {
-        Some(o) => o.clone(),
-        None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "expected_object", "registry_version": registry_version}),
-            );
-        }
-    };
-
-    // 2. Lookup table descriptor.
-    let descriptor = {
-        let inner = app.dev_agg.registry.read();
-        match inner.tables.get(&table_name).cloned() {
-            Some(d) => d,
-            None => {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "table_not_found", "table": table_name}),
-                );
-            }
-        }
-    };
-
-    // 3. Encode entity key.
-    let entity_key = match entity_key_from_body(&descriptor, &obj) {
-        Some(k) => k,
-        None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({
-                    "error": "missing_or_unsupported_primary_key",
-                    "primary_key": descriptor.primary_key,
-                }),
-            );
-        }
-    };
-
-    // 4. Build WAL payload.
-    let payload = serde_json::json!({
-        "v": 1,
-        "rv": registry_version,
-        "t": table_name,
-        "k": entity_key,
-        "b": parsed,
-    });
-    let payload_bytes = match serde_json::to_vec(&payload) {
-        Ok(b) => b,
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "serialize_failed"}),
-            );
-        }
-    };
-
-    // 5. Durable WAL append.
-    let ack_lsn = match app
-        .wal_sink
-        .append_record(RecordType::TableUpsert, payload_bytes)
-        .await
-    {
-        Ok(lsn) => lsn,
-        Err(_) => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({"error": "wal_unavailable"}),
-            );
-        }
-    };
-
-    // 6. Apply to MVCC store (only if temporal). Single-writer lock.
-    let now = now_ms();
-    let row = json_object_to_row(&obj);
-    if descriptor.temporal {
-        let mut stores = app.dev_agg.temporal_stores.lock();
-        let store = stores.entry(table_name.clone()).or_default();
-        store.upsert(entity_key.clone(), ack_lsn, row, now);
-    }
-    // Non-temporal tables: in v0 we only persist via WAL; in-memory state
-    // for non-temporal table reads lands with Phase 12 (per CONTEXT.md
-    // gap section). The retract handler still recognizes the WAL write
-    // via event_id_index.
-
-    // 7. Update event_id_index.
-    {
-        let mut idx = app.dev_agg.event_id_index.lock();
-        idx.insert(
-            ack_lsn,
-            EventIdEntry::TableWrite {
-                table_name: table_name.clone(),
-                entity_key,
-                retracted: false,
-            },
-        );
-    }
-
-    // 8. Bump monotonic counter.
-    app.dev_agg
-        .next_event_id
-        .fetch_max(ack_lsn, std::sync::atomic::Ordering::Relaxed);
-
-    let ack = PushTableAck {
-        ack_lsn,
-        registry_version,
-    };
-    ok_response(serde_json::to_value(ack).unwrap())
-}
-
 // ─── DELETE handler ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -462,9 +309,8 @@ struct DeleteRequest {
     key: serde_json::Map<String, JsonValue>,
 }
 
-/// Plan 12.6-14: shared helper for `POST /delete/:table` reachable from
-/// both the legacy axum router and the mio data-plane dispatch.  Mirrors
-/// `delete_handler` byte-for-byte.  Returns `(status, body_bytes)`.
+/// Helper for `POST /delete/:table` on the mio data-plane dispatch.
+/// Returns `(status, body_bytes)`.
 pub async fn delete_via_mio(
     app: &Arc<AppState>,
     table_name: &str,
@@ -628,154 +474,6 @@ pub async fn delete_via_mio(
     (200, serde_json::to_vec(&ack).unwrap_or_default())
 }
 
-/// `POST /delete/{table_name}` handler (Phase 16 rename + Plan 18-07).
-///
-/// Body: `{"key": {"user_id": "alice"}}`.
-/// Retracts the identified row from the temporal store by issuing a Retract
-/// WAL record and marking the entry in event_id_index. Uses the most recent
-/// upsert LSN for the identified key as the target event_id. Returns 404 if
-/// the key has no prior upsert or the table doesn't exist.
-async fn delete_handler(
-    State(app): State<Arc<AppState>>,
-    Path(table_name): Path<String>,
-    body_bytes: Bytes,
-) -> Response {
-    let registry_version = app.dev_agg.registry.version() as u32;
-
-    // 1. Parse JSON.
-    let parsed: JsonValue = match serde_json::from_slice(&body_bytes) {
-        Ok(v) => v,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid_json", "registry_version": registry_version}),
-            );
-        }
-    };
-    let req: DeleteRequest = match serde_json::from_value(parsed) {
-        Ok(r) => r,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "expected_key_object", "registry_version": registry_version}),
-            );
-        }
-    };
-
-    // 2. Lookup table descriptor.
-    let descriptor = {
-        let inner = app.dev_agg.registry.read();
-        match inner.tables.get(&table_name).cloned() {
-            Some(d) => d,
-            None => {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "table_not_found", "table": table_name}),
-                );
-            }
-        }
-    };
-
-    if !descriptor.temporal {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "table_not_temporal", "table": table_name}),
-        );
-    }
-
-    // 3. Encode entity key from the "key" map.
-    let entity_key = match entity_key_from_body(&descriptor, &req.key) {
-        Some(k) => k,
-        None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({
-                    "error": "missing_or_unsupported_primary_key",
-                    "primary_key": descriptor.primary_key,
-                }),
-            );
-        }
-    };
-
-    // 4. Find the most recent upsert LSN for this key in event_id_index.
-    let target_event_id = {
-        let idx = app.dev_agg.event_id_index.lock();
-        // Scan event_id_index for the latest TableWrite entry matching this key.
-        idx.iter()
-            .filter_map(|(lsn, entry)| match entry {
-                EventIdEntry::TableWrite {
-                    table_name: t,
-                    entity_key: k,
-                    retracted,
-                } if t == &table_name && k == &entity_key && !retracted => Some(*lsn),
-                _ => None,
-            })
-            .max()
-    };
-
-    let target_event_id = match target_event_id {
-        Some(lsn) => lsn,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "key_not_found", "table": table_name}),
-            );
-        }
-    };
-
-    // 5. Build retract WAL payload.
-    let payload = serde_json::json!({
-        "v": 1,
-        "t": table_name,
-        "target": target_event_id,
-        "k": entity_key,
-    });
-    let payload_bytes = match serde_json::to_vec(&payload) {
-        Ok(b) => b,
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": "serialize_failed"}),
-            );
-        }
-    };
-    let retract_lsn = match app
-        .wal_sink
-        .append_record(beava_persistence::RecordType::Retract, payload_bytes)
-        .await
-    {
-        Ok(lsn) => lsn,
-        Err(_) => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                serde_json::json!({"error": "wal_unavailable"}),
-            );
-        }
-    };
-
-    // 6. Apply retraction to MVCC store.
-    let now = now_ms();
-    {
-        let mut stores = app.dev_agg.temporal_stores.lock();
-        let store = stores.entry(table_name.clone()).or_default();
-        let _ = store.retract(&entity_key, target_event_id, retract_lsn, now);
-    }
-
-    // 7. Mark the entry retracted.
-    {
-        let mut idx = app.dev_agg.event_id_index.lock();
-        if let Some(EventIdEntry::TableWrite { retracted, .. }) = idx.get_mut(&target_event_id) {
-            *retracted = true;
-        }
-    }
-
-    let ack = PushTableAck {
-        ack_lsn: retract_lsn,
-        registry_version,
-    };
-    ok_response(serde_json::to_value(ack).unwrap())
-}
-
 // ─── Retract handler ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -791,9 +489,9 @@ struct RetractAck {
     restored_to_lsn: Option<u64>,
 }
 
-/// Plan 12.6-14: shared helper for `POST /retract` reachable from both
-/// the legacy axum router and the mio data-plane dispatch. Mirrors
-/// `retract_handler` byte-for-byte (D-12 / D-17 error shapes).
+/// Helper for `POST /retract` on the mio data-plane dispatch.
+/// D-12 / D-17 error shapes (event_id_not_found 404, stream_retraction_unimplemented 501,
+/// table_not_temporal 400, event_id_already_retracted 409).
 pub async fn retract_via_mio(app: &Arc<AppState>, body_bytes: &[u8]) -> (u16, Vec<u8>) {
     // 1. Parse body.
     let req: RetractRequest = match serde_json::from_slice(body_bytes) {
@@ -959,160 +657,7 @@ pub async fn retract_via_mio(app: &Arc<AppState>, body_bytes: &[u8]) -> (u16, Ve
     }
 }
 
-/// `POST /retract` handler — D-17 error shapes.
-async fn retract_handler(State(app): State<Arc<AppState>>, body_bytes: Bytes) -> Response {
-    // 1. Parse body.
-    let req: RetractRequest = match serde_json::from_slice(&body_bytes) {
-        Ok(r) => r,
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid_json"}),
-            );
-        }
-    };
-
-    // 2. Look up the event_id in the index.
-    let entry = {
-        let idx = app.dev_agg.event_id_index.lock();
-        idx.get(&req.event_id).cloned()
-    };
-
-    let entry = match entry {
-        Some(e) => e,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "event_id_not_found", "event_id": req.event_id}),
-            );
-        }
-    };
-
-    match entry {
-        EventIdEntry::Stream { .. } => error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            serde_json::json!({
-                "error": "stream_retraction_unimplemented",
-                "see": "phase-11.5-summary",
-                "event_id": req.event_id,
-            }),
-        ),
-        EventIdEntry::TableWrite {
-            table_name,
-            entity_key,
-            retracted,
-        } => {
-            if retracted {
-                return error_response(
-                    StatusCode::CONFLICT,
-                    serde_json::json!({
-                        "error": "event_id_already_retracted",
-                        "event_id": req.event_id,
-                    }),
-                );
-            }
-            // Lookup descriptor.
-            let descriptor = {
-                let inner = app.dev_agg.registry.read();
-                match inner.tables.get(&table_name).cloned() {
-                    Some(d) => d,
-                    None => {
-                        // Should not happen — descriptor existed at write time.
-                        // Treat as 404 conservatively.
-                        return error_response(
-                            StatusCode::NOT_FOUND,
-                            serde_json::json!({"error": "table_not_found", "table": table_name}),
-                        );
-                    }
-                }
-            };
-            if !descriptor.temporal {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    serde_json::json!({
-                        "error": "table_not_temporal",
-                        "table": table_name,
-                    }),
-                );
-            }
-
-            // Build retract WAL payload.
-            let payload = serde_json::json!({
-                "v": 1,
-                "t": table_name,
-                "target": req.event_id,
-                "k": entity_key,
-            });
-            let payload_bytes = match serde_json::to_vec(&payload) {
-                Ok(b) => b,
-                Err(_) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        serde_json::json!({"error": "serialize_failed"}),
-                    );
-                }
-            };
-            let retract_lsn = match app
-                .wal_sink
-                .append_record(RecordType::Retract, payload_bytes)
-                .await
-            {
-                Ok(lsn) => lsn,
-                Err(_) => {
-                    return error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        serde_json::json!({"error": "wal_unavailable"}),
-                    );
-                }
-            };
-
-            // Apply to MVCC under lock.
-            let now = now_ms();
-            let restored = {
-                let mut stores = app.dev_agg.temporal_stores.lock();
-                let store = stores.entry(table_name.clone()).or_default();
-                store.retract(&entity_key, req.event_id, retract_lsn, now)
-            };
-            match restored {
-                Ok(restored_to_lsn) => {
-                    // Mark the entry as retracted.
-                    {
-                        let mut idx = app.dev_agg.event_id_index.lock();
-                        if let Some(EventIdEntry::TableWrite { retracted, .. }) =
-                            idx.get_mut(&req.event_id)
-                        {
-                            *retracted = true;
-                        }
-                    }
-                    let ack = RetractAck {
-                        ack_lsn: retract_lsn,
-                        target_event_id: req.event_id,
-                        table: table_name,
-                        restored_to_lsn,
-                    };
-                    ok_response(serde_json::to_value(ack).unwrap())
-                }
-                Err(RetractError::TargetNotFound) => error_response(
-                    StatusCode::CONFLICT,
-                    serde_json::json!({
-                        "error": "event_id_outside_retention",
-                        "event_id": req.event_id,
-                    }),
-                ),
-                Err(RetractError::AlreadyRetracted) => error_response(
-                    StatusCode::CONFLICT,
-                    serde_json::json!({
-                        "error": "event_id_already_retracted",
-                        "event_id": req.event_id,
-                    }),
-                ),
-            }
-        }
-    }
-}
-
-/// Plan 12.6-14: pure helper for `GET /table/:table?key=...&as_of=...`
-/// shared between the legacy axum `table_get_handler` and the mio
+/// Pure helper for `GET /table/:table?key=...&as_of=...` on the mio
 /// data-plane dispatch. Sync — no WAL or async I/O. Returns
 /// `(status, body_bytes)`.
 pub fn table_get_via_mio(app: &Arc<AppState>, table_name: &str, raw_query: &str) -> (u16, Vec<u8>) {
@@ -1208,106 +753,4 @@ pub fn table_get_via_mio(app: &Arc<AppState>, table_name: &str, raw_query: &str)
                 .unwrap_or_default(),
         ),
     }
-}
-
-/// `GET /table/{table_name}?key=<v>&as_of=<lsn>` handler.
-async fn table_get_handler(
-    State(app): State<Arc<AppState>>,
-    Path(table_name): Path<String>,
-    uri: Uri,
-) -> Response {
-    let raw_q = uri.query().unwrap_or("");
-    let pairs = parse_query_pairs(raw_q);
-    let key = match pairs.get("key") {
-        Some(k) if !k.is_empty() => k.clone(),
-        _ => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "missing_key_query_param"}),
-            );
-        }
-    };
-    let as_of: Option<u64> = pairs.get("as_of").and_then(|s| s.parse::<u64>().ok());
-    // 1. Lookup descriptor.
-    let descriptor = {
-        let inner = app.dev_agg.registry.read();
-        match inner.tables.get(&table_name).cloned() {
-            Some(d) => d,
-            None => {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "table_not_found", "table": table_name}),
-                );
-            }
-        }
-    };
-
-    // 2. Reject as_of on non-temporal tables.
-    if as_of.is_some() && !descriptor.temporal {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({
-                "error": "as_of_requires_temporal",
-                "table": table_name,
-            }),
-        );
-    }
-
-    // 3. Build entity_key from query param. v0: single-field PK only.
-    let entity_key = match entity_key_from_str(&key, descriptor.primary_key.len()) {
-        Some(k) => k,
-        None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({
-                    "error": "unsupported_primary_key_arity",
-                    "primary_key": descriptor.primary_key,
-                }),
-            );
-        }
-    };
-
-    // 4. Lookup. v0: only temporal tables have an in-memory store; non-
-    // temporal table get is a Phase 12 concern.
-    if !descriptor.temporal {
-        return error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            serde_json::json!({
-                "error": "non_temporal_table_get_v0_deferred",
-                "see": "phase-11.5-summary",
-            }),
-        );
-    }
-
-    let lookup_lsn = as_of.unwrap_or(u64::MAX);
-    let row_json = {
-        let stores_guard = app.dev_agg.temporal_stores.lock();
-        match stores_guard.get(&table_name) {
-            Some(store) => store
-                .lookup_at_lsn(&entity_key, lookup_lsn)
-                .map(row_to_json),
-            None => None,
-        }
-    };
-
-    match row_json {
-        Some(jv) => ok_response(serde_json::json!({"row": jv})),
-        None => error_response(
-            StatusCode::NOT_FOUND,
-            serde_json::json!({"error": "key_not_found", "key": key}),
-        ),
-    }
-}
-
-/// Build the temporal sub-router.
-///
-/// Plan 18-07 (Phase 16 rename): `/push-table` → `/upsert`, `/delete-table` → `/delete`.
-/// Old routes are NOT registered (hard break per Phase 16 D-09 / GA-2).
-pub fn temporal_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/upsert/:table_name", post(upsert_handler))
-        .route("/delete/:table_name", post(delete_handler))
-        .route("/retract", post(retract_handler))
-        .route("/table/:table_name", get(table_get_handler))
-        .with_state(state)
 }
