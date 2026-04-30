@@ -73,9 +73,14 @@ async fn http_push_through_glue_applies_event_and_returns_ok() {
         payload: register_payload_bytes(),
     };
     let reg_resp = dispatch_wire_request(&app, reg_req).await;
+    // Plan 12.6-01: GlueResponse::RegisterOk + RegisterError were collapsed
+    // into the unified Register { http_status, body, tcp_op } variant.
+    // Success is indicated by `http_status == 200`.
     match reg_resp {
-        GlueResponse::RegisterOk { .. } => {}
-        other => panic!("expected RegisterOk, got {other:?}"),
+        GlueResponse::Register {
+            http_status: 200, ..
+        } => {}
+        other => panic!("expected Register {{ http_status: 200, .. }}, got {other:?}"),
     }
 
     // 2. Push an event through the HTTP glue path.

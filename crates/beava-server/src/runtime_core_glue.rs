@@ -24,7 +24,7 @@
 
 use crate::feature_query::{parse_entity_key, value_to_json};
 use crate::push::{execute_push, PushOutcome};
-use crate::register::{execute_register_with_wal, RegisterOutcome, RegisterPayload};
+use crate::register::{execute_register_with_wal, RegisterPayload};
 use crate::AppState;
 use beava_persistence::SyncMode;
 use beava_runtime_core::wal_buffer::WalBufferRing;
@@ -40,10 +40,20 @@ use std::time::{Duration, Instant};
 /// the appropriate wire bytes (TCP framed or HTTP response).
 #[derive(Debug)]
 pub enum GlueResponse {
-    /// Successful registration. `version` is the new registry_version.
-    RegisterOk { version: u64 },
-    /// Registration produced a validation error or conflict.
-    RegisterError { code: String, message: String },
+    /// Plan 12.6-01: register response — both success (200) and error
+    /// (400/409/503/415) paths funnel here.  The body is pre-serialised by
+    /// `crate::register::register_outcome_to_glue` so the wire shape
+    /// matches legacy axum's `register::map_outcome_to_http` exactly
+    /// (used by ~30 phase2/4/5/etc. tests that assert on `error.code`,
+    /// `error.path`, `error.reason`, `error.diff.added/removed/changed`,
+    /// `registered_descriptors`, `added`, `already_present`, etc).  The
+    /// TCP encoder uses `tcp_op` (OP_REGISTER on success,
+    /// OP_ERROR_RESPONSE on failure); the HTTP encoder uses `http_status`.
+    Register {
+        http_status: u16,
+        body: Bytes,
+        tcp_op: u16,
+    },
     /// Push accepted; `ack_lsn` is the WAL LSN.
     PushAck { ack_lsn: u64, registry_version: u32 },
     /// Push idempotent-replay; identical to the original ACK.
@@ -69,6 +79,21 @@ pub enum GlueResponse {
     Pong { registry_version: u32 },
     /// /health response — always 200 once the listener is up. Plan 12-07.
     HealthOk,
+    /// /ready response on the data-plane port — Plan 12.6-01 back-compat
+    /// shim for TestServer tests. Identical body shape to the admin
+    /// sidecar's /ready (`{"status":"ready"}`).  No apply-thread state
+    /// consulted; the admin port is canonical.
+    ReadyOk,
+    /// /registry response on the data-plane port — Plan 12.6-01 back-compat
+    /// shim. Body is the registry snapshot (legacy axum dev endpoint
+    /// shape) serialised by the apply-thread reader.
+    RegistrySnapshot { body: Bytes },
+    /// Plan 12.6-01: HTTP path did not match any route.  Encoded as
+    /// `404 Not Found` to match the legacy axum NotFoundLayer.
+    HttpRouteNotFound { path: String },
+    /// Plan 12.6-01: HTTP path matched a route but with the wrong method.
+    /// Encoded as `405 Method Not Allowed`.
+    HttpMethodNotAllowed { method: String, path: String },
     /// Unrecognised request type — caller maps to 404 / error frame.
     Unsupported,
 }
@@ -91,37 +116,36 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
 
         // ─── Register ─────────────────────────────────────────────────────────
         WireRequest::Register { payload } => {
+            // Plan 12.6-01: parse + dispatch to the shared
+            // `execute_register_with_wal`, then funnel the outcome through
+            // `register_outcome_to_glue` so the HTTP / TCP encoders emit
+            // bytes identical to the legacy axum `map_outcome_to_http`.
             let reg_payload: RegisterPayload = match serde_json::from_slice(&payload) {
                 Ok(p) => p,
                 Err(e) => {
-                    return GlueResponse::RegisterError {
-                        code: "invalid_registration".to_owned(),
-                        message: e.to_string(),
+                    let (path, reason) = crate::register::format_serde_error_public(&e);
+                    let body = serde_json::json!({
+                        "error": {
+                            "code": "invalid_registration",
+                            "path": path,
+                            "reason": reason,
+                        },
+                        "registry_version": app.dev_agg.registry.version(),
+                    });
+                    return GlueResponse::Register {
+                        http_status: 400,
+                        body: Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                        tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                     };
                 }
             };
             let outcome =
                 execute_register_with_wal(&app.dev_agg.registry, reg_payload, &app.wal_sink).await;
-            match outcome {
-                RegisterOutcome::Success { version, .. } => GlueResponse::RegisterOk { version },
-                RegisterOutcome::EmptyPayload { version } => GlueResponse::RegisterOk { version },
-                RegisterOutcome::Noop { version, .. } => GlueResponse::RegisterOk { version },
-                RegisterOutcome::ValidationFailed {
-                    first_error_path,
-                    first_error_reason,
-                    ..
-                } => GlueResponse::RegisterError {
-                    code: "invalid_registration".to_owned(),
-                    message: format!("{first_error_path}: {first_error_reason}"),
-                },
-                RegisterOutcome::Conflict { .. } => GlueResponse::RegisterError {
-                    code: "registration_conflict".to_owned(),
-                    message: "descriptor conflict".to_owned(),
-                },
-                RegisterOutcome::WalUnavailable { .. } => GlueResponse::RegisterError {
-                    code: "wal_unavailable".to_owned(),
-                    message: "WAL unavailable".to_owned(),
-                },
+            let (http_status, body, tcp_op) = crate::register::register_outcome_to_glue(outcome);
+            GlueResponse::Register {
+                http_status,
+                body,
+                tcp_op,
             }
         }
 
@@ -167,6 +191,24 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
         // tower (http.rs); HttpHealth here is a fallback for any caller that
         // routes a parsed mio-shape request through this async path.
         WireRequest::HttpHealth => GlueResponse::HealthOk,
+
+        // Plan 12.6-01: /ready and /registry on the data-plane port (mio
+        // path).  Mirror the admin sidecar's response shape — back-compat
+        // for TestServer-using tests that poll `ts.base_url() + /ready` and
+        // call `ts.get_json("/registry")`.
+        WireRequest::HttpReady => GlueResponse::ReadyOk,
+        WireRequest::HttpRegistry => {
+            let dump = crate::registry_debug::build_registry_dump(&app.dev_agg.registry);
+            let body = serde_json::to_vec(&dump).unwrap_or_default();
+            GlueResponse::RegistrySnapshot {
+                body: Bytes::from(body),
+            }
+        }
+        // Plan 12.6-01: route-level errors (404 / 405).
+        WireRequest::HttpNotFound { path } => GlueResponse::HttpRouteNotFound { path },
+        WireRequest::HttpMethodNotAllowed { method, path } => {
+            GlueResponse::HttpMethodNotAllowed { method, path }
+        }
 
         // Plan 12-07: TCP GET/MGET/GET_MULTI dispatch only via the mio-side
         // ApplyShard sync path (apply_shard.rs). The legacy async path here is

@@ -86,12 +86,32 @@ pub struct RegistryDebugState {
 /// Full registry dump. `_dev_only: true` is a permanent wire sentinel so SDK
 /// authors know this endpoint is unstable.
 #[derive(Debug, Serialize)]
-struct RegistryDump {
-    version: u64,
-    events: BTreeMap<String, EventDescriptor>,
-    tables: BTreeMap<String, TableDescriptor>,
-    derivations: BTreeMap<String, DerivationDescriptor>,
-    _dev_only: bool, // always true
+pub struct RegistryDump {
+    pub version: u64,
+    pub events: BTreeMap<String, EventDescriptor>,
+    pub tables: BTreeMap<String, TableDescriptor>,
+    pub derivations: BTreeMap<String, DerivationDescriptor>,
+    pub _dev_only: bool, // always true
+}
+
+/// Plan 12.6-01: build a `RegistryDump` from a live `Arc<Registry>`.
+/// Re-used by the mio data-plane `/registry` route via
+/// `apply_shard.rs::dispatch_one`'s `WireRequest::HttpRegistry` arm so
+/// the response body matches the legacy axum `get_registry` handler exactly.
+pub fn build_registry_dump(registry: &Registry) -> RegistryDump {
+    let inner = registry.snapshot();
+    let events = inner
+        .events
+        .into_iter()
+        .map(|(k, v)| (k, (*v).clone()))
+        .collect();
+    RegistryDump {
+        version: inner.version,
+        events,
+        tables: inner.tables,
+        derivations: inner.derivations,
+        _dev_only: true,
+    }
 }
 
 /// Build the GET /registry sub-router.  Caller merges this into the main
@@ -103,22 +123,7 @@ pub fn registry_debug_router(state: RegistryDebugState) -> Router {
 }
 
 async fn get_registry(State(state): State<RegistryDebugState>) -> Json<serde_json::Value> {
-    let inner = state.registry.snapshot();
-    // Plan 18-11 D-6: events live as Arc<EventDescriptor>; unwrap into plain
-    // EventDescriptor for the JSON dump (cold path — admin endpoint).
-    let events = inner
-        .events
-        .into_iter()
-        .map(|(k, v)| (k, (*v).clone()))
-        .collect();
-    let dump = RegistryDump {
-        version: inner.version,
-        events,
-        tables: inner.tables,
-        derivations: inner.derivations,
-        _dev_only: true,
-    };
-    Json(serde_json::to_value(dump).unwrap())
+    Json(serde_json::to_value(build_registry_dump(&state.registry)).unwrap())
 }
 
 // ─── POST /dev/apply_ops ──────────────────────────────────────────────────────

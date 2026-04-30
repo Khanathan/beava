@@ -375,6 +375,37 @@ pub struct ServerV18 {
     // to tokio listeners and hands them to the HTTP/TCP accept loops.
     http_listener: std::net::TcpListener,
     tcp_listener: std::net::TcpListener,
+    /// Plan 12.6-01: pre-built runtime state populated by `bind_with_state`.
+    ///
+    /// When `Some`, the `serve_with_dirs` path consumes this instead of
+    /// re-building AppState/Registry/WalSink/snapshot trigger from scratch.
+    /// Used by `TestServer` (which needs `app_state()` / `registry()` /
+    /// `snapshot_trigger_handle()` accessors before `serve()` is called).
+    /// Plain `bind()` callers leave this `None` — back-compat preserved.
+    prebuilt_state: Option<ServerV18State>,
+}
+
+/// Plan 12.6-01: state pre-built by `ServerV18::bind_with_state` so that
+/// `TestServer` can grab Arc clones (`app_state`, `registry`,
+/// `snapshot_trigger`) BEFORE consuming the server with `serve_with_dirs`.
+///
+/// All fields are extracted by `serve_with_dirs` and consumed during the
+/// run loop; if `prebuilt_state` is `Some`, `serve_with_dirs` skips the
+/// equivalent construction in its prefix.
+struct ServerV18State {
+    app_state: Arc<AppState>,
+    registry: Arc<Registry>,
+    idem_cache: Arc<IdemCache>,
+    wal_sink: WalSink,
+    legacy_wal_worker: JoinHandle<()>,
+    wal_ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
+    wal_lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
+    wal_writer_handle: std::thread::JoinHandle<()>,
+    snapshot_cancel: CancellationToken,
+    snapshot_worker: JoinHandle<()>,
+    snapshot_trigger: SnapshotTriggerTx,
+    wal_dir: std::path::PathBuf,
+    snapshot_dir: std::path::PathBuf,
 }
 
 impl ServerV18 {
@@ -456,7 +487,89 @@ impl ServerV18 {
             admin,
             http_listener,
             tcp_listener,
+            prebuilt_state: None,
         })
+    }
+
+    /// Plan 12.6-01: variant of `bind` that ALSO eagerly builds AppState,
+    /// Registry, WalSink, hand-rolled WAL ring/writer, and the snapshot
+    /// task — so `TestServer` can return Arc clones via `app_state()`,
+    /// `registry()`, `snapshot_trigger_handle()` BEFORE `serve_with_dirs`
+    /// is called.
+    ///
+    /// Per `project_phase18_no_dual_runtime` and Phase 12.6 D-01 this is
+    /// the canonical bootstrap shape for the test harness.  Production
+    /// callers continue to use `bind()` + `serve()`.
+    ///
+    /// Arguments mirror `serve_with_dirs` (which `serve_with_dirs` will
+    /// consume after this method returns) plus snapshot/fsync intervals
+    /// that were previously hard-coded inside `serve_with_dirs`.
+    pub async fn bind_with_state(
+        http_addr: std::net::SocketAddr,
+        tcp_addr: std::net::SocketAddr,
+        admin_addr: std::net::SocketAddr,
+        wal_dir: std::path::PathBuf,
+        snapshot_dir: std::path::PathBuf,
+        snapshot_interval_ms: u64,
+        wal_fsync_interval_ms: u64,
+    ) -> Result<Self, ServerError> {
+        let mut sv18 = Self::bind(http_addr, tcp_addr, admin_addr).await?;
+        let state = build_runtime_state(
+            wal_dir,
+            snapshot_dir,
+            snapshot_interval_ms,
+            wal_fsync_interval_ms,
+        )
+        .await?;
+        sv18.prebuilt_state = Some(state);
+        Ok(sv18)
+    }
+
+    /// Plan 12.6-01: clone of the shared `Arc<AppState>` populated by
+    /// `bind_with_state`.  Panics if called on a server bound via
+    /// plain `bind()` (no pre-built state).
+    pub fn app_state(&self) -> Arc<AppState> {
+        Arc::clone(
+            &self
+                .prebuilt_state
+                .as_ref()
+                .expect(
+                    "ServerV18::app_state requires bind_with_state() — \
+                     plain bind() leaves prebuilt_state None",
+                )
+                .app_state,
+        )
+    }
+
+    /// Plan 12.6-01: clone of the shared `Arc<Registry>` populated by
+    /// `bind_with_state`.  Panics on plain-`bind` servers.
+    pub fn registry(&self) -> Arc<Registry> {
+        Arc::clone(
+            &self
+                .prebuilt_state
+                .as_ref()
+                .expect(
+                    "ServerV18::registry requires bind_with_state() — \
+                     plain bind() leaves prebuilt_state None",
+                )
+                .registry,
+        )
+    }
+
+    /// Plan 12.6-01: clone of the snapshot-trigger channel populated by
+    /// `bind_with_state`.  Panics on plain-`bind` servers.
+    ///
+    /// `TestServer::force_snapshot_now` holds onto the cloned sender so
+    /// it remains valid after `serve_with_dirs` consumes the server.
+    pub fn snapshot_trigger_handle(&self) -> SnapshotTriggerTx {
+        self.prebuilt_state
+            .as_ref()
+            .expect(
+                "ServerV18::snapshot_trigger_handle requires bind_with_state() — \
+                 plain bind() leaves prebuilt_state None",
+            )
+            .snapshot_trigger
+            .clone()
     }
 
     /// The bound HTTP event-plane address.
@@ -518,6 +631,11 @@ impl ServerV18 {
     ///   - N IoPool workers: parallel read-parse + write-serialize
     ///   - 1 WalWriter thread: drain sealed WAL buffers → write + fsync
     ///   - 1 tokio runtime: admin endpoints only (/metrics /health /ready /registry)
+    ///
+    /// Plan 12.6-01: if `bind_with_state` was used to construct `self`, the
+    /// pre-built `prebuilt_state` is consumed here in place of building
+    /// fresh state.  Plain `bind()` callers retain the original behavior
+    /// (state built inside `serve_with_dirs`).
     pub async fn serve_with_dirs<F>(
         self,
         shutdown: F,
@@ -527,179 +645,22 @@ impl ServerV18 {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        use crate::apply_shard::ApplyShard;
-        use beava_runtime_core::wal_buffer::WalBufferRing;
-        use beava_runtime_core::wal_lsn::WalLsn;
-        use beava_runtime_core::wal_writer::WalWriter;
-        use std::sync::atomic::{AtomicBool, Ordering as AOrdering};
-
-        // ── Build AppState ────────────────────────────────────────────────────
-        let idem_cache = Arc::new(IdemCache::new());
-        let registry = Arc::new(beava_core::registry::Registry::new());
-        let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
-
-        // ── Recovery: replay persistence WAL (*.log) then hand-rolled WAL (*.wal) ──
-        //
-        // Step 1: replay *.log registry bumps from beava-persistence WalSink.
-        //   These records carry /register payloads (RegistryBump). Without them,
-        //   the second server instance has no event descriptors and cannot replay
-        //   data-plane events.
-        //
-        // Step 2: replay *.wal data-plane events from WalBufferRing + WalWriter.
-        //   These records use the v=2 binary format (apply_shard.rs).
-        let persistence_lsn = if wal_dir.exists() {
-            match replay_wal_from_lsn(&wal_dir, 0, &dev_agg) {
-                Ok(outcome) => outcome.last_lsn,
-                Err(_) => 0,
-            }
-        } else {
-            0
+        // Plan 12.6-01: extract pre-built state (from `bind_with_state`) or
+        // fall back to building it here. Both paths funnel into the same
+        // run-loop body.
+        let state = match self.prebuilt_state {
+            Some(state) => state,
+            None => build_runtime_state(wal_dir, snapshot_dir, 60_000, 2).await?,
         };
 
-        // Step 2: replay hand-rolled *.wal data-plane events.
-        // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across both WALs.
-        let handrolled_lsn_start = persistence_lsn + 1;
-        let handrolled_outcome =
-            replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
-        let initial_start_lsn = handrolled_outcome.last_lsn.max(persistence_lsn) + 1;
-
-        tracing::info!(
-            target: "beava.recovery",
-            kind = "recovery.serve_with_dirs",
-            persistence_lsn,
-            handrolled_events = handrolled_outcome.replay_event_count,
-            initial_start_lsn,
-            "serve_with_dirs recovery complete"
-        );
-
-        // Legacy WalSink: still used for /register cold path (admin endpoint).
-        // Data-plane push uses WalBufferRing directly (D-2).
-        // initial_start_lsn ensures the new *.log segment doesn't collide with
-        // the existing one from the previous server instance.
-        let (wal_sink, legacy_wal_worker) = beava_persistence::WalSink::spawn(WalSinkConfig {
-            dir: wal_dir.clone(),
-            initial_start_lsn,
-            initial_registry_version: dev_agg.registry.version() as u32,
-            fsync_interval_ms: 2,
-            fsync_bytes: 0,
-            segment_bytes: 64 * 1024 * 1024,
-            sync_mode: beava_persistence::SyncMode::Periodic,
-        })
-        .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
-
-        let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache));
-
-        // ── Hand-rolled WAL stack ────────────────────────────────────────────
-        let wal_lsn = Arc::new(WalLsn::new());
-        // WAL ring config from env (default 4 × 32 MiB tick=20ms; tunable via
-        // BEAVA_WAL_BUFFERS / BEAVA_WAL_BUFFER_SIZE_MB / BEAVA_WAL_TICK_MS).
-        // Phase 18 invariants UNCHANGED: lock-free apply, single writer+fsync,
-        // O_APPEND, four-watermark discipline. Only buffer count, size, and
-        // tick interval are tuned (Phase 19.1-03 D-01..D-04).
-        let wal_cfg = crate::wal_config::WalConfig::resolve_from_env();
-        tracing::info!(
-            target: "beava.wal",
-            kind = "wal.config.resolved",
-            buffers = wal_cfg.buffers,
-            buffer_size_mb = wal_cfg.buffer_size_mb,
-            tick_ms = wal_cfg.tick_ms,
-            "WAL config resolved (env-tunable: BEAVA_WAL_BUFFERS default=4 range [2,32] / \
-             BEAVA_WAL_BUFFER_SIZE_MB default=32 range [4,256] / BEAVA_WAL_TICK_MS default=20 range [1,1000])"
-        );
-        let buf_bytes = wal_cfg.buffer_size_mb * 1024 * 1024;
-        let wal_ring = Arc::new(WalBufferRing::new(
-            wal_cfg.buffers,
-            buf_bytes,
-            Arc::clone(&wal_lsn),
-        ));
-
-        // WAL writer thread: drains sealed buffers, calls write() + fsync().
-        let wal_writer_dir = wal_dir.clone();
-        let wal_writer = WalWriter::new(
-            &wal_writer_dir,
-            Arc::clone(&wal_ring),
-            Arc::clone(&wal_lsn),
-            wal_cfg.tick_ms,
+        run_serve_loop(
+            self.http_listener,
+            self.tcp_listener,
+            self.admin,
+            state,
+            shutdown,
         )
-        .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
-        let wal_writer_handle = wal_writer.spawn();
-
-        // ── Apply shard ───────────────────────────────────────────────────────
-        let apply_shard = ApplyShard::new(
-            Arc::clone(&app_state),
-            Arc::clone(&wal_ring),
-            Arc::clone(&wal_lsn),
-        );
-
-        // ── Shutdown flag (shared between tokio + apply thread) ───────────────
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
-        let shutdown_flag_apply = Arc::clone(&shutdown_flag);
-        let shutdown_flag_signal = Arc::clone(&shutdown_flag);
-
-        // ── Convert std::net listeners → mio listeners ────────────────────────
-        // ServerV18::bind() already set them nonblocking.
-        let http_listener_std = self.http_listener;
-        let tcp_listener_std = self.tcp_listener;
-
-        // ── Spawn apply thread (mio EventLoop) ───────────────────────────────
-        // The apply thread owns mio Poll + client map + IoPool.
-        // It does NOT touch tokio.
-        let apply_join = std::thread::Builder::new()
-            .name("beava-apply".to_owned())
-            .spawn(move || {
-                run_mio_event_loop(
-                    http_listener_std,
-                    tcp_listener_std,
-                    apply_shard,
-                    shutdown_flag_apply,
-                );
-            })
-            .map_err(ServerError::Serve)?;
-
-        // ── Tokio: admin + shutdown signal ────────────────────────────────────
-        // Start snapshot task (legacy, admin plane).
-        let snapshot_cancel = CancellationToken::new();
-        let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
-            SnapshotTaskConfig {
-                interval: Duration::from_millis(60_000),
-                snapshot_dir,
-                retain: 2,
-            },
-            Arc::clone(&app_state),
-            wal_sink.clone(),
-            snapshot_cancel.clone(),
-        );
-        drop(snapshot_trigger);
-
-        // Wait for the external shutdown future, then signal the apply thread.
-        shutdown.await;
-        shutdown_flag_signal.store(true, AOrdering::Release);
-
-        // Wait for the apply thread to drain.
-        let _ = apply_join.join();
-
-        // Signal the WalWriter to do a final fsync and exit.
-        let _wal_shutdown_flag = Arc::new(AtomicBool::new(true));
-        // The WalWriter's shutdown flag is internal; signal via a local AtomicBool.
-        // Since we already joined the apply thread (no more appends), we just wait
-        // for the wal_writer_handle to complete naturally.
-        // The WalWriter loop: sleep tick → seal → drain → check shutdown.
-        // Give it 2 ticks (4ms) to drain, then drop.
-        std::thread::sleep(Duration::from_millis(6));
-        drop(wal_writer_handle);
-
-        // Stop snapshot task.
-        snapshot_cancel.cancel();
-        let _ = snapshot_worker.await;
-
-        // Drain legacy WalSink (used only for /register cold path).
-        let _ = app_state.wal_sink.clone().shutdown().await;
-        let _ = legacy_wal_worker.await;
-
-        // Stop admin server.
-        self.admin.shutdown().await;
-
-        Ok(())
+        .await
     }
 
     /// Gracefully shut down the admin server without running serve().
@@ -707,6 +668,238 @@ impl ServerV18 {
     pub async fn shutdown(self) {
         self.admin.shutdown().await;
     }
+}
+
+// ─── Plan 12.6-01: shared runtime-state builder ─────────────────────────────
+
+/// Build the shared AppState/Registry/WalSink/snapshot stack used by both
+/// `serve_with_dirs` (legacy in-line path) and `bind_with_state`
+/// (TestServer path). Identical construction sequence — extracted so
+/// `TestServer` can grab Arc clones BEFORE `serve_with_dirs` consumes the
+/// server. See `serve_with_dirs` for line-by-line history.
+async fn build_runtime_state(
+    wal_dir: std::path::PathBuf,
+    snapshot_dir: std::path::PathBuf,
+    snapshot_interval_ms: u64,
+    wal_fsync_interval_ms: u64,
+) -> Result<ServerV18State, ServerError> {
+    use beava_runtime_core::wal_buffer::WalBufferRing;
+    use beava_runtime_core::wal_lsn::WalLsn;
+    use beava_runtime_core::wal_writer::WalWriter;
+
+    // ── Build AppState ────────────────────────────────────────────────────
+    let idem_cache = Arc::new(IdemCache::new());
+    let registry = Arc::new(beava_core::registry::Registry::new());
+    let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
+
+    // ── Recovery: replay persistence WAL (*.log) then hand-rolled WAL (*.wal) ──
+    //
+    // Step 1: replay *.log registry bumps from beava-persistence WalSink.
+    //   These records carry /register payloads (RegistryBump). Without them,
+    //   the second server instance has no event descriptors and cannot replay
+    //   data-plane events.
+    //
+    // Step 2: replay *.wal data-plane events from WalBufferRing + WalWriter.
+    //   These records use the v=2 binary format (apply_shard.rs).
+    let persistence_lsn = if wal_dir.exists() {
+        match replay_wal_from_lsn(&wal_dir, 0, &dev_agg) {
+            Ok(outcome) => outcome.last_lsn,
+            Err(_) => 0,
+        }
+    } else {
+        0
+    };
+
+    // Step 2: replay hand-rolled *.wal data-plane events.
+    // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across both WALs.
+    let handrolled_lsn_start = persistence_lsn + 1;
+    let handrolled_outcome =
+        replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
+    let initial_start_lsn = handrolled_outcome.last_lsn.max(persistence_lsn) + 1;
+
+    tracing::info!(
+        target: "beava.recovery",
+        kind = "recovery.serve_with_dirs",
+        persistence_lsn,
+        handrolled_events = handrolled_outcome.replay_event_count,
+        initial_start_lsn,
+        "serve_with_dirs recovery complete"
+    );
+
+    // Legacy WalSink: still used for /register cold path (admin endpoint).
+    // Data-plane push uses WalBufferRing directly (D-2).
+    // initial_start_lsn ensures the new *.log segment doesn't collide with
+    // the existing one from the previous server instance.
+    let (wal_sink, legacy_wal_worker) = WalSink::spawn(WalSinkConfig {
+        dir: wal_dir.clone(),
+        initial_start_lsn,
+        initial_registry_version: dev_agg.registry.version() as u32,
+        fsync_interval_ms: wal_fsync_interval_ms,
+        fsync_bytes: 0,
+        segment_bytes: 64 * 1024 * 1024,
+        sync_mode: SyncMode::Periodic,
+    })
+    .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+
+    let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
+
+    // ── Hand-rolled WAL stack ────────────────────────────────────────────
+    let wal_lsn = Arc::new(WalLsn::new());
+    // WAL ring config from env (default 4 × 32 MiB tick=20ms; tunable via
+    // BEAVA_WAL_BUFFERS / BEAVA_WAL_BUFFER_SIZE_MB / BEAVA_WAL_TICK_MS).
+    // Phase 18 invariants UNCHANGED: lock-free apply, single writer+fsync,
+    // O_APPEND, four-watermark discipline. Only buffer count, size, and
+    // tick interval are tuned (Phase 19.1-03 D-01..D-04).
+    let wal_cfg = crate::wal_config::WalConfig::resolve_from_env();
+    tracing::info!(
+        target: "beava.wal",
+        kind = "wal.config.resolved",
+        buffers = wal_cfg.buffers,
+        buffer_size_mb = wal_cfg.buffer_size_mb,
+        tick_ms = wal_cfg.tick_ms,
+        "WAL config resolved (env-tunable: BEAVA_WAL_BUFFERS default=4 range [2,32] / \
+         BEAVA_WAL_BUFFER_SIZE_MB default=32 range [4,256] / BEAVA_WAL_TICK_MS default=20 range [1,1000])"
+    );
+    let buf_bytes = wal_cfg.buffer_size_mb * 1024 * 1024;
+    let wal_ring = Arc::new(WalBufferRing::new(
+        wal_cfg.buffers,
+        buf_bytes,
+        Arc::clone(&wal_lsn),
+    ));
+
+    // WAL writer thread: drains sealed buffers, calls write() + fsync().
+    let wal_writer = WalWriter::new(
+        &wal_dir,
+        Arc::clone(&wal_ring),
+        Arc::clone(&wal_lsn),
+        wal_cfg.tick_ms,
+    )
+    .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+    let wal_writer_handle = wal_writer.spawn();
+
+    // ── Spawn snapshot task (admin plane) ────────────────────────────────
+    let snapshot_cancel = CancellationToken::new();
+    let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
+        SnapshotTaskConfig {
+            interval: Duration::from_millis(snapshot_interval_ms.max(1)),
+            snapshot_dir: snapshot_dir.clone(),
+            retain: 2,
+        },
+        Arc::clone(&app_state),
+        wal_sink.clone(),
+        snapshot_cancel.clone(),
+    );
+
+    Ok(ServerV18State {
+        app_state,
+        registry,
+        idem_cache,
+        wal_sink,
+        legacy_wal_worker,
+        wal_ring,
+        wal_lsn,
+        wal_writer_handle,
+        snapshot_cancel,
+        snapshot_worker,
+        snapshot_trigger,
+        wal_dir,
+        snapshot_dir,
+    })
+}
+
+/// Run the apply thread + admin server until `shutdown` resolves, then
+/// drain everything cleanly.  Extracted from the original
+/// `serve_with_dirs` body so it can be invoked from both the legacy
+/// build path and the `bind_with_state` path (Plan 12.6-01).
+async fn run_serve_loop<F>(
+    http_listener: std::net::TcpListener,
+    tcp_listener: std::net::TcpListener,
+    admin: crate::http_admin::BoundAdminServer,
+    state: ServerV18State,
+    shutdown: F,
+) -> Result<(), ServerError>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    use crate::apply_shard::ApplyShard;
+    use std::sync::atomic::{AtomicBool, Ordering as AOrdering};
+
+    let ServerV18State {
+        app_state,
+        registry: _registry,
+        idem_cache: _idem_cache,
+        wal_sink,
+        legacy_wal_worker,
+        wal_ring,
+        wal_lsn,
+        wal_writer_handle,
+        snapshot_cancel,
+        snapshot_worker,
+        snapshot_trigger,
+        wal_dir: _wal_dir,
+        snapshot_dir: _snapshot_dir,
+    } = state;
+
+    // Snapshot trigger lifecycle: drop our copy.  Any clones held externally
+    // (`TestServer`) keep the channel sender count > 0 until they're
+    // dropped or used. Without external clones the channel becomes
+    // unreachable, which is fine — the snapshot task itself owns the
+    // receiver and continues servicing scheduled ticks.
+    drop(snapshot_trigger);
+
+    // ── Apply shard ───────────────────────────────────────────────────────
+    let apply_shard = ApplyShard::new(
+        Arc::clone(&app_state),
+        Arc::clone(&wal_ring),
+        Arc::clone(&wal_lsn),
+    );
+
+    // ── Shutdown flag (shared between tokio + apply thread) ───────────────
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_flag_apply = Arc::clone(&shutdown_flag);
+    let shutdown_flag_signal = Arc::clone(&shutdown_flag);
+
+    // ── Spawn apply thread (mio EventLoop) ───────────────────────────────
+    let apply_join = std::thread::Builder::new()
+        .name("beava-apply".to_owned())
+        .spawn(move || {
+            run_mio_event_loop(
+                http_listener,
+                tcp_listener,
+                apply_shard,
+                shutdown_flag_apply,
+            );
+        })
+        .map_err(ServerError::Serve)?;
+
+    // Wait for the external shutdown future, then signal the apply thread.
+    shutdown.await;
+    shutdown_flag_signal.store(true, AOrdering::Release);
+
+    // Wait for the apply thread to drain.
+    let _ = apply_join.join();
+
+    // Signal the WalWriter to do a final fsync and exit.
+    // The WalWriter loop: sleep tick → seal → drain → check shutdown.
+    // Give it 2 ticks (4ms) to drain, then drop.
+    std::thread::sleep(Duration::from_millis(6));
+    drop(wal_writer_handle);
+
+    // Stop snapshot task.
+    snapshot_cancel.cancel();
+    let _ = snapshot_worker.await;
+
+    // Drain legacy WalSink (used only for /register cold path).
+    let _ = app_state.wal_sink.clone().shutdown().await;
+    let _ = legacy_wal_worker.await;
+    // Make sure wal_sink (the explicit clone we held) is dropped before
+    // returning so the channel sender count drops to zero.
+    drop(wal_sink);
+
+    // Stop admin server.
+    admin.shutdown().await;
+
+    Ok(())
 }
 
 // ─── Plan 18-04.6: real mio EventLoop driver ─────────────────────────────────
@@ -2008,8 +2201,17 @@ fn encode_glue_response_tcp(
     use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_GET_RESPONSE, OP_PING, OP_PUSH};
 
     match resp {
-        GlueResponse::Pong { .. } => {
-            encode_tcp_frame_bytes(OP_PING, CT_JSON, b"{}", buf);
+        // Plan 12.6-01: Pong body matches the legacy TCP encoder so
+        // `tcp_client::ping` can read `server_version` + `registry_version`
+        // back. Pre-rewrite the mio path emitted `{}` here, breaking
+        // `testing::tests::tcp_client_connect_and_ping` against ServerV18.
+        GlueResponse::Pong { registry_version } => {
+            let body = serde_json::json!({
+                "server_version": crate::VERSION,
+                "registry_version": registry_version,
+            });
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_PING, CT_JSON, &b, buf);
         }
         GlueResponse::PushAck {
             ack_lsn,
@@ -2025,15 +2227,14 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
         }
-        GlueResponse::RegisterOk { version } => {
-            let body = serde_json::json!({"version": version});
-            let b = serde_json::to_vec(&body).unwrap_or_default();
-            encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
-        }
-        GlueResponse::RegisterError { code, message } => {
-            let body = serde_json::json!({"code": code, "message": message});
-            let b = serde_json::to_vec(&body).unwrap_or_default();
-            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        // Plan 12.6-01: register response (success and error paths funnel
+        // through here). `body` is pre-serialised by
+        // `register::register_outcome_to_glue` to match the legacy axum
+        // `map_outcome_to_http` body verbatim — `RegisterSuccess` on
+        // success, `RegisterErrorBody` on failure.  `tcp_op` is
+        // `OP_REGISTER` on success, `OP_ERROR_RESPONSE` on failure.
+        GlueResponse::Register { body, tcp_op, .. } => {
+            encode_tcp_frame_bytes(*tcp_op, CT_JSON, body, buf);
         }
         GlueResponse::PushError { code, .. } => {
             let body = serde_json::json!({"code": code});
@@ -2089,14 +2290,14 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"idempotent_replay": true, "registry_version": registry_version});
             (200, serde_json::to_vec(&body).unwrap_or_default())
         }
-        GlueResponse::RegisterOk { version } => {
-            let body = serde_json::json!({"version": version});
-            (200, serde_json::to_vec(&body).unwrap_or_default())
-        }
-        GlueResponse::RegisterError { code, message } => {
-            let body = serde_json::json!({"error": {"code": code, "message": message}});
-            (400, serde_json::to_vec(&body).unwrap_or_default())
-        }
+        // Plan 12.6-01: HTTP /register response — body is pre-serialised
+        // by `register::register_outcome_to_glue` to match the legacy
+        // axum `map_outcome_to_http` JSON shape exactly (used by ~30
+        // phase2/4/5/etc. tests).  Status is 200 on success, 400/409/503
+        // on failure.
+        GlueResponse::Register {
+            http_status, body, ..
+        } => (*http_status, body.to_vec()),
         GlueResponse::PushError { code, .. } => {
             let body = serde_json::json!({"error": {"code": code}});
             let status = if *code == "event_not_found" { 404 } else { 400 };
@@ -2116,6 +2317,28 @@ fn encode_glue_response_http(
         }
         // Plan 12-07: /health on mio data-plane port. Always 200.
         GlueResponse::HealthOk => (200, br#"{"status":"ok"}"#.to_vec()),
+        // Plan 12.6-01: /ready on mio data-plane port. Always 200 once the
+        // listener is up — readiness is gated by the admin sidecar's
+        // recovery flag, but the data-plane mirror returns 200
+        // unconditionally so test fixtures that poll `base_url + /ready`
+        // converge.  Body matches admin's `{"status":"ready"}`.
+        GlueResponse::ReadyOk => (200, br#"{"status":"ready"}"#.to_vec()),
+        // Plan 12.6-01: /registry on mio data-plane port. Body is the live
+        // registry snapshot (matches the legacy axum dev endpoint shape).
+        GlueResponse::RegistrySnapshot { body } => (200, body.to_vec()),
+        // Plan 12.6-01: 404 Not Found for paths not in the router table.
+        GlueResponse::HttpRouteNotFound { path } => {
+            let body = serde_json::json!({"error": {"code": "not_found", "path": path}});
+            (404, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        // Plan 12.6-01: 405 Method Not Allowed for path-known but
+        // method-mismatched requests.
+        GlueResponse::HttpMethodNotAllowed { method, path } => {
+            let body = serde_json::json!({
+                "error": {"code": "method_not_allowed", "method": method, "path": path},
+            });
+            (405, serde_json::to_vec(&body).unwrap_or_default())
+        }
         GlueResponse::InternalError { reason } => {
             let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
             (500, serde_json::to_vec(&body).unwrap_or_default())
@@ -2127,6 +2350,7 @@ fn encode_glue_response_http(
         200 => "OK",
         400 => "Bad Request",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         _ => "OK",
@@ -2213,8 +2437,13 @@ fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wi
     use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_PING, OP_PUSH};
 
     match glue {
-        GlueResponse::Pong { .. } => {
-            beava_core::wire::Frame::new(OP_PING, CT_JSON, bytes::Bytes::from_static(b"{}"))
+        GlueResponse::Pong { registry_version } => {
+            let body = serde_json::json!({
+                "server_version": crate::VERSION,
+                "registry_version": registry_version,
+            });
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            beava_core::wire::Frame::new(OP_PING, CT_JSON, bytes::Bytes::from(b))
         }
         GlueResponse::PushAck {
             ack_lsn,
@@ -2230,15 +2459,12 @@ fn glue_to_frame(glue: crate::runtime_core_glue::GlueResponse) -> beava_core::wi
             let b = serde_json::to_vec(&body).unwrap_or_default();
             beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
         }
-        GlueResponse::RegisterOk { version } => {
-            let body = serde_json::json!({"version": version});
-            let b = serde_json::to_vec(&body).unwrap_or_default();
-            beava_core::wire::Frame::new(OP_PUSH, CT_JSON, bytes::Bytes::from(b))
-        }
-        GlueResponse::RegisterError { code, message } => {
-            let body = serde_json::json!({"code": code, "message": message});
-            let b = serde_json::to_vec(&body).unwrap_or_default();
-            beava_core::wire::Frame::new(OP_ERROR_RESPONSE, CT_JSON, bytes::Bytes::from(b))
+        // Plan 12.6-01: register response (body pre-serialised by
+        // `register::register_outcome_to_glue`); both success and error
+        // paths funnel here. `tcp_op` is OP_REGISTER on success,
+        // OP_ERROR_RESPONSE on failure.
+        GlueResponse::Register { body, tcp_op, .. } => {
+            beava_core::wire::Frame::new(tcp_op, CT_JSON, body)
         }
         GlueResponse::PushError { code, .. } => {
             let body = serde_json::json!({"code": code, "message": ""});

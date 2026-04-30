@@ -27,6 +27,16 @@ pub enum Route {
     /// GET /health — liveness probe (Plan 12-07). Always 200 once listener
     /// is up; no apply-thread dependency.
     Health,
+    /// GET /ready — readiness probe (Plan 12.6-01). Mirrors the legacy axum
+    /// `/ready` route on the data-plane port for back-compat with the ~20
+    /// test files that poll `ts.base_url()` for readiness.  The admin port
+    /// also exposes `/ready` (canonical, per `project_phase18_no_dual_runtime`).
+    Ready,
+    /// GET /registry — registry snapshot dump (Plan 12.6-01). Mirrors the
+    /// legacy axum `/registry` dev endpoint on the data-plane port for
+    /// back-compat with phase4/5/11.5 tests that GET `/registry` to assert
+    /// schema propagation.
+    Registry,
     /// Path not in the table.
     NotFound,
     /// Path matched but wrong method.
@@ -137,6 +147,26 @@ impl Router {
         if path == "/health" {
             return if method == "GET" {
                 Route::Health
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /ready (Plan 12.6-01) — readiness probe on the data-plane port.
+        // Mirrors the admin sidecar's /ready for back-compat with foundation /
+        // phase1 / phase7 tests that check readiness on `ts.base_url()`.
+        if path == "/ready" {
+            return if method == "GET" {
+                Route::Ready
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /registry (Plan 12.6-01) — registry snapshot dump on the data-plane
+        // port. Mirrors the admin sidecar's /registry for back-compat with
+        // phase4/5/11.5 tests that GET /registry to assert schema propagation.
+        if path == "/registry" {
+            return if method == "GET" {
+                Route::Registry
             } else {
                 Route::MethodNotAllowed
             };

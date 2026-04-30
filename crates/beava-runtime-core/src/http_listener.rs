@@ -196,11 +196,18 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         // Plan 12-07: /health on the data-plane HTTP port — inline shim, no
         // apply-thread roundtrip. read_bench.py polls /health at startup.
         Route::Health => WireRequest::HttpHealth,
-        Route::NotFound => WireRequest::ParseError {
-            reason: format!("404 Not Found: {path}"),
+        // Plan 12.6-01: /ready and /registry on the data-plane HTTP port —
+        // back-compat shims for TestServer-using tests; the admin sidecar
+        // remains the canonical home for both endpoints (per
+        // `project_phase18_no_dual_runtime`).
+        Route::Ready => WireRequest::HttpReady,
+        Route::Registry => WireRequest::HttpRegistry,
+        Route::NotFound => WireRequest::HttpNotFound {
+            path: path.to_owned(),
         },
-        Route::MethodNotAllowed => WireRequest::ParseError {
-            reason: format!("405 Method Not Allowed: {method} {path}"),
+        Route::MethodNotAllowed => WireRequest::HttpMethodNotAllowed {
+            method: method.to_owned(),
+            path: path.to_owned(),
         },
     };
 
