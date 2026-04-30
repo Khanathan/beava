@@ -30,23 +30,17 @@ async fn apply_event(
     amount: f64,
     status: &str,
 ) {
-    let resp = ts
-        .post_json(
-            "/dev/apply_events",
-            &json!({
-                "source": "Txn",
-                "event_time_ms": event_time_ms,
-                "row": {
-                    "event_time": event_time_ms,
-                    "user_id": user,
-                    "amount": amount,
-                    "status": status,
-                }
-            }),
-        )
-        .await
-        .expect("apply_events");
-    assert_eq!(resp.status().as_u16(), 200, "apply_events must succeed");
+    // Plan 12.6-15: migrate from /dev/apply_events to /push/Txn (mio data plane).
+    // Both paths drive the same apply_event_to_aggregations function;
+    // descriptor.event_time_field reads `event_time` from the row.
+    let row = json!({
+        "event_time": event_time_ms,
+        "user_id": user,
+        "amount": amount,
+        "status": status,
+    });
+    let resp = ts.post_json("/push/Txn", &row).await.expect("push");
+    assert_eq!(resp.status().as_u16(), 200, "push must succeed");
 }
 
 #[tokio::test]
