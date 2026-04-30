@@ -10,7 +10,9 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 ### SDK-DEC — Python SDK decorators (source declarations)
 
 - [ ] **SDK-DEC-01**: `@bv.event` decorator accepts a class with type-hinted fields; extracts schema (types, optional flags, Field metadata); stores as an `EventSource` descriptor
-- [ ] **SDK-DEC-02**: `@bv.event` class form accepts optional `keep_events_for` (duration string) parameter. (`tolerate_delay` REMOVED 2026-04-30 per no-event-time pivot.)
+- [ ] **SDK-DEC-02a**: `@bv.event` class form accepts optional `keep_events_for` (duration string) parameter. (Active.)
+- ~~**SDK-DEC-02b**: `@bv.event` class form accepts optional `tolerate_delay` (duration string) parameter~~ — **REMOVED 2026-04-30 per no-event-time pivot** (SUPERSEDED by `project_redis_shaped_no_event_time_ever`). The runtime has no event-time concept post-pivot, so a per-event tolerance window is meaningless. v0 ships without this parameter; if a future v0.1+ revisits per-event timing semantics, a NEW REQ-ID covers that scope.
+  - Note: SDK-DEC-02 was split 2026-04-30 to make the active vs removed surfaces explicit. The original SDK-DEC-02 conflated `keep_events_for` (kept) with `tolerate_delay` (removed); the split lets Phase 12.6's plans reference either side cleanly.
 - [ ] **SDK-DEC-03**: `@bv.event` function form: function with upstream-class parameters returns an `Event` / `EventDerivation`; decorator invokes the function once at registration with upstream descriptors and captures the result
 - [ ] **SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator accepts string or list primary key, optional TTL duration; validates key fields exist in schema
 - [ ] **SDK-DEC-05**: `@bv.table` function form: returns a `Table`/`TableDerivation`; upstream descriptors passed as typed parameters

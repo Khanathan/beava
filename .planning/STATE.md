@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 12.6 CONTEXT captured 2026-04-30 (5 decisions locked D-01..D-05). Next session — /gsd-plan-phase 12.6 to break into ~12-15 plans across 3-4 weeks. Architectural pivot 2026-04-30 (no event-time / no joins / no PIT, permanent) is the upstream commitment driving 12.6.
-last_updated: "2026-04-30T14:30:00.000Z"
+status: Phase 12.6 PLANNED 2026-04-30 — 13 plans across 8 waves landed after 1 revision iteration (D-03 strict-deny + section-ownership + TDD-clean Plan 04 + temporal_http.rs/shutdown.rs decisions). Ready to execute via /gsd-execute-phase 12.6. Architectural pivot 2026-04-30 (no event-time / no joins / no PIT, permanent) is the upstream commitment driving 12.6.
+last_updated: "2026-04-30T11:05:00.000Z"
 progress:
   total_phases: 34
   completed_phases: 20
@@ -13,9 +13,9 @@ progress:
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-04-30 — /gsd-resume-work → /gsd-discuss-phase 12.6 → CONTEXT captured (commit dc07dd9) -->
-<!-- Stopped at: Phase 12.6 ready for planning; HANDOFF.json (2026-04-30T13:35) consumed at session start -->
-<!-- Resume file: .planning/phases/12.6-v0-surface-reduction/12.6-CONTEXT.md -->
+<!-- Last session: 2026-04-30 — /gsd-plan-phase 12.6 → 13 plans + 1 revision iteration → VERIFICATION PASSED -->
+<!-- Stopped at: Phase 12.6 planned (13 plans); ready for /gsd-execute-phase 12.6 -->
+<!-- Resume file: .planning/phases/12.6-v0-surface-reduction/12.6-01-PLAN.md (Wave 1 entry point) -->
 
 
 # State: Beava v2 — v0 OSS Launch
