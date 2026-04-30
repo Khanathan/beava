@@ -800,4 +800,126 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotConnected);
         ts.shutdown().await.expect("shutdown");
     }
+
+    // ─── Plan 12.6-01 Task 1.a (RED) — TestServer must back ServerV18 ────────
+    //
+    // Per Phase 12.6 D-01, TestServer's internals are rewritten to wrap
+    // ServerV18 (mio data plane) instead of the legacy axum `Server`.  The
+    // following three tests pin that contract so the GREEN task (1.b) cannot
+    // accidentally regress to the legacy path.
+
+    /// Task 1.a Test 1: `/ready` MUST NOT live on the data-plane port.
+    ///
+    /// Per `project_phase18_no_dual_runtime`, `/ready` is an admin endpoint
+    /// served by the tokio sidecar on a SEPARATE port.  The legacy
+    /// `Server` co-locates `/ready` with `/push` on the same axum router
+    /// (so `GET /ready` returns 200 on `base_url()`).  ServerV18's data
+    /// plane (hand-rolled mio HTTP) has no `/ready` route — it returns
+    /// 404 on `base_url()` and 200 on the admin port.  This test pins that
+    /// signal and is RED until TestServer is rewired to ServerV18.
+    #[tokio::test]
+    async fn test_server_v18_uses_mio_dataplane() {
+        let ts = TestServer::spawn().await.expect("spawn");
+        let resp = ts.get_raw("/ready").await;
+        assert_eq!(
+            resp.status().as_u16(),
+            404,
+            "GET /ready on the data-plane port must return 404 — \
+             /ready is admin-only on ServerV18 (mio data plane has no /ready route). \
+             A 200 here means TestServer is still on the legacy axum Server."
+        );
+        // /health on the data-plane DOES exist on mio (for liveness probes),
+        // so this still returns 200 — confirms we're on a working mio HTTP
+        // listener (not just a dead port).
+        let hr = ts.get_raw("/health").await;
+        assert_eq!(
+            hr.status().as_u16(),
+            200,
+            "GET /health on the data-plane MUST return 200 — \
+             mio HTTP listener routes /health"
+        );
+        ts.shutdown().await.expect("shutdown");
+    }
+
+    /// Task 1.a Test 2: TestServer preserves the public builder API surface
+    /// per D-01 — every builder method existing pre-rewrite must keep its
+    /// signature and produce a running server.  Tests use `admin_url()` as
+    /// the post-rewrite accessor that pins ServerV18-shaped output (RED via
+    /// compile-error today; GREEN once 1.b adds `admin_url()`).
+    #[tokio::test]
+    async fn test_server_preserves_builder_api() {
+        let wal = tempfile::tempdir().expect("tempdir wal");
+        let snap = tempfile::tempdir().expect("tempdir snap");
+        let ts = TestServer::builder()
+            .tcp_enabled(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .snapshot_interval_ms(60_000)
+            .listen_addr("127.0.0.1:0")
+            .log_level("info")
+            .readiness_timeout(Duration::from_secs(5))
+            .dev_endpoints(false)
+            .spawn()
+            .await
+            .expect("spawn must succeed with full builder chain");
+
+        assert!(
+            ts.tcp_addr().is_some(),
+            "tcp_addr must be Some when tcp_enabled(true)"
+        );
+
+        // ServerV18-specific accessor: admin URL.  This is the contract
+        // signal that `spawn()` ran ServerV18::bind (legacy Server has no
+        // admin port concept).  Today `admin_url()` does not exist on
+        // TestServer — this line will fail to compile and the test is RED.
+        let admin_url = ts.admin_url().to_string();
+        assert!(
+            admin_url.starts_with("http://"),
+            "admin_url must be an http URL, got {admin_url}"
+        );
+        assert_ne!(
+            admin_url,
+            ts.base_url(),
+            "admin URL must be on a different port from the data-plane base_url"
+        );
+
+        ts.shutdown().await.expect("shutdown");
+    }
+
+    /// Task 1.a Test 3: ServerV18 separates admin endpoints (`/health`,
+    /// `/ready`, `/metrics`, `/registry`) onto a port distinct from the
+    /// event-plane HTTP listener — `project_phase18_no_dual_runtime`
+    /// invariant.
+    #[tokio::test]
+    async fn test_server_v18_admin_endpoints_separate_port() {
+        let ts = TestServer::spawn().await.expect("spawn");
+        let admin_url = ts.admin_url().to_string();
+        assert_ne!(
+            admin_url,
+            ts.base_url(),
+            "admin URL must differ from event-plane base_url"
+        );
+
+        // `/ready` MUST live on the admin port.
+        let resp = reqwest::get(format!("{}/ready", admin_url))
+            .await
+            .expect("admin /ready GET");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "admin /ready must return 200 on the admin port"
+        );
+
+        // `/health` MUST live on the admin port too.
+        let resp = reqwest::get(format!("{}/health", admin_url))
+            .await
+            .expect("admin /health GET");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "admin /health must return 200 on the admin port"
+        );
+        ts.shutdown().await.expect("shutdown");
+    }
 }
