@@ -16,7 +16,7 @@ Validation rules (Phase 3 scope — mirrors server register_validate.rs):
                                (Phase 3 only; server additionally checks the registry).
   3. cycle                   — DFS three-color cycle detection on the upstream graph.
   4. unknown_field_type      — a schema field's type string is not one of the 6 valid ones.
-  5. event_time_field_invalid — event_time_field set but field is missing or wrong type.
+  5. (removed 2026-04-30 per no-event-time pivot — was event_time_field_invalid).
   6. table_key_invalid        — primary_key field(s) not all in schema.
   7. bad_return_type          — derivation's _beava_kind is not one of the three valid values.
   8. schema_mismatch          — Phase 3 no-op placeholder (stateless ops land in Phase 4).
@@ -41,8 +41,6 @@ from beava._errors import RegistrationError, ValidationError
 _VALID_FIELD_TYPES: frozenset[str] = frozenset(
     {"str", "i64", "f64", "bool", "bytes", "datetime"}
 )
-
-_VALID_EVENT_TIME_TYPES: frozenset[str] = frozenset({"i64", "datetime"})
 
 _VALID_BEAVA_KINDS: frozenset[str] = frozenset({"event", "table", "derivation"})
 
@@ -78,12 +76,6 @@ def _descriptor_upstreams(desc: Any) -> list[str]:
 def _get_schema_fields(desc: Any) -> dict[str, Any]:
     """Return the schema dict ({field_name: FieldSpec}) for the descriptor."""
     return dict(getattr(desc, "_schema", {}))
-
-
-def _get_event_time_field(desc: Any) -> str | None:
-    """Return the event_time_field name or None."""
-    val: str | None = getattr(desc, "_event_time_field", None)
-    return val
 
 
 def _get_primary_key(desc: Any) -> list[str]:
@@ -251,45 +243,6 @@ def _check_field_types(desc: Any, errors: list[ValidationError]) -> None:
             )
 
 
-def _check_event_time_field(desc: Any, errors: list[ValidationError]) -> None:
-    """Rule 5: event_time_field (if set) must exist in schema with type i64 or datetime."""
-    from beava._types import py_type_to_field_type
-
-    name = _descriptor_name(desc)
-    etf = _get_event_time_field(desc)
-    if etf is None:
-        return
-    schema = _get_schema_fields(desc)
-    if etf not in schema:
-        errors.append(
-            ValidationError(
-                kind="event_time_field_invalid",
-                path=f"{name}.{etf}",
-                message=(
-                    f"event_time_field {etf!r} is not declared in schema; "
-                    f"available: {sorted(schema.keys())}"
-                ),
-            )
-        )
-        return
-    spec = schema[etf]
-    try:
-        wire_type = py_type_to_field_type(spec.py_type)
-    except (TypeError, KeyError):
-        wire_type = None
-    if wire_type not in _VALID_EVENT_TIME_TYPES:
-        errors.append(
-            ValidationError(
-                kind="event_time_field_invalid",
-                path=f"{name}.{etf}",
-                message=(
-                    f"event_time_field {etf!r} must be i64 or datetime, "
-                    f"got {wire_type!r}"
-                ),
-            )
-        )
-
-
 def _check_table_primary_key(desc: Any, errors: list[ValidationError]) -> None:
     """Rule 6: all primary_key fields must exist in schema."""
     name = _descriptor_name(desc)
@@ -341,7 +294,7 @@ def validate_descriptors(descriptors: Sequence[Any]) -> list[ValidationError]:
       2. missing_upstream     — a derivation references a name not in the batch
       3. cycle                — DFS cycle detection on the upstream graph
       4. unknown_field_type   — unsupported field type in any schema
-      5. event_time_field_invalid — bad event_time_field
+      5. (removed 2026-04-30 per no-event-time pivot — was event_time_field_invalid)
       6. table_key_invalid    — primary_key fields not in schema
       7. bad_return_type      — invalid _beava_kind
       8. schema_mismatch      — Phase 3 no-op placeholder (ops are empty in Phase 3)
@@ -370,10 +323,9 @@ def validate_descriptors(descriptors: Sequence[Any]) -> list[ValidationError]:
     # Collect unique names for upstream checks (use first occurrence)
     name_set: set[str] = set(seen_names.keys())
 
-    # Rules 4-7: per-descriptor checks
+    # Rules 4-7: per-descriptor checks (rule 5 removed 2026-04-30 per no-event-time pivot)
     for desc in desc_list:
         _check_field_types(desc, errors)
-        _check_event_time_field(desc, errors)
         _check_table_primary_key(desc, errors)
         _check_bad_return_type(desc, errors)
 

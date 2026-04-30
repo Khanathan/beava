@@ -6,11 +6,17 @@ Public API (re-exported from beava.__init__):
 Runtime classes (internal, used by Plan 03-05 DAG walker):
   - EventSource: descriptor produced by class-form @bv.event
   - EventDerivation: descriptor produced by function-form @bv.event
+
+Plan 12.6-08 strict-deny (no-event-time pivot, locked 2026-04-30):
+  - `event_time` field declarations on the class form raise TypeError
+  - `tolerate_delay` parameter raises TypeError
+  - `event_time_field` parameter raises TypeError
+  See `project_redis_shaped_no_event_time_ever` for the architectural
+  commitment that drove this change.
 """
 
 from __future__ import annotations
 
-import datetime
 import inspect
 from typing import TYPE_CHECKING, Any
 
@@ -234,19 +240,18 @@ class EventSource(_EventOpsMixin):
         *,
         name: str,
         schema: dict[str, FieldSpec],
-        event_time_field: str | None,
         dedupe_key: str | None,
         dedupe_window_ms: int | None,
         keep_events_for_ms: int | None,
-        tolerate_delay_ms: int | None,
     ) -> None:
+        # Plan 12.6-08 (no-event-time pivot): event_time_field and
+        # tolerate_delay_ms parameters were deleted. Sources only carry
+        # processing-time-safe metadata.
         self._name = name
         self._schema = schema
-        self._event_time_field = event_time_field
         self._dedupe_key = dedupe_key
         self._dedupe_window_ms = dedupe_window_ms
         self._keep_events_for_ms = keep_events_for_ms
-        self._tolerate_delay_ms = tolerate_delay_ms
         self._upstreams: list[str] = []
         self._ops: list[Any] = []
 
@@ -340,24 +345,23 @@ def _decorate_event_class(
     cls: type,
     *,
     keep_events_for: str | None,
-    tolerate_delay: str | None,
     dedupe_key: str | None,
     dedupe_window: str | None,
 ) -> EventSource:
     """Apply @bv.event semantics to a class, returning an EventSource descriptor."""
     schema = extract_schema(cls)
 
-    # SDK-DEC-08 devex-first: event_time is OPTIONAL.
-    # If declared, it MUST be int (millis) or datetime.datetime.
-    event_time_field: str | None = None
+    # Plan 12.6-08 strict-deny: event_time field declarations are no longer
+    # supported per the no-event-time pivot (locked 2026-04-30). Beava is
+    # processing-time only; the server stamps wall-clock arrival time on
+    # every push, and windowed/decay/velocity ops bucket on that.
     if "event_time" in schema:
-        py_t = schema["event_time"].py_type
-        if py_t is not int and py_t is not datetime.datetime:
-            raise TypeError(
-                f"event_time field must be int (milliseconds epoch) or datetime.datetime, "
-                f"got {py_t!r}; if omitted the server stamps wall-clock on receipt"
-            )
-        event_time_field = "event_time"
+        raise TypeError(
+            "event_time field on @bv.event is no longer supported per the "
+            "no-event-time pivot (2026-04-30). Beava is processing-time only; "
+            "remove the event_time field from your event class. The server "
+            "stamps wall-clock arrival time on every push automatically."
+        )
 
     # Validate dedupe_key is in schema
     if dedupe_key is not None and dedupe_key not in schema:
@@ -372,11 +376,6 @@ def _decorate_event_class(
         validate_duration_string(keep_events_for)
         keep_events_for_ms = duration_to_ms(keep_events_for)
 
-    tolerate_delay_ms: int | None = None
-    if tolerate_delay is not None:
-        validate_duration_string(tolerate_delay)
-        tolerate_delay_ms = duration_to_ms(tolerate_delay)
-
     dedupe_window_ms: int | None = None
     if dedupe_window is not None:
         validate_duration_string(dedupe_window)
@@ -385,11 +384,9 @@ def _decorate_event_class(
     return EventSource(
         name=cls.__name__,
         schema=schema,
-        event_time_field=event_time_field,
         dedupe_key=dedupe_key,
         dedupe_window_ms=dedupe_window_ms,
         keep_events_for_ms=keep_events_for_ms,
-        tolerate_delay_ms=tolerate_delay_ms,
     )
 
 
@@ -397,7 +394,6 @@ def _decorate_event_function(
     func: Any,
     *,
     keep_events_for: str | None,
-    tolerate_delay: str | None,
     dedupe_key: str | None,
     dedupe_window: str | None,
 ) -> EventDerivation:
@@ -450,9 +446,9 @@ def event(
     arg: Any = None,
     *,
     keep_events_for: str | None = None,
-    tolerate_delay: str | None = None,
     dedupe_key: str | None = None,
     dedupe_window: str | None = None,
+    **legacy_kwargs: Any,
 ) -> Any:
     """Decorator to declare an event source or derivation.
 
@@ -465,9 +461,8 @@ def event(
         class Transaction:
             amount: float
             user_id: str
-            event_time: int  # optional; server stamps wall-clock if omitted
 
-        @bv.event(keep_events_for="7d", tolerate_delay="5s")
+        @bv.event(keep_events_for="7d")
         class Transaction:
             ...
 
@@ -482,7 +477,6 @@ def event(
         arg: The class or function being decorated (bare ``@bv.event`` form).
              ``None`` when called with parentheses (``@bv.event(...)``).
         keep_events_for: Duration string for event retention (e.g. ``"7d"``).
-        tolerate_delay: Duration string for late-arrival tolerance (e.g. ``"5s"``).
         dedupe_key: Schema field name used for idempotency deduplication.
         dedupe_window: Deduplication window duration (e.g. ``"24h"``).
 
@@ -491,12 +485,39 @@ def event(
         or a decorator function when called with parentheses.
 
     Raises:
-        TypeError: If a field type is unsupported, event_time type is wrong,
-                   dedupe_key is not in schema, or a duration string is malformed.
+        TypeError:
+          * If a field type is unsupported, dedupe_key is not in schema, or
+            a duration string is malformed.
+          * If a class declares an ``event_time`` field (no longer supported
+            per the 2026-04-30 no-event-time pivot).
+          * If ``tolerate_delay`` or ``event_time_field`` is passed as a
+            keyword argument (no longer supported per the same pivot).
     """
+    # Plan 12.6-08 strict-deny: legacy event-time keyword arguments are
+    # rejected at decorator time. Per D-03 (CONTEXT.md) the no-event-time
+    # pivot has zero compat surface — no parse-and-strip, no warn-then-error.
+    if "tolerate_delay" in legacy_kwargs:
+        raise TypeError(
+            "tolerate_delay parameter on @bv.event is no longer supported per "
+            "the no-event-time pivot (2026-04-30). Remove the parameter; the "
+            "server stamps processing time on every push so there is no late-"
+            "arrival window to tolerate."
+        )
+    if "event_time_field" in legacy_kwargs:
+        raise TypeError(
+            "event_time_field parameter on @bv.event is no longer supported "
+            "per the no-event-time pivot (2026-04-30). Remove the parameter; "
+            "the server stamps processing time on every push automatically."
+        )
+    if legacy_kwargs:
+        # Forward any other unexpected kwargs to the canonical TypeError shape.
+        first = next(iter(legacy_kwargs))
+        raise TypeError(
+            f"event() got an unexpected keyword argument {first!r}"
+        )
+
     kwargs = {
         "keep_events_for": keep_events_for,
-        "tolerate_delay": tolerate_delay,
         "dedupe_key": dedupe_key,
         "dedupe_window": dedupe_window,
     }

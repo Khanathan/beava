@@ -29,7 +29,12 @@ def test_validation_error_str_repr() -> None:
 
 
 def test_validation_error_kinds_enumerated() -> None:
-    """VALIDATION_ERROR_KINDS frozenset contains exactly the 9 specified kinds."""
+    """VALIDATION_ERROR_KINDS frozenset contains exactly the 8 valid kinds.
+
+    Plan 12.6-08 (no-event-time pivot): event_time_field_invalid removed; the
+    Python SDK rejects event_time field declarations at decorator time so the
+    kind can no longer be issued by validate_descriptors.
+    """
     expected = frozenset({
         "cycle",
         "missing_upstream",
@@ -37,7 +42,6 @@ def test_validation_error_kinds_enumerated() -> None:
         "bad_return_type",
         "unknown_field_type",
         "table_key_invalid",
-        "event_time_field_invalid",
         "registration_conflict",
         "duplicate_name",
     })

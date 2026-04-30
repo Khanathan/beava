@@ -22,14 +22,14 @@ from beava._schema import FieldSpec
 
 
 def _make_event(name: str, upstreams: list[str] | None = None) -> EventSource:
+    # Plan 12.6-08: EventSource no longer accepts event_time_field /
+    # tolerate_delay_ms per the no-event-time pivot.
     src = EventSource(
         name=name,
         schema={"x": FieldSpec(name="x", py_type=str, optional=False)},
-        event_time_field=None,
         dedupe_key=None,
         dedupe_window_ms=None,
         keep_events_for_ms=None,
-        tolerate_delay_ms=None,
     )
     if upstreams is not None:
         src._upstreams = upstreams  # type: ignore[assignment]

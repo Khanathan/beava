@@ -75,7 +75,7 @@ def _sc4_reset_for_server(http_url: str) -> None:
 class Transaction:
     amount: float
     kind: str
-    event_time: int
+    ts: int
 
 
 # ---------------------------------------------------------------------------
@@ -139,11 +139,11 @@ def test_sc1_http_filter_predicate_registered(beava_server: tuple[str, str]) -> 
     assert resp.get("status") == "ok"
 
     # Row that passes the filter (amount=150 > 100).
-    kept = _apply_ops(http_url, "BigTxHTTP", {"amount": 150.0, "kind": "sale", "event_time": 1})
+    kept = _apply_ops(http_url, "BigTxHTTP", {"amount": 150.0, "kind": "sale", "ts": 1})
     assert kept.get("kept") is True
 
     # Row that is dropped by the filter (amount=50 <= 100).
-    dropped = _apply_ops(http_url, "BigTxHTTP", {"amount": 50.0, "kind": "sale", "event_time": 1})
+    dropped = _apply_ops(http_url, "BigTxHTTP", {"amount": 50.0, "kind": "sale", "ts": 1})
     assert dropped.get("kept") is False
 
 
@@ -157,10 +157,10 @@ def test_sc1_tcp_filter_predicate_registered(beava_server: tuple[str, str]) -> N
         resp = app.register(Transaction, BigTxTcp)
     assert resp.get("status") == "ok"
 
-    kept = _apply_ops(http_url, "BigTxTCP", {"amount": 300.0, "kind": "sale", "event_time": 1})
+    kept = _apply_ops(http_url, "BigTxTCP", {"amount": 300.0, "kind": "sale", "ts": 1})
     assert kept.get("kept") is True
 
-    dropped = _apply_ops(http_url, "BigTxTCP", {"amount": 100.0, "kind": "sale", "event_time": 1})
+    dropped = _apply_ops(http_url, "BigTxTCP", {"amount": 100.0, "kind": "sale", "ts": 1})
     assert dropped.get("kept") is False
 
 
@@ -200,10 +200,10 @@ def test_sc3_chained_ops_compose_schema_propagates(
     """SC3: 4-op chain (filter→select→with_columns→cast); schema propagates."""
     http_url, _tcp_url = beava_server
 
-    # Build: filter(amount>0) → select(event_time,amount) → with_columns(is_big) → cast(is_big→int)
+    # Build: filter(amount>0) → select(ts,amount) → with_columns(is_big) → cast(is_big→int)
     ChainedDeriv = (
         Transaction.filter(bv.col("amount") > 0)
-        .select("event_time", "amount")
+        .select("ts", "amount")
         .with_columns(is_big=bv.col("amount") > 500)
         .cast(is_big="int")
         .named("ChainedDeriv")
@@ -223,14 +223,14 @@ def test_sc3_chained_ops_compose_schema_propagates(
 
     # apply_ops: row with amount=1000 should be kept; is_big should be 1 (cast bool→int).
     result = _apply_ops(
-        http_url, "ChainedDeriv", {"amount": 1000.0, "kind": "sale", "event_time": 1}
+        http_url, "ChainedDeriv", {"amount": 1000.0, "kind": "sale", "ts": 1}
     )
     assert result.get("kept") is True
     assert result["row"].get("is_big") == 1, f"is_big cast mismatch: {result}"
 
     # Row with amount=0 should be dropped by the filter.
     dropped = _apply_ops(
-        http_url, "ChainedDeriv", {"amount": 0.0, "kind": "sale", "event_time": 1}
+        http_url, "ChainedDeriv", {"amount": 0.0, "kind": "sale", "ts": 1}
     )
     assert dropped.get("kept") is False
 
@@ -572,7 +572,7 @@ def test_sc5_malformed_predicate_http_400(beava_server: tuple[str, str]) -> None
                 "upstreams": ["Transaction"],
                 "ops": [{"op": "filter", "expr": "(amount > "}],  # unterminated expr
                 "schema": {
-                    "fields": {"amount": "f64", "kind": "str", "event_time": "i64"},
+                    "fields": {"amount": "f64", "kind": "str", "ts": "i64"},
                     "optional_fields": [],
                 },
                 "table_primary_key": None,
@@ -617,7 +617,7 @@ def test_sc5_malformed_predicate_tcp_error_frame(beava_server: tuple[str, str]) 
                     "upstreams": ["Transaction"],
                     "ops": [{"op": "filter", "expr": "(amount > "}],  # unterminated
                     "schema": {
-                        "fields": {"amount": "f64", "kind": "str", "event_time": "i64"},
+                        "fields": {"amount": "f64", "kind": "str", "ts": "i64"},
                         "optional_fields": [],
                     },
                     "table_primary_key": None,

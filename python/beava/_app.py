@@ -132,7 +132,6 @@ class App:
           - Missing upstream references
           - Cycle detection (DFS three-color)
           - Schema field type checks
-          - event_time_field validity
           - Table primary_key validity
           - Bad return type
 

@@ -1,13 +1,14 @@
 """Tests for @bv.event decorator — class form and function form.
 
-These tests are written RED-first — they will fail until _events.py exists.
+Plan 12.6-08 (no-event-time pivot, 2026-04-30): the @bv.event decorator no
+longer accepts event_time field declarations on the class form, the
+tolerate_delay parameter, or the event_time_field parameter. The strict-deny
+contract is pinned by ``test_v0_no_event_time.py``.
 
 Note: deliberately no ``from __future__ import annotations`` so that parameter
 annotations in function-form tests are evaluated eagerly at def-time and
 capture the decorated EventSource / TableSource objects from local scope.
 """
-
-import datetime
 
 import pytest
 
@@ -25,7 +26,6 @@ def test_event_class_form_basic() -> None:
     class Transaction:
         amount: float
         user_id: str
-        event_time: int
 
     assert Transaction._name == "Transaction"
     assert Transaction._beava_kind == "event"
@@ -33,24 +33,14 @@ def test_event_class_form_basic() -> None:
     j = Transaction._to_register_json()
     assert j["kind"] == "event"
     assert j["name"] == "Transaction"
-    assert j["schema"]["fields"] == {"amount": "f64", "user_id": "str", "event_time": "i64"}
+    assert j["schema"]["fields"] == {"amount": "f64", "user_id": "str"}
     assert j["schema"]["optional_fields"] == []
-    assert j["event_time_field"] == "event_time"
     assert j["dedupe_key"] is None
     assert j["dedupe_window_ms"] is None
     assert j["keep_events_for_ms"] is None
-    assert j["tolerate_delay_ms"] is None
-
-
-def test_event_without_event_time_field() -> None:
-    """@bv.event without event_time declared sets event_time_field=null (server stamps)."""
-
-    @bv.event
-    class Ping:
-        user_id: str
-
-    j = Ping._to_register_json()
-    assert j["event_time_field"] is None
+    # Plan 12.6-08 D-03: event_time_field / tolerate_delay_ms keys deleted.
+    assert "event_time_field" not in j
+    assert "tolerate_delay_ms" not in j
 
 
 def test_event_with_optional_field() -> None:
@@ -72,15 +62,14 @@ def test_event_with_optional_field() -> None:
 
 
 def test_event_duration_options() -> None:
-    """keep_events_for + tolerate_delay are converted to ms in JSON output."""
+    """keep_events_for is converted to ms in JSON output."""
 
-    @bv.event(keep_events_for="7d", tolerate_delay="5s")
+    @bv.event(keep_events_for="7d")
     class X:
         a: float
 
     j = X._to_register_json()
     assert j["keep_events_for_ms"] == 604_800_000
-    assert j["tolerate_delay_ms"] == 5_000
 
 
 # ---------------------------------------------------------------------------
@@ -108,41 +97,6 @@ def test_event_dedupe_key_must_be_in_schema() -> None:
         @bv.event(dedupe_key="missing_field")
         class X:
             a: float
-
-
-# ---------------------------------------------------------------------------
-# event_time type validation (SDK-DEC-08 devex-first)
-# ---------------------------------------------------------------------------
-
-
-def test_event_time_type_invalid() -> None:
-    """event_time declared as non-int/non-datetime raises TypeError."""
-    with pytest.raises(TypeError):
-
-        @bv.event
-        class X:
-            event_time: str
-
-
-def test_event_time_type_int_ok() -> None:
-    """event_time: int does not raise."""
-
-    @bv.event
-    class Y:
-        event_time: int
-
-    assert Y._to_register_json()["event_time_field"] == "event_time"
-
-
-def test_event_time_type_datetime_ok() -> None:
-    """event_time: datetime.datetime does not raise and sets event_time_field."""
-
-    @bv.event
-    class Z:
-        event_time: datetime.datetime
-
-    j = Z._to_register_json()
-    assert j["event_time_field"] == "event_time"
 
 
 # ---------------------------------------------------------------------------

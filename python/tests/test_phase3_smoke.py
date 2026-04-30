@@ -17,14 +17,15 @@ from beava._tables import TableDerivation, TableSource
 # Module-level shared descriptors
 # ---------------------------------------------------------------------------
 
-# Two event sources
+# Two event sources.
+# Plan 12.6-08 (no-event-time pivot): event_time fields removed from fixtures.
+# The server stamps wall-clock arrival time on every push automatically.
 @bv.event
 class TxEvent:
-    """Minimal event with an event_time field."""
+    """Minimal event source."""
 
     user_id: str
     amount: float
-    event_time: int
 
 
 @bv.event
@@ -33,7 +34,6 @@ class LoginEvent:
 
     user_id: str
     session_id: str
-    event_time: int
 
 
 # Table source keyed on user_id
@@ -61,14 +61,12 @@ def CheckoutDerivation(src: TxEvent):  # type: ignore[no-untyped-def]
 class SC6EventA:
     user_id: str
     amount: float
-    event_time: int
 
 
 @bv.event
 class SC6EventB:
     user_id: str
     session_id: str
-    event_time: int
 
 
 @bv.table(key="user_id")
@@ -95,17 +93,16 @@ def test_c1_event_decorator_both_forms() -> None:
     assert TxEvent._name == "TxEvent"
     assert "user_id" in TxEvent._schema
     assert "amount" in TxEvent._schema
-    assert "event_time" in TxEvent._schema
     assert TxEvent._beava_kind == "event"
     assert TxEvent._upstreams == []
 
     # Class form: schema field py_types are correct
     assert TxEvent._schema["user_id"].py_type is str
     assert TxEvent._schema["amount"].py_type is float
-    assert TxEvent._schema["event_time"].py_type is int
 
-    # Class form: event_time_field detected
-    assert TxEvent._event_time_field == "event_time"
+    # Plan 12.6-08: EventSource no longer carries _event_time_field per the
+    # no-event-time pivot.
+    assert not hasattr(TxEvent, "_event_time_field")
 
     # Second class form: LoginEvent
     assert isinstance(LoginEvent, EventSource)
