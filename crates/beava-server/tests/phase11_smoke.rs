@@ -413,12 +413,30 @@ async fn all_eleven_ops_type_mix_set_membership() {
 
     // Push the same 6-event stream — categories: a (×4), b (×1), c (×1).
     let events: Vec<(i64, serde_json::Value)> = vec![
-        (1_000_000, serde_json::json!({"user_id":"alice","amount":  5.0, "category":"a","lat":40.7128,"lon":-74.0060})),
-        (1_000_000 + 3_600_000, serde_json::json!({"user_id":"alice","amount": 50.0, "category":"a","lat":40.7128,"lon":-74.0060})),
-        (1_000_000 + 2 * 3_600_000, serde_json::json!({"user_id":"alice","amount":150.0, "category":"b","lat":41.7128,"lon":-74.0060})),
-        (1_000_000 + 3 * 3_600_000, serde_json::json!({"user_id":"alice","amount": 25.0, "category":"a","lat":41.7128,"lon":-74.0060})),
-        (1_000_000 + 4 * 3_600_000, serde_json::json!({"user_id":"alice","amount": 80.0, "category":"c","lat":41.8128,"lon":-74.0060})),
-        (1_000_000 + 5 * 3_600_000, serde_json::json!({"user_id":"alice","amount":200.0, "category":"a","lat":41.9128,"lon":-74.0060})),
+        (
+            1_000_000,
+            serde_json::json!({"user_id":"alice","amount":  5.0, "category":"a","lat":40.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 3_600_000,
+            serde_json::json!({"user_id":"alice","amount": 50.0, "category":"a","lat":40.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 2 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount":150.0, "category":"b","lat":41.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 3 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount": 25.0, "category":"a","lat":41.7128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 4 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount": 80.0, "category":"c","lat":41.8128,"lon":-74.0060}),
+        ),
+        (
+            1_000_000 + 5 * 3_600_000,
+            serde_json::json!({"user_id":"alice","amount":200.0, "category":"a","lat":41.9128,"lon":-74.0060}),
+        ),
     ];
     for (t, row) in events {
         let body = serde_json::json!({
