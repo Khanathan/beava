@@ -3,22 +3,22 @@
 //!
 //! Two locked architectural commitments from Phase 12.6 are guarded here:
 //!
-//! 1. **Single hot-path entry.** The mio event loop is the only data-plane
-//!    runtime. The legitimate callers of `apply_event_to_aggregations` are
-//!    exactly two:
-//!      - `crates/beava-server/src/apply_shard.rs::dispatch_push_sync`
-//!        (mio data plane — invoked from `dispatch_one`).
-//!      - `crates/beava-server/src/recovery.rs::replay_handrolled_wal_dir`
-//!        and `replay_wal_from_lsn` (cold-path WAL replay on boot).
-//!    Any third caller is an architectural regression per
-//!    `project_phase18_no_dual_runtime` + `project_redis_shaped_no_event_time_ever`.
+//! **1. Single hot-path entry.**
+//! The mio event loop is the only data-plane runtime. The legitimate callers
+//! of `apply_event_to_aggregations` are exactly two:
+//! `crates/beava-server/src/apply_shard.rs::dispatch_push_sync` (mio data
+//! plane — invoked from `dispatch_one`); and
+//! `crates/beava-server/src/recovery.rs::replay_handrolled_wal_dir` plus
+//! `replay_wal_from_lsn` (cold-path WAL replay on boot). Any third caller is
+//! an architectural regression per `project_phase18_no_dual_runtime` +
+//! `project_redis_shaped_no_event_time_ever`.
 //!
-//! 2. **axum is restricted to the admin sidecar.** `axum::Router`,
-//!    `axum::Json`, `axum::Extension`, `axum::extract::*`, `axum::routing::*`
-//!    imports may only appear in `crates/beava-server/src/http_admin.rs` —
-//!    the canonical tokio admin sidecar bound by `ServerV18` at
-//!    `cfg.admin_addr`. Any other appearance (especially in a re-introduced
-//!    data-plane handler) is a regression.
+//! **2. axum is restricted to the admin sidecar.**
+//! `axum::Router`, `axum::Json`, `axum::Extension`, `axum::extract::*`,
+//! `axum::routing::*` imports may only appear in
+//! `crates/beava-server/src/http_admin.rs` — the canonical tokio admin
+//! sidecar bound by `ServerV18` at `cfg.admin_addr`. Any other appearance
+//! (especially in a re-introduced data-plane handler) is a regression.
 //!
 //! Companion to `phase12_6_legacy_axum_killed.rs` (Plan 07): that test
 //! asserts the legacy axum *files* and *symbols* were deleted. This test
@@ -31,23 +31,21 @@
 //! Architectural-invariant tests are confirmation tests, not behaviour-driven
 //! RED-GREEN tests. To convince yourself the test actually catches violations:
 //!
-//! 1. In `crates/beava-server/src/runtime_core_glue.rs` (or any non-allowlisted
-//!    file under `crates/beava-server/src/`), temporarily add inside a `fn`
-//!    body:
-//!    ```rust,ignore
-//!    let _ = beava_core::agg_apply::apply_event_to_aggregations;
-//!    ```
-//!    Run `cargo test -p beava-server --test phase12_6_mio_only_dataplane`.
-//!    Confirm `only_apply_shard_and_recovery_call_apply_event_to_aggregations`
-//!    fails with the file's path in the violation list. REVERT the edit.
+//! **Probe 1 — apply_event_to_aggregations.** In a non-allowlisted file under
+//! `crates/beava-server/src/` (e.g. `runtime_core_glue.rs`), temporarily add
+//! a call to `beava_core::agg_apply::apply_event_to_aggregations(...)` inside
+//! a `fn` body. Run `cargo test -p beava-server --test
+//! phase12_6_mio_only_dataplane`. Confirm
+//! `only_apply_shard_and_recovery_call_apply_event_to_aggregations` fails
+//! with the file's path in the violation list. REVERT the edit.
 //!
-//! 2. Same procedure for axum: temporarily add `use axum::Router;` to a
-//!    non-allowlisted file. Confirm
-//!    `axum_imports_only_in_admin_sidecar` fails. REVERT the edit.
+//! **Probe 2 — axum.** In the same file, temporarily add a reference to
+//! `axum::Router`. Run the test. Confirm
+//! `axum_imports_only_in_admin_sidecar` fails. REVERT the edit.
 //!
-//! Both probes were exercised during Plan 12.6-10 execution and reverted before
-//! commit; this docstring records the procedure so future maintainers can
-//! re-validate the invariant.
+//! Both probes were exercised during Plan 12.6-10 execution and reverted
+//! before commit; this docstring records the procedure so future maintainers
+//! can re-validate the invariant.
 
 use std::path::{Path, PathBuf};
 
@@ -224,8 +222,7 @@ fn sanity_allowlisted_callers_actually_contain_patterns() {
     let recovery = root.join("crates/beava-server/src/recovery.rs");
     let http_admin = root.join("crates/beava-server/src/http_admin.rs");
 
-    let apply_shard_src =
-        std::fs::read_to_string(&apply_shard).expect("apply_shard.rs must exist");
+    let apply_shard_src = std::fs::read_to_string(&apply_shard).expect("apply_shard.rs must exist");
     let recovery_src = std::fs::read_to_string(&recovery).expect("recovery.rs must exist");
     let http_admin_src = std::fs::read_to_string(&http_admin).expect("http_admin.rs must exist");
 
