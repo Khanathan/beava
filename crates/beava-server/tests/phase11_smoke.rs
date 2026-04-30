@@ -272,6 +272,112 @@ async fn all_eleven_ops_round_trip_through_http() {
     assert!(body["value"].as_f64().is_some());
 }
 
+// ─── Plan 12.6-01 Task 2.a/2.b — type_mix set-membership assertion ───────────
+//
+// Per D-02, the existing `all_eleven_ops_round_trip_through_http` line ~235
+// asserted `v["a"].as_f64().expect("a share")` — a key-specific check that
+// fails non-deterministically when the `type_mix` HashMap iteration order
+// elides key "a" from the response Map.  The replacement asserts on the SET
+// of expected entries (any of {"a","b","c"} present, each share finite f64
+// in [0,1], total ~ 1.0 within ε).
+//
+// Task 2.a (RED) lands a sibling test that asserts the set-membership
+// invariants *as if* they were already encoded.  The test fails today
+// because no helper exists and the assertion shape is key-specific.
+//
+// Task 2.b (GREEN) rewrites the original assertion at line 235 to the same
+// set-membership shape, and confirms 5/5 reruns are stable.
+
+/// Plan 12.6-01 Task 2.a (RED) → Task 2.b (GREEN): pin the set-membership
+/// invariants for the `type_mix` Map response so HashMap iteration order
+/// nondeterminism is no longer a flake source.  Builds the same registry
+/// and event stream as `all_eleven_ops_round_trip_through_http` and uses
+/// `assert_type_mix_set_membership` to verify the invariants.
+///
+/// RED state: the helper `assert_type_mix_set_membership` is intentionally
+/// NOT defined yet — this test will FAIL TO COMPILE until Task 2.b lands
+/// the helper alongside the line-235 rewrite of the original test.
+#[tokio::test]
+async fn all_eleven_ops_type_mix_set_membership() {
+    let registry = Arc::new(Registry::new());
+    let dev_state = DevAggState::new(registry.clone());
+    let r = router(
+        ReadinessFlag::new(),
+        registry.clone(),
+        true,
+        Some(dev_state.clone()),
+    );
+
+    // Mirror the exact registration payload + event stream used by
+    // `all_eleven_ops_round_trip_through_http` so this test exercises the
+    // SAME code path that historically produced the flake.
+    let payload = serde_json::json!({
+        "nodes": [
+            {
+                "kind": "event",
+                "name": "TxEvent",
+                "schema": {
+                    "fields": {
+                        "event_time": "i64",
+                        "user_id":    "str",
+                        "amount":     "f64",
+                        "category":   "str",
+                        "lat":        "f64",
+                        "lon":        "f64"
+                    },
+                    "optional_fields": []
+                },
+                "event_time_field": "event_time"
+            },
+            {
+                "kind": "derivation",
+                "name": "TxAgg",
+                "output_kind": "table",
+                "upstreams": ["TxEvent"],
+                "ops": [{"op": "group_by", "keys": ["user_id"], "agg": {
+                    "type_mix": {"op": "event_type_mix", "params": {"field": "category", "max_categories": 16}}
+                }}],
+                "schema": {
+                    "fields": {
+                        "user_id":  "str",
+                        "type_mix": "str"
+                    },
+                    "optional_fields": []
+                },
+                "table_primary_key": ["user_id"]
+            }
+        ]
+    });
+    let (status, _body) = call_post(r.clone(), "/register", payload).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Push the same 6-event stream — categories: a (×4), b (×1), c (×1).
+    let events: Vec<(i64, serde_json::Value)> = vec![
+        (1_000_000, serde_json::json!({"user_id":"alice","amount":  5.0, "category":"a","lat":40.7128,"lon":-74.0060})),
+        (1_000_000 + 3_600_000, serde_json::json!({"user_id":"alice","amount": 50.0, "category":"a","lat":40.7128,"lon":-74.0060})),
+        (1_000_000 + 2 * 3_600_000, serde_json::json!({"user_id":"alice","amount":150.0, "category":"b","lat":41.7128,"lon":-74.0060})),
+        (1_000_000 + 3 * 3_600_000, serde_json::json!({"user_id":"alice","amount": 25.0, "category":"a","lat":41.7128,"lon":-74.0060})),
+        (1_000_000 + 4 * 3_600_000, serde_json::json!({"user_id":"alice","amount": 80.0, "category":"c","lat":41.8128,"lon":-74.0060})),
+        (1_000_000 + 5 * 3_600_000, serde_json::json!({"user_id":"alice","amount":200.0, "category":"a","lat":41.9128,"lon":-74.0060})),
+    ];
+    for (t, row) in events {
+        let body = serde_json::json!({
+            "source": "TxEvent",
+            "event_time_ms": t,
+            "row": row,
+        });
+        let (status, _b) = call_post(r.clone(), "/dev/apply_events", body).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Fetch type_mix and assert on the SET of present entries.
+    let (status, body) = call_get(r.clone(), "/get/type_mix/alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let v = &body["value"];
+    assert!(v.is_object(), "type_mix must be a JSON object");
+    assert_type_mix_set_membership(v);
+}
+
 /// SC4 (replay determinism): pushing the same event sequence twice into two
 /// fresh registries produces identical query results for geo_distance + reservoir_sample.
 /// Plan 19.2-06: unique_cells removed; geo_distance used instead for determinism check.
