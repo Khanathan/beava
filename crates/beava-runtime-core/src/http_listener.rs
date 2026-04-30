@@ -130,12 +130,8 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
                 }
             }
             "content-type" => {
-                content_type_header = Some(
-                    std::str::from_utf8(h.value)
-                        .unwrap_or("")
-                        .trim()
-                        .to_owned(),
-                );
+                content_type_header =
+                    Some(std::str::from_utf8(h.value).unwrap_or("").trim().to_owned());
             }
             _ => {}
         }
@@ -192,8 +188,7 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     // every existing test (event_loop_smoke / phase8_tcp_push wire
     // shape / phase18_07_push_and_get) untouched while turning the
     // phase2_smoke success_criterion_5 415 contract green.
-    let is_register_post =
-        method.eq_ignore_ascii_case("POST") && matches!(route, Route::Register);
+    let is_register_post = method.eq_ignore_ascii_case("POST") && matches!(route, Route::Register);
     if is_register_post {
         let ct_ok = match &content_type_header {
             None => false,

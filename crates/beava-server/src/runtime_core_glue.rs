@@ -218,8 +218,7 @@ pub async fn dispatch_wire_request(app: &Arc<AppState>, req: WireRequest) -> Glu
             }
         }
         WireRequest::HttpTableGet { table, query } => {
-            let (status, body_bytes) =
-                crate::temporal_http::table_get_via_mio(app, &table, &query);
+            let (status, body_bytes) = crate::temporal_http::table_get_via_mio(app, &table, &query);
             GlueResponse::TemporalResponse {
                 http_status: status,
                 body: Bytes::from(body_bytes),

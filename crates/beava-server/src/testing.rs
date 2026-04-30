@@ -269,10 +269,9 @@ impl TestServerBuilder {
         // shared AppState so `/registry` on the mio data plane gates
         // identically to the legacy axum `BEAVA_DEV_ENDPOINTS=1`
         // toggle. (Default false; `.dev_endpoints(true)` flips it.)
-        app_state.dev_endpoints.store(
-            self.dev_endpoints,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        app_state
+            .dev_endpoints
+            .store(self.dev_endpoints, std::sync::atomic::Ordering::Relaxed);
 
         let (tx, rx) = oneshot::channel::<()>();
         let shutdown = async move {

@@ -325,10 +325,7 @@ pub async fn upsert_via_mio(
         ack_lsn,
         registry_version,
     };
-    (
-        200,
-        serde_json::to_vec(&ack).unwrap_or_default(),
-    )
+    (200, serde_json::to_vec(&ack).unwrap_or_default())
 }
 
 /// `POST /upsert/{table_name}` handler (renamed from push-table per Phase 16 D-09).
@@ -1118,11 +1115,7 @@ async fn retract_handler(State(app): State<Arc<AppState>>, body_bytes: Bytes) ->
 /// shared between the legacy axum `table_get_handler` and the mio
 /// data-plane dispatch. Sync — no WAL or async I/O. Returns
 /// `(status, body_bytes)`.
-pub fn table_get_via_mio(
-    app: &Arc<AppState>,
-    table_name: &str,
-    raw_query: &str,
-) -> (u16, Vec<u8>) {
+pub fn table_get_via_mio(app: &Arc<AppState>, table_name: &str, raw_query: &str) -> (u16, Vec<u8>) {
     let pairs = parse_query_pairs(raw_query);
     let key = match pairs.get("key") {
         Some(k) if !k.is_empty() => k.clone(),
