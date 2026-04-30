@@ -18,6 +18,13 @@ const VARS: [&str; 3] = [
     "BEAVA_WAL_TICK_MS",
 ];
 
+/// Plan 12.6-15: env vars are process-global; tests must run sequentially
+/// to avoid one clearing another's set values mid-read. The plan-author
+/// originally relied on `--test-threads=1` at the cargo invocation but
+/// that's not enforced when tests run as part of `cargo test --workspace`.
+/// In-test mutex is the bullet-proof variant.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn clear_env() {
     for v in VARS.iter() {
         std::env::remove_var(v);
@@ -26,6 +33,7 @@ fn clear_env() {
 
 #[test]
 fn test_default_wal_config_4x32_tick20() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let cfg = WalConfig::resolve_from_env();
     assert_eq!(cfg.buffers, 4, "D-01 default buffers should be 4");
@@ -38,6 +46,7 @@ fn test_default_wal_config_4x32_tick20() {
 
 #[test]
 fn test_env_overrides_apply() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     std::env::set_var("BEAVA_WAL_BUFFERS", "8");
     std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "64");
@@ -54,6 +63,7 @@ fn test_env_overrides_apply() {
 
 #[test]
 fn test_clamp_ranges_reject_oom_typos() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     // High side — operator typo like BEAVA_WAL_BUFFER_SIZE_MB=10000 must clamp
     // to the documented OOM-guard ceiling, not allocate ~10 GB per buffer.
     clear_env();
