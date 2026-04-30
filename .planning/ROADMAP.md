@@ -471,6 +471,23 @@ Feature authoring as composable Python code that ships to production unchanged. 
 6. Throughput rebaseline: simple-fraud + fraud-team.json zipfian shapes still PASS (no regression > 5% from no-event-time path simplification — actually expect a small lift from removed code in hot path)
 7. SUMMARY + VERIFICATION docs land in `.planning/phases/12.6-v0-surface-reduction/`
 
+**Plans:** 13 plans (planned 2026-04-30; sequence designed for parallel execution across 8 waves; per CLAUDE.md every task is a TDD red→green pair)
+
+Plans:
+- [ ] 12.6-01-PLAN.md — Wave 1 — TestServer drop-in rewrite to ServerV18 + phase11_smoke type_mix fix (D-01, D-02)
+- [ ] 12.6-02-PLAN.md — Wave 1 — Dead-code baseline scan + threshold setting (DEADCODE-REPORT.md)
+- [ ] 12.6-03-PLAN.md — Wave 1 — REQUIREMENTS.md + PROJECT.md surgical sweep (depth: surgical, 11 occurrences pre-sweep)
+- [ ] 12.6-04-PLAN.md — Wave 2 — OpNode::Join / OpNode::Union / JoinType deletion + structured error codes (feature_removed_no_joins_v0 / no_unions_v0)
+- [ ] 12.6-05-PLAN.md — Wave 2 — Path X — windowed-op time-source swap from event_time_ms to server now_ms()
+- [ ] 12.6-06-PLAN.md — Wave 2 — Event-time hard rip per D-03 — push wire + EventDescriptor + AppState + WAL/snapshot schema bump v1→v2
+- [ ] 12.6-07-PLAN.md — Wave 3 — Legacy axum kill (~3500 LOC) — push.rs/http.rs/http_admin.rs/push_and_get.rs delete + legacy Server struct delete
+- [ ] 12.6-08-PLAN.md — Wave 4 — Python SDK strip — event_time / tolerate_delay / bv.join / bv.union helpers deleted; decorator-time TypeError
+- [ ] 12.6-09-PLAN.md — Wave 4 — Worktree + Phase 12.5 + 13.3 archive sweep (SUPERSEDED-AND-DEFERRED banners; STATE.md worktree map)
+- [ ] 12.6-10-PLAN.md — Wave 5 — mio-only architectural enforcement test + CLAUDE.md invariant doc
+- [ ] 12.6-11-PLAN.md — Wave 6 — Criterion microbench (post-axum-kill apply hot path) + perf-baselines.md row
+- [ ] 12.6-12-PLAN.md — Wave 7 — Throughput rebaseline (small/medium/large + fraud-team-zipfian × http+tcp) + throughput-baselines.md row
+- [ ] 12.6-13-PLAN.md — Wave 8 — Phase 12.6 SUMMARY.md + VERIFICATION.md + STATE/CORRECTNESS-PATH/ROADMAP closure
+
 ### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship — 🟡 PARTIAL
 
 **Status:** Plans 13-01 (`/metrics` Prometheus + middleware) and 13-03 (`env_var_overrides` hermetic fix) shipped on branch `phase-13-ship` @ `2ef5afc`. Plan 13-02 (cold-entity GC sweep), Plan 13-04 (perf gate), and metric-counter wiring pending on worktree `.claude/worktrees/phase-13-followup`. Plans 13-05..13-08 (docs site, `bv.fork`, PyPI/Docker/Releases, playground) deferred to v0.0.x point releases per Phase 13 CONTEXT D-16.
