@@ -2,20 +2,20 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 12.6 PLANNED 2026-04-30 — 13 plans across 8 waves landed after 1 revision iteration (D-03 strict-deny + section-ownership + TDD-clean Plan 04 + temporal_http.rs/shutdown.rs decisions). Ready to execute via /gsd-execute-phase 12.6. Architectural pivot 2026-04-30 (no event-time / no joins / no PIT, permanent) is the upstream commitment driving 12.6.
-last_updated: "2026-04-30T11:05:00.000Z"
+status: Phase 12.6 CLOSED 2026-04-30 (PASS-WITH-WARN). 15 plans landed (Plans 01-15 inclusive of Wave-1.5 gap closure 14+15). Workspace 1067/0/3. Legacy axum data plane deleted (~7475 LOC); mio is sole data-plane runtime; event_time_ms / event_time_field / tolerate_delay_ms hard-ripped from wire/WAL/snapshot/SDK; joins/unions deleted; Path X windowed-op time-source swap to server now_ms(). microbench (Plan 11) + throughput rebaseline (Plan 12) PASS. v0 critical path advances to Phase 13.
+last_updated: "2026-04-30T23:30:00.000Z"
 progress:
   total_phases: 34
-  completed_phases: 20
-  total_plans: 148
-  completed_plans: 116
-  percent: 78
+  completed_phases: 21
+  total_plans: 163
+  completed_plans: 131
+  percent: 80
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-04-30 — /gsd-plan-phase 12.6 → 13 plans + 1 revision iteration → VERIFICATION PASSED -->
-<!-- Stopped at: Phase 12.6 planned (13 plans); ready for /gsd-execute-phase 12.6 -->
-<!-- Resume file: .planning/phases/12.6-v0-surface-reduction/12.6-01-PLAN.md (Wave 1 entry point) -->
+<!-- Last session: 2026-04-30 — /gsd-execute-phase 12.6 → 15 plans landed → Phase 12.6 CLOSED (PASS-WITH-WARN) -->
+<!-- Stopped at: Phase 12.6 closed; ready for /gsd-discuss-phase 13 (next on v0 critical path) -->
+<!-- Resume file: .planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md (Phase 12.6 narrative) + .planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md (mechanical PASS-WITH-WARN) -->
 
 
 # State: Beava v2 — v0 OSS Launch
@@ -101,19 +101,17 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Locked.** State is `f(arrival-order events, query time)`. mio data plane is the only hot-path entry. Phases 14, 14.1, 15 archived. Phase 12 retitled "push/get API completion (joins/unions REMOVED)". Phase 17 reworked. Phase 12.5 archived (superseded by Plan 12-10). NEW Phase 12.6 inserted (v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + windowed-op time-source swap + join/union removal + REQUIREMENTS sweep + mio-only enforcement). NEW Phase 25 inserted (session window operator family — v0.1+).
 
-**v0 critical path post-pivot:** Plan 12-10 (push-and-get on mio) → Phase 12.6 (surface reduction) → Phase 13 (docs + packaging + ship). Phase 25 (session windows) is v0.1+. Phases 14/14.1/15 are dead architecture — do not unarchive without explicit user override + new ADR.
+**v0 critical path post-pivot:** ~~Plan 12-10 (push-and-get on mio)~~ DEFERRED per Phase 12.6 D-04 → ~~Phase 12.6 (surface reduction)~~ ✅ **CLOSED 2026-04-30 (PASS-WITH-WARN)** → **Phase 13 (docs + packaging + ship) — NEXT**. Phase 25 (session windows) is v0.1+. Phases 14/14.1/15 are dead architecture — do not unarchive without explicit user override + new ADR.
 
 ## Current Focus
 
-**Plan 12-07 closed 2026-04-29 — `/get` on mio HTTP+TCP via apply_shard + main.rs migrated to ServerV18.** Production binary `target/release/beava` now runs the mio data plane (no env-var workarounds for `/get`); `dispatch_get_batch` real impl replaces the Plan 18-01 stub; `OP_GET_RESPONSE = 0x0023` allocated; `/health` shimmed inline on the mio HTTP listener (read_bench.py contract). 22 TDD-paired tasks, 35 new tests, 21 plan commits + this SUMMARY. `python/benches/read_bench.py` runs end-to-end against the unmodified release binary at **1000/1000 OK, p99=1.81 ms**. Throughput rebaseline shows simple-fraud TCP +8.0% vs 19.4 baseline (PASS).
+**Phase 12.6 CLOSED 2026-04-30 (PASS-WITH-WARN) — v0 surface reduction landed.** 15 plans across 8 waves (Plans 01-15 inclusive of Wave-1.5 gap closure 14+15). HEAD `1e318b1` (`chore: merge plan 12.6-12 (Phase 12.6 throughput baseline — PASS)`). 76 commits in the Phase 12.6 commit range. Workspace **1067 passed / 0 failed / 3 ignored** with `cargo clippy + cargo fmt` clean. Legacy axum data plane DELETED (~7475 LOC across `push.rs` / `http.rs` / `push_and_get.rs` / `tcp.rs` / legacy `Server` struct). mio is the SOLE data-plane runtime per `project_phase18_no_dual_runtime` — enforced by `phase12_6_mio_only_dataplane.rs` architectural test. `event_time_ms` / `event_time_field` / `tolerate_delay_ms` HARD ripped from push wire + register wire + EventDescriptor + DevAggState + WAL/snapshot schema (v1→v2) + Python SDK decorator. `OpNode::Join` / `OpNode::Union` / `JoinType` deleted. Path X swapped windowed-op time source from event_time_ms to server `now_ms()`. Microbench (Plan 11) captured 3 cells as first measurement; throughput rebaseline (Plan 12) at -0.94% on small/tcp gate cell vs post-12-08 baseline (PASS). All 5 CONTEXT decisions D-01..D-05 honored verbatim. SUMMARY: `.planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md`. VERIFICATION: `.planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md`.
 
-**Plan 12-09 closed 2026-04-29 — TCP /get msgpack default.** v2/greenfield HEAD `98e305b`. 14 task commits + SUMMARY across 8 waves. Branched `dispatch_get_*_sync` on `body_format: u8` (CT_JSON / CT_MSGPACK); extended `GlueResponse::QueryResult { body, format }` so the encoder emits the right content-type byte; threaded body_format through `apply_shard.rs` TcpGet/MGet/Multi arms (Http arms hardcode CT_JSON); Python SDK `App.get(...)` on `tcp://` defaults to msgpack; HTTP /get bit-for-bit unchanged. 16 new tests (12 Rust + 4 Python integration) + criterion microbench `phase12_09_msgpack_get.rs` + throughput rebaseline matrix. **Locked decisions D-A..D-E honored end-to-end.** **STRETCH miss (documented honestly per `feedback_cost_model_from_flamegraph`):** Apple-M4 microbench shows ~2-3% codec lift, NOT the 40% the SCOPE doc predicted on integer-leaf fixtures; hypothesis: heavy-sketch leaf shapes may show predicted lift; current single-cell measurement is dominated by HashMap lookup + entity-key parse, not serialization. Push small/tcp regression -14% (WARN) attributed to load-sensitive variance (system load avg 7-9 during measurement; plan touches no push code paths). SUMMARY: `.planning/phases/12-server-side-async-push-coalescing/12-09-SUMMARY.md`.
+**Plan 12-07/08/09 closed 2026-04-29 (Phase 12 sequence).** main.rs migrated to ServerV18 (mio data plane); `/get` on mio HTTP+TCP via apply_shard; apply-loop overhead reduction 1095→75 ns/event (14.6×); TCP /get msgpack default. Legacy push.rs / push_and_get.rs / tcp.rs subsequently deleted by Phase 12.6 Plan 07.
 
-**Plan 12-08 closed 2026-04-29 — apply-loop overhead reduction.** v2/greenfield HEAD `c6471bd`. 11 TDD-paired tasks across 6 waves: D-A adaptive busy-poll (recv_timeout 50µs after K=10k spin), D-D drain-until-empty (no DRAIN_CAP), D-B response batch with hybrid 16/100µs flush + 1-wake-per-batch amortization, D-C per-IO-worker BytesMutPool (cap=256 × 4 KiB). Apply orchestration: **1095 ns → 75 ns/event (14.6×)**. fraud-team/tcp **92,213 → 102,291 EPS (+10.9%)**, fraud-team/http **30,372 → 55,233 EPS (+82%)**. Small/tcp regression-gate **+1.9%** PASS. Pool design: simpler `acquire/encode/extend/release` shape adopted (NOT RecyclableBytes wrapper — fallback path per plan's escape hatch; FnOnce + same-scope encoding makes Drop-based reclamation unnecessary). Listener cross-wake fix discovered + applied (non-blocking event_loop.tick(0) before recv_timeout fall-through; bounds first-connection latency 50ms→150µs). 4 documented deviations (idle CPU 12% vs <5% target due to crossbeam Backoff; STRETCH-targets miss on cheap pipelines = dispatch-bound). SUMMARY: `.planning/phases/12-server-side-async-push-coalescing/12-08-SUMMARY.md`. Hetzner Linux baseline + samply trace pending Phase 13 sweep.
+**Phase 18 wrap items folded into Phase 12.6 closure** (worktree archival recorded by Plan 09; SUMMARY/verification work absorbed into Phase 12.6 SUMMARY's plan-by-plan TOC and per-plan SUMMARY references).
 
-**Phase 18 wrap also closed (main.rs migration was the last item that wasn't verification-only):** main.rs now boots ServerV18; `BEAVA_DEV_ENDPOINTS` retained on legacy `Server` for `phase6_crash_probe` + `TestServer` only. Phase 18 SUMMARY + worktree archival decision remain TBD as housekeeping.
-
-**Next: v0 critical path (post-2026-04-30 pivot):** Plan 12-10 (push-and-get on mio HTTP+TCP, supersedes archived Phase 12.5) → **Phase 12.6 (NEW — v0 surface reduction)** → Phase 13 ship. Phase 14 streaming-correctness ARCHIVED (no longer a v0 blocker — bucket-reset bug class disappears with event-time itself).
+**Next: v0 critical path → Phase 13.** `/gsd-discuss-phase 13` for ship-readiness scope (Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`; PyPI / Docker / GitHub Releases packaging; quickstart docs; concept docs / operator docs / HTTP API docs sweep with no-event-time pivot — D-05 deferred work). Plan 12-10 (push-and-get) DEFERRED entirely from v0 per Phase 12.6 D-04.
 
 ---
 
