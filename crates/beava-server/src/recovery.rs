@@ -287,6 +287,17 @@ pub fn replay_handrolled_wal_dir(
                 }
             };
 
+            // Plan 12.8-03 D-01/D-04: thread the source's cold_after_ms
+            // through the apply path. WAL replay rebuilds live state in
+            // time order; cold-TTL eviction during replay is correct
+            // (replay state == live state once recovery completes). When
+            // the source descriptor is missing (shouldn't happen — register
+            // records replay before event records — but defensive),
+            // cold_after_ms = None preserves pre-12.8-03 behavior.
+            let cold_after_ms = dev_agg
+                .registry
+                .get_event_descriptor(&rec.event_name)
+                .and_then(|d| d.cold_after_ms);
             {
                 let mut tables = dev_agg.state_tables.lock();
                 beava_core::agg_apply::apply_event_to_aggregations(
@@ -296,6 +307,7 @@ pub fn replay_handrolled_wal_dir(
                     lsn,
                     &dev_agg.registry,
                     &mut tables,
+                    cold_after_ms,
                 );
             }
 
@@ -353,6 +365,13 @@ pub fn replay_wal_from_lsn(
                     }
                 };
                 let row = json_object_to_row(&payload.b);
+                // Plan 12.8-03 D-01/D-04: thread cold_after_ms through the
+                // legacy WalSink replay path too. payload.s is the source
+                // event name; descriptor lookup yields the configured TTL.
+                let cold_after_ms = dev_agg
+                    .registry
+                    .get_event_descriptor(&payload.s)
+                    .and_then(|d| d.cold_after_ms);
                 {
                     let mut tables = dev_agg.state_tables.lock();
                     apply_event_to_aggregations(
@@ -362,6 +381,7 @@ pub fn replay_wal_from_lsn(
                         rec.lsn,
                         &dev_agg.registry,
                         &mut tables,
+                        cold_after_ms,
                     );
                 }
                 dev_agg.next_event_id.fetch_max(rec.lsn, Ordering::Relaxed);

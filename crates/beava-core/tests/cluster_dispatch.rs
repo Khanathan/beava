@@ -214,7 +214,7 @@ fn test_entity_key_built_once_per_cluster() {
     beava_core::agg_state_table::_take_entity_key_build_count();
 
     let row = Row::new().with_field("user_id", Value::Str("alice".into()));
-    apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables);
+    apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables, None);
 
     let count = beava_core::agg_state_table::_take_entity_key_build_count();
     assert_eq!(
@@ -248,7 +248,7 @@ fn test_apply_routes_single_u64_for_i64_group_key() {
     let mut state_tables: StateTables =
         beava_core::agg_state_table::new_state_tables_for(&registry);
     let row = Row::new().with_field("acct_id", Value::I64(42));
-    apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables);
+    apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables, None);
 
     let inner = registry.read();
     let agg_desc = inner.compiled_aggregations.get("AcctAgg").expect("AcctAgg");
@@ -290,7 +290,7 @@ fn test_apply_routes_single_str_for_str_group_key() {
     let mut state_tables: StateTables =
         beava_core::agg_state_table::new_state_tables_for(&registry);
     let row = Row::new().with_field("user_id", Value::Str("alice".into()));
-    apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables);
+    apply_event_to_aggregations("Txn", &row, 1000, 0, &registry, &mut state_tables, None);
 
     let inner = registry.read();
     let agg_desc = inner.compiled_aggregations.get("UserAgg").expect("UserAgg");

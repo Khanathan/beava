@@ -790,6 +790,12 @@ impl ApplyShard {
         // `apply_event_to_aggregations` is the server `now_ms_i64`, NOT a
         // body-derived event_time. This is the keystone of the windowed-op
         // arrival-time semantics swap (no event-time anywhere downstream).
+        //
+        // Plan 12.8-03 D-01/D-04: pass the source's `cold_after_ms` so the
+        // apply path can run the per-event cold-TTL eviction check inline.
+        // `descriptor` is an `Arc<EventDescriptor>` (refcount bump on the
+        // `get_event_descriptor` call above), so this is just a `Copy` of
+        // an `Option<u64>`.
         {
             let mut tables = self.state.dev_agg.state_tables.lock();
             apply_event_to_aggregations(
@@ -799,6 +805,7 @@ impl ApplyShard {
                 ack_lsn,
                 &self.state.dev_agg.registry,
                 &mut tables,
+                descriptor.cold_after_ms,
             );
         }
         let t_agg = t0.map(|t| t.elapsed());

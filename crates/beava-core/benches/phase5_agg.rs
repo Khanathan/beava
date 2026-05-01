@@ -286,6 +286,7 @@ fn bench_apply(c: &mut Criterion) {
                         *id,
                         &registry,
                         &mut state_tables,
+                        None,
                     );
                 }
                 std::hint::black_box(state_tables);

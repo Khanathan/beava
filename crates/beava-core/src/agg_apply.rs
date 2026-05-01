@@ -239,6 +239,24 @@ pub(crate) fn legacy_apply_event_to_aggregations(
 ///
 /// `now_ms` is the only time source.  Wall-clock reads are forbidden
 /// in this function (D-06).
+///
+/// # `cold_after_ms` parameter (Plan 12.8-03)
+///
+/// Per CONTEXT D-01 (per-source `@bv.event(cold_after=...)`) + D-04 (FRESH
+/// state on resurrect, Redis TTL pattern, locked permanent), callers pass the
+/// source's `EventDescriptor.cold_after_ms`. When `Some(N)`, each touched
+/// entity is checked against its sidecar `last_seen_ms`; if older than
+/// `now_ms - N`, the entity's prior `Vec<AggOp>` is dropped and a fresh row
+/// is allocated by the subsequent `get_or_init_by_shape` call.
+///
+/// When `cold_after_ms = None` (the common case, sources that don't opt in),
+/// the eviction check is a single `Option::is_some` branch — zero per-event
+/// cost over the pre-12.8-03 path.
+///
+/// Recovery (`replay_handrolled_wal_dir` / `replay_wal_from_lsn`) also passes
+/// the source's `cold_after_ms`. This is correct: replay re-builds live state
+/// in time order, so cold-TTL eviction during replay matches what the
+/// running server would have done.
 pub fn apply_event_to_aggregations(
     source_name: &str,
     row: &Row,
@@ -246,6 +264,7 @@ pub fn apply_event_to_aggregations(
     _event_id: u64, // Phase 5: unused. Phase 6 WAL populates via D-08.
     registry: &Registry,
     state_tables: &mut StateTables,
+    cold_after_ms: Option<u64>,
 ) {
     // SPIKE: per-substage timing of the agg hot path.
     // Gated on its OWN env var (not BEAVA_TRACE_APPLY_TIMING) so that the
@@ -387,6 +406,18 @@ pub fn apply_event_to_aggregations(
         let table = &mut state_tables[agg_idx];
         let t_c = t0.map(|t| t.elapsed());
 
+        // Plan 12.8-03 D-01/D-04: cold-TTL eviction check (FRESH state on
+        // resurrect). Skipped when source has no cold_after_ms — single
+        // Option::is_some branch, ~1 ns. When set, costs 1 HashMap lookup
+        // (~10-15 ns warm-path) + comparison; on cold-eviction, drops the
+        // entity's Vec<AggOp> + sidecar entry so the next
+        // `get_or_init_by_shape` call below allocates a fresh row.
+        if let Some(ttl_ms) = cold_after_ms {
+            let _evicted = table.evict_entity_by_shape_if_cold(shape, now_ms as u64, ttl_ms);
+            // _evicted return value: ignored here; Plan 06 wires
+            // cold_entity_evictions_total{source=...} via this signal.
+        }
+
         let entity_row = table.get_or_init_by_shape(shape, &desc);
         let t_d = t0.map(|t| t.elapsed());
 
@@ -456,6 +487,17 @@ pub fn apply_event_to_aggregations(
             }
             feat_updates += 1;
         }
+
+        // Plan 12.8-03 D-01: record arrival time AFTER applying the event so
+        // the sidecar reflects the most-recent successful update. Only paid
+        // when the source opts in via cold_after_ms. The post-eviction
+        // `get_or_init_by_shape` call above either reused the warm row or
+        // allocated a fresh one — either way, this entity is now warm at
+        // `now_ms`, so the sidecar must be (re)stamped here.
+        if cold_after_ms.is_some() {
+            table.record_last_seen_by_shape(shape, now_ms as u64);
+        }
+
         let t_e = t0.map(|t| t.elapsed());
 
         if let (Some(a), Some(b), Some(c), Some(d), Some(e)) = (t_a, t_b, t_c, t_d, t_e) {
@@ -701,7 +743,15 @@ mod tests {
         let mut state_tables: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
         let row = Row::new().with_field("user_id", Value::Str("alice".into()));
 
-        apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
+        apply_event_to_aggregations(
+            "Transaction",
+            &row,
+            1000,
+            0,
+            &registry,
+            &mut state_tables,
+            None,
+        );
 
         // AggA's table should be populated; AggB's table should NOT.
         assert!(
@@ -736,6 +786,7 @@ mod tests {
                 i as u64,
                 &registry,
                 &mut state_tables,
+                None,
             );
         }
 
@@ -769,7 +820,15 @@ mod tests {
         // Row with user_id = Null → should be dropped.
         let row = Row::new().with_field("user_id", Value::Null);
 
-        apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
+        apply_event_to_aggregations(
+            "Transaction",
+            &row,
+            1000,
+            0,
+            &registry,
+            &mut state_tables,
+            None,
+        );
 
         // No state should exist at all.
         let is_empty =
@@ -825,7 +884,15 @@ mod tests {
             .with_field("user_id", Value::Str("alice".into()))
             .with_field("amount", Value::F64(50.0)); // below threshold
 
-        apply_event_to_aggregations("Transaction", &row, 1000, 0, &registry, &mut state_tables);
+        apply_event_to_aggregations(
+            "Transaction",
+            &row,
+            1000,
+            0,
+            &registry,
+            &mut state_tables,
+            None,
+        );
 
         // Either: no entry for alice, OR alice's count == 0.
         let count =
@@ -869,7 +936,15 @@ mod tests {
 
         let apply_all = |tables: &mut StateTables| {
             for (i, (row, t)) in events.iter().enumerate() {
-                apply_event_to_aggregations("Transaction", row, *t, i as u64, &registry, tables);
+                apply_event_to_aggregations(
+                    "Transaction",
+                    row,
+                    *t,
+                    i as u64,
+                    &registry,
+                    tables,
+                    None,
+                );
             }
         };
 
@@ -916,6 +991,7 @@ mod tests {
                 i as u64,
                 &registry,
                 &mut state_tables,
+                None,
             );
         }
 
@@ -963,11 +1039,11 @@ mod tests {
 
         // Apply with event_id=0.
         let mut tables_0: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
-        apply_event_to_aggregations("Transaction", &row, t, 0, &registry, &mut tables_0);
+        apply_event_to_aggregations("Transaction", &row, t, 0, &registry, &mut tables_0, None);
 
         // Apply with event_id=99.
         let mut tables_99: StateTables = crate::agg_state_table::new_state_tables_for(&registry);
-        apply_event_to_aggregations("Transaction", &row, t, 99, &registry, &mut tables_99);
+        apply_event_to_aggregations("Transaction", &row, t, 99, &registry, &mut tables_99, None);
 
         // State must be identical regardless of event_id.
         let snap_0 =
@@ -1238,6 +1314,7 @@ mod registry_source_tests {
                 i,
                 &registry,
                 &mut state_tables,
+                None,
             );
         }
         let count = super::extracted_build_count_load();
@@ -1388,7 +1465,15 @@ mod registry_source_tests {
                 .with_field("amount", Value::F64(amount))
                 .with_field("status", Value::Str("ok".into()));
 
-            super::apply_event_to_aggregations("Txn", &row, event_time, i, &r_new, &mut state_new);
+            super::apply_event_to_aggregations(
+                "Txn",
+                &row,
+                event_time,
+                i,
+                &r_new,
+                &mut state_new,
+                None,
+            );
             super::legacy_apply_event_to_aggregations(
                 "Txn",
                 &row,

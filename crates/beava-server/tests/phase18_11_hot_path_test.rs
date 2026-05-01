@@ -378,6 +378,7 @@ fn test_snapshot_byte_identical_for_same_inputs() {
                 i as u64,
                 registry,
                 &mut tables,
+                None,
             );
         }
         tables

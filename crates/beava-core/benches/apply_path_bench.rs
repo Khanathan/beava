@@ -472,6 +472,7 @@ fn bench_apply_cold_key(c: &mut Criterion) {
                     black_box(0_u64),
                     black_box(&registry),
                     black_box(&mut state_tables),
+                    black_box(None),
                 );
             },
             BatchSize::SmallInput,
@@ -526,6 +527,7 @@ fn bench_apply_warm_key(c: &mut Criterion) {
             i as u64,
             &registry,
             &mut state_tables,
+            None,
         );
     }
     let row = build_fraud_team_synthetic_row();
@@ -541,6 +543,7 @@ fn bench_apply_warm_key(c: &mut Criterion) {
                 black_box(eid),
                 black_box(&registry),
                 black_box(&mut state_tables),
+                black_box(None),
             );
             ts += 1;
             eid += 1;
@@ -568,6 +571,7 @@ fn bench_apply_warm_key(c: &mut Criterion) {
             i as u64,
             &registry_w,
             &mut state_tables_w,
+            None,
         );
     }
     group.bench_function("14_aggs_windowed", |b| {
@@ -581,6 +585,7 @@ fn bench_apply_warm_key(c: &mut Criterion) {
                 black_box(eid),
                 black_box(&registry_w),
                 black_box(&mut state_tables_w),
+                black_box(None),
             );
             ts += 1;
             eid += 1;

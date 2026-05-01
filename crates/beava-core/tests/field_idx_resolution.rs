@@ -314,7 +314,15 @@ fn test_apply_uses_pre_extraction_not_per_op_row_get() {
     // Reset the counter before the apply call.
     let _ = beava_core::row::_take_get_count();
 
-    apply_event_to_aggregations("Transaction", &row, 0, 0, &registry, &mut state_tables);
+    apply_event_to_aggregations(
+        "Transaction",
+        &row,
+        0,
+        0,
+        &registry,
+        &mut state_tables,
+        None,
+    );
 
     let get_calls = beava_core::row::_take_get_count();
 
@@ -391,7 +399,7 @@ fn test_apply_with_count_only_no_field_extraction() {
         .with_field("user_id", Value::Str("alice".into()))
         .with_field("amount", Value::F64(99.0));
 
-    apply_event_to_aggregations("Login", &row, 0, 0, &registry, &mut state_tables);
+    apply_event_to_aggregations("Login", &row, 0, 0, &registry, &mut state_tables, None);
 
     let table =
         beava_core::agg_state_table::lookup_table_by_name(&state_tables, &registry, "CountOnly")

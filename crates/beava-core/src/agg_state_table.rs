@@ -446,6 +446,27 @@ pub struct AggStateTable {
     /// Populated by `get_or_init_by_shape` on first call; matches the
     /// descriptor's group_keys.
     pub group_keys: Vec<String>,
+    /// Plan 12.8-03 D-01: per-entity last_seen_ms sidecar for cold-TTL
+    /// eviction. Mirrors the 3-shape dispatch (single_u64 / single_str /
+    /// multi). Populated/updated only when the source has
+    /// `EventDescriptor.cold_after_ms = Some(_)` — `None` source skips
+    /// the read entirely (zero cost).
+    ///
+    /// Stored separately from `Vec<AggOp>` to avoid cascading the
+    /// (Vec<AggOp>, u64) shape through query_feature / iter_sorted /
+    /// snapshot code paths. Sidecar costs ~16 bytes/entity (key
+    /// replication + u64 timestamp); acceptable per CONTEXT D-04
+    /// "inline-cheap or amortized".
+    ///
+    /// On eviction (when `now_ms - last_seen_ms > cold_after_ms`), the
+    /// entity's Vec<AggOp> is removed via `evict_entity_by_shape_if_cold`
+    /// AND its last_seen_ms entry is removed. The next event call's
+    /// `get_or_init_by_shape` then allocates a fresh Vec via `init_row`,
+    /// realising FRESH state on resurrect (Redis TTL pattern, locked
+    /// permanent per CONTEXT D-04).
+    pub last_seen_u64: HashMap<u64, u64, FxBuildHasher>,
+    pub last_seen_str: HashMap<CompactString, u64, FxBuildHasher>,
+    pub last_seen_multi: HashMap<EntityKey, u64, FxBuildHasher>,
 }
 
 impl AggStateTable {
@@ -456,6 +477,9 @@ impl AggStateTable {
             single_str: HashMap::with_hasher(FxBuildHasher::default()),
             multi: HashMap::with_hasher(FxBuildHasher::default()),
             group_keys: vec![],
+            last_seen_u64: HashMap::with_hasher(FxBuildHasher::default()),
+            last_seen_str: HashMap::with_hasher(FxBuildHasher::default()),
+            last_seen_multi: HashMap::with_hasher(FxBuildHasher::default()),
         }
     }
 
@@ -581,6 +605,102 @@ impl AggStateTable {
     /// Return the number of distinct entities across all three sub-maps.
     pub fn entity_count(&self) -> usize {
         self.single_u64.len() + self.single_str.len() + self.multi.len()
+    }
+
+    /// Plan 12.8-03 D-01/D-04: cold-TTL eviction check.
+    ///
+    /// Reads the entity's `last_seen_ms` (from the appropriate sidecar map);
+    /// if older than `now_ms - cold_after_ms`, REMOVES the entity from the
+    /// state map (Vec<AggOp> dropped) AND removes the last_seen_ms entry,
+    /// returning `true`. Returns `false` if entity is warm or absent (first
+    /// event for entity).
+    ///
+    /// Caller MUST update `last_seen_ms` via `record_last_seen_by_shape` after
+    /// the apply call (regardless of whether eviction fired). This is what
+    /// keeps the sidecar tracking the most recent event per entity.
+    ///
+    /// Per CONTEXT D-04 (Redis TTL pattern, locked permanent): on resurrect
+    /// the entity is treated as fresh — no partial-state preservation. The
+    /// `get_or_init_by_shape` call after eviction allocates a new
+    /// `Vec<AggOp>` via `init_row`.
+    ///
+    /// `now_ms.saturating_sub(last_seen)` is used so the comparison is robust
+    /// to wall-clock skew (a `last_seen` value greater than `now_ms` would
+    /// underflow without `saturating_sub`).
+    pub fn evict_entity_by_shape_if_cold(
+        &mut self,
+        shape: &EntityKeyShape,
+        now_ms: u64,
+        cold_after_ms: u64,
+    ) -> bool {
+        // Read last_seen_ms for this shape; bail if absent (first event for
+        // this entity — no eviction needed).
+        let last_seen_ms = match shape {
+            EntityKeyShape::SingleU64(k) => self.last_seen_u64.get(k).copied(),
+            EntityKeyShape::SingleStr(_, s) => self.last_seen_str.get(s.as_str()).copied(),
+            EntityKeyShape::Multi(ek) => self.last_seen_multi.get(ek).copied(),
+        };
+        let last_seen = match last_seen_ms {
+            Some(t) => t,
+            None => return false,
+        };
+        // Check cold threshold. saturating_sub handles wall-clock skew.
+        if now_ms.saturating_sub(last_seen) <= cold_after_ms {
+            return false; // warm
+        }
+        // COLD — remove the Vec<AggOp> and last_seen entry. Caller's
+        // get_or_init_by_shape will allocate a fresh Vec for the new event.
+        match shape {
+            EntityKeyShape::SingleU64(k) => {
+                self.single_u64.remove(k);
+                self.last_seen_u64.remove(k);
+            }
+            EntityKeyShape::SingleStr(_, s) => {
+                self.single_str.remove(s.as_str());
+                self.last_seen_str.remove(s.as_str());
+            }
+            EntityKeyShape::Multi(ek) => {
+                self.multi.remove(ek);
+                self.last_seen_multi.remove(ek);
+            }
+        }
+        true
+    }
+
+    /// Plan 12.8-03 D-01: record the wall-clock arrival time for this entity.
+    /// Called from the apply path AFTER `apply_event_to_aggregations` — only
+    /// when source has `cold_after_ms = Some(_)`.
+    ///
+    /// Uses `raw_entry_mut` for the str/multi shapes to avoid an extra clone
+    /// of the key when the entry is already present (the common warm path).
+    pub fn record_last_seen_by_shape(&mut self, shape: &EntityKeyShape, now_ms: u64) {
+        match shape {
+            EntityKeyShape::SingleU64(k) => {
+                self.last_seen_u64.insert(*k, now_ms);
+            }
+            EntityKeyShape::SingleStr(_, s) => {
+                use hashbrown::hash_map::RawEntryMut;
+                match self.last_seen_str.raw_entry_mut().from_key(s.as_str()) {
+                    RawEntryMut::Occupied(mut o) => {
+                        *o.get_mut() = now_ms;
+                    }
+                    RawEntryMut::Vacant(v) => {
+                        v.insert(s.clone(), now_ms);
+                    }
+                }
+            }
+            EntityKeyShape::Multi(ek) => {
+                use hashbrown::hash_map::RawEntryMut;
+                match self.last_seen_multi.raw_entry_mut().from_key(ek) {
+                    RawEntryMut::Occupied(mut o) => {
+                        *o.get_mut() = now_ms;
+                    }
+                    RawEntryMut::Vacant(v) => {
+                        v.insert(ek.clone(), now_ms);
+                    }
+                }
+            }
+        }
     }
 
     /// Plan 18-11 D-8 (updated for 3-map storage): iterate entries in
