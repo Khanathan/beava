@@ -86,6 +86,11 @@ async fn t1_mio_upsert_returns_200_and_ack_lsn() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7-03: /upsert/{table} route deleted; the deleted route falls through
+// to mio's default 404 (`{"error": {"code": "not_found", ...}}`) rather than the
+// temporal_http handler's `{"error": "table_not_found"}`. File slated for
+// deletion in 12.7-06.
+#[ignore = "Phase 12.7-03: /upsert route deleted; file slated for deletion in 12.7-06"]
 #[tokio::test]
 async fn t1_mio_upsert_unknown_table_returns_404() {
     let ts = TestServer::builder()
@@ -139,6 +144,11 @@ async fn t2_mio_delete_returns_200() {
 
 // ─── Task 3: /retract dispatch ───────────────────────────────────────────────
 
+// Phase 12.7-03: /retract route deleted; the deleted route falls through to
+// mio's default 404 (`{"error": {"code": "not_found", "path": "/retract"}}`)
+// rather than the temporal_http handler's `{"error": "event_id_not_found"}`.
+// File slated for deletion in 12.7-06.
+#[ignore = "Phase 12.7-03: /retract route deleted; file slated for deletion in 12.7-06"]
 #[tokio::test]
 async fn t3_mio_retract_unknown_event_id_returns_404() {
     let ts = TestServer::builder()
@@ -156,6 +166,9 @@ async fn t3_mio_retract_unknown_event_id_returns_404() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7-03: /retract route deleted; the deleted route falls through to
+// mio's default 404 (status 404, NOT 501). File slated for deletion in 12.7-06.
+#[ignore = "Phase 12.7-03: /retract route deleted; file slated for deletion in 12.7-06"]
 #[tokio::test]
 async fn t3_mio_retract_stream_event_returns_501() {
     let ts = TestServer::builder()

@@ -206,13 +206,6 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         }
     }
 
-    // Strip query-string from path for routing carriers that don't use it.
-    // For Route::TableGet we pass the query through to the dispatcher.
-    let query_string = match path.split_once('?') {
-        Some((_p, q)) => q.to_owned(),
-        None => String::new(),
-    };
-
     let wire_req = match route {
         Route::Push { event_name } => WireRequest::HttpPush {
             event_name,
@@ -231,13 +224,6 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         },
         Route::Get => WireRequest::HttpGet { body },
         Route::GetSingle { feature, key } => WireRequest::HttpGetSingle { feature, key },
-        Route::Upsert { table } => WireRequest::HttpUpsert { table, body },
-        Route::Delete { table } => WireRequest::HttpDelete { table, body },
-        Route::Retract => WireRequest::HttpRetract { body },
-        Route::TableGet { table } => WireRequest::HttpTableGet {
-            table,
-            query: query_string,
-        },
         Route::Register => WireRequest::Register { payload: body },
         // Plan 12-07: /health on the data-plane HTTP port — inline shim, no
         // apply-thread roundtrip. read_bench.py polls /health at startup.

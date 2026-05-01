@@ -169,6 +169,11 @@ async fn temporal_table_upsert_retract_returns_prior_value() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7-03: /retract route deleted; the deleted route falls through to
+// mio's default 404 (`{"error": {"code": "not_found", "path": "/retract"}}`)
+// per CONTEXT D-02. Old assertion (`body["error"] == "event_id_not_found"`)
+// no longer holds. File slated for deletion in 12.7-06.
+#[ignore = "Phase 12.7-03: /retract route deleted; file slated for deletion in 12.7-06"]
 #[tokio::test]
 async fn retract_unknown_event_id_returns_404() {
     let ts = TestServer::builder()
@@ -216,6 +221,11 @@ async fn retract_on_non_temporal_table_returns_400() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7-03: /retract route deleted; the deleted route falls through to
+// mio's default 404 (instead of the temporal_http 501 stream-retraction shape).
+// Old assertion (`status == 501; body["error"] == "stream_retraction_unimplemented"`)
+// no longer holds. File slated for deletion in 12.7-06.
+#[ignore = "Phase 12.7-03: /retract route deleted; file slated for deletion in 12.7-06"]
 #[tokio::test]
 async fn retract_on_stream_event_returns_501() {
     // SC #4: stream retraction explicitly rejected with the documented shape.

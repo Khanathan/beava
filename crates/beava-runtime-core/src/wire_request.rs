@@ -65,16 +65,6 @@ pub enum WireRequest {
     /// `body` payload encodes `{keys: [...], features: [...]}` (mirrors HTTP /get);
     /// same content_type rules.
     TcpGetMulti { body: Bytes, body_format: u8 },
-    /// HTTP POST /upsert/:table — table upsert.
-    HttpUpsert { table: String, body: Bytes },
-    /// HTTP POST /delete/:table — table tombstone.
-    HttpDelete { table: String, body: Bytes },
-    /// HTTP POST /retract — retraction.
-    HttpRetract { body: Bytes },
-    /// HTTP GET /table/:table?key=...&as_of=... — point lookup (Plan 12.6-14).
-    /// `query` is the raw query-string (without leading `?`) so the dispatch
-    /// layer can parse `key=` / `as_of=` exactly as the legacy axum handler.
-    HttpTableGet { table: String, query: String },
     /// Plan 12.6-14: POST request whose Content-Type was not
     /// `application/json` (or absent). Encoded as 415 with the structured
     /// `unsupported_media_type` body shape used by legacy axum's register

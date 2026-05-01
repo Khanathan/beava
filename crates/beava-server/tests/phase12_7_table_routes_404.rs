@@ -178,10 +178,7 @@ async fn surviving_routes_still_work() {
             }
         ]
     });
-    let resp = ts
-        .post_json("/register", &payload)
-        .await
-        .expect("register");
+    let resp = ts.post_json("/register", &payload).await.expect("register");
     assert!(
         (200..300).contains(&resp.status().as_u16()),
         "POST /register with valid event payload must return 2xx (got {})",

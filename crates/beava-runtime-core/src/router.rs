@@ -16,15 +16,6 @@ pub enum Route {
     Get,
     /// GET /get/:feature/:key — single feature read.
     GetSingle { feature: String, key: String },
-    /// POST /upsert/:table — table upsert.
-    Upsert { table: String },
-    /// POST /delete/:table — table tombstone.
-    Delete { table: String },
-    /// POST /retract — retraction.
-    Retract,
-    /// GET /table/:table — point lookup (Plan 12.6-14). Query string
-    /// `?key=<v>[&as_of=<lsn>]` carried in the parsed `WireRequest::HttpTableGet`.
-    TableGet { table: String },
     /// POST /register — pipeline registration.
     Register,
     /// GET /health — liveness probe (Plan 12-07). Always 200 once listener
@@ -114,44 +105,6 @@ impl Router {
         if path == "/get" {
             return if method == "POST" {
                 Route::Get
-            } else {
-                Route::MethodNotAllowed
-            };
-        }
-        // /upsert/:table
-        if let Some(rest) = path.strip_prefix("/upsert/") {
-            return if method == "POST" {
-                Route::Upsert {
-                    table: rest.to_owned(),
-                }
-            } else {
-                Route::MethodNotAllowed
-            };
-        }
-        // /delete/:table
-        if let Some(rest) = path.strip_prefix("/delete/") {
-            return if method == "POST" {
-                Route::Delete {
-                    table: rest.to_owned(),
-                }
-            } else {
-                Route::MethodNotAllowed
-            };
-        }
-        // /retract
-        if path == "/retract" {
-            return if method == "POST" {
-                Route::Retract
-            } else {
-                Route::MethodNotAllowed
-            };
-        }
-        // /table/:table — point lookup (Plan 12.6-14)
-        if let Some(rest) = path.strip_prefix("/table/") {
-            return if method == "GET" {
-                Route::TableGet {
-                    table: rest.to_owned(),
-                }
             } else {
                 Route::MethodNotAllowed
             };
