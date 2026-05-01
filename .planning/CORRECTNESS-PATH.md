@@ -1,51 +1,50 @@
 ---
 context: v0-ship-correctness-path
 created: 2026-04-29
-revised: 2026-04-30 — no-event-time architectural pivot
+revised: 2026-04-30 — Phase 12.6 CLOSED (PASS-WITH-WARN); v0 critical path advances to Phase 13
 status: post-pivot
 ---
 
-# Correctness path to v0 OSS ship — REVISED 2026-04-30
+# Correctness path to v0 OSS ship — REVISED 2026-04-30 (Phase 12.6 closure)
 
-**MAJOR PIVOT 2026-04-30:** Architectural simplification — no event-time / no watermarks / no joins / no PIT, ever. Phases 14, 14.1, 15 archived. NEW Phase 12.6 inserted as the new v0 surface-reduction blocker. The original "Phase 14 streaming bug" P0 item is **DELETED** — the bug class disappears with event-time itself.
+**MAJOR PIVOT 2026-04-30:** Architectural simplification — no event-time / no watermarks / no joins / no PIT, ever. Phases 14, 14.1, 15 archived. **Phase 12.6 (NEW v0 surface-reduction blocker) CLOSED 2026-04-30 (PASS-WITH-WARN).** The original "Phase 14 streaming bug" P0 item is **DELETED** — the bug class disappears with event-time itself.
 
 See `project_redis_shaped_no_event_time_ever` (memory) for the full architectural commitment.
 
-## Priority tier (post-pivot)
+## Priority tier (post-12.6-closure)
 
-### 🔴 P0 — v0 ship blockers
+### 🟢 CLOSED — completed v0 ship-blockers
 
-#### 1. Phase 12.6 — v0 surface reduction (NEW; the new biggest blocker)
-- **Severity:** CRITICAL — v0 ship surface must match the locked architectural commitment before launch
-- **Status:** 📋 PLANNED (inserted 2026-04-30); no CONTEXT or plans yet — needs `/gsd-discuss-phase 12.6` first
-- **Scope:** Legacy axum kill (~3500 LOC + ~10 smoke test migrations) + event-time strip (wire schema bump) + windowed-op time-source swap (Path X) + join/union removal + dead-code/redundancy sweep + mio-only hot-path enforcement + REQUIREMENTS.md + docs sweep
-- **Why now:** Locked architectural commitment — v0 must ship exactly the surface defined by the no-event-time pivot
-- **Next action:** `/gsd-discuss-phase 12.6` to gather scope-specific decisions (TestServerV18 design, dead-code threshold, smoke-test fate)
-- **Estimated:** 12-15 plans across 3-4 weeks
+#### Phase 12.6 — v0 surface reduction — ✅ CLOSED 2026-04-30 (PASS-WITH-WARN)
+- **Severity:** was CRITICAL — was v0 ship surface mismatch with the locked architectural commitment
+- **Status:** ✅ CLOSED 2026-04-30 (PASS-WITH-WARN) — 15 plans landed (Plans 01-15 inclusive of Wave-1.5 gap closure 14+15); workspace 1067/0/3; HEAD `1e318b1`
+- **What landed:** Legacy axum kill (~7475 LOC; plan estimated ~3500 — orphan tcp.rs + in-source test mods cascaded out) + event-time hard rip (push wire + register wire + EventDescriptor + DevAggState + WAL/snapshot v1→v2 + Python decorator) + Path X windowed-op time-source swap (event_time_ms → server now_ms()) + joins/unions removal (OpNode::Join/Union/JoinType deleted; structured-error rejection arms `feature_removed_no_*_v0`) + dead-code/redundancy sweep + mio-only hot-path enforcement (`phase12_6_mio_only_dataplane.rs` architectural test + CLAUDE.md `§Conventions § mio-only Hot-Path Invariant`) + REQUIREMENTS.md surgical sweep + Phase 12.5 / 13.3 archival banner sweep + microbench + throughput rebaseline
+- **Verdict basis:** all 7 ROADMAP success criteria PASS or PASS-WITH-WARN; all 5 CONTEXT decisions D-01..D-05 honored verbatim; PASS-WITH-WARN on the deadcode buckets (planning-target overshoots categorized as strict-deny test fixtures + post-pivot doc-comments + out-of-plan-scope `tally/` legacy package; clippy-warning floor is 0 warnings)
+- **Artifacts:** `.planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md` (phase narrative) + `.planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md` (mechanical pass/fail)
+
+### 🔴 P0 — v0 ship blockers (post-Phase-12.6 closure)
+
+#### 1. Phase 13 — Observability + performance + docs + packaging + ship-readiness (NEXT on v0 critical path)
+- **Severity:** CRITICAL — final v0 ship gate
+- **Status:** 🟡 PARTIAL (Plan 13-01 `/metrics` Prometheus + middleware + Plan 13-03 `env_var_overrides` hermetic fix shipped on `phase-13-ship` @ `2ef5afc`; remaining plans on `phase-13-followup` worktree + new Hetzner Linux baseline + multi-instance shard-scaling validation TBD)
+- **Scope:** `/metrics` exposes per-operator/per-endpoint/WAL/snapshot/registry-version metrics; perf benchmark harness ≥3M EPS on THREE pipeline shapes (simple fraud / complex fraud / recommendation); P99 batch-get <10ms each; docs live (quickstart → operators → concepts → http-api → architecture); `playground.beava.dev` interactive tutorial; `pip install beava` works; Docker Hub image; GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); `bv.fork(...)` local scoped replica; CI green; ship-ready tag
+- **Why now:** All v0 architectural prerequisites complete (Phase 12.6 closure) — Phase 13 is the final ship-gate sweep
+- **Next action:** `/gsd-discuss-phase 13` to capture remaining context decisions (Hetzner hw-class choice, multi-instance shard scaling target, docs scope minimum-viable cut)
+- **Estimated:** 8+ plans across 2-3 weeks — Plan 13-02/04 already partially scoped on `phase-13-followup` + new Phase 13 plans for Hetzner + shard-scaling + docs/packaging
 
 #### 2. ~~Phase 14 — Streaming silent-data-loss bug~~ — REMOVED 2026-04-30
 - **Why removed:** No event-time → no event-time-bucketed `agg_windowed` → no bucket-epoch mismatch class of bug. The bug disappears as a side-effect of the architectural pivot. Phase 12.6 Path X (windowed ops use server-side `now_ms()`) makes the agg_windowed bucket arithmetic operate on monotonically-increasing arrival time, eliminating the late-event class entirely.
 
-#### 3. `phase11_smoke::all_eleven_ops_round_trip_through_http` regression
-- **Severity:** HIGH — was flaky pre-existing; now deterministic-fail (3/3 reruns this session)
-- **Failure point:** `crates/beava-server/tests/phase11_smoke.rs:235` — `v["a"].as_f64().expect("a share")`
-- **Hypothesis:** type_mix Map response missing key "a"; previously HashMap iteration nondeterminism, possibly made deterministic by a recent change
-- **Documented as pre-existing in:** 12-07 SUMMARY + 12-08 SUMMARY
-- **Why now:** Documented "pre-existing" but currently *deterministic* — needs root cause; could be a real Phase 11 op regression
-- **Next action:** `/gsd-debug` to investigate
-- **Estimated:** 1-2 hours
+#### 3. ~~`phase11_smoke::all_eleven_ops_round_trip_through_http` regression~~ — RESOLVED in Phase 12.6 Plan 01 / Plan 07
+- **Resolution:** Plan 12.6-01 (D-02) rewrote line 235 from `v["a"].as_f64().expect("a share")` to `assert_type_mix_set_membership(v)` enforcing set-membership invariants on the type_mix Map response (5/5 stable reruns). Plan 12.6-07 subsequently DELETED `phase11_smoke.rs` because its async-router-based mechanism didn't survive the legacy axum kill; the set-membership invariant is now exercised end-to-end via the mio data-plane HTTP path during the rest of the workspace test suite (every TestServer-using test that pushes events to phase11_smoke fixtures runs the same invariant).
+- **Status:** ✅ RESOLVED — workspace at 1067/0/3 with the invariant preserved across the file lifecycle.
 
 ### 🟡 P1 — Functional completeness (v0-blocking)
 
-#### 4. Plan 12-10 — push-and-get on mio HTTP+TCP
-- **Status:** 📋 SCOPED, plan written (`12-10-PLAN.md` in phase 12 dir, 2158 lines, 23 tasks, 11 waves)
-- **Unblocked by:** Plan 12-09's `GlueResponse::QueryResult { body, format }` shape ✓
-- **Why now:** Atomic apply+query for fraud-decisioning; collapses 2 RTs to 1 (~500µs → ~250µs P50 latency target). Lands BEFORE Phase 12.6 surface reduction so 12.6 doesn't have to migrate a half-finished mio push-and-get path.
-- **Triage notes** (carried in HANDOFF):
-  - Python `OP_PUSH=0x0002` vs Rust `OP_PUSH=0x0010` inconsistency — document in 12-10 SUMMARY as v0.1 followup; do NOT fix in 12-10
-  - Wave 6 may collapse into Wave 4.b — executor decides per RED/GREEN status of 6.a
-- **Next action:** `/gsd-execute-phase 12` (will pick up 12-10 next)
-- **Estimated:** 3-4 hours executor time (similar to 12-08/12-09)
+#### 4. ~~Plan 12-10 — push-and-get on mio HTTP+TCP~~ — DEFERRED entirely from v0 per Phase 12.6 D-04
+- **Status:** 📋 DEFERRED — Plan 12-10 PLAN.md remains at `.planning/phases/12-server-side-async-push-coalescing/12-10-PLAN.md` for v0.0.x or v0.1+ revival. Phase 12.5 dir banner-stamped SUPERSEDED-AND-DEFERRED 2026-04-30 (Plan 12.6-09). Legacy `crates/beava-server/src/push_and_get.rs` (293 LOC) DELETED by Plan 12.6-07.
+- **Why deferred:** Per Phase 12.6 CONTEXT D-04, v0 ships without push-and-get — users do 2 RTs (push then get). Future v0.0.x or v0.1+ revival requires explicit user decision.
+- **Resolution:** v0 ship surface tightens; Phase 13 picks up the next ship-readiness items.
 
 #### 5. Phase 12-01..12-06 follow-up — DESCOPED post-pivot
 - **Scope (post-pivot):** `push_sync`, `push_many`, `push_table`, `delete_table`, `set`, `mset`, `mget`, `get_multi`. Joins (event↔event / event↔table / table↔table) + `bv.union` + `as_of=` REMOVED 2026-04-30 per `project_redis_shaped_no_event_time_ever`.
@@ -114,17 +113,19 @@ See `project_redis_shaped_no_event_time_ever` (memory) for the full architectura
 - **Why post-v0:** Not ship-blocker — users compose count/sum with processing-time windowed ops for v0 demos. Session windows are the v0.1 highlight feature.
 - **Next action:** `/gsd-discuss-phase 25` after Phase 12.6 lands
 
-## Recommended ordering for next session(s) — REVISED 2026-04-30
+## Recommended ordering for next session(s) — REVISED 2026-04-30 (post Phase 12.6 closure)
 
-1. **Session 1 — phase11_smoke debug:** `/gsd-debug` to root-cause `tests/phase11_smoke.rs:235` deterministic failure. 1-2 hours. Standalone fix; not blocked by anything.
-2. **Session 2 — Plan 12-10 execute:** `/gsd-execute-phase 12` picks up push-and-get. ~3-4 hours.
-3. **Session 3+ — Phase 12.6 discuss → plan → execute:** The big v0 surface reduction (legacy axum kill + event-time strip + dead-code sweep + windowed-op time-source swap + join/union removal + REQUIREMENTS sweep). 12-15 plans, 3-4 weeks.
-4. **Session N — Phase 13 ship work:** Hetzner+shard sweep + docs/packaging incrementally toward OSS launch.
+1. ~~**Session 1 — phase11_smoke debug**~~ — RESOLVED in Phase 12.6 Plan 01 (D-02 set-membership rewrite + Plan 07 file deletion with invariant preservation).
+2. ~~**Session 2 — Plan 12-10 execute**~~ — DEFERRED entirely from v0 per Phase 12.6 D-04.
+3. ~~**Session 3+ — Phase 12.6 discuss → plan → execute**~~ — ✅ CLOSED 2026-04-30 (PASS-WITH-WARN). 15 plans landed across 8 waves.
+4. **Session 4 (NEXT) — Phase 13 discuss → plan → execute:** `/gsd-discuss-phase 13` to capture remaining ship-readiness context (Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`; PyPI / Docker / GitHub Releases packaging; quickstart docs; concept docs / operator docs / HTTP API docs sweep with no-event-time pivot — D-05 deferred work). Then plan + execute. 8+ plans across 2-3 weeks.
 5. **Post-v0 — Phase 25 session windows + Phase 14/14.1/15 reconsideration if/when needed (ADR required to revive event-time).**
 
 ## Out-of-scope (do not pursue without explicit user direction)
 
 - **Event-time / watermarks / late-event correction / PIT temporal store / joins of any kind / `bv.union`** — LOCKED OUT permanently per `project_redis_shaped_no_event_time_ever` (2026-04-30). Reviving any of these requires explicit user override + new ADR.
+- **Second data-plane runtime / third caller of `apply_event_to_aggregations` / `axum::*` symbols outside `http_admin.rs`** — LOCKED OUT permanently per Phase 12.6 mio-only Hot-Path Invariant (CLAUDE.md `§Conventions § mio-only Hot-Path Invariant (locked Phase 12.6)`). Enforced by `phase12_6_mio_only_dataplane.rs` architectural test on every PR.
+- **`event_time_ms` / `event_time_field` / `tolerate_delay_ms` / `bv.join` / `bv.union` / `OpNode::Join` / `OpNode::Union`** — LOCKED OUT permanently per Phase 12.6 D-03 hard rip. Wire schema rejects with structured 400 codes; Python decorator raises TypeError; OpNode variants deleted.
 - Multi-thread apply / sharding within a process (LOCKED OUT per `project_no_sharded_apply`)
 - TLS support (deferred to v0.1+ per Phase 12-09 D-E)
 - Tokio dual-runtime / dual hot-path entry (LOCKED OUT per `project_phase18_no_dual_runtime` + `project_redis_shaped_no_event_time_ever`)
@@ -133,4 +134,4 @@ See `project_redis_shaped_no_event_time_ever` (memory) for the full architectura
 
 ---
 
-*Drafted by Claude Opus 4.7 on 2026-04-29. Revised 2026-04-30 for no-event-time architectural pivot.*
+*Drafted by Claude Opus 4.7 on 2026-04-29. Revised 2026-04-30 for no-event-time architectural pivot. Re-revised 2026-04-30 for Phase 12.6 closure (Plan 12.6-13).*
