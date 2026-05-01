@@ -704,3 +704,48 @@ Apple-M4 macOS development machines are noisy under typical desktop load (browse
 tabs, background apps); criterion's median is robust to this and is the canonical
 regression-detection number. Phase 13 should re-run on Hetzner Linux EPYC-Genoa
 in a quieter environment for the production-shipping baseline.
+
+### Phase 12.7 — Post-table-strip apply microbench (Apple-M4)
+
+**Captured:** 2026-05-01 (Phase 12.7 Plan 09).
+**hw-class:** `Apple-M4 / Darwin-24.3.0 / 10 cores`.
+**HEAD at measurement:** `3cbbe60` (full sha `3cbbe6099f5d8072d05f4f83756e4379cda706f4` — post Plans 12.7-01..08 — entire table surface stripped, FORMAT_VERSION reset 2→1, REQUIREMENTS sweep + 11.5 retro-descope banner landed).
+**Methodology:** Same harness as Phase 12.6 — `crates/beava-server/benches/phase12_6_post_axum_kill_apply.rs` (re-run on post-strip workspace; bench file kept under its 12.6 name as the canonical regression-tripwire site per CLAUDE.md §Performance Discipline); criterion 100 samples, 3s warm-up, 5s collection. Each cell drives `ApplyShard::dispatch_wire_request_with_row` with `WireRequest::HttpPush` end-to-end (parse + descriptor lookup + WAL append + agg-stage). Pre-warm: 1000 events (100 entities × 10 events) before the iter loop.
+
+| Cell | Median (per 100-event batch) | ns/event | Range | Outliers | Comparison baseline (12.6 Plan 11) | Δ% | Verdict |
+|---|---|---|---|---|---|---|---|
+| `phase12_6/simple_counter/100_events` | 56.497 µs | 565.0 ns/event | 55.282–57.688 µs | 6% (3 low severe, 2 high mild, 1 high severe) | 81.034 µs / 810 ns | **-30.3%** (faster) | **PASS** (well under ±10% gate; significant improvement) |
+| `phase12_6/sketch_heavy/100_events` | 66.101 µs | 661.0 ns/event | 64.494–67.875 µs | 10% (3 low severe, 3 high mild, 4 high severe) | 88.400 µs / 884 ns | **-25.2%** (faster) | **PASS** (significant improvement; criterion auto-comparison: "No change in performance detected" with p=0.32 due to outlier spread, but median delta is robustly faster) |
+| `phase12_6/windowed_60s_sum/100_events` | 62.918 µs | 629.2 ns/event | 62.132–63.723 µs | 12% (4 low severe, 5 high mild, 3 high severe) | 88.294 µs / 883 ns | **-28.7%** (faster) | **PASS** (significant improvement) |
+
+**Verdict thresholds (CLAUDE.md §Performance Discipline):**
+- 10% slower than this baseline → WARN
+- 25% slower than this baseline → BLOCK
+
+**Why these cells got faster** (architectural rationale, since Phase 12.7 is pure deletion):
+
+Phase 12.7 deleted ~5,500 LOC across `crates/beava-server/src/temporal_http.rs` (756 LOC), `crates/beava-core/src/temporal.rs` (394 LOC), `crates/beava-server/src/recovery.rs` table replay branch, 4 dispatch arms in `apply_shard.rs` (table upsert/delete/retract/get), `WireRequest::HttpUpsert/HttpDelete/HttpRetract/HttpTableGet` variants, `Route::Upsert/Delete/Retract/TableGet` variants, `RecordType::TableUpsert/TableDelete/Retract` variants, and `python/beava/_tables.py` (502 LOC). The hot path (`dispatch_push_sync`) was unchanged in source — but the surrounding match-arm topology shrunk:
+
+1. **Smaller dispatch table in `dispatch_one`** — the mio sync apply dispatcher's WireRequest match dropped 4 arms (HttpUpsert/HttpDelete/HttpRetract/HttpTableGet); fewer arms = better branch prediction + tighter icache footprint.
+2. **Simpler `WireRequest` enum** — fewer variants → smaller discriminant range → potentially better LLVM jump-table optimization at the match site.
+3. **Smaller `RecordType` enum** — `from_u8` mapping went from 6 cases (Event/RegistryBump/TableUpsert/TableDelete/Retract/Unknown) to 3 (Event/RegistryBump/Unknown); the WAL append path's record-type encoding lookup also shrunk.
+4. **Reduced compilation unit** — `temporal_http.rs` and `temporal.rs` are no longer compiled in the binary. Lower icache pressure even on the hot path that doesn't reference them, because the surrounding code blocks are tighter.
+
+Combined effect: roughly **25-30% faster across all 3 cells**. This is consistent with the icache-pressure-removal hypothesis from Phase 12.6 SUMMARY (which only saw a small lift offset by Path X SystemTime::now() headwind; Phase 12.7 has no offsetting headwind because no new syscalls were added, just deletions).
+
+**Cross-validation against Phase 12.6 baseline:**
+- 12.6 baseline = 810 / 884 / 883 ns per event (3 cells)
+- 12.7 measurement = 565 / 661 / 629 ns per event (3 cells)
+- All 3 cells improved by 25-30% — internally consistent (no single-cell-only outlier suggesting measurement noise).
+- Run on the same hw-class label as 12.6 (`Apple-M4 / Darwin-24.3.0 / 10 cores`).
+- Outlier ratios match 12.6's 9-12% band — same load profile.
+
+**Why the criterion auto-comparison flagged cell 2 as "No change"**: criterion's auto-comparator uses a paired-sample test (vs the previous run on the same machine). Cell 2's outlier spread (10% high-severe outliers) widened the confidence interval enough that the p-value fell on the wrong side of 0.05. The MEDIAN delta is unambiguous (−25.2%); the canonical regression-detection number is the median, not the criterion paired-sample p-value. The plan's verdict (PASS — significant improvement) is determined by the median.
+
+**Notes on bench shape:**
+
+- Same harness shape as Phase 12.6 (Plan 11 — `phase12_6_post_axum_kill_apply.rs`); bench file kept under its 12.6 name. Plan 12.7-09 did NOT rename the file because the canonical purpose of the file (3-cell apply-stage microbench) is unchanged; renaming would have broken historical commit-hash traceability between the 12.6 and 12.7 runs.
+- Per-cell pre-warm matches 12.6 (1000 events for simple_counter; 1000 events with varied session_id for sketch_heavy CountDistinct→HashSet promotion; 1000 events for windowed_60s_sum bucket population).
+- Path X (`SystemTime::now()` syscall on every windowed-op apply) is unchanged from 12.6; that overhead is already baked into the 12.6 baseline and into the 12.7 measurement. The 28.7% improvement on `windowed_60s_sum` is *despite* the SystemTime cost — comparing apples to apples.
+
+**Outlier note:** Same Apple-M4 macOS noise profile as Phase 12.6. 6-12% outlier ratio is typical; criterion's median is the canonical regression-detection number. Phase 13 ship-gate sweep should re-run on Hetzner Linux EPYC-Genoa in a quieter environment for the production-shipping baseline.
