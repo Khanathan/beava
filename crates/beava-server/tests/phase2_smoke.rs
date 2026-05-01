@@ -85,6 +85,15 @@ async fn success_criterion_2_identical_repost_is_noop() {
 
 // ─── Success criterion 3 ──────────────────────────────────────────────────────
 
+// Phase 12.7 Plan 01: this test registers a `kind: "table"` payload (Merchant)
+// to verify additive registry bump from v1 → v2. The new
+// `pre_check_unsupported_node_kind` shim now rejects table-kind register
+// payloads at the JSON layer per `project_v0_events_only_scope` (locked
+// 2026-04-30). v0 ships events-only; tables/joins/aggregation return in v0.1+.
+// The additive-bump invariant itself is exercised by other Phase 2 tests using
+// only event nodes, so this specific multi-node table-included path is no
+// longer reachable. Ignored until later 12.7 waves rewrite or delete it.
+#[ignore = "Phase 12.7-01: registers kind=table; superseded by events-only v0 scope"]
 #[tokio::test]
 async fn success_criterion_3_additive_bumps_version() {
     let ts = TestServer::spawn().await.expect("spawn");

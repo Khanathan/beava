@@ -48,6 +48,9 @@ fn non_temporal_table_node(name: &str) -> serde_json::Value {
 
 // ─── Task 1: /upsert dispatch ────────────────────────────────────────────────
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim per
+// `project_v0_events_only_scope`. File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn t1_mio_upsert_returns_200_and_ack_lsn() {
     let ts = TestServer::builder()
@@ -102,6 +105,9 @@ async fn t1_mio_upsert_unknown_table_returns_404() {
 
 // ─── Task 2: /delete dispatch ────────────────────────────────────────────────
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn t2_mio_delete_returns_200() {
     let ts = TestServer::builder()
@@ -184,6 +190,9 @@ async fn t3_mio_retract_stream_event_returns_501() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn t3_mio_retract_non_temporal_table_returns_400() {
     let ts = TestServer::builder()
@@ -212,6 +221,9 @@ async fn t3_mio_retract_non_temporal_table_returns_400() {
 
 // ─── Task 3b: /table/{name} GET dispatch (gap-closure ride-along) ─────────────
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn t3b_mio_table_get_after_upsert_returns_200_with_row() {
     let ts = TestServer::builder()
@@ -235,6 +247,9 @@ async fn t3b_mio_table_get_after_upsert_returns_200_with_row() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn t3b_mio_table_get_as_of_on_non_temporal_returns_400() {
     let ts = TestServer::builder()

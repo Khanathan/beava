@@ -38,6 +38,12 @@ fn non_temporal_table_node(name: &str) -> serde_json::Value {
     })
 }
 
+// Phase 12.7 Plan 01: this test registers a `kind: "table"` payload, which is
+// now rejected at register-time by `pre_check_unsupported_node_kind` per
+// `project_v0_events_only_scope` (locked 2026-04-30). The full file is slated
+// for deletion in Phase 12.7's later waves (CONTEXT.md §"Test sweep — DELETE").
+// Ignored until then so the workspace stays green.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn registry_reports_temporal_flag() {
     // SC #2: GET /registry surfaces temporal: true|false per table.
@@ -76,6 +82,9 @@ async fn registry_reports_temporal_flag() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn temporal_table_upsert_retract_returns_prior_value() {
     // SC #5: register temporal table, upsert at t=0, upsert at t=1, retract t=1,
@@ -177,6 +186,9 @@ async fn retract_unknown_event_id_returns_404() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn retract_on_non_temporal_table_returns_400() {
     let ts = TestServer::builder()
@@ -244,6 +256,9 @@ async fn retract_on_stream_event_returns_501() {
     ts.shutdown().await.expect("shutdown");
 }
 
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn as_of_on_non_temporal_table_returns_400() {
     // SC #2: as_of against a non-temporal table is a 400 with a clear error code.

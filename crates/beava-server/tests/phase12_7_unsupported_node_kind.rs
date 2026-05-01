@@ -118,7 +118,8 @@ async fn error_reason_uses_v0_framing_not_feature_removed() {
     assert_eq!(body["error"]["code"], "unsupported_node_kind");
     let actual_code = body["error"]["code"].as_str().unwrap_or_default();
     assert_ne!(
-        actual_code, forbidden_code.as_str(),
+        actual_code,
+        forbidden_code.as_str(),
         "code MUST NOT be '{forbidden_code}' (D-02 forbids retrospective framing)"
     );
 

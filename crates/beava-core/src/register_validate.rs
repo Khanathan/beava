@@ -281,6 +281,66 @@ pub fn pre_check_legacy_event_time_keys(body: &serde_json::Value) -> Option<Feat
     None
 }
 
+// ─── Unsupported-node-kind JSON-prelude shim (Phase 12.7 Plan 01) ─────────────
+
+/// Walks the request JSON looking for nodes whose `"kind"` field names a
+/// node type not supported in v0 (anything other than `"event"` or
+/// `"derivation"` — most notably `"table"`). Returns `Some(_)` on the first
+/// hit; `None` if the payload is clean.
+///
+/// PayloadNode discriminator is `kind` per `crates/beava-core/src/registry_diff.rs`
+/// (`#[serde(tag = "kind", rename_all = "snake_case")]`). Strict serde would
+/// surface "unknown variant `table`" once `OpNode::Table` / `PayloadNode::Table`
+/// are removed in Phase 12.7 Wave 2; this shim catches it FIRST so the wire
+/// error is the structured `unsupported_node_kind` code.
+///
+/// Per CONTEXT.md D-02 framing ("not supported in v0", NOT "feature removed"):
+/// the code is `unsupported_node_kind` (forward-looking) not a retrospective
+/// "feature removed" code. v0 is the FIRST public release; users never knew
+/// tables existed in v0, so a retrospective frame would confuse fresh users.
+///
+/// Architectural commitment per `project_v0_events_only_scope` (locked
+/// 2026-04-30): v0 ships events-only — tables, table-aggregation, and session
+/// windows return in v0.1+ if/when justified by demand. Reviving any of these
+/// requires explicit user override + a new ADR overturning
+/// `project_v0_events_only_scope`.
+pub fn pre_check_unsupported_node_kind(body: &serde_json::Value) -> Option<FeatureRemovedError> {
+    let nodes = body.get("nodes")?.as_array()?;
+    for (node_idx, node) in nodes.iter().enumerate() {
+        let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        // Whitelist (post-12.7): only "event" and "derivation" remain.
+        // Empty kind is ignored here — strict serde catches it later with
+        // "missing field `kind`".
+        if kind == "event" || kind == "derivation" || kind.is_empty() {
+            continue;
+        }
+        let node_name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let path_prefix = if node_name.is_empty() {
+            format!("nodes[{node_idx}].kind")
+        } else {
+            format!("nodes[{node_idx}].{node_name}.kind")
+        };
+        return Some(FeatureRemovedError {
+            code: "unsupported_node_kind",
+            // op_label carries the rejected kind string verbatim (e.g. "table").
+            // Box::leak: per-rejection one-time leak; the kind string is bounded
+            // by JSON parser's max-string-length (existing axum/mio limit).
+            // Identical pattern to 12.6 Plan 04's pre_check_removed_ops on
+            // attacker-controlled op strings.
+            op_label: Box::leak(kind.to_string().into_boxed_str()),
+            path: path_prefix,
+            reason: format!(
+                "Node kind `{kind}` is not supported in v0. Beava v0 ships \
+                 events-only (supported kinds: \"event\", \"derivation\"). \
+                 Tables, table-aggregation, and session windows return in v0.1+ \
+                 if/when justified by demand. See \
+                 .planning/phases/12.7-table-strip/ for context."
+            ),
+        });
+    }
+    None
+}
+
 /// Newtype wrapper: a `Vec<PayloadNode>` that has passed all validation rules.
 /// `compute_diff` (Plan 03) accepts `&[PayloadNode]` via `as_slice()`.
 /// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.
@@ -2117,5 +2177,68 @@ mod tests_structural {
             ErrorCode::DerivationUpstreamUnknown,
             "upstreams[2]",
         );
+    }
+}
+
+// ─── Phase 12.7 Plan 01 — pre_check_unsupported_node_kind unit tests ──────────
+
+#[cfg(test)]
+mod tests_pre_check_unsupported_node_kind {
+    use super::*;
+
+    #[test]
+    fn pre_check_unsupported_node_kind_rejects_table_node() {
+        let body = serde_json::json!({"nodes": [{"kind": "table", "name": "Users"}]});
+        let err = pre_check_unsupported_node_kind(&body).expect("table kind should be rejected");
+        assert_eq!(err.code, "unsupported_node_kind");
+        assert_eq!(err.op_label, "table");
+        assert_eq!(err.path, "nodes[0].Users.kind");
+        assert!(err.reason.contains("not supported in v0"));
+        assert!(err.reason.contains("events-only"));
+    }
+
+    #[test]
+    fn pre_check_unsupported_node_kind_passes_event_and_derivation() {
+        let body = serde_json::json!({"nodes": [
+            {"kind": "event", "name": "Tx"},
+            {"kind": "derivation", "name": "Filtered"}
+        ]});
+        assert!(pre_check_unsupported_node_kind(&body).is_none());
+    }
+
+    #[test]
+    fn pre_check_unsupported_node_kind_returns_first_offender() {
+        let body = serde_json::json!({"nodes": [
+            {"kind": "event", "name": "Tx"},
+            {"kind": "table", "name": "Users"},
+            {"kind": "derivation", "name": "Filtered"}
+        ]});
+        let err = pre_check_unsupported_node_kind(&body).unwrap();
+        assert_eq!(err.path, "nodes[1].Users.kind");
+    }
+
+    #[test]
+    fn pre_check_unsupported_node_kind_handles_unnamed_node() {
+        // No `name` field on the node — path falls back to the index-only form.
+        let body = serde_json::json!({"nodes": [{"kind": "table"}]});
+        let err = pre_check_unsupported_node_kind(&body).unwrap();
+        assert_eq!(err.code, "unsupported_node_kind");
+        assert_eq!(err.path, "nodes[0].kind");
+    }
+
+    #[test]
+    fn pre_check_unsupported_node_kind_skips_empty_kind() {
+        // Empty kind is left for strict serde to surface as "missing field `kind`".
+        // The shim must not emit a structured error here.
+        let body = serde_json::json!({"nodes": [{"name": "X"}]});
+        assert!(pre_check_unsupported_node_kind(&body).is_none());
+    }
+
+    #[test]
+    fn pre_check_unsupported_node_kind_returns_none_on_empty_payload() {
+        let body = serde_json::json!({});
+        assert!(pre_check_unsupported_node_kind(&body).is_none());
+        let body = serde_json::json!({"nodes": []});
+        assert!(pre_check_unsupported_node_kind(&body).is_none());
     }
 }

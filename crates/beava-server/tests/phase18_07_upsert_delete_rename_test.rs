@@ -50,6 +50,9 @@ async fn register_temporal_table(ts: &TestServer, table_name: &str) {
 /// RED: fails because:
 ///   - /upsert/users returns 404 (route not added yet)
 ///   - /push-table/users returns 200 (not yet deleted)
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim per
+// `project_v0_events_only_scope`. File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn test_upsert_route_works_old_route_404() {
     let ts = TestServer::builder()
@@ -113,6 +116,9 @@ async fn test_upsert_route_works_old_route_404() {
 /// 7.4 — /upsert stores row that is then readable via /table/:name.
 ///
 /// RED: fails because /upsert route doesn't exist yet.
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn test_upsert_stores_row_readable_via_table_get() {
     let ts = TestServer::builder()
@@ -155,6 +161,9 @@ async fn test_upsert_stores_row_readable_via_table_get() {
 /// 7.4 — /delete removes a row that was previously upserted.
 ///
 /// RED: fails because /delete route doesn't exist yet.
+// Phase 12.7 Plan 01: registers kind=table — now rejected by the shim.
+// File slated for deletion in 12.7 later waves.
+#[ignore = "Phase 12.7-01: registers kind=table; file slated for deletion in 12.7 later waves"]
 #[tokio::test]
 async fn test_delete_removes_upserted_row() {
     let ts = TestServer::builder()

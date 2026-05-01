@@ -148,6 +148,35 @@ impl ApplyShard {
                             tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
+                    // Plan 12.7-01: events-only register-time enforcement.
+                    // Third JSON-prelude shim — sits alongside Plan 12.6-04
+                    // (joins/unions) and Plan 12.6-06 (event-time keys). Rejects
+                    // payloads with `{"kind": "table", ...}` (or any other
+                    // non-event/non-derivation kind) at the JSON layer BEFORE
+                    // strict RegisterPayload deserialize, so the rejection path
+                    // is independent of whether `OpNode::Table*` /
+                    // `PayloadNode::Table` variants still exist in the enum.
+                    // Per CONTEXT D-02 the structured error code is
+                    // `unsupported_node_kind` (forward-looking) — v0 is the
+                    // FIRST public release; tables were never available, so a
+                    // retrospective code naming would confuse fresh users.
+                    if let Some(removed) =
+                        beava_core::register_validate::pre_check_unsupported_node_kind(&json_value)
+                    {
+                        let body = serde_json::json!({
+                            "error": {
+                                "code": removed.code,
+                                "path": removed.path,
+                                "reason": removed.reason,
+                            },
+                            "registry_version": self.state.dev_agg.registry.version(),
+                        });
+                        return GlueResponse::Register {
+                            http_status: 400,
+                            body: bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                            tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
+                        };
+                    }
                 }
                 // Plan 12.6-01: parse + dispatch on the apply thread, then
                 // funnel the outcome through `register_outcome_to_glue`
