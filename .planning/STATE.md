@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 12.7
-last_updated: "2026-05-01T11:22:39Z"
+last_updated: "2026-05-01T11:42:00Z"
 progress:
   total_phases: 37
   completed_phases: 17
   total_plans: 157
-  completed_plans: 120
-  percent: 76
+  completed_plans: 121
+  percent: 77
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 02 landed (architectural-test pair: phase12_7_no_table_surface.rs symbol-grep [286 LOC, 20 forbidden patterns × 5 walk-dirs] + phase12_7_legacy_table_handlers_killed.rs file/symbol-absence [338 LOC, 6 tests pinning specific deletion sites by name]). Both #[ignore]-marked at HEAD because surface still exists (32 occurrences across 13 production files); each subsequent Wave 2-3 deletion plan turns specific tests GREEN; Plan 12.7-09 closure removes #[ignore] annotations. Commits: 30c1ce4 (Task 1.a) → 02f45a7 (Task 1.b). Workspace green, clippy clean, fmt clean. -->
-<!-- Stopped at: Plan 12.7-02 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-03 wire/router variant deletion — Wave 2) per CONTEXT.md wave order -->
-<!-- Resume files: .planning/phases/12.7-table-strip/12.7-02-SUMMARY.md (Plan 02 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
+<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 03 landed (Wave 2 first plan: wire/router/dispatch variant deletion). Stripped 4 WireRequest::Http* table variants + 4 Route::* variants + 4 router.rs parse arms + 4 http_listener.rs translate arms + 4 apply_shard.rs dispatch arms (~131 LOC). POST /upsert/X, POST /delete/X, POST /retract, GET /table/X all return mio's default 404 with body {"error": {"code": "not_found", "path": "<route>"}} per CONTEXT D-02. Plan 02's RED inventory dropped 32 → 15 occurrences (17 wire/router/dispatch violations gone). 2 architectural sub-tests turned GREEN (wire_request_table_variants_deleted, route_table_variants_deleted). 5 doomed tests #[ignore]-marked across phase11_5_temporal_smoke + phase12_6_14_mio_temporal (file slated for deletion in 12.7-06). Commits: 34569c7 (RED) → 80be189 (GREEN). Workspace green, clippy clean, fmt clean, 100/100 test files PASSED. -->
+<!-- Stopped at: Plan 12.7-03 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-04 temporal_http.rs + temporal.rs + AppState fields delete — Wave 2 sequel; touches apply_shard.rs which Plan 03 already cleared) per CONTEXT.md wave order -->
+<!-- Resume files: .planning/phases/12.7-table-strip/12.7-03-SUMMARY.md (Plan 03 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
 
 # State: Beava v2 — v0 OSS Launch
 
