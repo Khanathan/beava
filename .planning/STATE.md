@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 12.7
-last_updated: "2026-05-01T12:21:00Z"
+last_updated: "2026-05-01T12:50:00Z"
 progress:
   total_phases: 37
   completed_phases: 17
   total_plans: 157
-  completed_plans: 123
-  percent: 78
+  completed_plans: 124
+  percent: 79
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 05 landed (Wave 2 closer: persistence schema reset). All 3 format-version constants reset 2 → 1 across record.rs / snapshot_body.rs / snapshot_header.rs (D-01 hard rip RESET, NOT forward bump — v0 isn't released, nothing to be backward-compatible with). RecordType enum slimmed by 3 variants (Phase 11.5's table-write + stream-retract record types deleted; surface = Event 0x01 + RegistryBump 0x02). from_u8(0x03|0x04|0x05) returns existing generic PersistError::UnknownRecordType per D-02 (no new table-specific code). recovery.rs replay loop deleted the table-write + stream-retract arm at line 380+. Fixture sweep: 2 tests in writer_reader.rs updated for the v=1 surface (segment_header_bad_version + unknown_record_type_errors). Plan-05 RED → GREEN: 5-test gate at phase12_7_format_version_reset.rs all passing. Architectural sub-test temporal_record_type_variants_deleted GREEN (still #[ignore]-marked pending Plan 12.7-09 closure). Plan 02's RED inventory dropped 8 → 2 (push_table / delete_table in beava-core/src/wire.rs — Plan 06+ scope). Net LOC delta: +93 / -71 across 6 production files; +112 new test file. Commits: 5394d2a (test) + 9a2012b (feat). Workspace cargo check + clippy --all-targets --all-features -D warnings + fmt --all --check all clean; 101 test files PASSED, 1045 cases passed, 0 failed. -->
-<!-- Stopped at: Plan 12.7-05 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-06 Python SDK strip — Wave 3 — deletes python/beava/_tables.py + namespace re-exports + App.upsert/delete methods + 3 Python e2e test files) per CONTEXT.md wave order -->
-<!-- Resume files: .planning/phases/12.7-table-strip/12.7-05-SUMMARY.md (Plan 05 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
+<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 06 landed (Wave 3: Python SDK strip + final wire.rs cleanup). python/beava/_tables.py DELETED (~502 LOC). bv.table re-export deleted from beava/__init__.py; "table" removed from __all__. App.upsert + App.delete methods deleted (43 LOC). _validate.py: _get_primary_key + _check_table_primary_key deleted; "table" removed from _VALID_BEAVA_KINDS. _agg.py: TableDerivation import + .agg() body replaced with v0 RuntimeError ("Aggregation is not supported in v0; v0 ships events-only via @bv.event...") per D-04 + PATTERNS.md §Pattern 9 — method-shaped stub keeping API surface stable, body always raises. wire.rs: OP_PUSH_TABLE (0x0013) + OP_DELETE_TABLE (0x0014) constants + opcode_name + reserved_phase + 4 in-module tests + doc-table + doc-drift guard cleaned (final 2 RED inventory items for forbidden_pattern_walk). 9 test files DELETED (6 Python + 3 Rust); 7 surgical strips (2 plan-listed + 5 planner-discovered Rule-3 blocking-issue fixes: test_app.py, test_phase3_smoke.py, test_validate.py, test_package_init.py, bench_register_compile.py). Architectural test pair (phase12_7_no_table_surface + phase12_7_legacy_table_handlers_killed) NOW FULLY GREEN with --include-ignored: forbidden_pattern_walk reports 0 violations; all 6 sub-tests in legacy_table_handlers_killed pass (legacy_table_files_deleted + temporal_record_type + wire_request + route + python_bv_table + app_temporal). Plan 06 RED→GREEN test (test_phase12_7_no_table_surface.py): 7/7 passed. Workspace cargo test --workspace: 98 test runs, 0 failures; clippy --all-targets --all-features -D warnings: 0 errors; fmt --all --check: clean. Net LOC delta: +287 / -2897 = -2610 lines. Commits: 04c7838 (test) + 8e51539 (feat). PLANNER-SURFACED CONCERN for Plan 10 SUMMARY review: SDK-AGG-02 (TableDerivation as .agg() output) marked DESCOPED at Plan 07; AGG-CORE-* / AGG-SKETCH-* / AGG-DECAY-* / AGG-VEL-* / AGG-Z-01 operator-family REQ-IDs left ACTIVE because the operators still serve the Rust runtime's state tracking. -->
+<!-- Stopped at: Plan 12.7-06 CLOSED; ready for /gsd-execute-phase 12.7 next plan — Plan 07 (REQUIREMENTS.md sweep) and Plan 08 (Phase 11.5 retro-descope banner) are both unblocked and independent of each other. Plan 09 (closure) depends on 06/07/08 closing. -->
+<!-- Resume files: .planning/phases/12.7-table-strip/12.7-06-SUMMARY.md (Plan 06 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
 
 # State: Beava v2 — v0 OSS Launch
 
