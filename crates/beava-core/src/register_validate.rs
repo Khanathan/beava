@@ -341,6 +341,150 @@ pub fn pre_check_unsupported_node_kind(body: &serde_json::Value) -> Option<Featu
     None
 }
 
+// ─── Unbounded-lifetime-op JSON-prelude shim (Phase 12.8 Plan 01) ─────────────
+
+/// Per-op lifetime memory-bound classification.
+///
+/// **Phase 12.8-01 lands this enum with a placeholder `lifetime_bound_for_op_str`
+/// helper that returns `Unbounded` for every op kind. Phase 12.8-04 populates
+/// the per-op classification table with real values, turning most ops into
+/// `O1` / `BoundedSketch` / `BoundedByRequiredKwarg` / `BoundedByConfig`.**
+///
+/// Per CONTEXT.md D-03: every operator declares either an O(1) bound, a
+/// bounded-sketch bound, a bound-by-required-kwarg, or a bound-by-config-with-default.
+/// `Unbounded` is the catch-all for ops that have not been classified yet
+/// (Plan 01 state) — the shim rejects all such ops in lifetime mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpLifetimeBound {
+    /// Constant per-entity memory regardless of input — Phase 5 core ops,
+    /// Phase 8 recency markers + streaks, Phase 9 decay/velocity scalar ops.
+    O1,
+    /// Sketch with a fixed structural bound — HLL precision (~12 KB),
+    /// DDSketch buckets (~few KB), SpaceSaving (k entries), BloomFilter
+    /// (capacity bits), Entropy (max_categories cap).
+    BoundedSketch,
+    /// Bounded by a REQUIRED kwarg the user must supply. Variant carries
+    /// the kwarg name (e.g., "n" for first_n / last_n / lag / most_recent_n /
+    /// time_since_last_n; "samples" for reservoir_sample).
+    BoundedByRequiredKwarg(&'static str),
+    /// Bounded by a config kwarg the user MAY supply, with a sensible default
+    /// applied if absent (e.g., histogram(num_buckets=256),
+    /// event_type_mix(max_categories=256), seasonal_deviation per Phase 19.2 D-05a).
+    /// First field = kwarg name; second = default cap.
+    BoundedByConfig(&'static str, usize),
+    /// No declared per-entity bound — REJECTED in lifetime mode.
+    Unbounded,
+}
+
+/// Classifier helper: maps an op-string from a register payload to its
+/// declared lifetime bound.
+///
+/// **Plan 12.8-01 (this plan) returns `Unbounded` for every input — the
+/// per-op classification table is populated by Plan 12.8-04.** The shim
+/// is gated behind `BEAVA_MEMORY_GOV_ENFORCE=1` during Wave 1 so the
+/// always-Unbounded behavior does not break the workspace.
+///
+/// Op-string list (54 ops) is enumerated in `crates/beava-core/src/agg_compile.rs`
+/// `op_str_to_agg_kind` — Plan 04 reads that list verbatim.
+pub fn lifetime_bound_for_op_str(op_str: &str) -> OpLifetimeBound {
+    // Plan 12.8-01: placeholder — Plan 12.8-04 replaces this body with the
+    // 54-op classification table.
+    let _ = op_str;
+    OpLifetimeBound::Unbounded
+}
+
+/// Walks the request JSON looking for derivation nodes that contain a
+/// windowless op whose lifetime memory bound is `Unbounded` (per
+/// `lifetime_bound_for_op_str`). Returns `Some(_)` on the first such hit;
+/// `None` if every op is either windowed (`params.window` present) or has
+/// a finite lifetime bound declared.
+///
+/// Per CONTEXT D-03: hard reject at register-time. Per CONTEXT D-02
+/// framing, the error code is `unbounded_op_in_lifetime_mode` (forward-
+/// looking — "requires explicit memory bound in v0", NOT a retrospective
+/// "feature removed" code).
+///
+/// Architectural commitment per `project_v0_events_only_scope` (locked
+/// 2026-04-30): each operator declares its lifetime memory ceiling at
+/// register-time. Reviving an unbounded-in-lifetime path requires explicit
+/// user override + a new ADR.
+pub fn pre_check_unbounded_op_in_lifetime_mode(
+    body: &serde_json::Value,
+) -> Option<FeatureRemovedError> {
+    let nodes = body.get("nodes")?.as_array()?;
+    for (node_idx, node) in nodes.iter().enumerate() {
+        let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        if kind != "derivation" {
+            continue;
+        }
+        let ops = match node.get("ops").and_then(|v| v.as_array()) {
+            Some(o) => o,
+            None => continue,
+        };
+        let deriv_name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        for (op_idx, op_value) in ops.iter().enumerate() {
+            // Walk the agg map (group_by ops carry an `agg` map of named
+            // features). For any feature whose op is windowless and has
+            // an Unbounded lifetime bound, reject.
+            let agg_map = match op_value.get("agg").and_then(|v| v.as_object()) {
+                Some(m) => m,
+                // Non-group_by ops (filter, select, etc.) carry no agg map —
+                // skip; only windowless aggregation ops are candidates for
+                // the bound check.
+                None => continue,
+            };
+            let path_prefix_node = if deriv_name.is_empty() {
+                format!("nodes[{node_idx}].ops[{op_idx}]")
+            } else {
+                format!("nodes[{node_idx}].{deriv_name}.ops[{op_idx}]")
+            };
+            for (feature_name, feature_value) in agg_map {
+                let op_str = feature_value
+                    .get("op")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let params = feature_value.get("params");
+                let has_window = params
+                    .and_then(|p| p.get("window"))
+                    .and_then(|w| w.as_str())
+                    .is_some();
+                if has_window {
+                    // Windowed path — naturally bounded by 64-bucket cap.
+                    continue;
+                }
+                // Lifetime-mode op — check the bound classifier.
+                let bound = lifetime_bound_for_op_str(op_str);
+                if !matches!(bound, OpLifetimeBound::Unbounded) {
+                    // Has a declared bound — accept.
+                    continue;
+                }
+                // Unbounded in lifetime mode — reject.
+                let path = format!("{path_prefix_node}.agg.{feature_name}");
+                let reason = format!(
+                    "Aggregation op `{op_str}` requires explicit memory bound \
+                     in v0. Add a `windowed=\"<duration>\"` kwarg (e.g. \
+                     windowed=\"60s\") to use the rolling 64-bucket window, \
+                     or add the op-specific cap kwarg (e.g. histogram \
+                     requires num_buckets=256, top_k requires k=N, \
+                     first_n/last_n/lag require n=N). See \
+                     .planning/phases/12.8-memory-governance/12.8-CONTEXT.md \
+                     for the full lifetime-bound contract."
+                );
+                return Some(FeatureRemovedError {
+                    code: "unbounded_op_in_lifetime_mode",
+                    // op_label carries the op kind verbatim. Box::leak the
+                    // attacker-controlled string identically to 12.7-01's
+                    // pattern for `unsupported_node_kind`.
+                    op_label: Box::leak(op_str.to_string().into_boxed_str()),
+                    path,
+                    reason,
+                });
+            }
+        }
+    }
+    None
+}
+
 /// Newtype wrapper: a `Vec<PayloadNode>` that has passed all validation rules.
 /// `compute_diff` (Plan 03) accepts `&[PayloadNode]` via `as_slice()`.
 /// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.
@@ -2240,5 +2384,125 @@ mod tests_pre_check_unsupported_node_kind {
         assert!(pre_check_unsupported_node_kind(&body).is_none());
         let body = serde_json::json!({"nodes": []});
         assert!(pre_check_unsupported_node_kind(&body).is_none());
+    }
+}
+
+// ─── Unit tests: pre_check_unbounded_op_in_lifetime_mode (Phase 12.8 Plan 01) ──
+
+#[cfg(test)]
+mod tests_pre_check_unbounded_op_in_lifetime_mode {
+    use super::*;
+
+    /// Helper: build a derivation-node payload with a single group_by op whose
+    /// `agg` map carries one named feature. Caller controls `op_str` (e.g.
+    /// "count") and optional window.
+    fn payload_with_op(
+        deriv_name: Option<&str>,
+        feature_name: &str,
+        op_str: &str,
+        with_window: bool,
+    ) -> serde_json::Value {
+        let params = if with_window {
+            serde_json::json!({"window": "60s"})
+        } else {
+            serde_json::json!({})
+        };
+        let mut deriv = serde_json::json!({
+            "kind": "derivation",
+            "output_kind": "event",
+            "upstreams": ["Tx"],
+            "ops": [
+                {
+                    "op": "group_by",
+                    "keys": ["user_id"],
+                    "agg": {
+                        feature_name: {"op": op_str, "params": params}
+                    }
+                }
+            ],
+            "schema": {"fields": {"user_id": "str", feature_name: "i64"}, "optional_fields": []}
+        });
+        if let Some(name) = deriv_name {
+            deriv["name"] = serde_json::Value::String(name.to_string());
+        }
+        serde_json::json!({
+            "nodes": [
+                {
+                    "kind": "event",
+                    "name": "Tx",
+                    "schema": {"fields": {"user_id": "str", "amount": "f64"}, "optional_fields": []}
+                },
+                deriv
+            ]
+        })
+    }
+
+    #[test]
+    fn pre_check_unbounded_op_returns_some_for_unbounded_count() {
+        // Plan 01's stub classifier returns Unbounded for every op-string.
+        // A windowless count therefore must be rejected.
+        let body = payload_with_op(Some("ByUser"), "cnt", "count", false);
+        let err = pre_check_unbounded_op_in_lifetime_mode(&body)
+            .expect("windowless count should be rejected (stub classifies all as Unbounded)");
+        assert_eq!(err.code, "unbounded_op_in_lifetime_mode");
+        assert_eq!(err.op_label, "count");
+        assert_eq!(err.path, "nodes[1].ByUser.ops[0].agg.cnt");
+        assert!(
+            err.reason.contains("requires explicit memory bound in v0"),
+            "reason should contain the v0 framing, got: {}",
+            err.reason
+        );
+        assert!(
+            err.reason.contains("count"),
+            "reason should name the op, got: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn pre_check_unbounded_op_skips_windowed_op() {
+        // params.window present → windowed path is naturally bounded by the
+        // 64-bucket cap; the shim must skip and return None.
+        let body = payload_with_op(Some("ByUser"), "cnt_60s", "count", true);
+        assert!(
+            pre_check_unbounded_op_in_lifetime_mode(&body).is_none(),
+            "windowed op should bypass the bound check"
+        );
+    }
+
+    #[test]
+    fn pre_check_unbounded_op_returns_none_on_empty_payload() {
+        let body = serde_json::json!({});
+        assert!(pre_check_unbounded_op_in_lifetime_mode(&body).is_none());
+        let body = serde_json::json!({"nodes": []});
+        assert!(pre_check_unbounded_op_in_lifetime_mode(&body).is_none());
+        // Event-only payload (no derivation) — no ops to classify.
+        let body = serde_json::json!({
+            "nodes": [
+                {
+                    "kind": "event",
+                    "name": "Tx",
+                    "schema": {"fields": {"user_id": "str"}, "optional_fields": []}
+                }
+            ]
+        });
+        assert!(pre_check_unbounded_op_in_lifetime_mode(&body).is_none());
+    }
+
+    #[test]
+    fn pre_check_unbounded_op_path_format_named_derivation() {
+        // Named derivation → path is `nodes[N].<name>.ops[K].agg.<feature>`.
+        let body = payload_with_op(Some("MyDeriv"), "feat_a", "count", false);
+        let err = pre_check_unbounded_op_in_lifetime_mode(&body).unwrap();
+        assert_eq!(err.path, "nodes[1].MyDeriv.ops[0].agg.feat_a");
+    }
+
+    #[test]
+    fn pre_check_unbounded_op_path_format_unnamed_derivation() {
+        // Unnamed derivation (no `name` field) → path falls back to
+        // `nodes[N].ops[K].agg.<feature>` (no derivation-name segment).
+        let body = payload_with_op(None, "feat_a", "count", false);
+        let err = pre_check_unbounded_op_in_lifetime_mode(&body).unwrap();
+        assert_eq!(err.path, "nodes[1].ops[0].agg.feat_a");
     }
 }

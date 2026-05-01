@@ -177,6 +177,53 @@ impl ApplyShard {
                             tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
+                    // Plan 12.8-01: 4th JSON-prelude shim — events-only memory
+                    // governance. Rejects derivation payloads with windowless
+                    // aggregation ops whose lifetime bound is Unbounded per
+                    // `lifetime_bound_for_op_str`. Per CONTEXT D-03 hard-reject
+                    // posture; per CONTEXT D-02 forward-looking framing
+                    // (`unbounded_op_in_lifetime_mode`).
+                    //
+                    // Wave 1 gate: behavior is opt-in via env `BEAVA_MEMORY_GOV_ENFORCE=1`.
+                    // The classifier helper in Plan 12.8-01 returns `Unbounded`
+                    // for every op-string, so without the env-gate the 4th shim
+                    // would reject every legacy registration during Wave 1.
+                    // Plan 12.8-04 populates the per-op bound table; Plan 12.8-06
+                    // (Wave 3) flips the env-gate default from OFF to ON. This
+                    // scaffolding stays in place; only the helper body changes
+                    // when Plan 06 lands.
+                    fn memory_gov_enforce_enabled() -> bool {
+                        // Per-call env read. Register-time validation is a COLD
+                        // path (called once per /register request), so the cost
+                        // of `std::env::var` per call is irrelevant. A cached
+                        // OnceLock variant would memoize the FIRST process-wide
+                        // read and break the integration tests that flip the
+                        // env between cases inside the same test binary.
+                        std::env::var("BEAVA_MEMORY_GOV_ENFORCE").ok().as_deref() == Some("1")
+                    }
+                    if memory_gov_enforce_enabled() {
+                        if let Some(removed) =
+                            beava_core::register_validate::pre_check_unbounded_op_in_lifetime_mode(
+                                &json_value,
+                            )
+                        {
+                            let body = serde_json::json!({
+                                "error": {
+                                    "code": removed.code,
+                                    "path": removed.path,
+                                    "reason": removed.reason,
+                                },
+                                "registry_version": self.state.dev_agg.registry.version(),
+                            });
+                            return GlueResponse::Register {
+                                http_status: 400,
+                                body: bytes::Bytes::from(
+                                    serde_json::to_vec(&body).unwrap_or_default(),
+                                ),
+                                tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
+                            };
+                        }
+                    }
                 }
                 // Plan 12.6-01: parse + dispatch on the apply thread, then
                 // funnel the outcome through `register_outcome_to_glue`

@@ -35,10 +35,12 @@ use serde_json::json;
 const ENV_KEY: &str = "BEAVA_MEMORY_GOV_ENFORCE";
 
 /// Process-global env mutex. Mirrors the pattern in
-/// `tests/wal_env_var_tunables.rs` — in-test sequencing avoids race on
-/// `std::env::set_var` / `std::env::remove_var` when the integration test
-/// binary uses tokio's multi-thread runtime.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// `tests/wal_env_var_tunables.rs` (which uses `std::sync::Mutex` because its
+/// tests are `#[test]` — sync). This file uses `#[tokio::test]` and the lock
+/// MUST be held across `.await` points (TestServer spawn + post_json), so we
+/// use `tokio::sync::Mutex` to satisfy clippy's `await_holding_lock` lint.
+/// Tokio's mutex is async-aware and designed for this pattern.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn enforce_on() {
     std::env::set_var(ENV_KEY, "1");
@@ -50,7 +52,7 @@ fn enforce_off() {
 
 #[tokio::test]
 async fn test_unbounded_op_rejected_when_enforcement_enabled() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     enforce_on();
 
     let ts = TestServer::spawn().await.expect("spawn");
@@ -102,8 +104,7 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
         "windowless lifetime op must be rejected at register time when \
          BEAVA_MEMORY_GOV_ENFORCE=1, got status={status}, body={body_text}"
     );
-    let body: serde_json::Value =
-        serde_json::from_str(&body_text).expect("body json");
+    let body: serde_json::Value = serde_json::from_str(&body_text).expect("body json");
     assert_eq!(
         body["error"]["code"], "unbounded_op_in_lifetime_mode",
         "expected unbounded_op_in_lifetime_mode, got body={body}"
@@ -124,7 +125,7 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
 
 #[tokio::test]
 async fn test_windowed_op_passes_when_enforcement_enabled() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     enforce_on();
 
     let ts = TestServer::spawn().await.expect("spawn");
@@ -181,7 +182,7 @@ async fn test_windowed_op_passes_when_enforcement_enabled() {
 
 #[tokio::test]
 async fn test_no_enforcement_when_env_unset() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     enforce_off();
 
     let ts = TestServer::spawn().await.expect("spawn");
@@ -236,7 +237,7 @@ async fn test_no_enforcement_when_env_unset() {
 
 #[tokio::test]
 async fn test_unbounded_op_path_includes_node_and_op_index() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     enforce_on();
 
     let ts = TestServer::spawn().await.expect("spawn");
@@ -307,8 +308,7 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
         "windowless count in derivation 2 must be rejected, got \
          status={status}, body={body_text}"
     );
-    let body: serde_json::Value =
-        serde_json::from_str(&body_text).expect("body json");
+    let body: serde_json::Value = serde_json::from_str(&body_text).expect("body json");
     assert_eq!(body["error"]["code"], "unbounded_op_in_lifetime_mode");
     let path = body["error"]["path"].as_str().unwrap_or_default();
     // nodes[2] = "Lifetime" derivation, ops[0] = group_by, agg.cnt_total = the
@@ -323,7 +323,7 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
 
 #[tokio::test]
 async fn test_message_suggests_windowed_kwarg() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     enforce_on();
 
     let ts = TestServer::spawn().await.expect("spawn");
@@ -371,8 +371,7 @@ async fn test_message_suggests_windowed_kwarg() {
     ts.shutdown().await.ok();
 
     assert_eq!(status, 400, "windowless count rejected, got {body_text}");
-    let body: serde_json::Value =
-        serde_json::from_str(&body_text).expect("body json");
+    let body: serde_json::Value = serde_json::from_str(&body_text).expect("body json");
     let reason = body["error"]["reason"]
         .as_str()
         .expect("reason should be a string");
@@ -386,9 +385,7 @@ async fn test_message_suggests_windowed_kwarg() {
     // bounded-by-config ops (histogram etc.) see the cap-kwarg path even though
     // Plan 01's stub classifies everything as Unbounded.
     assert!(
-        reason.contains("num_buckets")
-            || reason.contains("k=N")
-            || reason.contains("n=N"),
+        reason.contains("num_buckets") || reason.contains("k=N") || reason.contains("n=N"),
         "reason should mention at least one cap kwarg (num_buckets / k=N / n=N), \
          got: {reason}"
     );
