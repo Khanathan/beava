@@ -14,8 +14,8 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - ~~**SDK-DEC-02b**: `@bv.event` class form accepts optional `tolerate_delay` (duration string) parameter~~ — **REMOVED 2026-04-30 per no-event-time pivot** (SUPERSEDED by `project_redis_shaped_no_event_time_ever`). The runtime has no event-time concept post-pivot, so a per-event tolerance window is meaningless. v0 ships without this parameter; if a future v0.1+ revisits per-event timing semantics, a NEW REQ-ID covers that scope.
   - Note: SDK-DEC-02 was split 2026-04-30 to make the active vs REMOVED surfaces explicit per the no-event-time pivot. The original SDK-DEC-02 conflated `keep_events_for` (kept) with `tolerate_delay` (REMOVED); the split lets Phase 12.6's plans reference either side cleanly.
 - [ ] **SDK-DEC-03**: `@bv.event` function form: function with upstream-class parameters returns an `Event` / `EventDerivation`; decorator invokes the function once at registration with upstream descriptors and captures the result
-- ~~**SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator~~ — **REMOVED 2026-04-30 per `project_v0_events_only_scope`**. v0 ships as pure events. Tables return in v0.1+ alongside joins / aggregation. Phase 12.7 strips the entire `@bv.table` surface.
-- ~~**SDK-DEC-05**: `@bv.table` function form~~ — **REMOVED 2026-04-30 per `project_v0_events_only_scope`** (same scope decision).
+- ~~**SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
+- ~~**SDK-DEC-05**: `@bv.table` function form~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
 - [ ] **SDK-DEC-06**: Schema extraction supports `str`, `f64`/`float`, `i64`/`int`, `bool`, `bytes`, `datetime` field types; rejects unsupported types at decorator time with a clear error message
 - [ ] **SDK-DEC-07**: `bv.Optional[T]` marks a field nullable; `bv.Field(desc=..., default=...)` attaches per-field metadata
 - ~~**SDK-DEC-08**: `event_time` field on `@bv.event`~~ — REMOVED 2026-04-30 per no-event-time pivot. Server-side `now_ms()` is the only time source; events have no event-time field on the wire. See PROJECT.md §Key Decisions.
@@ -48,7 +48,7 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 ### SDK-AGG — Aggregation framework
 
 - [ ] **SDK-AGG-01**: `Event.group_by(*keys)` returns a `GroupBy` builder; keys must exist in upstream schema
-- [x] **SDK-AGG-02**: `GroupBy.agg(**named_features)` accepts named aggregation operator descriptors; returns a `TableDerivation`
+- ~~**SDK-AGG-02**: `GroupBy.agg(**named_features)` accepts named aggregation operator descriptors; returns a `TableDerivation`~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7's Plan 06 makes `GroupBy.agg()` raise `RuntimeError` with v0 framing. The operator catalogue (AGG-CORE-* / AGG-SKETCH-* / AGG-POINT-* / AGG-DECAY-* / AGG-VEL-* / AGG-RECENCY-* / AGG-BUFFER-* / AGG-GEO-* / AGG-Z-*) remains ACTIVE — only the Python builder method that produces `TableDerivation` is gone.**
 - [ ] **SDK-AGG-03**: Aggregation output schema: group keys preserve upstream types; feature columns get types inferred by each operator's `output_type_for(schema)` method
 - [ ] **SDK-AGG-04**: `group_by().agg()` validates every operator's field references exist in upstream schema; errors with path
 - [x] **SDK-AGG-05**: Aggregation on a `Table` is explicitly rejected in v0 (deferred to v0.1 pending retraction propagation)
@@ -158,8 +158,8 @@ All join + union requirements REMOVED 2026-04-30 per the no-event-time pivot (se
 - [ ] **SDK-APP-04**: `app.push(Event, event_dict)` — async fire-and-forget push; returns immediately; errors surface on next API call
 - [ ] **SDK-APP-05**: `app.push_sync(Event, event_dict)` → `FeatureResult` — sync push that returns computed features for the event's entity in the same round-trip
 - [ ] **SDK-APP-06**: `app.push_many(Event, [dicts])` — batched push, single wire frame; reports errors per `(batch_id, event_index)`
-- [ ] **SDK-APP-07**: `app.push(Table, key, row_dict)` — synchronous table upsert; blocks until server ACK
-- [ ] **SDK-APP-08**: `app.delete(Table, key)` — synchronous tombstone; server retains 7d for late cascade consumers
+- ~~**SDK-APP-07**: `app.push(Table, key, row_dict)` — synchronous table upsert; blocks until server ACK~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
+- ~~**SDK-APP-08**: `app.delete(Table, key)` — synchronous tombstone; server retains 7d for late cascade consumers~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
 - [ ] **SDK-APP-09**: `app.get(key)` → `FeatureResult` — all features for the key; attribute and dict-style access; unknown key → empty result
 - [ ] **SDK-APP-10**: `app.mget([keys])` — batched feature lookup; returns dict of key→FeatureResult
 - [ ] **SDK-APP-11**: `app.get_multi([Table1, Table2, ...], key=...)` — fetch features across multiple tables in one round-trip; returns dict of descriptor→FeatureResult
@@ -188,14 +188,18 @@ All join + union requirements REMOVED 2026-04-30 per the no-event-time pivot (se
 - [ ] **SRV-API-03**: `POST /push/{event_name}` accepts JSON event; validates against registered schema; returns `{ack_lsn, idempotent_replay, registry_version}` only after WAL fsync past LSN
 - [ ] **SRV-API-04**: `POST /push-sync/{event_name}` — same as /push but returns `{ack_lsn, features: {...}, ...}` with computed features
 - [ ] **SRV-API-05**: `POST /push-batch/{event_name}` accepts JSON array; returns per-event results
-- [ ] **SRV-API-06**: `POST /push-table/{table_name}` upserts a row by primary key
-- [ ] **SRV-API-07**: `POST /delete-table/{table_name}` tombstones a row by primary key
+- ~~**SRV-API-06**: `POST /push-table/{table_name}` upserts a row by primary key~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
+- ~~**SRV-API-07**: `POST /delete-table/{table_name}` tombstones a row by primary key~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
 - [ ] **SRV-API-08**: `POST /get` accepts `{keys: [...], features: [...]}`; returns `{key: {feature: value}}` map; per-request cap keys × features ≤ 10000
 - [ ] **SRV-API-09**: `GET /get/{feature}/{key}` single-feature lookup; `{value, meta?}` shape
 - [ ] **SRV-API-10**: `POST /set` and `POST /mset` accept direct feature writes
 - [ ] **SRV-API-11**: Content-Type application/json enforced; 415 on mismatch
 - [ ] **SRV-API-12**: Validation errors return 400 with `{error: {code, path, reason}}` naming the offending DAG/field/expression path
 - [ ] **SRV-API-13**: All endpoints support optional `X-Trace-Id` header propagated to logs
+
+### V0-INVARIANT — Architectural commitments locked at CI
+
+- [ ] **V0-EVENTS-ONLY-01**: No `@bv.table` decorator in public `bv` namespace; no `OpNode::Table*` variants; no `TemporalStore` / `MvccVersion`; no `RecordType::TableUpsert/TableDelete/Retract`; no `temporal_http` / `push_table` / `delete_table` / `app.retract` symbols. Enforced at CI runtime by `crates/beava-server/tests/phase12_7_no_table_surface.rs` and `crates/beava-server/tests/phase12_7_legacy_table_handlers_killed.rs` (architectural-test pair, Plan 12.7-02). Reviving any forbidden symbol requires explicit user override + new ADR overturning `project_v0_events_only_scope`.
 
 ### SRV-REG — Registry
 
@@ -289,7 +293,7 @@ Deferred to future release.
 
 ### v0.1: Table aggregation with retraction
 
-- ~~**V0.1-TABLE-01**: `table.group_by(...).agg(...)` with retraction propagation~~ — **ARCHIVED-INDEFINITELY 2026-04-30 per `project_v0_events_only_scope`** (returns alongside tables/joins in v0.1+ if/when justified by demand).
+- ~~**V0.1-TABLE-01**: `table.group_by(...).agg(...)` with retraction propagation~~ — **DESCOPED 2026-04-30 per `project_v0_events_only_scope`; tables return v0.1+ alongside joins/aggregation. Phase 12.7 strips the surface.**
 
 ### Emit / timers / CEP / attribution
 
