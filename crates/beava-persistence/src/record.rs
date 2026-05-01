@@ -15,14 +15,20 @@ use crate::{Lsn, RecordType, WalRecord};
 
 /// Format version emitted by this implementation.
 ///
-/// **Plan 12.6-06 (D-03 hard rip):** bumped 1 → 2 alongside the deletion of
-/// the `event_time` byte slot in the per-record payload (apply_shard.rs's
-/// hand-rolled v=2 binary records carry server `now_ms` instead of a
-/// body-derived event timestamp). v1 records fail with the existing
-/// `SchemaVersionMismatch` path on recovery — per CONTEXT D-03 there is no
-/// migration shim; pre-pivot WALs are dev artifacts that operators clear
-/// before booting the new binary.
-pub const FORMAT_VERSION: u32 = 2;
+/// **Plan 12.7-05 (D-01 hard rip RESET):** RESET 2 → 1 alongside the deletion
+/// of the Phase 11.5 table-write and stream-retract record-type variants
+/// (entire table surface removed per `project_v0_events_only_scope`). v0
+/// launches at version=1 across WAL/snapshot/wire — not a forward bump
+/// because v0 isn't released; nothing to be backward-compatible with.
+/// Pre-12.7 dev WALs (which carried `v=2`) fail with the existing
+/// `SchemaVersionMismatch` path on recovery — per CONTEXT D-01 there is no
+/// migration shim; operators clear `.beava/wal` + `.beava/snapshots` before
+/// booting the new binary.
+///
+/// History: Plan 12.6-06 bumped 1 → 2 alongside the `event_time` byte-slot
+/// deletion; Plan 12.7-05 walks back to 1 because v0 is unreleased and the
+/// record-type strip changes the v=1 surface incompatibly anyway.
+pub const FORMAT_VERSION: u32 = 1;
 
 /// Magic bytes at the head of every WAL segment file.
 pub const MAGIC: [u8; 8] = *b"BEAVAWAL";
@@ -32,9 +38,14 @@ impl RecordType {
         match b {
             0x01 => Ok(RecordType::Event),
             0x02 => Ok(RecordType::RegistryBump),
-            0x03 => Ok(RecordType::TableUpsert),
-            0x04 => Ok(RecordType::TableDelete),
-            0x05 => Ok(RecordType::Retract),
+            // Bytes 0x03 / 0x04 / 0x05 (formerly the Phase 11.5 table-write
+            // and stream-retract record types) fall through to the
+            // existing `UnknownRecordType` arm per Plan 12.7-05 (CONTEXT
+            // D-02): v0 ships events-only and there is no table-specific
+            // error code in persistence — the generic variant naturally
+            // covers the deleted discriminants. Pre-12.7 dev WALs that
+            // carried these bytes surface the standard "unknown
+            // record_type" error on recovery.
             other => Err(PersistError::UnknownRecordType(other)),
         }
     }
@@ -150,16 +161,19 @@ mod tests {
     use super::*;
     use crate::{RecordType, WalRecord};
 
-    /// Phase 11.5 Task 2 — round-trip the three new record types through the
-    /// WAL codec. Verifies D-11/D-12: TableUpsert (0x03), TableDelete (0x04),
-    /// and Retract (0x05) each encode → decode losslessly and that unknown
-    /// discriminants continue to error cleanly.
+    /// Plan 12.7-05 — round-trip the v0 events-only record types through
+    /// the WAL codec. Verifies that `Event` (0x01) and `RegistryBump` (0x02)
+    /// — the two surviving discriminants after the record-type strip —
+    /// encode → decode losslessly, and that previously-valid (pre-12.7)
+    /// bytes 0x03 / 0x04 / 0x05 (which carried the Phase 11.5 table-write
+    /// and stream-retract record types) now surface as `UnknownRecordType`
+    /// per CONTEXT D-02. (No new table-specific error code; existing
+    /// generic variant suffices.)
     #[test]
-    fn new_record_types_round_trip_through_codec() {
+    fn surviving_record_types_round_trip_through_codec() {
         for (byte, rt) in [
-            (0x03u8, RecordType::TableUpsert),
-            (0x04u8, RecordType::TableDelete),
-            (0x05u8, RecordType::Retract),
+            (0x01u8, RecordType::Event),
+            (0x02u8, RecordType::RegistryBump),
         ] {
             let rec = WalRecord {
                 lsn: 42,
@@ -177,10 +191,15 @@ mod tests {
             assert_eq!(back.payload, b"hello");
         }
 
-        // Unknown discriminant continues to surface cleanly.
-        assert!(matches!(
-            RecordType::from_u8(0x06),
-            Err(PersistError::UnknownRecordType(0x06))
-        ));
+        // Plan 12.7-05 (CONTEXT D-02): bytes 0x03 / 0x04 / 0x05 (formerly
+        // the Phase 11.5 table-write and stream-retract record types) and
+        // any other unknown discriminant surface cleanly as the existing
+        // UnknownRecordType variant.
+        for b in [0x03u8, 0x04, 0x05, 0x06, 0xff] {
+            assert!(matches!(
+                RecordType::from_u8(b),
+                Err(PersistError::UnknownRecordType(got)) if got == b
+            ));
+        }
     }
 }

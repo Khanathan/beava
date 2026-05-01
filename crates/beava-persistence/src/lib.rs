@@ -17,6 +17,16 @@ mod writer;
 pub type Lsn = u64;
 
 /// WAL record type discriminant.
+///
+/// **Plan 12.7-05 (D-01 hard rip):** v0 ships events-only per
+/// `project_v0_events_only_scope` (locked 2026-04-30). The Phase 11.5
+/// table / retraction record types (formerly bytes 0x03 / 0x04 / 0x05)
+/// are deleted here; those bytes now fall through to the existing
+/// `PersistError::UnknownRecordType` arm in `record::RecordType::from_u8`
+/// per CONTEXT D-02 ("not supported in v0", NOT "feature removed"). v0's
+/// surface = pushed events (0x01) + registry bumps (0x02). Tables /
+/// retraction return in v0.1+ alongside joins / aggregation if/when
+/// justified by demand.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordType {
@@ -24,19 +34,6 @@ pub enum RecordType {
     Event = 0x01,
     /// Reserved for Phase 7 — registry version bump records.
     RegistryBump = 0x02,
-    /// Phase 11.5 — a table upsert (MVCC chain append for temporal tables,
-    /// plain upsert otherwise). Payload shape documented in
-    /// `beava_server::push_table`.
-    TableUpsert = 0x03,
-    /// Phase 11.5 — a table delete (tombstone insertion on MVCC; otherwise
-    /// key removal). Symmetric with TableUpsert.
-    TableDelete = 0x04,
-    /// Phase 11.5 — an `app.retract(event_id)` directive targeting a prior
-    /// TableUpsert/TableDelete record. Stream retraction is NOT valid in v0
-    /// (the retract handler returns 501) but the record type is reserved now
-    /// so stream retraction can land additively in v1 without a WAL format
-    /// break.
-    Retract = 0x05,
 }
 
 /// A single WAL record as stored on disk.

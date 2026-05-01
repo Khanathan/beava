@@ -372,20 +372,15 @@ pub fn replay_wal_from_lsn(
                 }
                 outcome.replay_event_count += 1;
             }
-            // Phase 11.5 Task 5 (green): replay table-write + retract records.
-            // Current plan implements server-side state in Task 4; recovery
-            // here is a stub that logs + advances last_lsn so the read loop
-            // stays exhaustive. Full replay lands alongside the in-memory
-            // MVCC wiring in the next commit.
-            RecordType::TableUpsert | RecordType::TableDelete | RecordType::Retract => {
-                tracing::debug!(
-                    target: "beava.recovery",
-                    kind = "recovery.phase11_5_record_seen",
-                    lsn = rec.lsn,
-                    record_type = ?rec.record_type,
-                    "table-write / retract record observed; full replay wired in follow-up task"
-                );
-            }
+            // Plan 12.7-05 (CONTEXT D-01 hard rip RESET): the
+            // table-write + stream-retract replay arm (formerly Phase
+            // 11.5's logging stub) is deleted alongside the corresponding
+            // record-type variants. Pre-12.7 dev WALs that carried those
+            // bytes (0x03 / 0x04 / 0x05) fail earlier at
+            // `RecordType::from_u8` with the existing
+            // `PersistError::UnknownRecordType` error; recovery surfaces a
+            // hard read-error before reaching this match arm. v0 ships
+            // events-only per `project_v0_events_only_scope`.
             RecordType::RegistryBump => match RegistryBumpPayload::decode(&rec.payload) {
                 Ok(bump) => match crate::register::apply_registry_bump(&dev_agg.registry, bump) {
                     Ok(()) => {

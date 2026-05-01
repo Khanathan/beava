@@ -24,12 +24,17 @@ use std::collections::BTreeMap;
 
 /// Monotonic format version for snapshot body evolution.
 ///
-/// **Plan 12.6-06 (D-03 hard rip):** bumped 1 → 2 alongside the rename of
-/// `max_event_time_ms` → `query_time_ms`. v1 bodies fail with
-/// `UnsupportedVersion(1)` on recovery — pre-pivot snapshots are dev artifacts
-/// that operators clear before booting the new binary; there is no migration
-/// shim per CONTEXT D-03 hard-rip.
-pub const SNAPSHOT_BODY_FORMAT_VERSION: u16 = 2;
+/// **Plan 12.7-05 (D-01 hard rip RESET):** RESET 2 → 1 alongside the WAL
+/// `FORMAT_VERSION` reset (record.rs) and the snapshot header reset
+/// (snapshot_header.rs). v0 launches at version=1 uniformly across
+/// WAL/snapshot per `project_v0_events_only_scope`. No `temporal_tables`
+/// section ever existed in this body (see Plan 11.5 §"Snapshot integration
+/// deferred"); the reset is purely a uniform-version commitment. v1
+/// bodies (which carried `v=2` after 12.6 Plan 06) fail with
+/// `UnsupportedVersion(2)` on recovery; pre-pivot snapshots are dev
+/// artifacts that operators clear before booting the new binary; no
+/// migration shim per CONTEXT D-01.
+pub const SNAPSHOT_BODY_FORMAT_VERSION: u16 = 1;
 
 /// Per-aggregation-node serialized state: ordered list of (entity, ops).
 pub type SerializedStateTables = BTreeMap<String, Vec<(EntityKey, Vec<AggOp>)>>;
