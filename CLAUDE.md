@@ -85,6 +85,16 @@ git log --format='%s' <base>..<head> | grep -E '^(test|feat|fix|refactor):'
 **How enforced:** `crates/beava-server/tests/phase12_6_mio_only_dataplane.rs` walks the workspace at test runtime and fails if either invariant is violated. CI runs the test on every PR via `cargo test --workspace`. Companion: `crates/beava-server/tests/phase12_6_legacy_axum_killed.rs` (Plan 12.6-07) asserts the legacy axum files and symbols stay deleted.
 
 **Reviving a second data-plane runtime requires:** explicit user override + new ADR overturning `project_phase18_no_dual_runtime`.
+
+### Events-Only Invariant (locked Phase 12.7)
+
+**Rule:** Beava v0 ships events-only. The public `bv` namespace exposes `@bv.event` and the operator catalogue; `@bv.table`, `app.upsert`, `app.delete`, `app.retract`, `OpNode::Table*`, `RecordType::TableUpsert/TableDelete/Retract`, `TemporalStore`, `MvccVersion`, `temporal_http`, `push_table`, `delete_table` are all gone. Register payloads with `{"kind": "table", ...}` are rejected at the JSON-prelude layer with structured error code `unsupported_node_kind`. Wire-format reset to version=1 (WAL `FORMAT_VERSION = 1`, snapshot `SNAPSHOT_FORMAT_VERSION = 1`, snapshot body `SNAPSHOT_BODY_FORMAT_VERSION = 1`); pre-12.7 dev WALs / snapshots fail at the version-byte check and require operators to clear `.beava/wal` + `.beava/snapshots` before boot.
+
+**Why:** Locked architectural commitments — `project_v0_events_only_scope` (locked 2026-04-30): v0 strips tables / table-aggregation / session windows / `bv.fork` / playground. Tables/joins/aggregation return together in v0.1+ if/when justified by demand. Combined with `project_redis_shaped_no_event_time_ever`, v0's surface is push events / register events+derivations / get features.
+
+**How enforced:** `crates/beava-server/tests/phase12_7_no_table_surface.rs` walks the workspace at test runtime and fails if any forbidden symbol resurfaces (`OpNode::Table*`, `TemporalStore`, `MvccVersion`, `RecordType::TableUpsert/TableDelete/Retract`, `WireRequest::HttpUpsert/HttpDelete/HttpRetract/HttpTableGet`, `Route::Upsert/Delete/Retract/TableGet`, `temporal_http`, `push_table`, `delete_table`, `fn retract(`). CI runs the test on every PR via `cargo test --workspace`. Companion: `crates/beava-server/tests/phase12_7_legacy_table_handlers_killed.rs` asserts the deleted files (`temporal_http.rs`, `temporal.rs`, `python/beava/_tables.py`) stay deleted.
+
+**Reviving `@bv.table` requires:** explicit user override + new ADR overturning `project_v0_events_only_scope`.
 <!-- GSD:conventions-end -->
 
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->

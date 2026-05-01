@@ -1,43 +1,43 @@
 ---
 context: v0-ship-correctness-path
 created: 2026-04-29
-revised: 2026-04-30 — Phase 12.6 CLOSED (PASS-WITH-WARN); v0 SCOPE LOCKED to events-only per `project_v0_events_only_scope`; new Phase 12.7 (table strip) inserted as predecessor to reframed Phase 13 (SDK polish + benchmarks + ship); 27 orphan pre-pivot phase dirs archived
+revised: 2026-05-01 — Phase 12.7 CLOSED (PASS); v0 critical path advances to Phase 13 (final v0 ship); both architectural-pivot phases (12.6 PASS-WITH-WARN + 12.7 PASS) closed on schedule
 status: post-pivot-events-only
 ---
 
-# Correctness path to v0 OSS ship — REVISED 2026-04-30 (Phase 12.6 closure)
+# Correctness path to v0 OSS ship — REVISED 2026-05-01 (Phase 12.7 closure)
 
-**MAJOR PIVOT 2026-04-30:** Architectural simplification — no event-time / no watermarks / no joins / no PIT, ever. Phases 14, 14.1, 15 archived. **Phase 12.6 (NEW v0 surface-reduction blocker) CLOSED 2026-04-30 (PASS-WITH-WARN).** The original "Phase 14 streaming bug" P0 item is **DELETED** — the bug class disappears with event-time itself.
+**MAJOR PIVOT 2026-04-30:** Architectural simplification — no event-time / no watermarks / no joins / no PIT, ever. Phases 14, 14.1, 15 archived. **Phase 12.6 (v0 surface-reduction blocker) CLOSED 2026-04-30 (PASS-WITH-WARN).** **Phase 12.7 (v0 table strip) CLOSED 2026-05-01 (PASS).** The original "Phase 14 streaming bug" P0 item is **DELETED** — the bug class disappeared with event-time itself.
 
-See `project_redis_shaped_no_event_time_ever` (memory) for the full architectural commitment.
+See `project_redis_shaped_no_event_time_ever` + `project_v0_events_only_scope` (memories) for the full architectural commitment.
 
-## Priority tier (post-12.6-closure)
+## Priority tier (post-12.7-closure)
 
 ### 🟢 CLOSED — completed v0 ship-blockers
+
+#### Phase 12.7 — v0 table strip — ✅ CLOSED 2026-05-01 (PASS)
+- **Severity:** was CRITICAL — was the events-only commitment predecessor to final ship phase
+- **Status:** ✅ CLOSED 2026-05-01 (PASS) — 10 plans landed (Plans 01-10) across 4 waves; workspace 1049/0/4; HEAD `5645ead`
+- **What landed:** Entire table / temporal / retraction surface DELETED (~5,500 LOC cumulative): `temporal_http.rs` (~756 LOC) + `temporal.rs` (~394 LOC) + `_tables.py` (~502 LOC) + `temporal_throughput.rs` (~238 LOC) + Plans 03/04/06 wire-router-dispatch surgery + Python SDK strip (Plan 06: 9 test files deleted + 5 surgical strips + `App.upsert/delete` delete + `GroupBy.agg()` → RuntimeError stub + `OP_PUSH_TABLE`/`OP_DELETE_TABLE` constants delete). FORMAT_VERSION RESET 2→1 across 3 schemas (D-01 hard rip RESET, more aggressive than 12.6's bump). Forward-looking error framing across 7 layers (D-02). Two-file architectural-test pair (`phase12_7_no_table_surface.rs` + `phase12_7_legacy_table_handlers_killed.rs`) GREEN BY DEFAULT (D-03; #[ignore] removal Plan 10). Comprehensive REQUIREMENTS.md sweep (8 REQ-IDs DESCOPED + V0-EVENTS-ONLY-01 anchor; D-04 first half). Phase 11.5 retro-descope banner on 3 files (D-04 second half). CLAUDE.md `§ Events-Only Invariant (locked Phase 12.7)` block.
+- **Verdict basis:** all 9 ROADMAP success criteria PASS; all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench -25 to -30% lift across 3 cells (apply hot path); throughput +7.3% on small/tcp regression-gate cell (well above 90% threshold); 7/8 cells within ±10%. Two PLANNER-SURFACED CONCERNs documented for user review (SDK-AGG-* operator-family REQ-IDs LEFT ACTIVE; D-04 wildcard discrepancy).
+- **Artifacts:** `.planning/phases/12.7-table-strip/12.7-SUMMARY.md` (phase narrative) + `.planning/phases/12.7-table-strip/12.7-VERIFICATION.md` (mechanical pass/fail)
 
 #### Phase 12.6 — v0 surface reduction — ✅ CLOSED 2026-04-30 (PASS-WITH-WARN)
 - **Severity:** was CRITICAL — was v0 ship surface mismatch with the locked architectural commitment
 - **Status:** ✅ CLOSED 2026-04-30 (PASS-WITH-WARN) — 15 plans landed (Plans 01-15 inclusive of Wave-1.5 gap closure 14+15); workspace 1067/0/3; HEAD `1e318b1`
-- **What landed:** Legacy axum kill (~7475 LOC; plan estimated ~3500 — orphan tcp.rs + in-source test mods cascaded out) + event-time hard rip (push wire + register wire + EventDescriptor + DevAggState + WAL/snapshot v1→v2 + Python decorator) + Path X windowed-op time-source swap (event_time_ms → server now_ms()) + joins/unions removal (OpNode::Join/Union/JoinType deleted; structured-error rejection arms `feature_removed_no_*_v0`) + dead-code/redundancy sweep + mio-only hot-path enforcement (`phase12_6_mio_only_dataplane.rs` architectural test + CLAUDE.md `§Conventions § mio-only Hot-Path Invariant`) + REQUIREMENTS.md surgical sweep + Phase 12.5 / 13.3 archival banner sweep + microbench + throughput rebaseline
+- **What landed:** Legacy axum kill (~7475 LOC; plan estimated ~3500 — orphan tcp.rs + in-source test mods cascaded out) + event-time hard rip (push wire + register wire + EventDescriptor + DevAggState + WAL/snapshot v1→v2 — later RESET to v=1 by Phase 12.7 + Python decorator) + Path X windowed-op time-source swap (event_time_ms → server now_ms()) + joins/unions removal (OpNode::Join/Union/JoinType deleted; structured-error rejection arms `feature_removed_no_*_v0`) + dead-code/redundancy sweep + mio-only hot-path enforcement (`phase12_6_mio_only_dataplane.rs` architectural test + CLAUDE.md `§Conventions § mio-only Hot-Path Invariant`) + REQUIREMENTS.md surgical sweep + Phase 12.5 / 13.3 archival banner sweep + microbench + throughput rebaseline
 - **Verdict basis:** all 7 ROADMAP success criteria PASS or PASS-WITH-WARN; all 5 CONTEXT decisions D-01..D-05 honored verbatim; PASS-WITH-WARN on the deadcode buckets (planning-target overshoots categorized as strict-deny test fixtures + post-pivot doc-comments + out-of-plan-scope `tally/` legacy package; clippy-warning floor is 0 warnings)
 - **Artifacts:** `.planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md` (phase narrative) + `.planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md` (mechanical pass/fail)
 
-### 🔴 P0 — v0 ship blockers (post-Phase-12.6 closure + v0-events-only commitment 2026-04-30)
+### 🔴 P0 — v0 ship blockers (post-Phase-12.7 closure + v0-events-only commitment 2026-04-30)
 
-#### 1. Phase 12.7 — Table strip (NEXT on v0 critical path) — NEW 2026-04-30
-- **Severity:** CRITICAL — predecessor to final ship phase
-- **Status:** 📋 PLANNED — CONTEXT.md stub at `.planning/phases/12.7-table-strip/12.7-CONTEXT.md`; not yet planned
-- **Scope:** Strip `@bv.table` Python decorator + `POST /upsert/{table_name}` + `POST /delete` + `POST /retract` + `GET /table/{name}` mio handlers (added by Phase 12.6 Plan 14) + `temporal_http.rs` helpers + `TemporalStore` MVCC machinery + `app.retract(event_id)` SDK verb + ~14 table-related tests. Walks back Phase 11.5 + Phase 12.6 Plan 14's mio table surface. WAL/snapshot likely needs v2→v3 schema bump.
-- **Why now:** Per `project_v0_events_only_scope` (locked 2026-04-30): v0 commits to events-only. Tables/joins/aggregation return together in v0.1+ if/when justified by demand. Phase 12.6 already deleted joins; tables have no v0 consumer; clean break is cheaper than maintaining a half-feature.
-- **Next action:** `/gsd-discuss-phase 12.7` to resolve open product decisions (WAL schema bump policy, Phase 11.5 retro-banner shape, test deletion vs migration, migration message in WAL loader)
-- **Estimated:** ~10 plans across 3-4 waves
-
-#### 2. Phase 13 — SDK polish + benchmarks + ship (FINAL v0 phase) — REFRAMED 2026-04-30
-- **Severity:** CRITICAL — final v0 ship gate
-- **Status:** 🟡 PARTIAL (Plan 13-01 `/metrics` Prometheus + Plan 13-03 `env_var_overrides` hermetic fix shipped on `phase-13-ship` @ `2ef5afc`; remaining plans need rescoping post-Phase-12.7)
+#### 1. Phase 13 — SDK polish + benchmarks + ship (FINAL v0 phase, NEXT) — REFRAMED 2026-04-30
+- **Severity:** CRITICAL — final v0 ship gate (NEXT on critical path post-Phase-12.7-closure)
+- **Status:** 🟡 PARTIAL (Plan 13-01 `/metrics` Prometheus + Plan 13-03 `env_var_overrides` hermetic fix shipped on `phase-13-ship` @ `2ef5afc`; remaining plans need rescoping post-Phase-12.7-closure)
 - **Scope (REFRAMED — drop bv.fork + playground + structured logs):** SDK polish on the events-only surface (`@bv.event` + 54-op catalogue + /push + /get + /register); perf gates on THREE pipelines (simple fraud / complex fraud / recommendation) ≥3M EPS, <10ms P99 batch-get; minimum-viable docs (quickstart → operators → http-api → architecture); `/metrics` Prometheus (already partially shipped); PyPI + Docker Hub image + GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); CI green; ship-ready tag. **DROPPED:** `bv.fork` subcommand, `playground.beava.dev`, structured logs.
+- **Inherits from Phase 12.7 closure:** Phase 12.7's microbench (3 cells: simple_counter 565 ns, sketch_heavy 661 ns, windowed_60s_sum 629 ns) + throughput rebaseline (8 cells: small/tcp 751,498 EPS regression-gate; fraud-team/tcp 93,519 EPS primary tuning bench) become the new regression-tripwire baselines. Architectural-test pair (`phase12_7_no_table_surface.rs` + `phase12_7_legacy_table_handlers_killed.rs`) gates every Phase 13+ commit against re-introduction of table surface. CLAUDE.md `§ Events-Only Invariant (locked Phase 12.7)` is non-negotiable.
 - **Why this shape:** v0 = polish + benchmarks. User explicit framing 2026-04-30: "the last phase before open source is polishing sdk and crafting benchmarks."
-- **Next action:** `/gsd-discuss-phase 13` AFTER Phase 12.7 closes (Phase 13 scope partly depends on what Phase 12.7 leaves behind)
+- **Next action:** `/gsd-discuss-phase 13` to capture remaining ship-readiness context (Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`; PyPI / Docker / GitHub Releases packaging; quickstart docs; concept docs / operator docs / HTTP API docs sweep with no-event-time pivot — D-05 deferred work from 12.6).
 - **Estimated:** ~10 plans (down from ~18; bv.fork + playground dropped)
 
 #### 2. ~~Phase 14 — Streaming silent-data-loss bug~~ — REMOVED 2026-04-30
@@ -121,17 +121,19 @@ See `project_redis_shaped_no_event_time_ever` (memory) for the full architectura
 - **Why post-v0:** Not ship-blocker — users compose count/sum with processing-time windowed ops for v0 demos. Session windows are the v0.1 highlight feature.
 - **Next action:** `/gsd-discuss-phase 25` after Phase 12.6 lands
 
-## Recommended ordering for next session(s) — REVISED 2026-04-30 (post Phase 12.6 closure)
+## Recommended ordering for next session(s) — REVISED 2026-05-01 (post Phase 12.7 closure)
 
 1. ~~**Session 1 — phase11_smoke debug**~~ — RESOLVED in Phase 12.6 Plan 01 (D-02 set-membership rewrite + Plan 07 file deletion with invariant preservation).
 2. ~~**Session 2 — Plan 12-10 execute**~~ — DEFERRED entirely from v0 per Phase 12.6 D-04.
 3. ~~**Session 3+ — Phase 12.6 discuss → plan → execute**~~ — ✅ CLOSED 2026-04-30 (PASS-WITH-WARN). 15 plans landed across 8 waves.
-4. **Session 4 (NEXT) — Phase 13 discuss → plan → execute:** `/gsd-discuss-phase 13` to capture remaining ship-readiness context (Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`; PyPI / Docker / GitHub Releases packaging; quickstart docs; concept docs / operator docs / HTTP API docs sweep with no-event-time pivot — D-05 deferred work). Then plan + execute. 8+ plans across 2-3 weeks.
-5. **Post-v0 — Phase 25 session windows + Phase 14/14.1/15 reconsideration if/when needed (ADR required to revive event-time).**
+4. ~~**Session 4 — Phase 12.7 discuss → plan → execute**~~ — ✅ CLOSED 2026-05-01 (PASS). 10 plans landed across 4 waves. ~5,500 LOC removed; FORMAT_VERSION RESET 2→1; events-only commitment locked at CI level.
+5. **Session 5 (NEXT) — Phase 13 discuss → plan → execute:** `/gsd-discuss-phase 13` to capture remaining ship-readiness context (Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`; PyPI / Docker / GitHub Releases packaging; quickstart docs; concept docs / operator docs / HTTP API docs sweep with no-event-time pivot — D-05 deferred work from 12.6). Then plan + execute. ~10 plans (down from ~18; bv.fork + playground dropped).
+6. **Post-v0 — Phase 25 session windows + Phase 14/14.1/15 reconsideration if/when needed (ADR required to revive event-time / tables).**
 
 ## Out-of-scope (do not pursue without explicit user direction)
 
 - **Event-time / watermarks / late-event correction / PIT temporal store / joins of any kind / `bv.union`** — LOCKED OUT permanently per `project_redis_shaped_no_event_time_ever` (2026-04-30). Reviving any of these requires explicit user override + new ADR.
+- **Tables / `@bv.table` / `app.upsert/delete/retract` / `TemporalStore` / `MvccVersion` / `temporal_http` / `RecordType::TableUpsert/TableDelete/Retract`** — LOCKED OUT permanently per Phase 12.7 Events-Only Invariant (CLAUDE.md `§Conventions § Events-Only Invariant (locked Phase 12.7)`). Enforced by `phase12_7_no_table_surface.rs` + `phase12_7_legacy_table_handlers_killed.rs` architectural test pair on every PR. Reviving requires explicit user override + new ADR overturning `project_v0_events_only_scope`.
 - **Second data-plane runtime / third caller of `apply_event_to_aggregations` / `axum::*` symbols outside `http_admin.rs`** — LOCKED OUT permanently per Phase 12.6 mio-only Hot-Path Invariant (CLAUDE.md `§Conventions § mio-only Hot-Path Invariant (locked Phase 12.6)`). Enforced by `phase12_6_mio_only_dataplane.rs` architectural test on every PR.
 - **`event_time_ms` / `event_time_field` / `tolerate_delay_ms` / `bv.join` / `bv.union` / `OpNode::Join` / `OpNode::Union`** — LOCKED OUT permanently per Phase 12.6 D-03 hard rip. Wire schema rejects with structured 400 codes; Python decorator raises TypeError; OpNode variants deleted.
 - Multi-thread apply / sharding within a process (LOCKED OUT per `project_no_sharded_apply`)
@@ -142,4 +144,4 @@ See `project_redis_shaped_no_event_time_ever` (memory) for the full architectura
 
 ---
 
-*Drafted by Claude Opus 4.7 on 2026-04-29. Revised 2026-04-30 for no-event-time architectural pivot. Re-revised 2026-04-30 for Phase 12.6 closure (Plan 12.6-13).*
+*Drafted by Claude Opus 4.7 on 2026-04-29. Revised 2026-04-30 for no-event-time architectural pivot. Re-revised 2026-04-30 for Phase 12.6 closure (Plan 12.6-13). Re-re-revised 2026-05-01 for Phase 12.7 closure (Plan 12.7-10).*
