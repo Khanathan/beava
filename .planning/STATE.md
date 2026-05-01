@@ -3,21 +3,23 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 12.8
-last_updated: "2026-05-01T20:30:00.000Z"
+last_updated: "2026-05-01T20:31:07.000Z"
 progress:
   total_phases: 38
   completed_phases: 18
   total_plans: 166
-  completed_plans: 129
-  percent: 77
+  completed_plans: 130
+  percent: 78
 ---
 
 <!-- Session continuity (resume) -->
 <!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 10 landed (Wave 4: closure — STATE/ROADMAP/CORRECTNESS-PATH advance + CLAUDE.md § Events-Only Invariant block + Phase 12.7 SUMMARY/VERIFICATION). Phase 12.7 OFFICIALLY CLOSED 2026-05-01 (PASS) at HEAD 5645ead. 10 plans landed (Plans 01-10) across 4 waves. Workspace 1049/0/4 with cargo clippy + fmt clean. Architectural test pair (phase12_7_no_table_surface 3 tests + phase12_7_legacy_table_handlers_killed 6 tests) GREEN BY DEFAULT (no --include-ignored flag needed). All 4 CONTEXT decisions D-01..D-04 honored verbatim: D-01 RESET FORMAT_VERSION 2→1 across 3 schemas; D-02 forward-looking error framing 'not supported in v0' across 7 layers; D-03 two-file architectural-test pair locks events-only at CI level; D-04 comprehensive REQUIREMENTS sweep (8 REQ-IDs DESCOPED + V0-EVENTS-ONLY-01 anchor) + 11.5 retro-descope banner on 3 files. ~5,500 LOC removed cumulatively (Plans 03/04/06 dominant). Microbench: 3 cells SIGNIFICANTLY FASTER (-25 to -30%); throughput +7.3% on small/tcp regression-gate cell. Two PLANNER-SURFACED CONCERNs documented for user review in 12.7-SUMMARY: SDK-AGG-* operator-family REQ-IDs LEFT ACTIVE (Concern 1) and D-04 wildcard discrepancy (Concern 2). Section-ownership honored across Plans 07 (REQUIREMENTS) + 08 (11.5 banners) + 09 (perf/throughput baselines) + 10 (STATE/ROADMAP/CORRECTNESS-PATH/CLAUDE.md). Per CLAUDE.md TDD §Note 4, doc-only closure plan: chore: prefix for code housekeeping (commit 5645ead) + docs: prefix for SUMMARY/VERIFICATION/closure (commits 6db1881 + this final closure commit). -->
-<!-- Stopped at: Phase 12.7 CLOSED; ready for /gsd-discuss-phase 13 (final v0 ship — SDK polish + perf benchmarks on THREE pipelines + minimum-viable docs + PyPI/Docker/GitHub Releases packaging). -->
+<!-- Stopped at: Phase 12.8 Plan 05 landed; ready for /gsd-execute-phase 12.8 Plan 06 (Wave 3 — env-gate `BEAVA_MEMORY_GOV_ENFORCE` OFF→ON flip + 5 Prometheus metric families on `/metrics` admin sidecar). -->
 <!-- Resume files: .planning/phases/12.7-table-strip/12.7-SUMMARY.md (phase narrative) + .planning/phases/12.7-table-strip/12.7-VERIFICATION.md (mechanical pass/fail) + .planning/perf-baselines.md::Phase 12.7 (regression-tripwire baseline for Phase 13) + .planning/throughput-baselines.md::Phase 12.7 (8-cell baseline for Phase 13). -->
-<!-- Phase 12.8 progress (2026-05-01): Plan 01 (4th JSON-prelude shim env-gated) + Plan 02 (cold_after kwarg + EventDescriptor.cold_after_ms field) + Plan 03 (cold-entity TTL eviction on apply hot path with last_seen_ms sidecar) + Plan 04 (54-op lifetime bound table + BoundedByRequiredKwarg presence-check) all LANDED at HEAD b096f7c. Workspace +20 new tests (15 Rust unit tests in op_lifetime_bounds.rs + 5 Python E2E tests). Plan 04 RED: dac7150; GREEN: b096f7c. Wave 2 COMPLETE (Plans 03+04). Remaining waves: Wave 3 (Plan 05 cold_entity_evictions metric + Plan 06 env-gate flip + lifetime_op_cap_hit metric counter wiring + Plan 07 architectural test phase12_8_lifetime_ops_have_bounds), Wave 4 (microbench + throughput rebaseline), Wave 5 (closure). Plan 04 left BEAVA_MEMORY_GOV_ENFORCE at default-OFF per checker B-01 fix; Plan 06 owns the OFF→ON flip. -->
-<!-- Resume Phase 12.8: next plans 05+ per .planning/phases/12.8-memory-governance/. -->
+<!-- Phase 12.8 progress (2026-05-01): Plan 01 (4th JSON-prelude shim env-gated) + Plan 02 (cold_after kwarg + EventDescriptor.cold_after_ms field) + Plan 03 (cold-entity TTL eviction on apply hot path with last_seen_ms sidecar) + Plan 04 (54-op lifetime bound table + BoundedByRequiredKwarg presence-check) + Plan 05 (architectural test phase12_8_lifetime_ops_have_bounds — single-file CI-tripwire, GREEN-by-default) all LANDED at HEAD e39314d. Workspace +23 new tests (15 Rust unit tests in op_lifetime_bounds.rs + 5 Python E2E tests + 3 architectural tests in phase12_8_lifetime_ops_have_bounds.rs). Plan 04 RED: dac7150; GREEN: b096f7c. Plan 05 test-only commit: e39314d. Wave 2 COMPLETE (Plans 03+04). Wave 3 PARTIALLY COMPLETE (Plan 05 landed; Plans 06+07 remaining). Remaining waves: Wave 3 (Plan 06 env-gate OFF→ON flip + 5 Prometheus metric families on /metrics admin sidecar; Plan 07 REQUIREMENTS.md positive anchors V0-MEM-GOV-01/02/03), Wave 4 (Plan 08 microbench + throughput rebaseline), Wave 5 (Plan 09 closure). Plan 04 left BEAVA_MEMORY_GOV_ENFORCE at default-OFF per checker B-01 fix; Plan 06 owns the OFF→ON flip. -->
+<!-- Resume Phase 12.8: next plan 06 per .planning/phases/12.8-memory-governance/12.8-06-PLAN.md (Wave 3 — env-gate flip + 5 Prometheus metric families). -->
+
+<!-- Plan 12.8-05 closed 2026-05-01 at HEAD e39314d. Architectural test phase12_8_lifetime_ops_have_bounds.rs (321 LOC; 3 tests) locks the agg_compile↔register_validate lockstep into CI. Coverage check + 2 sanity drift guards. GREEN-by-default (no #[ignore]); cargo test --workspace 83 buckets pass; clippy + fmt clean. Single-file architectural test (NOT companion pair like 12.6/12.7) per CONTEXT.md decisions — 12.8 has no analogous deletion target. Single test: prefix commit per CLAUDE.md TDD §Note 4 (test-only plan exemption; Plan 04 already provides GREEN behaviour). Plan 05 was bumped Wave 2→Wave 3 per checker W-01 fix so it executes strictly AFTER Plan 04's classification table is populated; running concurrently in Wave 2 would have produced false-RED against Plan 01's all-Unbounded placeholder. SUMMARY: .planning/phases/12.8-memory-governance/12.8-05-SUMMARY.md. -->
 
 # State: Beava v2 — v0 OSS Launch
 
