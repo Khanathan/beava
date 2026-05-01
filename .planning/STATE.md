@@ -2,20 +2,22 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 12.7 CLOSED — Phase 13 NEXT (final v0 ship)
-last_updated: "2026-05-01T14:30:00Z"
+status: Executing Phase 12.8
+last_updated: "2026-05-01T22:00:00.000Z"
 progress:
-  total_phases: 37
+  total_phases: 38
   completed_phases: 18
-  total_plans: 157
-  completed_plans: 130
-  percent: 83
+  total_plans: 166
+  completed_plans: 128
+  percent: 77
 ---
 
 <!-- Session continuity (resume) -->
 <!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 10 landed (Wave 4: closure — STATE/ROADMAP/CORRECTNESS-PATH advance + CLAUDE.md § Events-Only Invariant block + Phase 12.7 SUMMARY/VERIFICATION). Phase 12.7 OFFICIALLY CLOSED 2026-05-01 (PASS) at HEAD 5645ead. 10 plans landed (Plans 01-10) across 4 waves. Workspace 1049/0/4 with cargo clippy + fmt clean. Architectural test pair (phase12_7_no_table_surface 3 tests + phase12_7_legacy_table_handlers_killed 6 tests) GREEN BY DEFAULT (no --include-ignored flag needed). All 4 CONTEXT decisions D-01..D-04 honored verbatim: D-01 RESET FORMAT_VERSION 2→1 across 3 schemas; D-02 forward-looking error framing 'not supported in v0' across 7 layers; D-03 two-file architectural-test pair locks events-only at CI level; D-04 comprehensive REQUIREMENTS sweep (8 REQ-IDs DESCOPED + V0-EVENTS-ONLY-01 anchor) + 11.5 retro-descope banner on 3 files. ~5,500 LOC removed cumulatively (Plans 03/04/06 dominant). Microbench: 3 cells SIGNIFICANTLY FASTER (-25 to -30%); throughput +7.3% on small/tcp regression-gate cell. Two PLANNER-SURFACED CONCERNs documented for user review in 12.7-SUMMARY: SDK-AGG-* operator-family REQ-IDs LEFT ACTIVE (Concern 1) and D-04 wildcard discrepancy (Concern 2). Section-ownership honored across Plans 07 (REQUIREMENTS) + 08 (11.5 banners) + 09 (perf/throughput baselines) + 10 (STATE/ROADMAP/CORRECTNESS-PATH/CLAUDE.md). Per CLAUDE.md TDD §Note 4, doc-only closure plan: chore: prefix for code housekeeping (commit 5645ead) + docs: prefix for SUMMARY/VERIFICATION/closure (commits 6db1881 + this final closure commit). -->
 <!-- Stopped at: Phase 12.7 CLOSED; ready for /gsd-discuss-phase 13 (final v0 ship — SDK polish + perf benchmarks on THREE pipelines + minimum-viable docs + PyPI/Docker/GitHub Releases packaging). -->
 <!-- Resume files: .planning/phases/12.7-table-strip/12.7-SUMMARY.md (phase narrative) + .planning/phases/12.7-table-strip/12.7-VERIFICATION.md (mechanical pass/fail) + .planning/perf-baselines.md::Phase 12.7 (regression-tripwire baseline for Phase 13) + .planning/throughput-baselines.md::Phase 12.7 (8-cell baseline for Phase 13). -->
+<!-- Phase 12.8 progress (2026-05-01): Plan 01 (4th JSON-prelude shim env-gated) + Plan 02 (cold_after kwarg + EventDescriptor.cold_after_ms field) + Plan 03 (cold-entity TTL eviction on apply hot path with last_seen_ms sidecar) all LANDED at HEAD aa90198. Workspace 1069/0 tests pass (+7 new from phase12_8_cold_entity_eviction). Cold-TTL eviction operational end-to-end: register source with @bv.event(cold_after='7d') → push events → entity state CLEARED on resurrect after TTL gap (FRESH state, Redis TTL pattern, D-04 locked permanent). Wave 2 partially done; remaining waves: per-op lifetime memory bounds + metrics + architectural test + microbench + closure. -->
+<!-- Resume Phase 12.8: next plans 04+ per .planning/phases/12.8-memory-governance/. -->
 
 # State: Beava v2 — v0 OSS Launch
 
