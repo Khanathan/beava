@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 12.7
-last_updated: "2026-05-01T12:01:54Z"
+last_updated: "2026-05-01T12:21:00Z"
 progress:
   total_phases: 37
   completed_phases: 17
   total_plans: 157
-  completed_plans: 122
-  percent: 77
+  completed_plans: 123
+  percent: 78
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 04 landed (Wave 2 sequel: server-side temporal-module strip). Whole-module deleted crates/beava-server/src/temporal_http.rs (~756 LOC) + crates/beava-core/src/temporal.rs (~394 LOC) + crates/beava-core/benches/temporal_mvcc.rs (~69 LOC orphan bench). DevAggState slimmed by 2 fields (temporal_stores + event_id_index); EventIdEntry enum (incl TableWrite + Stream variants) deleted; GlueResponse::TemporalResponse variant + server.rs:2186 consumer arm deleted; apply_shard.rs step 10 (orphan event_id_index lock) deleted. LOC delta: +76 / -1,358 (net ~1,282 removed; planning estimate 1,150). Plan 02's RED inventory dropped 15 → 8 occurrences (7 cleared: TemporalStore, MvccVersion, temporal_http, plus runtime_core_glue/server.rs cleanup of TemporalResponse leftover). 1 new architectural sub-test GREEN (app_temporal_fields_deleted); legacy_table_files_deleted partial 2/3 (Rust files gone; python/_tables.py pending Plan 06). Test maintenance: phase18_12_arc_str_bookkeeping_test #![cfg(any())]-gated (slated for deletion Plan 06); phase12_6_legacy_axum_killed::temporal_http_axum_handlers_deleted repointed to file-absence assertion. Commit: 4d0fabd (single GREEN; RED gate was Plan 02's existing architectural test). Workspace green, clippy clean, fmt clean, 100/100 test files PASSED. -->
-<!-- Stopped at: Plan 12.7-04 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-05 persistence schema reset — RecordType::TableUpsert/TableDelete/Retract delete + FORMAT_VERSION 2→1 reset OR 12.7-06 Python SDK strip — both Wave-3, parallel-runnable) per CONTEXT.md wave order -->
-<!-- Resume files: .planning/phases/12.7-table-strip/12.7-04-SUMMARY.md (Plan 04 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
+<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 05 landed (Wave 2 closer: persistence schema reset). All 3 format-version constants reset 2 → 1 across record.rs / snapshot_body.rs / snapshot_header.rs (D-01 hard rip RESET, NOT forward bump — v0 isn't released, nothing to be backward-compatible with). RecordType enum slimmed by 3 variants (Phase 11.5's table-write + stream-retract record types deleted; surface = Event 0x01 + RegistryBump 0x02). from_u8(0x03|0x04|0x05) returns existing generic PersistError::UnknownRecordType per D-02 (no new table-specific code). recovery.rs replay loop deleted the table-write + stream-retract arm at line 380+. Fixture sweep: 2 tests in writer_reader.rs updated for the v=1 surface (segment_header_bad_version + unknown_record_type_errors). Plan-05 RED → GREEN: 5-test gate at phase12_7_format_version_reset.rs all passing. Architectural sub-test temporal_record_type_variants_deleted GREEN (still #[ignore]-marked pending Plan 12.7-09 closure). Plan 02's RED inventory dropped 8 → 2 (push_table / delete_table in beava-core/src/wire.rs — Plan 06+ scope). Net LOC delta: +93 / -71 across 6 production files; +112 new test file. Commits: 5394d2a (test) + 9a2012b (feat). Workspace cargo check + clippy --all-targets --all-features -D warnings + fmt --all --check all clean; 101 test files PASSED, 1045 cases passed, 0 failed. -->
+<!-- Stopped at: Plan 12.7-05 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-06 Python SDK strip — Wave 3 — deletes python/beava/_tables.py + namespace re-exports + App.upsert/delete methods + 3 Python e2e test files) per CONTEXT.md wave order -->
+<!-- Resume files: .planning/phases/12.7-table-strip/12.7-05-SUMMARY.md (Plan 05 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
 
 # State: Beava v2 — v0 OSS Launch
 
