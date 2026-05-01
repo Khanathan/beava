@@ -633,3 +633,74 @@ must remain GREEN.
 **Hetzner Linux EPYC-Genoa baseline:** not captured in this run
 (single-pass execution on Apple-M4 only). Future Phase 13 / regression
 sweeps should re-run on Hetzner.
+
+---
+
+### Phase 12.6 — Post-axum-kill apply microbench (Apple-M4)
+
+**Captured:** 2026-04-30 (Phase 12.6 Plan 11).
+**hw-class:** `Apple-M4 / Darwin-24.3.0 / 10 cores`.
+**HEAD at measurement:** `3ffa19d` (post Plans 12.6-05 / 06 / 07 / 10 — Path X
+windowed-op time-source swap, event-time hard rip, legacy axum kill, mio-only
+architectural test).
+**Methodology:** criterion 100 samples, 3s warm-up, 5s collection. Bench
+harness at `crates/beava-server/benches/phase12_6_post_axum_kill_apply.rs`.
+Each cell drives `ApplyShard::dispatch_wire_request_with_row` with
+`WireRequest::HttpPush` end-to-end (parse + descriptor lookup + WAL append +
+agg-stage). Pre-warm: 1000 events (100 entities × 10 events) before the iter
+loop so per-entity init costs are amortized. Bench measures *batch of 100
+events* per criterion iter — divide by 100 for ns/event.
+
+| Cell | Median (per 100-event batch) | ns/event | Range | Outliers | Comparison baseline | Verdict |
+|---|---|---|---|---|---|---|
+| `phase12_6/simple_counter/100_events` | 81.034 µs | 810.3 ns/event | 78.107–84.800 µs | 12% (4 low severe, 5 high mild, 3 high severe) | First measurement (no prior end-to-end dispatch_push_sync bench in same shape; closest analogue is Phase 19.4-E `apply_path/warm_key/14_aggs` = 318.68 ns at agg-stage-only). | PASS (first measurement; future regressions detected against this row) |
+| `phase12_6/sketch_heavy/100_events` | 88.400 µs | 884.0 ns/event | 83.054–96.841 µs | 9% (4 low mild, 1 high mild, 4 high severe) | First measurement (CountDistinct in HashSet mode after pre-warm; closest analogue is Phase 19.4-A identity-hasher fix on the agg-stage). | PASS (first measurement) |
+| `phase12_6/windowed_60s_sum/100_events` | 88.294 µs | 882.9 ns/event | 85.556–92.440 µs | 9% (4 low severe, 1 low mild, 1 high mild, 3 high severe) | First measurement (post Path-X SystemTime::now() swap; closest analogue is Phase 19.3-02 `WindowedOp::update_at` fast-path or Phase 19.4-E `apply_path/warm_key/14_aggs_windowed` = 413.87 ns at agg-stage-only). | PASS (first measurement) |
+
+**Verdict thresholds (CLAUDE.md §Performance Discipline):**
+- 10% slower than this baseline (in same hw-class) → WARN (must investigate before Phase 13)
+- 25% slower than this baseline (in same hw-class) → BLOCK (phase verification fails)
+
+**Why "first measurement" rather than comparison vs Phase 19.4:**
+
+Phase 19.4 baselines (`apply_path/warm_key/14_aggs` = 316.95 ns; `14_aggs_windowed` = 413.87 ns)
+measure the **agg-stage in isolation** — they call `apply_event_to_aggregations` directly with
+a pre-built `Row` and pre-resolved registry, skipping parse + descriptor lookup + WAL append.
+Phase 12.6's bench measures **end-to-end dispatch_push_sync**: HTTP/TCP push entry → JSON
+parse → descriptor lookup → strict-deny field check → schema validate → dedupe lookup →
+WAL serialize + append → agg-stage → bookkeeping counters. The numbers are not
+apples-to-apples comparable.
+
+A rough cost model for `phase12_6/simple_counter` (810 ns/event):
+- ~100-200 ns: `sonic_rs::from_slice::<Row>` JSON parse for `{user_id, amount}` body
+- ~50-100 ns: descriptor lookup + schema validate + strict-deny field iteration
+- ~50-100 ns: WAL record build + `WalBufferRing::append` (lock-free atomic memcpy)
+- ~150-300 ns: agg-stage (1 Count feature; a fraction of Phase 19.4's 14-feature 316.95 ns)
+- ~50-100 ns: bookkeeping counters + event_id_index insert
+
+Sum ≈ 400-800 ns, in the same envelope as the measured 810 ns. The fixture is sane.
+
+**Notes on bench shape:**
+
+- **Bench harness shared via `crates/beava-server/benches/common.rs`** —
+  `BenchHarness` struct + `build_apply_shard_with_pipeline(register_payload)` helper.
+  Future Phase 12.6+ apply-path benches reuse the same bootstrap. The helper spawns
+  a `WalWriter` thread alongside the `WalBufferRing` so the bench loop can run
+  for many iterations without exhausting the 3 × 16 MiB ring (without a writer,
+  buffers never return to FREE state and `append` blocks forever once the ring
+  fills up).
+- **Per-cell pre-warm:** simple_counter pushes 1000 events upfront; sketch_heavy
+  pushes 1000 events with varied `session_id` so CountDistinct promotes past
+  EXACT_THRESHOLD (16) into HashSet mode (the hot path Phase 19.4-A optimized);
+  windowed_60s_sum pushes 1000 events to populate WindowedOp buckets.
+- **Path X overhead:** the windowed_60s_sum cell exercises
+  `SystemTime::now()` syscall (Phase 12.6-05 swap from row.event_time read).
+  Expected overhead: +10-30 ns/event vs the pre-Path-X read path. The
+  windowed_60s_sum and simple_counter cells differ by ~73 ns/event (884 - 810);
+  this delta includes the SystemTime cost and the WindowedOp bucket fold work.
+
+**Outlier note:** All three cells show 9-12% outliers in the criterion sample.
+Apple-M4 macOS development machines are noisy under typical desktop load (browser
+tabs, background apps); criterion's median is robust to this and is the canonical
+regression-detection number. Phase 13 should re-run on Hetzner Linux EPYC-Genoa
+in a quieter environment for the production-shipping baseline.

@@ -274,3 +274,12 @@ required-features = ["testing"]
 name = "phase12_09_msgpack_get"
 harness = false
 required-features = ["testing"]
+
+# ─── Plan 12.6-11 — post-axum-kill apply microbench (perf-discipline gate) ───
+# Drives ApplyShard::dispatch_wire_request_with_row through three concrete
+# event shapes (simple counter, count_distinct/HLL, windowed 60s sum). Bench
+# bootstrap is shared via benches/common.rs. See
+# .planning/phases/12.6-v0-surface-reduction/12.6-11-PLAN.md.
+[[bench]]
+name = "phase12_6_post_axum_kill_apply"
+harness = false
