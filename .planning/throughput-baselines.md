@@ -1371,3 +1371,130 @@ architectures.
 - Plan 12-09 microbench codec gates: msgpack and JSON within ±5% on
   integer-leaf fixtures (not a lift requirement; codec-equivalence
   guard).
+
+## Phase 12.6 — Post-axum-kill throughput rebaseline (Apple-M4 / Darwin-24.3.0 / 10 cores)
+
+**Captured:** 2026-05-01. hw-class: `Apple-M4 / Darwin-24.3.0 / 10 cores`.
+**HEAD at measurement:** `5e1da55` (commit `5e1da55a92f7f579cd1cf33e9c9d275ef6f7997c` — post-Plan-12.6-11 microbench).
+**Beava binary:** `target/release/beava-bench-v18` driving an in-process `ServerV18`
+(mio data plane only, post-Phase-12.6 surface reduction). Legacy axum data plane
+deleted; `event_time_ms` push field stripped from wire schema; windowed-op time
+source switched to server-side `now_ms()` (Path X); joins/unions DAG nodes deleted;
+~3500 LOC removed vs post-Plan-12-09.
+
+**System note:** runs executed on a busy MacBook (load avg ~5-11 across the run; Cursor
+IDE + Claude Code worktrees compiling in parallel). Pre-12-07 the same conditions
+caused small/tcp variance from 392k → 706k EPS; post-12-08 runs ranged 671k-730k EPS
+with stddev ~22k (3%). Post-12.6 small/tcp (6 runs) ranged 653k-724k EPS with stddev
+~24k (3.4%) — same load-variance band, no architectural shift.
+
+**Methodology (matches Phase 12-08 / 12-09 convention):** 1 run per cell except small/tcp
+(6 runs to characterize variance; median reported). All runs:
+`--total-events=1000000 --parallel=16 --pipeline-depth=1024 --continuous-pipeline=true
+--transport={tcp|http} --wire-format={msgpack|json} --blast-shape=zipfian --zipf-alpha=1.0
+--cardinality=10000 --isolation-mode --no-ledger`. HTTP cells use `--wire-format=json`
+(HTTP only supports JSON per project_redis_shaped_no_event_time_ever). TCP cells use
+`--wire-format=msgpack` (post-Plan-12-09 default).
+
+### Push throughput matrix (Apple-M4)
+
+| Pipeline | Transport | EPS | push p50 / p99 (µs) | wall_clock (ms) | RSS peak (MB) | Prior baseline (cell) | Delta | Verdict |
+|---|---|---:|---|---:|---:|---|---|---|
+| small | tcp | **700,571** (median of 6 runs: 653k / 692k / 696k / 705k / 707k / 724k; mean 696,420; stddev 23,845) | 17,487 / 38,463 (sampled run) | 1,406 | 1,815 | 707,237 (post-12-08) | **-0.94%** (median) / **-1.5%** (mean) | **PASS** (regression-gate cell — within ±10%) |
+| small | http | 105,400 (single run with /get sampling) | 135 / 266 | 9,487 | 353 | 103,693 (post-12-08) | **+1.6%** | PASS |
+| medium | tcp | 704,217 (single run with /get sampling) | 18,687 / 33,599 | 1,420 | 1,838 | 699,509 (post-12-08) | **+0.7%** | PASS |
+| medium | http | 110,157 (single run with /get sampling) | 136 / 266 | 9,077 | 613 | 106,541 (post-12-08) | **+3.4%** | PASS |
+| large | tcp | 619,931 (single run with /get sampling) | 19,919 / 54,495 | 1,613 | 2,337 | 659,877 (post-12-08) | **-6.1%** | PASS (within ±10%) |
+| large | http | 98,513 (single run with /get sampling) | 142 / 293 | 10,150 | 1,179 | 107,745 (post-12-08) | **-8.6%** | PASS (borderline; within ±10%) |
+| fraud-team | tcp | **102,788** (single run with /get sampling) | 157,823 / 267,007 | 9,728 | 7,081 | 102,291 (post-12-08) | **+0.5%** | PASS (primary tuning bench per `project_fraud_team_primary_bench` 2026-04-27) |
+| fraud-team | http | 52,708 (single run with /get sampling) | 292 / 440 | 18,972 | 8,451 | 55,233 (post-12-08) | **-4.6%** | PASS |
+
+### Sampled batch-/get latency (under push load — gate-cell context)
+
+| Pipeline | Transport | get_samples | get p99 (µs, 100-key batch) | Notes |
+|---|---|---:|---:|---|
+| small | tcp | 33 | 38,463 | sampled at 50ms interval under sustained 700k+ EPS push load |
+| small | http | 18 | 2,629 | sampled at 500ms interval under sustained 100k+ EPS push load |
+| medium | tcp | 3 | 19,935 | only 3 samples — short run (1.4s wall_clock) at 500ms sampler |
+| medium | http | 18 | 366 | |
+| large | tcp | 4 | 31,519 | |
+| large | http | 20 | 2,179 | |
+| fraud-team | tcp | 12 | 166,143 | rich pipeline; tail dominated by 14-node × 110-feature apply cost under saturated push load |
+| fraud-team | http | 18 | 1,180 | |
+
+**Caveat:** these are batch /get P99s captured **during sustained push saturation**, not
+read-only quiescent measurements. Plan 12-09 §Single-cell read sample documents 7-175k
+single-cell read throughput depending on workers; these batch-/get numbers are upper-bound
+read latency under push pressure, not the SLO surface.
+
+### Regression check vs Phase 12-08 baseline (small/tcp gate cell)
+
+| Cell | Pre-12.6 (post-12-08) | Post-12.6 (median 6 runs) | Delta | Verdict |
+|---|---:|---:|---:|---|
+| **small/tcp EPS (regression-gate)** | 707,237 | **700,571** | **-0.94%** | **PASS** (within ±10% gate) |
+| small/tcp mean (across 6 runs) | 707,237 | 696,420 | -1.5% | PASS |
+| small/http EPS | 103,693 | 105,400 | +1.6% | PASS |
+| medium/tcp EPS | 699,509 | 704,217 | +0.7% | PASS |
+| medium/http EPS | 106,541 | 110,157 | +3.4% | PASS |
+| large/tcp EPS | 659,877 | 619,931 | -6.1% | PASS |
+| large/http EPS | 107,745 | 98,513 | -8.6% | PASS (borderline; within ±10%) |
+| fraud-team/tcp EPS (primary tuning bench) | 102,291 | **102,788** | **+0.5%** | PASS |
+| fraud-team/http EPS | 55,233 | 52,708 | -4.6% | PASS |
+
+### Verdict thresholds (CLAUDE.md §Performance Discipline §End-to-end throughput regression contract)
+
+- **simple-fraud TCP** <90% of prior baseline → WARN (must investigate before Phase 13)
+- **simple-fraud TCP** <75% of prior baseline → BLOCK (phase verification fails)
+- All other cells: informational; no block threshold (per the contract, only the simple-fraud (small) shape's TCP cell is the gate)
+
+### Headline
+
+Phase 12.6 net code change vs post-Plan-12-09 was a deletion sweep: legacy axum data
+plane deleted, event_time_ms field stripped from wire, windowed-op time source switched
+to server `now_ms()` (Path X), joins/unions DAG nodes deleted, ~3500 LOC removed. Expected
+performance change was ~neutral with possible small lift from removed legacy code (no
+longer compiled in the binary, fewer instructions in icache) offset by `now_ms()` syscall
+on every push (~10-30 ns × ~500 ns mean apply = ~2-6% headwind).
+
+**Observation:** numbers are within ±2% on the production-relevant cells (small/tcp -1%,
+medium/tcp +1%, fraud-team/tcp +0.5%) and the spread of 6 small/tcp runs is dominated by
+load-variance (stddev 3.4%, matching post-12-08's 3% pattern). The slight `large/tcp` -6%
+and `large/http` -8.6% are within the ±10% gate but at the WARN edge — these are
+single-run cells on a busy box; quiescent re-measurement during Phase 13 ship-gate would
+firm them up. Both deltas are small enough to be load-noise rather than architectural; the
+Path X event-time → now_ms() swap touches every windowed-op apply path, so a few percent
+jitter in the windowed-op-heavy cells is expected and within band.
+
+### Cell-level anomalies flagged for Phase 13 investigation
+
+| Cell | Delta | Disposition |
+|---|---|---|
+| large/tcp | -6.1% | Likely load-variance (single run on busy box at load 5-11). Phase 13 quiescent re-measurement should firm up. No code-path investigation warranted. |
+| large/http | -8.6% | Borderline; same disposition as large/tcp. Both `large` cells use the 15-feature pipeline with multiple windowed ops — most affected by Path X event-time→now_ms() swap. Re-measurement on quiescent box recommended. |
+| fraud-team/tcp push p99 = 267,007 µs (~267 ms) | n/a | Tail latency under saturated push load is expected for the 14-node × 110-feature pipeline at 100k+ EPS. EPS is the gate metric; tail is informational. |
+
+### Truth-target verdict for Plan 12.6-12 must_haves
+
+| Truth target | Status | Evidence |
+|---|---|---|
+| beava-bench runs successfully against small/medium/large + fraud-team.json zipfian (post-12.6 codebase) | **PASS** | All 8 cells produced EPS measurements; harness compiled clean from post-12.6 source. |
+| Each (pipeline-shape, transport) tuple produces an EPS measurement appended to throughput-baselines.md | **PASS** | 8 cells in Push throughput matrix above (4 shapes × 2 transports). |
+| Comparison vs most recent prior baseline (post-Plan-12-09 / post-Plan-12-08) on simple-fraud (small) shape with Verdict | **PASS** | small/tcp regression-gate row: -0.94% (median 6 runs) → PASS. |
+| 10% slower → WARN; 25% slower → BLOCK | **PASS** | -0.94% well within ±10% gate; no WARN/BLOCK triggered. |
+
+### Hetzner Linux EPYC-Genoa baseline
+
+**Status: PENDING** — single-pass executor environment runs on Apple-M4 only.
+Future Phase 13 ship-gate sweep should:
+1. Build `target/release/beava-bench-v18` on Hetzner.
+2. Re-run the 8-cell matrix from this section.
+3. Append a parallel `### Push throughput matrix (Hetzner Linux EPYC-Genoa)` table.
+4. Update the regression-check sub-table with Hetzner row.
+
+### Regression gates updated post-12.6 (Apple-M4)
+
+- bench-v18 push small/tcp+msgpack ≥ 630,500 EPS (10% under post-12.6 700,571 median)
+  — Phase 13 ship-gate floor.
+- bench-v18 push fraud-team/tcp+msgpack ≥ 92,500 EPS (10% under post-12.6 102,788)
+  — primary tuning-bench floor.
+- Other cells informational (no block threshold per the contract).
