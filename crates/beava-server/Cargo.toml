@@ -282,3 +282,14 @@ required-features = ["testing"]
 [[bench]]
 name = "phase12_6_post_axum_kill_apply"
 harness = false
+
+# ─── Plan 12.8-08 — memory-governance apply microbench (perf-discipline gate) ───
+# Two cells covering Plan 12.8-03's cold-entity TTL check overhead on the
+# apply hot path: cold_ttl_disabled (cold_after_ms = None — baseline; matches
+# Phase 12.7 simple_counter shape) vs cold_ttl_enabled (cold_after_ms =
+# Some(30d) — measures Option-is-some + last_seen_u64 HashMap lookup +
+# update cost when TTL is set but no actual eviction fires). See
+# .planning/phases/12.8-memory-governance/12.8-08-PLAN.md.
+[[bench]]
+name = "phase12_8_memory_gov_apply"
+harness = false
