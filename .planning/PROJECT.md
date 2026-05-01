@@ -2,11 +2,11 @@
 
 ## What This Is
 
-Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources, `@bv.table` snapshots, and derived features (aggregations, session windows, stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP/JSON (curl-testable, LB/WAF-compatible) and a custom-framed TCP fast-path (low-latency SDK-to-server), maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, dual HTTP+TCP wire, processing-time semantics only — no event-time / no watermarks / no joins), and a richer operator catalogue.
+Beava is a single-binary real-time feature server built around a dataframe-style Python DSL. Users declare `@bv.event` sources and derived features (the 54-op aggregation catalogue + stateless transforms) using decorators and an expression DSL. The server ingests events over HTTP/JSON (curl-testable, LB/WAF-compatible) and a custom-framed TCP fast-path (low-latency SDK-to-server), maintains per-entity state in memory, and serves features sub-millisecond. The product is the spiritual successor to Beava v1 — same authoring experience, dramatically simpler runtime (single process, single thread, in-memory state, dual HTTP+TCP wire, processing-time semantics only). **v0 is events-only** — `@bv.table`, joins, table aggregation, session windows are out of v0 scope (return in v0.1+ if/when justified by demand per `project_v0_events_only_scope`).
 
 ## Core Value
 
-**Feature authoring as composable Python code that ships to production unchanged.** A data scientist writes `@bv.event`, `.filter(...)`, `group_by("user").agg(...)`, `@bv.table(key=..., ttl=...)`, registers with `app.register()`, and their feature definitions run at live fraud-serving latency. Every architectural decision serves this: the Python SDK is the blessed UX, the HTTP wire is the contract, JSON is transport only, all state lives in RAM for correctness-by-construction, the server binary is a single Rust artifact a single operator can run, and semantics are Redis-shaped (processing-time only — state is a function of arrival-order events plus query time; no event-time discipline burden on users).
+**Feature authoring as composable Python code that ships to production unchanged.** A data scientist writes `@bv.event`, `.filter(...)`, `group_by("user").agg(...)`, registers with `app.register()`, and their feature definitions run at live fraud-serving latency. Every architectural decision serves this: the Python SDK is the blessed UX, the HTTP wire is the contract, JSON is transport only, all state lives in RAM for correctness-by-construction, the server binary is a single Rust artifact a single operator can run, and semantics are Redis-shaped (processing-time only — state is a function of arrival-order events plus query time; no event-time discipline burden on users). **v0 ships as events-only** — tables/joins/table-aggregation are deferred to v0.1+.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ Beava is a single-binary real-time feature server built around a dataframe-style
 Grouped by theme. Every entry is a hypothesis until shipped + used in production. Full enumerated REQ-IDs live in `REQUIREMENTS.md`.
 
 **A. Python SDK — the canonical declaration surface**
-- Decorators: `@bv.event`, `@bv.table(key=..., ttl=...)` in both class and function forms
+- Decorators: `@bv.event` in both class and function forms (`@bv.table` removed for v0 — see Out of Scope)
 - Stateless ops on Event/Table: `.filter .select .drop .rename .with_columns .map .cast .fillna`
 - Expression DSL: `bv.col("x")` with `+ - * /`, `< > <= >= == !=`, `& | ~`, `.isnull()`, `.cast()`
 - Aggregations via `event.group_by(keys).agg(name=bv.<op>(...), ...)` producing a Table; windowed ops use server-side `now_ms()` (processing-time)
@@ -88,8 +88,10 @@ Listed with reasoning to prevent re-adding.
 - **Cross-entity / cross-shard features** — `co_occurrence_count`, `graph_degree`, stream-stream joins on non-matching shard keys. Single-thread single-process architecture locks this out. Different architecture problem for v2.x.
 - **State exceeding single-box RAM** — no SSD overflow, no tiered storage, no cold cache. Users size their box; exceed → refuse new entities.
 - **Multi-instance coordination / replication / HA in OSS** — horizontal scale belongs to commercial tier. Multi-instance via user-sharded deploys allowed; server does not coordinate.
-- **Table aggregation with retraction propagation** — v0 forbids `table.group_by(...)`. v1 of beava already made this call; v2 inherits it. Retraction-aware table→table aggregations are v0.1 work.
-- **Table mode: `"changelog"`** — only `"upsert"` mode in v0 (matches v1).
+- **`@bv.table` decorator + table surface entirely** — Removed from v0 2026-04-30 per `project_v0_events_only_scope`. Phase 12.7 strips `@bv.table` + `/upsert /delete /retract` endpoints + `TemporalStore` MVCC + `app.retract` SDK verb. Tables return in v0.1+ alongside joins / aggregation if/when justified by demand. Phase 11.5 retroactively-descoped (table primitive landed but is being walked back by Phase 12.7).
+- **Table aggregation with retraction propagation** — Out of v0 + v0.1. Returns alongside tables. Phase 17 archived-indefinitely 2026-04-30.
+- **Session windows (`bv.session(gap_ms=..., inner=...)`)** — Out of v0 + v0.1. Users compose count/sum with processing-time windowed ops. Phase 25 archived-indefinitely 2026-04-30.
+- **`bv.fork(...)` replica + `playground.beava.dev` hosted tutorial + structured logs** — Dropped from v0 ship phase 2026-04-30. Final v0 phase 13 = SDK polish + benchmarks + minimum-viable docs + PyPI/Docker/GitHub Releases + ship.
 - **Timers / autonomous emission** — no `on_timer` callbacks, no debouncer, no session-end-by-timeout. Deferred to post-v0.
 - **CEP / sequence pattern detection / state machines as operators** — not in the aggregation operator framework. Deferred.
 - **Backfill + replay + branching** — the `bv.fork()` replica covers some of this use case; full branch/promote/discard semantics deferred.
@@ -97,7 +99,7 @@ Listed with reasoning to prevent re-adding.
 - **Protobuf / schema-registry wire** — custom framed binary is OK (see Wire format) but no Protobuf/FlatBuffers/Avro dependency in OSS.
 - **Operator implementation by user Rust code** — v0 ships only the built-in catalogue. Plugin ABI deferred.
 - **Multi-tenancy / per-tenant quotas** — beava is single-tenant by design.
-- **All joins (event↔event, table↔table, stream↔table)** — Removed permanently from v0 architecture per `project_redis_shaped_no_event_time_ever` (locked 2026-04-30). v0.1+ may revisit, but joins of any shape are not part of Beava's core semantics. Users compose via push/get patterns.
+- **All joins (event↔event, table↔table, stream↔table)** — Out of v0 + v0.1 (and likely beyond) per `project_redis_shaped_no_event_time_ever` + `project_v0_events_only_scope` (locked 2026-04-30). Joins return in a future minor release alongside tables if/when justified by user demand. Users compose via push/get patterns and entity-key sharding.
 - **`bv.union(*events)`** — Deferred with joins to v0.1+. Users multiplex client-side for v0.
 - **Event-time / watermarks / PIT temporal store** — Removed permanently. State is a function of `(arrival-order events, query time)`. No `event_time_ms` on the wire, no `tolerate_delay_ms`, no `event_time_field` decorator, no `as_of=` join syntax. Late events are an undefined concept; `agg_windowed` operators index by server-side `now_ms()`. Phases 14, 14.1, 15 archived 2026-04-30 (`.planning/phases/_archived-*`).
 

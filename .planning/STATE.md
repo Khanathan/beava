@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 12.6 CLOSED 2026-04-30 (PASS-WITH-WARN). 15 plans landed (Plans 01-15 inclusive of Wave-1.5 gap closure 14+15). Workspace 1067/0/3. Legacy axum data plane deleted (~7475 LOC); mio is sole data-plane runtime; event_time_ms / event_time_field / tolerate_delay_ms hard-ripped from wire/WAL/snapshot/SDK; joins/unions deleted; Path X windowed-op time-source swap to server now_ms(). microbench (Plan 11) + throughput rebaseline (Plan 12) PASS. v0 critical path advances to Phase 13.
-last_updated: "2026-04-30T23:30:00.000Z"
+status: Phase 12.6 CLOSED 2026-04-30 (PASS-WITH-WARN). v0 SCOPE LOCKED 2026-04-30 to events-only per `project_v0_events_only_scope` — Phases 16/17/25 archived-indefinitely, Phase 11.5 retroactively-descoped, Phase 13 reframed (drop bv.fork + playground), 27 orphan pre-pivot phase dirs archived. v0 critical path = Phase 12.7 (table strip — `@bv.table` + /upsert /delete /retract + TemporalStore + ~14 tests deleted) → Phase 13 (final ship — SDK polish + benchmarks + min-viable docs + PyPI/Docker/GitHub Releases).
+last_updated: "2026-05-01T00:00:00.000Z"
 progress:
-  total_phases: 34
+  total_phases: 19
   completed_phases: 21
   total_plans: 163
   completed_plans: 131
@@ -13,9 +13,9 @@ progress:
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-04-30 — /gsd-execute-phase 12.6 → 15 plans landed → Phase 12.6 CLOSED (PASS-WITH-WARN) -->
-<!-- Stopped at: Phase 12.6 closed; ready for /gsd-discuss-phase 13 (next on v0 critical path) -->
-<!-- Resume file: .planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md (Phase 12.6 narrative) + .planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md (mechanical PASS-WITH-WARN) -->
+<!-- Last session: 2026-04-30 — /gsd-execute-phase 12.6 → 15 plans landed → Phase 12.6 CLOSED (PASS-WITH-WARN); then v0 scope locked to events-only (Phases 16/17/25 archived; Phase 11.5 retro-descoped; Phase 13 reframed; 27 orphan pre-pivot dirs archived; Phase 12.7 dir + CONTEXT stub created) -->
+<!-- Stopped at: v0 scope locked; ready for /gsd-discuss-phase 12.7 (table strip — predecessor to final ship phase 13) -->
+<!-- Resume files: .planning/phases/12.7-table-strip/12.7-CONTEXT.md (table strip scope) + .planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md (post-12.6 narrative) -->
 
 
 # State: Beava v2 — v0 OSS Launch

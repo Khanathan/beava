@@ -14,8 +14,8 @@ Requirements for the v0 OSS launch. Each maps to roadmap phases via the traceabi
 - ~~**SDK-DEC-02b**: `@bv.event` class form accepts optional `tolerate_delay` (duration string) parameter~~ — **REMOVED 2026-04-30 per no-event-time pivot** (SUPERSEDED by `project_redis_shaped_no_event_time_ever`). The runtime has no event-time concept post-pivot, so a per-event tolerance window is meaningless. v0 ships without this parameter; if a future v0.1+ revisits per-event timing semantics, a NEW REQ-ID covers that scope.
   - Note: SDK-DEC-02 was split 2026-04-30 to make the active vs REMOVED surfaces explicit per the no-event-time pivot. The original SDK-DEC-02 conflated `keep_events_for` (kept) with `tolerate_delay` (REMOVED); the split lets Phase 12.6's plans reference either side cleanly.
 - [ ] **SDK-DEC-03**: `@bv.event` function form: function with upstream-class parameters returns an `Event` / `EventDerivation`; decorator invokes the function once at registration with upstream descriptors and captures the result
-- [ ] **SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator accepts string or list primary key, optional TTL duration; validates key fields exist in schema
-- [ ] **SDK-DEC-05**: `@bv.table` function form: returns a `Table`/`TableDerivation`; upstream descriptors passed as typed parameters
+- ~~**SDK-DEC-04**: `@bv.table(key=..., ttl=..., mode="upsert")` decorator~~ — **REMOVED 2026-04-30 per `project_v0_events_only_scope`**. v0 ships as pure events. Tables return in v0.1+ alongside joins / aggregation. Phase 12.7 strips the entire `@bv.table` surface.
+- ~~**SDK-DEC-05**: `@bv.table` function form~~ — **REMOVED 2026-04-30 per `project_v0_events_only_scope`** (same scope decision).
 - [ ] **SDK-DEC-06**: Schema extraction supports `str`, `f64`/`float`, `i64`/`int`, `bool`, `bytes`, `datetime` field types; rejects unsupported types at decorator time with a clear error message
 - [ ] **SDK-DEC-07**: `bv.Optional[T]` marks a field nullable; `bv.Field(desc=..., default=...)` attaches per-field metadata
 - ~~**SDK-DEC-08**: `event_time` field on `@bv.event`~~ — REMOVED 2026-04-30 per no-event-time pivot. Server-side `now_ms()` is the only time source; events have no event-time field on the wire. See PROJECT.md §Key Decisions.
@@ -146,9 +146,9 @@ All join + union requirements REMOVED 2026-04-30 per the no-event-time pivot (se
 - ~~**SDK-JOIN-01..04**: joins~~ — REMOVED
 - ~~**SDK-JOIN-05**: `bv.union(*events)`~~ — DEFERRED v0.1+
 
-### SDK-SESSION — Session windows (v0.1)
+### ~~SDK-SESSION~~ — ~~Session windows (v0.1)~~ — **ARCHIVED-INDEFINITELY 2026-04-30 per `project_v0_events_only_scope`** (out of v0 + v0.1 scope; users compose count/sum with processing-time windowed ops)
 
-- [ ] **SDK-SESSION-01**: `bv.session(gap_ms=..., inner=bv.<op>(...))` — activity-based grouping; opens session on first event, increments inner per event within `gap_ms`, closes on `now_ms() - last_event_ms > gap_ms` (lazy-on-query) AND flips on next event after gap; latest closed session retained per (entity, feature)
+- ~~**SDK-SESSION-01**: `bv.session(gap_ms=..., inner=bv.<op>(...))` activity-based grouping~~ — **ARCHIVED-INDEFINITELY 2026-04-30 per `project_v0_events_only_scope`**.
 
 ### SDK-APP — Python `App` client
 
@@ -289,7 +289,7 @@ Deferred to future release.
 
 ### v0.1: Table aggregation with retraction
 
-- **V0.1-TABLE-01**: `table.group_by(...).agg(...)` with retraction propagation through derived features
+- ~~**V0.1-TABLE-01**: `table.group_by(...).agg(...)` with retraction propagation~~ — **ARCHIVED-INDEFINITELY 2026-04-30 per `project_v0_events_only_scope`** (returns alongside tables/joins in v0.1+ if/when justified by demand).
 
 ### Emit / timers / CEP / attribution
 

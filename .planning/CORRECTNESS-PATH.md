@@ -1,8 +1,8 @@
 ---
 context: v0-ship-correctness-path
 created: 2026-04-29
-revised: 2026-04-30 — Phase 12.6 CLOSED (PASS-WITH-WARN); v0 critical path advances to Phase 13
-status: post-pivot
+revised: 2026-04-30 — Phase 12.6 CLOSED (PASS-WITH-WARN); v0 SCOPE LOCKED to events-only per `project_v0_events_only_scope`; new Phase 12.7 (table strip) inserted as predecessor to reframed Phase 13 (SDK polish + benchmarks + ship); 27 orphan pre-pivot phase dirs archived
+status: post-pivot-events-only
 ---
 
 # Correctness path to v0 OSS ship — REVISED 2026-04-30 (Phase 12.6 closure)
@@ -22,15 +22,23 @@ See `project_redis_shaped_no_event_time_ever` (memory) for the full architectura
 - **Verdict basis:** all 7 ROADMAP success criteria PASS or PASS-WITH-WARN; all 5 CONTEXT decisions D-01..D-05 honored verbatim; PASS-WITH-WARN on the deadcode buckets (planning-target overshoots categorized as strict-deny test fixtures + post-pivot doc-comments + out-of-plan-scope `tally/` legacy package; clippy-warning floor is 0 warnings)
 - **Artifacts:** `.planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md` (phase narrative) + `.planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md` (mechanical pass/fail)
 
-### 🔴 P0 — v0 ship blockers (post-Phase-12.6 closure)
+### 🔴 P0 — v0 ship blockers (post-Phase-12.6 closure + v0-events-only commitment 2026-04-30)
 
-#### 1. Phase 13 — Observability + performance + docs + packaging + ship-readiness (NEXT on v0 critical path)
+#### 1. Phase 12.7 — Table strip (NEXT on v0 critical path) — NEW 2026-04-30
+- **Severity:** CRITICAL — predecessor to final ship phase
+- **Status:** 📋 PLANNED — CONTEXT.md stub at `.planning/phases/12.7-table-strip/12.7-CONTEXT.md`; not yet planned
+- **Scope:** Strip `@bv.table` Python decorator + `POST /upsert/{table_name}` + `POST /delete` + `POST /retract` + `GET /table/{name}` mio handlers (added by Phase 12.6 Plan 14) + `temporal_http.rs` helpers + `TemporalStore` MVCC machinery + `app.retract(event_id)` SDK verb + ~14 table-related tests. Walks back Phase 11.5 + Phase 12.6 Plan 14's mio table surface. WAL/snapshot likely needs v2→v3 schema bump.
+- **Why now:** Per `project_v0_events_only_scope` (locked 2026-04-30): v0 commits to events-only. Tables/joins/aggregation return together in v0.1+ if/when justified by demand. Phase 12.6 already deleted joins; tables have no v0 consumer; clean break is cheaper than maintaining a half-feature.
+- **Next action:** `/gsd-discuss-phase 12.7` to resolve open product decisions (WAL schema bump policy, Phase 11.5 retro-banner shape, test deletion vs migration, migration message in WAL loader)
+- **Estimated:** ~10 plans across 3-4 waves
+
+#### 2. Phase 13 — SDK polish + benchmarks + ship (FINAL v0 phase) — REFRAMED 2026-04-30
 - **Severity:** CRITICAL — final v0 ship gate
-- **Status:** 🟡 PARTIAL (Plan 13-01 `/metrics` Prometheus + middleware + Plan 13-03 `env_var_overrides` hermetic fix shipped on `phase-13-ship` @ `2ef5afc`; remaining plans on `phase-13-followup` worktree + new Hetzner Linux baseline + multi-instance shard-scaling validation TBD)
-- **Scope:** `/metrics` exposes per-operator/per-endpoint/WAL/snapshot/registry-version metrics; perf benchmark harness ≥3M EPS on THREE pipeline shapes (simple fraud / complex fraud / recommendation); P99 batch-get <10ms each; docs live (quickstart → operators → concepts → http-api → architecture); `playground.beava.dev` interactive tutorial; `pip install beava` works; Docker Hub image; GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); `bv.fork(...)` local scoped replica; CI green; ship-ready tag
-- **Why now:** All v0 architectural prerequisites complete (Phase 12.6 closure) — Phase 13 is the final ship-gate sweep
-- **Next action:** `/gsd-discuss-phase 13` to capture remaining context decisions (Hetzner hw-class choice, multi-instance shard scaling target, docs scope minimum-viable cut)
-- **Estimated:** 8+ plans across 2-3 weeks — Plan 13-02/04 already partially scoped on `phase-13-followup` + new Phase 13 plans for Hetzner + shard-scaling + docs/packaging
+- **Status:** 🟡 PARTIAL (Plan 13-01 `/metrics` Prometheus + Plan 13-03 `env_var_overrides` hermetic fix shipped on `phase-13-ship` @ `2ef5afc`; remaining plans need rescoping post-Phase-12.7)
+- **Scope (REFRAMED — drop bv.fork + playground + structured logs):** SDK polish on the events-only surface (`@bv.event` + 54-op catalogue + /push + /get + /register); perf gates on THREE pipelines (simple fraud / complex fraud / recommendation) ≥3M EPS, <10ms P99 batch-get; minimum-viable docs (quickstart → operators → http-api → architecture); `/metrics` Prometheus (already partially shipped); PyPI + Docker Hub image + GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); CI green; ship-ready tag. **DROPPED:** `bv.fork` subcommand, `playground.beava.dev`, structured logs.
+- **Why this shape:** v0 = polish + benchmarks. User explicit framing 2026-04-30: "the last phase before open source is polishing sdk and crafting benchmarks."
+- **Next action:** `/gsd-discuss-phase 13` AFTER Phase 12.7 closes (Phase 13 scope partly depends on what Phase 12.7 leaves behind)
+- **Estimated:** ~10 plans (down from ~18; bv.fork + playground dropped)
 
 #### 2. ~~Phase 14 — Streaming silent-data-loss bug~~ — REMOVED 2026-04-30
 - **Why removed:** No event-time → no event-time-bucketed `agg_windowed` → no bucket-epoch mismatch class of bug. The bug disappears as a side-effect of the architectural pivot. Phase 12.6 Path X (windowed ops use server-side `now_ms()`) makes the agg_windowed bucket arithmetic operate on monotonically-increasing arrival time, eliminating the late-event class entirely.
