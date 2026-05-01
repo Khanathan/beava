@@ -528,10 +528,10 @@ Plans:
 **Plans:** 10 plans across 4 waves. Per CLAUDE.md TDD discipline (Phase 3+) every code task pairs `test:` (red) → `feat:` (green) commits.
 
 Plans:
-- [ ] 12.7-01-PLAN.md — Wave 1 — JSON-prelude `unsupported_node_kind` shim in `register_validate.rs` (D-02; lands FIRST so subsequent variant deletions are safe per 12.6 Plan 04 lesson)
-- [ ] 12.7-02-PLAN.md — Wave 1 — Architectural-test pair (`phase12_7_no_table_surface.rs` + `phase12_7_legacy_table_handlers_killed.rs`); RED at end of Wave 1 → GREEN as Waves 2-3 land deletions (D-03)
-- [ ] 12.7-03-PLAN.md — Wave 2 — Mio table dispatch + wire-request + router + http_listener strip (delete `WireRequest::Http*` table variants + `Route::*` table variants + dispatch arms in `apply_shard.rs:400-459`); deleted routes return plain 404 (D-02)
-- [ ] 12.7-04-PLAN.md — Wave 2 — `temporal_http.rs` + `temporal.rs` whole-module delete + AppState `temporal_stores`/`event_id_index` field strip + orphan apply_shard.rs:816 cleanup
+- [x] 12.7-01-PLAN.md — Wave 1 — JSON-prelude `unsupported_node_kind` shim in `register_validate.rs` (D-02; lands FIRST so subsequent variant deletions are safe per 12.6 Plan 04 lesson) — ✅ CLOSED
+- [x] 12.7-02-PLAN.md — Wave 1 — Architectural-test pair (`phase12_7_no_table_surface.rs` + `phase12_7_legacy_table_handlers_killed.rs`); RED at end of Wave 1 → GREEN as Waves 2-3 land deletions (D-03) — ✅ CLOSED
+- [x] 12.7-03-PLAN.md — Wave 2 — Mio table dispatch + wire-request + router + http_listener strip (delete `WireRequest::Http*` table variants + `Route::*` table variants + dispatch arms in `apply_shard.rs:400-459`); deleted routes return plain 404 (D-02) — ✅ CLOSED
+- [x] 12.7-04-PLAN.md — Wave 2 — `temporal_http.rs` + `temporal.rs` whole-module delete + AppState `temporal_stores`/`event_id_index` field strip + orphan apply_shard.rs:816 cleanup — ✅ CLOSED 2026-05-01 (commit `4d0fabd`; -1,358 LOC; 1 architectural sub-test GREEN, 1 partial; phase12_6_legacy_axum_killed::temporal_http_axum_handlers_deleted repointed to file-absence)
 - [ ] 12.7-05-PLAN.md — Wave 2 — Persistence schema RESET (D-01): `record.rs::FORMAT_VERSION 2→1` + `snapshot_body.rs::SNAPSHOT_BODY_FORMAT_VERSION 2→1` + `snapshot_header.rs::SNAPSHOT_FORMAT_VERSION 2→1` + `RecordType` variant deletions + recovery.rs branch deletion
 - [ ] 12.7-06-PLAN.md — Wave 3 — Python SDK strip: `_tables.py` delete + namespace cleanup + `App.upsert/delete` delete + `_agg.py:GroupBy.agg()` raises v0 error + 6 Python test deletes + 2 surgical strips + 3 Rust test deletes; architectural-test pair turns FULLY GREEN here
 - [ ] 12.7-07-PLAN.md — Wave 3 — REQUIREMENTS.md comprehensive sweep (D-04 first half): 8 REQ-IDs DESCOPED with uniform banner + V0-EVENTS-ONLY-01 positive anchor added; AGG-CORE-* / AGG-SKETCH-* etc. operator-family REQ-IDs LEFT ACTIVE

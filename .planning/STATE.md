@@ -3,19 +3,19 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: Executing Phase 12.7
-last_updated: "2026-05-01T11:42:00Z"
+last_updated: "2026-05-01T12:01:54Z"
 progress:
   total_phases: 37
   completed_phases: 17
   total_plans: 157
-  completed_plans: 121
+  completed_plans: 122
   percent: 77
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 03 landed (Wave 2 first plan: wire/router/dispatch variant deletion). Stripped 4 WireRequest::Http* table variants + 4 Route::* variants + 4 router.rs parse arms + 4 http_listener.rs translate arms + 4 apply_shard.rs dispatch arms (~131 LOC). POST /upsert/X, POST /delete/X, POST /retract, GET /table/X all return mio's default 404 with body {"error": {"code": "not_found", "path": "<route>"}} per CONTEXT D-02. Plan 02's RED inventory dropped 32 → 15 occurrences (17 wire/router/dispatch violations gone). 2 architectural sub-tests turned GREEN (wire_request_table_variants_deleted, route_table_variants_deleted). 5 doomed tests #[ignore]-marked across phase11_5_temporal_smoke + phase12_6_14_mio_temporal (file slated for deletion in 12.7-06). Commits: 34569c7 (RED) → 80be189 (GREEN). Workspace green, clippy clean, fmt clean, 100/100 test files PASSED. -->
-<!-- Stopped at: Plan 12.7-03 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-04 temporal_http.rs + temporal.rs + AppState fields delete — Wave 2 sequel; touches apply_shard.rs which Plan 03 already cleared) per CONTEXT.md wave order -->
-<!-- Resume files: .planning/phases/12.7-table-strip/12.7-03-SUMMARY.md (Plan 03 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
+<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 04 landed (Wave 2 sequel: server-side temporal-module strip). Whole-module deleted crates/beava-server/src/temporal_http.rs (~756 LOC) + crates/beava-core/src/temporal.rs (~394 LOC) + crates/beava-core/benches/temporal_mvcc.rs (~69 LOC orphan bench). DevAggState slimmed by 2 fields (temporal_stores + event_id_index); EventIdEntry enum (incl TableWrite + Stream variants) deleted; GlueResponse::TemporalResponse variant + server.rs:2186 consumer arm deleted; apply_shard.rs step 10 (orphan event_id_index lock) deleted. LOC delta: +76 / -1,358 (net ~1,282 removed; planning estimate 1,150). Plan 02's RED inventory dropped 15 → 8 occurrences (7 cleared: TemporalStore, MvccVersion, temporal_http, plus runtime_core_glue/server.rs cleanup of TemporalResponse leftover). 1 new architectural sub-test GREEN (app_temporal_fields_deleted); legacy_table_files_deleted partial 2/3 (Rust files gone; python/_tables.py pending Plan 06). Test maintenance: phase18_12_arc_str_bookkeeping_test #![cfg(any())]-gated (slated for deletion Plan 06); phase12_6_legacy_axum_killed::temporal_http_axum_handlers_deleted repointed to file-absence assertion. Commit: 4d0fabd (single GREEN; RED gate was Plan 02's existing architectural test). Workspace green, clippy clean, fmt clean, 100/100 test files PASSED. -->
+<!-- Stopped at: Plan 12.7-04 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-05 persistence schema reset — RecordType::TableUpsert/TableDelete/Retract delete + FORMAT_VERSION 2→1 reset OR 12.7-06 Python SDK strip — both Wave-3, parallel-runnable) per CONTEXT.md wave order -->
+<!-- Resume files: .planning/phases/12.7-table-strip/12.7-04-SUMMARY.md (Plan 04 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
 
 # State: Beava v2 — v0 OSS Launch
 
