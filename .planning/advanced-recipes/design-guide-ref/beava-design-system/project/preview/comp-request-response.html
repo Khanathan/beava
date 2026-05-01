@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 22px 24px; }
+  .legend { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+
+  .hd {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 10px;
+  }
+  .hd .label { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3); }
+  .hd .label code { color: var(--fg1); background: var(--beava-paper); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); }
+  .hd .run {
+    font-family: var(--font-sans); font-size: 12.5px; font-weight: 600;
+    color: #fff; background: var(--accent);
+    border: 0; padding: 6px 14px; border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer;
+  }
+  .hd .run .chev { font-family: var(--font-mono); opacity: 0.9; }
+
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .block { position: relative; }
+  .block .title {
+    font-family: var(--font-sans); font-size: 12px; color: var(--fg3);
+    margin-bottom: 6px;
+  }
+  .block .title strong { color: var(--fg1); font-weight: 600; }
+
+  pre.code {
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.7;
+    background: #fdfaf4; border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin: 0;
+    color: var(--fg1); overflow-x: auto;
+    min-height: 110px;
+    box-sizing: border-box;
+  }
+  .cmt  { color: var(--fg3); }
+  .kw   { color: #7a3e8a; }
+  .fn   { color: #2563a3; }
+  .str  { color: var(--beava-success); }
+  .num  { color: var(--accent); }
+  .tok  { color: var(--accent); } /* POST, route */
+
+  .copy {
+    position: absolute; top: 26px; right: 10px;
+    font-family: var(--font-sans); font-size: 11.5px; font-weight: 500;
+    background: #fff; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--fg2);
+    padding: 3px 9px;
+    display: inline-flex; align-items: center; gap: 5px;
+    cursor: pointer;
+  }
+  .copy:hover { background: var(--beava-paper); color: var(--fg1); }
+
+  .foot { margin-top: 12px; font-family: var(--font-sans); font-size: 13px; color: var(--fg3); line-height: 1.55; }
+</style>
+</head><body>
+  <div class="legend">Request / response pair · curl + live response, side-by-side</div>
+  <div class="hd">
+    <div class="label">↓ how your app reads it: <code>post /batch/userstats</code></div>
+    <button class="run"><span class="chev">&gt;_</span>Run query</button>
+  </div>
+
+  <div class="pair">
+    <div class="block">
+      <div class="title"><strong>1. request</strong> — copy-paste this into your terminal</div>
+      <button class="copy">◌ copy</button>
+      <pre class="code">$ curl -X <span class="tok">POST</span> https://your-beava/batch/<span class="fn">UserStats</span> \
+    -H <span class="str">'Content-Type: application/json'</span> \
+    -d <span class="str">'[]'</span></pre>
+    </div>
+
+    <div class="block">
+      <div class="title"><strong>2. response</strong> (push events first)</div>
+      <pre class="code"><span class="cmt"># push an event above, then run this query.</span></pre>
+    </div>
+  </div>
+
+  <div class="foot">Your frontend passes the user_ids currently on screen. beava returns every metric for every id, atomically. This is what powers the dashboard above.</div>
+</body></html>

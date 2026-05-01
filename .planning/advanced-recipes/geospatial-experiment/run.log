@@ -1,0 +1,34 @@
+[08:54:02] Loading jan.parquet
+[08:54:02]   raw rows: 2,964,624
+[08:54:02]   cleaned rows: 2,862,634
+[08:54:02] Loading feb.parquet
+[08:54:02]   raw rows: 3,007,526
+[08:54:02]   cleaned rows: 2,900,335
+[08:54:03]   stratified sample size: 500,000
+[08:54:03]   stratified sample size: 499,999
+[08:54:03] Computing lifetime pu avg (batch feature)
+[08:54:03] Computing realtime 1h pair avg (train)
+[08:54:03] Computing realtime 1h pair avg (test)
+[08:54:03] Computing realtime 1h pu demand (train)
+[08:54:03] Computing realtime 1h citywide inv speed (train)
+[08:54:03] === Part 1: feature ablation ===
+[08:54:06]   baseline (pu, do, hour, dow): MAE=304.9s MAPE=50.59% (n_features=4)
+[08:54:09]   + pu_alltime_avg: MAE=286.2s MAPE=47.00% (n_features=5)
+[08:54:12]   + pair_avg_1h (realtime): MAE=280.5s MAPE=45.65% (n_features=6)
+[08:54:15]   + pu_trip_count_1h: MAE=280.7s MAPE=45.57% (n_features=7)
+[08:54:20]   + city_inv_speed_1h: MAE=282.3s MAPE=46.56% (n_features=8)
+[08:54:20] === Part 2: staleness ===
+[08:54:20]   staleness Δ=0 (realtime) (delta_hours=0.0)
+[08:54:23]     MAE=282.3s MAPE=46.56% rush=280.1s offpeak=244.7s
+[08:54:23]   staleness Δ=15 min (delta_hours=0.25)
+[08:54:26]     MAE=283.7s MAPE=46.78% rush=281.9s offpeak=244.4s
+[08:54:26]   staleness Δ=1 hour (delta_hours=1.0)
+[08:54:30]     MAE=288.5s MAPE=47.36% rush=287.1s offpeak=244.0s
+[08:54:30]   staleness Δ=6 hours (delta_hours=6.0)
+[08:54:33]     MAE=322.1s MAPE=51.08% rush=311.0s offpeak=300.5s
+[08:54:33]   staleness Δ=1 day (delta_hours=24.0)
+[08:54:37]     MAE=295.1s MAPE=48.07% rush=293.0s offpeak=250.9s
+[08:54:37]   staleness Δ=7 days (delta_hours=168.0)
+[08:54:40]     MAE=290.1s MAPE=47.62% rush=289.5s offpeak=245.2s
+[08:54:40] Wrote /Users/petrpan26/work/tally/.planning/advanced-recipes/geospatial-experiment-results.md
+[08:54:40] Done.

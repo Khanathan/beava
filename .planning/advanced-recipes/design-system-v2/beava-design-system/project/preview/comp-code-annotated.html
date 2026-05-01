@@ -1,0 +1,54 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 24px 28px; }
+  pre.code {
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.65;
+    background: #fdfaf4; border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 22px; margin: 0;
+    color: var(--fg1); overflow-x: auto;
+  }
+  .cmt { color: var(--fg3); }
+  .kw  { color: #7a3e8a; font-weight: 500; }   /* purple for keywords like @bv.stream, class, def, import */
+  .fn  { color: #2563a3; }                     /* blue for function calls */
+  .str { color: var(--beava-success); }        /* green for strings */
+  .num { color: var(--accent); }
+  .t   { color: #8a6a54; }                     /* warm brown for type names */
+  /* inline marker note — the star of this card */
+  .anno {
+    font-family: var(--font-accent);
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 14.5px;
+    padding-left: 10px;
+    white-space: nowrap;
+    transform: translateY(-1px);
+    display: inline-block;
+  }
+  .toolbar { display: flex; justify-content: flex-end; margin-bottom: -38px; position: relative; z-index: 1; padding-right: 14px; padding-top: 10px; }
+  .copy { font-family: var(--font-sans); font-size: 12px; font-weight: 500; color: var(--fg3); background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+  .legend { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+</style>
+</head><body>
+  <div class="legend">Code block + hand-drawn line annotations</div>
+  <div class="toolbar"><button class="copy">◌ copy</button></div>
+  <pre class="code"><span class="cmt"># a per-customer analytics dashboard</span>
+<span class="kw">import</span> beava <span class="kw">as</span> bv
+
+<span class="fn">@bv.stream</span>
+<span class="kw">class</span> <span class="t">PageView</span>:
+    user_id:  <span class="t">str</span>
+    path:     <span class="t">str</span>
+    category: <span class="t">str</span>
+
+<span class="fn">@bv.table</span>(key=<span class="str">"user_id"</span>)
+<span class="kw">def</span> <span class="fn">Dashboard</span>(e: <span class="t">PageView</span>):
+    <span class="kw">return</span> e.<span class="fn">agg</span>(
+        views_total     = bv.<span class="fn">count</span>(),                   <span class="anno">← lifetime views</span>
+        views_24h       = bv.<span class="fn">count</span>(window=<span class="str">"24h"</span>),      <span class="anno">← today's activity bar</span>
+        distinct_cats_7d= bv.<span class="fn">distinct</span>(e.category, window=<span class="str">"7d"</span>), <span class="anno">← category breakdown</span>
+        last_seen       = bv.<span class="fn">latest</span>(e.ts),              <span class="anno">← "last seen" timestamp</span>
+    )
+
+bv.<span class="fn">App</span>(<span class="str">"0.0.0.0:6400"</span>).<span class="fn">register</span>(PageView, Dashboard).<span class="fn">serve</span>()  <span class="anno">← replaces old table, serves new one</span></pre>
+</body></html>

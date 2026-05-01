@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 22px 24px; }
+  .legend { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+  .compare { display: grid; grid-template-columns: 1fr auto 1fr; gap: 16px; align-items: center; }
+  .col .label { font-family: var(--font-sans); font-size: 12px; font-weight: 600; color: var(--fg3); letter-spacing: 0.04em; margin-bottom: 8px; padding-left: 4px; }
+  .col .label .alt { color: var(--accent); }
+  pre.code {
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.7;
+    background: #fdfaf4; border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px; margin: 0;
+    color: var(--fg1); overflow-x: auto;
+  }
+  .cmt { color: var(--fg3); }
+  .kw  { color: #7a3e8a; }
+  .fn  { color: #2563a3; }
+  .str { color: var(--beava-success); }
+  .op  {
+    font-family: var(--font-accent); font-weight: 700;
+    color: var(--accent); font-size: 40px; line-height: 1;
+    transform: rotate(-5deg); display: inline-block;
+  }
+  .caption { text-align: center; margin-top: 14px; font-family: var(--font-sans); font-size: 13px; color: var(--fg3); font-style: italic; }
+</style>
+</head><body>
+  <div class="legend">Side-by-side comparison · Gaegu operator ≈ in middle</div>
+  <div class="compare">
+    <div class="col">
+      <div class="label">pandas <span class="alt">(batch)</span></div>
+      <pre class="code">events.<span class="fn">groupby</span>(<span class="str">"user_id"</span>).<span class="fn">agg</span>(
+    views_total=(<span class="str">"path"</span>, <span class="str">"count"</span>),
+    last_seen=(<span class="str">"ts"</span>, <span class="str">"max"</span>),
+)</pre>
+    </div>
+    <div class="op">≈</div>
+    <div class="col">
+      <div class="label">beava <span class="alt">(live)</span></div>
+      <pre class="code">events.<span class="fn">groupby</span>(<span class="str">"user_id"</span>).<span class="fn">agg</span>(
+    views_total=bv.<span class="fn">count</span>(),
+    last_seen=bv.<span class="fn">latest</span>(e.ts),
+)</pre>
+    </div>
+  </div>
+  <div class="caption">Same shape, different time model. pandas runs once over a frame. beava maintains the groupby forever.</div>
+</body></html>

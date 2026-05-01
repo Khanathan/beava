@@ -1,0 +1,349 @@
+/* ============================================================
+   beava — Colors & Type
+   The canonical design tokens. Import this file first.
+   ============================================================ */
+
+/* ---------- FONTS ----------
+   beava's type pairing is a warm humanist sans for UI/body
+   and a bookish contrast serif for headlines + blog titles.
+   A hand-tuned monospace powers code blocks.
+   See SKILL.md note: these are Google Fonts substitutions
+   until custom faces are licensed.
+   ------------------------------------------------------------ */
+@import url('https://fonts.googleapis.com/css2?family=Alegreya:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400;1,500;1,700&family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Gaegu:wght@400;700&display=swap');
+
+:root {
+  /* ============================================================
+     COLOR — Brand
+     Warm, earthy, cozy. Orange does the loud talking; cream
+     and brown hold the room.
+     ============================================================ */
+
+  /* Brand oranges */
+  --beava-orange:        #b85c20;  /* burnt orange — primary accent, CTAs, links */
+  --beava-orange-soft:   #d97a3e;  /* accent — hovers, highlights */
+  --beava-orange-glow:   #e89a65;  /* pale accent — pill badges, subtle fills */
+  --beava-orange-wash:   #fbecde;  /* tinted bg — call-outs, hero washes */
+
+  /* Brand browns (mascot's tail/feet/outline, body copy) */
+  --beava-brown-ink:     #1a1714;  /* deepest — body copy, outlines */
+  --beava-brown-dark:    #3a2a1f;  /* secondary headings on cream */
+  --beava-brown:         #6b4a35;  /* warm brown — mascot tail */
+  --beava-brown-mid:     #8a6a54;  /* muted body text */
+
+  /* Creams + rules */
+  --beava-cream:         #fdfaf4;  /* page bg — off-white, warm */
+  --beava-cream-deep:    #f6eed9;  /* secondary surface / section alt */
+  --beava-paper:         #fbf5e8;  /* tertiary — code block bg, cards */
+  --beava-rule:          #e6dccb;  /* 1px dividers, card borders */
+  --beava-rule-soft:     #efe6d3;  /* softer rule inside cards */
+
+  /* Semantic — sparingly used, warm variants */
+  --beava-success:       #4a7a3a;  /* forest green — checkmarks, live status */
+  --beava-success-wash:  #e5edd9;
+  --beava-warn:          #c98a1e;  /* amber */
+  --beava-warn-wash:     #fbecc6;
+  --beava-danger:        #a6351f;  /* rust red, NOT a bright alert red */
+  --beava-danger-wash:   #f4d9d0;
+  --beava-info:          #3a6a8a;  /* dusty blue — used for "note" callouts */
+  --beava-info-wash:     #dbe6ee;
+
+  /* Code syntax (warm palette — not VSCode-dark) */
+  --code-bg:             #fbf5e8;
+  --code-fg:             #2a201a;
+  --code-comment:        #8a6a54;   /* muted brown */
+  --code-keyword:        #b85c20;   /* burnt orange */
+  --code-string:         #4a7a3a;   /* forest */
+  --code-number:         #7d4a1e;   /* dark orange-brown */
+  --code-fn:             #3a6a8a;   /* dusty blue */
+  --code-type:           #8a5c1e;   /* ochre */
+  --code-punctuation:    #6b4a35;
+
+  /* ============================================================
+     SEMANTIC ALIASES — use these in components
+     ============================================================ */
+  --bg:                  var(--beava-cream);
+  --bg-alt:              var(--beava-cream-deep);
+  --bg-card:             #ffffff;
+  --bg-inset:            var(--beava-paper);
+
+  --fg1:                 var(--beava-brown-ink);   /* primary text */
+  --fg2:                 var(--beava-brown-dark);  /* secondary */
+  --fg3:                 var(--beava-brown-mid);   /* tertiary / meta */
+  --fg-invert:           var(--beava-cream);
+
+  --accent:              var(--beava-orange);
+  --accent-hover:        #a04e16;                  /* darker orange for hover */
+  --accent-soft:         var(--beava-orange-soft);
+  --accent-wash:         var(--beava-orange-wash);
+
+  --border:              var(--beava-rule);
+  --border-strong:       #d4c5a8;
+  --border-inset:        var(--beava-rule-soft);
+
+  --link:                var(--beava-orange);
+  --link-hover:          #a04e16;
+  --link-visited:        #8a4a1e;
+
+  --focus-ring:          #b85c2044;                /* 26% orange */
+
+  /* ============================================================
+     TYPE — Font stacks
+     ============================================================ */
+  --font-sans:    'Inter Tight', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-serif:   'Alegreya', ui-serif, Georgia, 'Iowan Old Style', 'Apple Garamond', 'Palatino Linotype', serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', 'Menlo', 'Monaco', Consolas, monospace;
+  /* Accent — Gaegu, hand-drawn marker. Use SPARINGLY. Eyebrows, margin notes,
+     chapter numerals, the occasional callout. Never body copy. Never nav. */
+  --font-accent:  'Gaegu', 'Caveat', 'Comic Sans MS', cursive;
+
+  /* Serif feature flags — ligatures + contextual alternates, no fancy sets needed for Alegreya */
+  --fraunces-feats: "liga" on, "calt" on;
+
+  /* ============================================================
+     TYPE — Sizes (fluid, print-safe floors)
+     ============================================================ */
+  --fs-xs:   12px;
+  --fs-sm:   14px;
+  --fs-base: 16px;
+  --fs-md:   18px;
+  --fs-lg:   20px;
+  --fs-xl:   24px;
+  --fs-2xl:  30px;
+  --fs-3xl:  38px;
+  --fs-4xl:  48px;
+  --fs-5xl:  64px;
+  --fs-6xl:  80px;
+
+  /* Line heights */
+  --lh-tight:  1.1;
+  --lh-snug:   1.25;
+  --lh-normal: 1.5;
+  --lh-prose:  1.7;
+
+  /* Letter spacing — beava uses almost no tracking except micro-caps */
+  --ls-tight:  -0.02em;   /* big display only */
+  --ls-normal: 0em;
+  --ls-wide:   0.08em;    /* eyebrow labels, micro-caps */
+
+  /* ============================================================
+     SPACING — 4px baseline
+     ============================================================ */
+  --sp-0:    0;
+  --sp-1:    4px;
+  --sp-2:    8px;
+  --sp-3:    12px;
+  --sp-4:    16px;
+  --sp-5:    20px;
+  --sp-6:    24px;
+  --sp-8:    32px;
+  --sp-10:   40px;
+  --sp-12:   48px;
+  --sp-16:   64px;
+  --sp-20:   80px;
+  --sp-24:   96px;
+  --sp-32:   128px;
+
+  /* ============================================================
+     RADII
+     beava leans into medium-soft rounding. Never pill-crazy.
+     ============================================================ */
+  --r-xs:    4px;
+  --r-sm:    6px;
+  --r-md:    10px;
+  --r-lg:    14px;   /* default for cards */
+  --r-xl:    20px;
+  --r-2xl:   28px;
+  --r-pill:  999px;
+
+  /* ============================================================
+     SHADOWS
+     Warm-tinted brown-ink shadows, never cool blue-gray.
+     Soft, low, close to the surface.
+     ============================================================ */
+  --shadow-xs:  0 1px 2px rgba(26, 23, 20, 0.06);
+  --shadow-sm:  0 1px 2px rgba(26, 23, 20, 0.04), 0 2px 6px rgba(26, 23, 20, 0.06);
+  --shadow-md:  0 2px 4px rgba(26, 23, 20, 0.04), 0 8px 20px rgba(26, 23, 20, 0.08);
+  --shadow-lg:  0 4px 8px rgba(26, 23, 20, 0.06), 0 18px 40px rgba(26, 23, 20, 0.10);
+  --shadow-pop: 0 2px 0 rgba(26, 23, 20, 0.08), 0 4px 0 var(--beava-rule); /* chunky "sticker" shadow */
+
+  /* Inner inset used on code blocks / wells */
+  --shadow-inset: inset 0 1px 0 rgba(255,255,255,0.6), inset 0 0 0 1px var(--beava-rule);
+
+  /* ============================================================
+     MOTION
+     ============================================================ */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* tiny bounce for mascot moments */
+  --dur-fast:    120ms;
+  --dur:         200ms;
+  --dur-slow:    360ms;
+
+  /* ============================================================
+     LAYOUT
+     ============================================================ */
+  --container:       1200px;
+  --container-prose: 720px;
+  --container-docs:  1280px;
+}
+
+/* ============================================================
+   BASE ELEMENT STYLES — drop these onto any page by including
+   this file and adding a class of `.beava` to <body>.
+   ============================================================ */
+html { color-scheme: light; }
+
+body.beava, .beava {
+  background: var(--bg);
+  color: var(--fg1);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Headings — Fraunces, not loud. Tracking tight, weight moderate. */
+.beava h1, .beava .h1 {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-feature-settings: var(--fraunces-feats);
+  font-weight: 600;
+  font-size: var(--fs-5xl);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-tight);
+  color: var(--fg1);
+  margin: 0 0 var(--sp-4);
+}
+.beava h2, .beava .h2 {
+  font-family: var(--font-serif);
+  font-feature-settings: var(--fraunces-feats);
+  font-weight: 600;
+  font-size: var(--fs-3xl);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--ls-tight);
+  color: var(--fg1);
+  margin: 0 0 var(--sp-3);
+}
+.beava h3, .beava .h3 {
+  font-family: var(--font-serif);
+  font-feature-settings: var(--fraunces-feats);
+  font-weight: 600;
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-snug);
+  color: var(--fg1);
+  margin: 0 0 var(--sp-3);
+}
+.beava h4, .beava .h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--fs-lg);
+  line-height: var(--lh-snug);
+  color: var(--fg1);
+  margin: 0 0 var(--sp-2);
+}
+
+/* Eyebrow — small caps, wide tracking, accent color */
+.beava .eyebrow {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-wide);
+  color: var(--accent);
+}
+
+/* Hand-drawn accent — USE SPARINGLY. Marginal notes, one-word highlights,
+   chapter numerals, kinda-friendly empty states. Never in nav, body, or UI. */
+.beava .marker,
+.beava .eyebrow--accent {
+  font-family: var(--font-accent);
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.beava .marker { font-size: 1.1em; line-height: 1; }
+
+/* Body prose */
+.beava p, .beava .p {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-prose);
+  color: var(--fg1);
+  margin: 0 0 var(--sp-4);
+  text-wrap: pretty;
+}
+
+.beava .lead {
+  font-family: var(--font-sans);
+  font-size: var(--fs-lg);
+  line-height: var(--lh-prose);
+  color: var(--fg2);
+}
+
+.beava small, .beava .small {
+  font-size: var(--fs-sm);
+  color: var(--fg3);
+}
+
+.beava a {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--link) 35%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
+  transition: text-decoration-color var(--dur) var(--ease-out),
+              color var(--dur) var(--ease-out);
+}
+.beava a:hover {
+  color: var(--link-hover);
+  text-decoration-color: currentColor;
+}
+
+/* Inline code */
+.beava code, .beava .code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-inset);
+  color: var(--code-fg);
+  padding: 0.12em 0.4em;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border-inset);
+}
+
+/* Block code */
+.beava pre {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: var(--sp-4) var(--sp-5);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  box-shadow: var(--shadow-inset);
+  margin: 0 0 var(--sp-5);
+}
+.beava pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* Focus — always visible, always warm */
+.beava :focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* Selection — warm cream on orange */
+.beava ::selection {
+  background: var(--beava-orange-glow);
+  color: var(--beava-brown-ink);
+}

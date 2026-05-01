@@ -1,0 +1,130 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 24px 28px; }
+  .legend { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
+
+  .frame {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 12px;
+    padding: 18px 20px;
+    font-family: var(--font-sans);
+  }
+
+  .hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .hd-left { display: flex; align-items: center; gap: 10px; }
+  .tag {
+    font-family: var(--font-sans);
+    font-size: 12px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--fg2);
+  }
+  .dest {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    background: var(--beava-orange-wash);
+    padding: 3px 9px;
+    border-radius: 6px;
+    border: 1px solid #f1d8c2;
+  }
+  .rand {
+    font-family: var(--font-sans); font-size: 12.5px; font-weight: 500;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid #f1d8c2;
+    padding: 6px 12px;
+    border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 6px;
+    cursor: pointer;
+  }
+  .rand:hover { background: var(--beava-orange-wash); }
+
+  .note {
+    text-align: center;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--fg3);
+    font-style: italic;
+    margin: 10px 0;
+  }
+
+  .fields {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 1fr auto;
+    gap: 10px;
+    align-items: end;
+  }
+  .f label { font-family: var(--font-sans); font-size: 11.5px; color: var(--fg3); display: block; margin-bottom: 4px; }
+  .f .derived { color: var(--accent); }
+  .f input {
+    font-family: var(--font-mono); font-size: 12.5px;
+    padding: 8px 12px;
+    background: var(--beava-paper);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 100%;
+    color: var(--fg1);
+    box-sizing: border-box;
+  }
+  .f input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  .f input.readonly { background: var(--beava-orange-wash); color: var(--accent); border-color: #f1d8c2; }
+
+  .push {
+    font-family: var(--font-sans);
+    font-size: 13px; font-weight: 600;
+    color: #fff;
+    background: var(--accent);
+    border: 0;
+    padding: 9px 18px;
+    border-radius: 8px;
+    cursor: pointer;
+    height: 36px;
+    box-shadow: 0 1px 2px rgba(26,23,20,0.08);
+  }
+  .push:disabled { opacity: 0.5; cursor: not-allowed; }
+  .push .a { font-family: var(--font-mono); margin-left: 4px; }
+
+  .foot {
+    margin-top: 14px;
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    color: var(--fg3);
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
+</style>
+</head><body>
+  <div class="legend">Live event pusher · inline form, one row, copy-paste ready</div>
+  <div class="frame">
+    <div class="hd">
+      <div class="hd-left">
+        <span class="tag">Push event</span>
+        <span class="dest">→ @bv.table userstats</span>
+      </div>
+      <button class="rand">✦ Send a random event</button>
+    </div>
+
+    <div class="note">or craft your own</div>
+
+    <div class="fields">
+      <div class="f">
+        <label>user_id</label>
+        <input type="text" value="u_7f3c">
+      </div>
+      <div class="f">
+        <label>path</label>
+        <input type="text" value="/product/belt-sander">
+      </div>
+      <div class="f">
+        <label class="derived">category <span style="color:var(--fg3);font-weight:400">(derived)</span></label>
+        <input type="text" value="belt-sander" readonly class="readonly">
+      </div>
+      <button class="push">Push <span class="a">→</span></button>
+    </div>
+
+    <div class="foot">→ Register the pipeline above, then push an event.</div>
+  </div>
+</body></html>
