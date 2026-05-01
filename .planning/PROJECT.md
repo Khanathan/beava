@@ -88,7 +88,7 @@ Listed with reasoning to prevent re-adding.
 - **Cross-entity / cross-shard features** — `co_occurrence_count`, `graph_degree`, stream-stream joins on non-matching shard keys. Single-thread single-process architecture locks this out. Different architecture problem for v2.x.
 - **State exceeding single-box RAM** — no SSD overflow, no tiered storage, no cold cache. Users size their box; exceed → refuse new entities.
 - **Multi-instance coordination / replication / HA in OSS** — horizontal scale belongs to commercial tier. Multi-instance via user-sharded deploys allowed; server does not coordinate.
-- **`@bv.table` decorator + table surface entirely** — Removed from v0 2026-04-30 per `project_v0_events_only_scope`. Phase 12.7 strips `@bv.table` + `/upsert /delete /retract` endpoints + `TemporalStore` MVCC + `app.retract` SDK verb. Tables return in v0.1+ alongside joins / aggregation if/when justified by demand. Phase 11.5 retroactively-descoped (table primitive landed but is being walked back by Phase 12.7).
+- **`@bv.table` decorator + table surface entirely** — Removed from v0 2026-04-30 per `project_v0_events_only_scope`. **Phase 12.7 stripped (CLOSED 2026-05-01 PASS):** `@bv.table` + `/upsert /delete /retract` endpoints + `TemporalStore` MVCC + `app.retract` SDK verb (~5,500 LOC removed across 10 plans). WAL/snapshot schema RESET to FORMAT_VERSION=1. Architectural test pair (`phase12_7_no_table_surface.rs` + `phase12_7_legacy_table_handlers_killed.rs`) locks the events-only invariant in CI per CLAUDE.md `§ Events-Only Invariant (locked Phase 12.7)`. Tables return in v0.1+ alongside joins / aggregation if/when justified by demand. Phase 11.5 retroactively-descoped 2026-05-01 (banner stamps on SUMMARY/VERIFICATION/CONTEXT preserve traceability).
 - **Table aggregation with retraction propagation** — Out of v0 + v0.1. Returns alongside tables. Phase 17 archived-indefinitely 2026-04-30.
 - **Session windows (`bv.session(gap_ms=..., inner=...)`)** — Out of v0 + v0.1. Users compose count/sum with processing-time windowed ops. Phase 25 archived-indefinitely 2026-04-30.
 - **`bv.fork(...)` replica + `playground.beava.dev` hosted tutorial + structured logs** — Dropped from v0 ship phase 2026-04-30. Final v0 phase 13 = SDK polish + benchmarks + minimum-viable docs + PyPI/Docker/GitHub Releases + ship.
@@ -190,4 +190,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-22 after re-plan to adopt v1 Python SDK API shape*
+*Last updated: 2026-05-01 after Phase 12.7 closure (v0 table strip — events-only commitment locked per `project_v0_events_only_scope`; ~5,500 LOC removed; architectural test pair gates CI)*
