@@ -16,16 +16,12 @@
 //! *symbol-level invariants* hold going forward — a tripwire for any future
 //! code change that would re-introduce table surface in v0.
 //!
-//! **Plan ordering note (12.7-02 in Wave 1):** This test is RED at end of
-//! Plan 02 because Waves 2-3 haven't deleted the surface yet — that's by
-//! design. The test failure list IS the gating contract. As Plans 12.7-03,
-//! 12.7-04, 12.7-05, 12.7-06 land, the symbol set shrinks; the test turns
-//! GREEN once all forbidden symbols are gone.
-//!
-//! The main `forbidden_pattern_walk` test is `#[ignore]`-marked so the
-//! workspace `cargo test --workspace` stays green during Waves 2-3. Plan
-//! 12.7-09 (closure) removes the `#[ignore]` annotation as the final
-//! tests-pass moment, locking the events-only invariant into CI for good.
+//! **Plan ordering note (12.7-02 in Wave 1):** This test was RED at end of
+//! Plan 02 because Waves 2-3 hadn't deleted the surface yet. As Plans
+//! 12.7-03, 12.7-04, 12.7-05, 12.7-06 landed, the symbol set shrank; the
+//! test turned GREEN once all forbidden symbols were gone. Plan 12.7-10
+//! (closure) removed the `#[ignore]` annotation as the final tests-pass
+//! moment, locking the events-only invariant into CI on every PR.
 //!
 //! ## Verification probe (TDD red-form for an architectural-invariant test)
 //!
@@ -156,25 +152,17 @@ const ALLOWLIST: &[&str] = &[
 /// strips line comments, and asserts NONE contain any FORBIDDEN_PATTERNS
 /// token outside the allowlist.
 ///
-/// **RED at end of Plan 12.7-02** — this is by design. The forbidden
-/// patterns still exist in `apply_shard.rs`, `runtime_core_glue.rs`,
-/// `temporal_http.rs`, `temporal.rs`, `recovery.rs`, `registry_debug.rs`,
-/// `wire_request.rs`, `router.rs`, `http_listener.rs`, and others. As
-/// Plans 12.7-03 / 12.7-04 / 12.7-05 / 12.7-06 land their deletions, the
-/// violation list shrinks until both architectural tests turn GREEN at
-/// the end of Wave 3.
+/// **GREEN post-Plan-12.7-10 (closure):** the table surface has been
+/// stripped — Plans 12.7-03 (wire/router/dispatch variants) / 12.7-04
+/// (`temporal_http.rs` + `temporal.rs` + DevAggState fields) / 12.7-05
+/// (RecordType variants + recovery branch) / 12.7-06 (Python SDK + final
+/// `wire.rs` constants) brought the violation count from 32 → 0. Plan
+/// 12.7-10 removed the `#[ignore]` annotation; the test now runs on every
+/// `cargo test --workspace` and locks the events-only invariant into CI.
 ///
-/// `#[ignore]`-marked so `cargo test --workspace` stays green during the
-/// RED-state interlude. Plan 12.7-09 (closure) removes the `#[ignore]`
-/// annotation as the final tests-pass moment, locking the events-only
-/// invariant into CI on every PR.
-///
-/// To run manually: `cargo test -p beava-server --test
-/// phase12_7_no_table_surface -- --ignored`. The failure message lists
-/// every (file, pattern) pair so subsequent waves can see exactly what to
-/// delete.
+/// If this test ever fails again, the failure message lists every (file,
+/// pattern) pair so the regression is unambiguous.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plans 12.7-03..06 delete the table surface. Plan 12.7-09 (closure) removes this #[ignore]."]
 fn forbidden_pattern_walk() {
     let root = workspace_root();
     let mut violations = Vec::new();

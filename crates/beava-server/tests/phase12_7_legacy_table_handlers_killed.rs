@@ -2,8 +2,10 @@
 //! temporal data plane has been killed.
 //!
 //! Per `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
-//! events-only.  Six checks (RED at end of Plan 02 because Waves 2-3
-//! haven't run yet; turns GREEN incrementally as Plans 03/04/05/06 land):
+//! events-only.  Six checks (RED at end of Plan 02; turned GREEN
+//! incrementally as Plans 03/04/05/06 landed; Plan 12.7-10 closure
+//! removed the `#[ignore]` annotations so the tests now run on every
+//! `cargo test --workspace`):
 //!
 //! 1. `legacy_table_files_deleted` — temporal_http.rs / temporal.rs /
 //!    _tables.py no longer exist on disk (Plans 04 + 06).
@@ -26,9 +28,9 @@
 //! When a Wave 2-3 plan lands, exactly the test(s) covering that surface
 //! turn GREEN — the test names form a natural progress map.
 //!
-//! All 6 tests are `#[ignore]`-marked at HEAD because the surface still
-//! exists. Plan 12.7-09 (closure) removes the `#[ignore]` annotations as
-//! the final tests-pass moment, locking the events-only invariant into
+//! All 6 tests were `#[ignore]`-marked through Waves 1-3 while the surface
+//! still existed. Plan 12.7-10 (closure) removed the `#[ignore]` annotations
+//! as the final tests-pass moment, locking the events-only invariant into
 //! CI on every PR.
 //!
 //! ## Why both tests instead of one
@@ -66,9 +68,9 @@ fn workspace_root() -> PathBuf {
 /// is not part of v0; all three files are deleted by Plans 12.7-04
 /// (Rust-side) and 12.7-06 (Python-side).
 ///
-/// Turns GREEN when both deletion plans land.
+/// Turned GREEN when both deletion plans (12.7-04 Rust-side and 12.7-06
+/// Python-side) landed; `#[ignore]` removed by Plan 12.7-10 closure.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plan 12.7-04 (Rust-side files) + Plan 12.7-06 (Python SDK). Plan 12.7-09 (closure) removes this #[ignore]."]
 fn legacy_table_files_deleted() {
     let root = workspace_root();
     for path in [
@@ -95,9 +97,9 @@ fn legacy_table_files_deleted() {
 /// Sanity-positive: the surviving variants `Event = 0x01` and
 /// `RegistryBump = 0x02` MUST remain.
 ///
-/// Turns GREEN when Plan 12.7-05 lands.
+/// Turned GREEN when Plan 12.7-05 landed; `#[ignore]` removed by Plan
+/// 12.7-10 closure.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plan 12.7-05 (RecordType variants). Plan 12.7-09 (closure) removes this #[ignore]."]
 fn temporal_record_type_variants_deleted() {
     let root = workspace_root();
     let lib_rs = root.join("crates/beava-persistence/src/lib.rs");
@@ -139,9 +141,9 @@ fn temporal_record_type_variants_deleted() {
 /// Sanity-positive: surviving variants `HttpPush`, `HttpGet`, `Register`,
 /// `Ping`, etc. MUST remain.
 ///
-/// Turns GREEN when Plan 12.7-03 lands.
+/// Turned GREEN when Plan 12.7-03 landed; `#[ignore]` removed by Plan
+/// 12.7-10 closure.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plan 12.7-03 (wire/router variants). Plan 12.7-09 (closure) removes this #[ignore]."]
 fn wire_request_table_variants_deleted() {
     let root = workspace_root();
     let wire_rs = root.join("crates/beava-runtime-core/src/wire_request.rs");
@@ -185,9 +187,9 @@ fn wire_request_table_variants_deleted() {
 /// Sanity-positive: surviving routes (`Route::Push`, `Route::Get`,
 /// `Route::Register`, etc.) MUST remain.
 ///
-/// Turns GREEN when Plan 12.7-03 lands.
+/// Turned GREEN when Plan 12.7-03 landed; `#[ignore]` removed by Plan
+/// 12.7-10 closure.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plan 12.7-03 (wire/router variants). Plan 12.7-09 (closure) removes this #[ignore]."]
 fn route_table_variants_deleted() {
     let root = workspace_root();
     let router_rs = root.join("crates/beava-runtime-core/src/router.rs");
@@ -258,9 +260,9 @@ fn route_table_variants_deleted() {
 /// Sanity-positive: surviving re-exports `from ._events import event` and
 /// the `"event"` token in `__all__` MUST remain.
 ///
-/// Turns GREEN when Plan 12.7-06 lands.
+/// Turned GREEN when Plan 12.7-06 landed; `#[ignore]` removed by Plan
+/// 12.7-10 closure.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plan 12.7-06 (Python SDK). Plan 12.7-09 (closure) removes this #[ignore]."]
 fn python_bv_table_re_export_deleted() {
     let root = workspace_root();
     let init_py = root.join("python/beava/__init__.py");
@@ -302,9 +304,9 @@ fn python_bv_table_re_export_deleted() {
 /// Sanity-positive: surviving fields (`state_tables`, `registry`,
 /// `next_event_id`, `query_time_ms`) MUST remain.
 ///
-/// Turns GREEN when Plan 12.7-04 lands.
+/// Turned GREEN when Plan 12.7-04 landed; `#[ignore]` removed by Plan
+/// 12.7-10 closure.
 #[test]
-#[ignore = "Wave 1 RED state; turns GREEN after Plan 12.7-04 (AppState/DevAggState fields). Plan 12.7-09 (closure) removes this #[ignore]."]
 fn app_temporal_fields_deleted() {
     let root = workspace_root();
     let registry_debug_rs = root.join("crates/beava-server/src/registry_debug.rs");
