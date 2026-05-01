@@ -2,21 +2,20 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 12.6 CLOSED 2026-04-30 (PASS-WITH-WARN). v0 SCOPE LOCKED 2026-04-30 to events-only per `project_v0_events_only_scope` — Phases 16/17/25 archived-indefinitely, Phase 11.5 retroactively-descoped, Phase 13 reframed (drop bv.fork + playground), 27 orphan pre-pivot phase dirs archived. v0 critical path = Phase 12.7 (table strip — `@bv.table` + /upsert /delete /retract + TemporalStore + ~14 tests deleted) → Phase 13 (final ship — SDK polish + benchmarks + min-viable docs + PyPI/Docker/GitHub Releases).
-last_updated: "2026-05-01T00:00:00.000Z"
+status: Executing Phase 12.7
+last_updated: "2026-05-01T11:08:15Z"
 progress:
-  total_phases: 19
-  completed_phases: 21
-  total_plans: 163
-  completed_plans: 131
-  percent: 80
+  total_phases: 37
+  completed_phases: 17
+  total_plans: 157
+  completed_plans: 119
+  percent: 75
 ---
 
 <!-- Session continuity (resume) -->
-<!-- Last session: 2026-04-30 — /gsd-execute-phase 12.6 → 15 plans landed → Phase 12.6 CLOSED (PASS-WITH-WARN); then v0 scope locked to events-only (Phases 16/17/25 archived; Phase 11.5 retro-descoped; Phase 13 reframed; 27 orphan pre-pivot dirs archived; Phase 12.7 dir + CONTEXT stub created) -->
-<!-- Stopped at: v0 scope locked; ready for /gsd-discuss-phase 12.7 (table strip — predecessor to final ship phase 13) -->
-<!-- Resume files: .planning/phases/12.7-table-strip/12.7-CONTEXT.md (table strip scope) + .planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md (post-12.6 narrative) -->
-
+<!-- Last session: 2026-05-01 — /gsd-execute-phase 12.7 Plan 01 landed (pre_check_unsupported_node_kind shim — third JSON-prelude shim alongside 12.6-04 + 12.6-06; events-only register-time enforcement at JSON layer per D-02). RED→GREEN: b0cc0b8 → de71bec. Workspace green, clippy clean, fmt clean. -->
+<!-- Stopped at: Plan 12.7-01 CLOSED; ready for /gsd-execute-phase 12.7 next plan (12.7-02 architectural test pair) per CONTEXT.md wave order -->
+<!-- Resume files: .planning/phases/12.7-table-strip/12.7-01-SUMMARY.md (Plan 01 narrative) + .planning/phases/12.7-table-strip/12.7-CONTEXT.md (locked decisions D-01..D-04) -->
 
 # State: Beava v2 — v0 OSS Launch
 
