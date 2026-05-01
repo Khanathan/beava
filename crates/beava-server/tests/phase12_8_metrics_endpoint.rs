@@ -296,6 +296,12 @@ async fn test_entity_count_resident_reports_active_entities() {
     let _guard = ENV_LOCK.lock().await;
     enforce_off();
 
+    // Phase 12.8 fraud-team WARN fix: entity_count_resident snapshot is
+    // amortized via 1024-event gate (with 32-event warm-up). Reset the
+    // process-static ticker so this test's 3 pushes land within warm-up
+    // even when prior tests in the same binary already exhausted it.
+    beava_core::agg_state::EntityCountSampleGate::reset();
+
     let ts = TestServer::spawn().await.expect("spawn");
 
     let payload = register_payload_count(None);
