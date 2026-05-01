@@ -176,6 +176,19 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
     };
 
     // Phase 11 extended params (buffer + geo).
+    //
+    // Plan 12.8-04: histogram's canonical memory-cap kwarg in lifetime mode is
+    // `buckets` (a Vec<f64>); the count of buckets is the per-entity memory
+    // ceiling. The bound is enforced at the JSON-prelude shim
+    // `pre_check_unbounded_op_in_lifetime_mode` via
+    // `OpLifetimeBound::BoundedByRequiredKwarg("buckets")`. Aliases like
+    // `num_buckets` are NOT accepted on the wire — Plan 04 deliberately keeps
+    // `buckets` as the single canonical name (CONTEXT.md item 5
+    // "cap-where-missing"). When `BEAVA_MEMORY_GOV_ENFORCE=1` and `buckets`
+    // is empty/missing in lifetime mode, the shim rejects at register-time
+    // before this extractor runs. Defense-in-depth at agg_compile-time is
+    // intentionally NOT added here to preserve the workspace-stays-green
+    // invariant under default-OFF gate (see Plan 04 SUMMARY).
     let ext_buckets = params.get("buckets").and_then(|v| v.as_array()).map(|arr| {
         arr.iter()
             .filter_map(|x| x.as_f64().or_else(|| x.as_i64().map(|n| n as f64)))

@@ -379,18 +379,114 @@ pub enum OpLifetimeBound {
 /// Classifier helper: maps an op-string from a register payload to its
 /// declared lifetime bound.
 ///
-/// **Plan 12.8-01 (this plan) returns `Unbounded` for every input — the
-/// per-op classification table is populated by Plan 12.8-04.** The shim
-/// is gated behind `BEAVA_MEMORY_GOV_ENFORCE=1` during Wave 1 so the
-/// always-Unbounded behavior does not break the workspace.
+/// **Plan 12.8-04 (this commit) populates the 53-variant / 54-op-string
+/// classification table per CONTEXT.md memory-bound classes section.**
+/// Plan 01 had a placeholder that returned `Unbounded` for every input;
+/// Plan 04 replaces it with this match. Plan 06 flips the env-gate default
+/// from OFF to ON.
 ///
-/// Op-string list (54 ops) is enumerated in `crates/beava-core/src/agg_compile.rs`
-/// `op_str_to_agg_kind` — Plan 04 reads that list verbatim.
+/// Op-string list mirrors `crates/beava-core/src/agg_compile.rs::parse_agg_kind`
+/// (53 `AggKind` variants + the `"ema"` SDK alias for `AggKind::Ewma` =
+/// 54 distinct op-strings; Phase 11 also includes the standalone `first` /
+/// `last` single-element ops which raise the count to 55 if both aliases and
+/// singletons are enumerated). Every op-string returns a non-`Unbounded`
+/// variant; `Unbounded` is the catch-all for typos / unknown op-strings.
+///
+/// **Bound classes:**
+/// - `O1` — constant per-entity memory regardless of input.
+/// - `BoundedSketch` — sketch with a fixed structural bound (HLL precision,
+///   DDSketch buckets, BloomFilter capacity).
+/// - `BoundedByRequiredKwarg(name)` — REQUIRES the named kwarg in lifetime
+///   mode (e.g. `n` for first_n / last_n / lag / most_recent_n /
+///   time_since_last_n; `samples` for reservoir_sample; `buckets` for
+///   histogram).
+/// - `BoundedByConfig(name, default)` — kwarg is OPTIONAL with a sensible
+///   default applied if absent (top_k k=10, entropy max_categories=256,
+///   event_type_mix max_categories=256, distance_from_home samples=100).
+/// - `Unbounded` — unknown op (typo / unclassified) — REJECTED.
+///
+/// Per CONTEXT.md `Claude's Discretion` + planner discretion: `top_k` uses
+/// `BoundedByConfig("k", 10)` (NOT `BoundedByRequiredKwarg("k")`) for
+/// backward-compat with existing top_k tests that don't specify `k`
+/// (`agg_compile.rs` line 606: `sp.top_k_k.unwrap_or(10).max(1)`). Histogram
+/// has no such default in the existing wire convention; Plan 04 elevates it
+/// to `BoundedByRequiredKwarg("buckets")` per CONTEXT.md item 5
+/// "cap-where-missing".
 pub fn lifetime_bound_for_op_str(op_str: &str) -> OpLifetimeBound {
-    // Plan 12.8-01: placeholder — Plan 12.8-04 replaces this body with the
-    // 54-op classification table.
-    let _ = op_str;
-    OpLifetimeBound::Unbounded
+    match op_str {
+        // ── Phase 5 core: O(1) ─────────────────────────────────────────
+        "count" | "sum" | "avg" | "min" | "max" | "variance" | "stddev" | "ratio" => {
+            OpLifetimeBound::O1
+        }
+        // ── Phase 8 single-element: O(1) ───────────────────────────────
+        "first" | "last" => OpLifetimeBound::O1,
+        // ── Phase 8 point/ordinal: BoundedByRequiredKwarg("n") ─────────
+        "first_n" | "last_n" | "lag" | "time_since_last_n" => {
+            OpLifetimeBound::BoundedByRequiredKwarg("n")
+        }
+        // ── Phase 8 recency markers: O(1) ──────────────────────────────
+        "first_seen" | "last_seen" | "age" | "has_seen" | "time_since" => OpLifetimeBound::O1,
+        // ── Phase 8 streaks: O(1) ──────────────────────────────────────
+        "streak" | "max_streak" | "negative_streak" => OpLifetimeBound::O1,
+        // ── Phase 8 windowed recency: O(1) (carries window_ms as a
+        //    lifetime parameter; storage stays constant per entity) ──────
+        "first_seen_in_window" => OpLifetimeBound::O1,
+        // ── Phase 9 decay: O(1) — `ema` is an SDK alias for ewma (see
+        //    agg_compile.rs:271) ────────────────────────────────────────
+        "ewma" | "ema" | "ewvar" | "ew_zscore" | "decayed_sum" | "decayed_count" | "twa" => {
+            OpLifetimeBound::O1
+        }
+        // ── Phase 9 velocity: O(1) ─────────────────────────────────────
+        "rate_of_change"
+        | "inter_arrival_stats"
+        | "burst_count"
+        | "delta_from_prev"
+        | "trend"
+        | "trend_residual"
+        | "outlier_count"
+        | "value_change_count" => OpLifetimeBound::O1,
+        // ── Phase 9 entity z-score: O(1) ───────────────────────────────
+        "z_score" => OpLifetimeBound::O1,
+        // ── Phase 10 sketches: BoundedSketch (fixed structural cap) ────
+        "count_distinct" | "percentile" | "bloom_member" => OpLifetimeBound::BoundedSketch,
+        // ── Phase 10 entropy: BoundedByConfig("max_categories", 256) ───
+        "entropy" => OpLifetimeBound::BoundedByConfig("max_categories", 256),
+        // ── Phase 10 top_k: BoundedByConfig("k", 10) ───────────────────
+        // Per CONTEXT.md `Claude's Discretion` + Plan 04 objective: soft
+        // default keeps backward compat with ~10 existing top_k tests that
+        // don't specify k. The shim treats top_k as having a finite bound
+        // (10) without requiring the user to spell it out.
+        "top_k" => OpLifetimeBound::BoundedByConfig("k", 10),
+        // ── Phase 11 buffer ops: histogram is HARD-required ────────────
+        // Wire convention (agg_compile.rs:179) is `params.buckets:
+        // Vec<f64>`; Plan 04 elevates this to a register-time requirement.
+        // Empty / missing buckets array → reject with cap-kwarg suggestion.
+        "histogram" => OpLifetimeBound::BoundedByRequiredKwarg("buckets"),
+        // ── Phase 11 fixed-size histograms: O(1) ───────────────────────
+        // 24 buckets (hour_of_day) and 24×24 = 576 buckets (dow_hour) and
+        // 24 hourly slots (seasonal_deviation) are structural caps; no
+        // user-supplied kwarg required.
+        "hour_of_day_histogram" => OpLifetimeBound::O1,
+        "dow_hour_histogram" => OpLifetimeBound::O1,
+        "seasonal_deviation" => OpLifetimeBound::O1,
+        // ── Phase 11 event_type_mix: BoundedByConfig("max_categories", 256) ──
+        "event_type_mix" => OpLifetimeBound::BoundedByConfig("max_categories", 256),
+        // ── Phase 11 most_recent_n: BoundedByRequiredKwarg("n") ────────
+        "most_recent_n" => OpLifetimeBound::BoundedByRequiredKwarg("n"),
+        // ── Phase 11 reservoir_sample: BoundedByRequiredKwarg("samples") ──
+        "reservoir_sample" => OpLifetimeBound::BoundedByRequiredKwarg("samples"),
+        // ── Phase 11 geo: O(1) ─────────────────────────────────────────
+        "geo_velocity" | "geo_distance" | "geo_spread" => OpLifetimeBound::O1,
+        // ── Phase 11 distance_from_home: BoundedByConfig("samples", 100) ──
+        // (Carries a `samples` kwarg with default 100 per agg_compile.rs.)
+        "distance_from_home" => OpLifetimeBound::BoundedByConfig("samples", 100),
+        // ── Catch-all: typo / unclassified op ──────────────────────────
+        // Reject in lifetime mode. New ops added to AggKind must extend
+        // this match; the architectural test
+        // `phase12_8_lifetime_ops_have_bounds` (Plan 07) walks the catalogue
+        // and locks the invariant in CI.
+        _ => OpLifetimeBound::Unbounded,
+    }
 }
 
 /// Walks the request JSON looking for derivation nodes that contain a
@@ -454,31 +550,86 @@ pub fn pre_check_unbounded_op_in_lifetime_mode(
                 }
                 // Lifetime-mode op — check the bound classifier.
                 let bound = lifetime_bound_for_op_str(op_str);
-                if !matches!(bound, OpLifetimeBound::Unbounded) {
-                    // Has a declared bound — accept.
-                    continue;
-                }
-                // Unbounded in lifetime mode — reject.
                 let path = format!("{path_prefix_node}.agg.{feature_name}");
-                let reason = format!(
-                    "Aggregation op `{op_str}` requires explicit memory bound \
-                     in v0. Add a `windowed=\"<duration>\"` kwarg (e.g. \
-                     windowed=\"60s\") to use the rolling 64-bucket window, \
-                     or add the op-specific cap kwarg (e.g. histogram \
-                     requires num_buckets=256, top_k requires k=N, \
-                     first_n/last_n/lag require n=N). See \
-                     .planning/phases/12.8-memory-governance/12.8-CONTEXT.md \
-                     for the full lifetime-bound contract."
-                );
-                return Some(FeatureRemovedError {
-                    code: "unbounded_op_in_lifetime_mode",
-                    // op_label carries the op kind verbatim. Box::leak the
-                    // attacker-controlled string identically to 12.7-01's
-                    // pattern for `unsupported_node_kind`.
-                    op_label: Box::leak(op_str.to_string().into_boxed_str()),
-                    path,
-                    reason,
-                });
+                match bound {
+                    OpLifetimeBound::O1
+                    | OpLifetimeBound::BoundedSketch
+                    | OpLifetimeBound::BoundedByConfig(..) => {
+                        // Has a declared bound (or a sensible default
+                        // applied at compile-time) — accept.
+                        continue;
+                    }
+                    OpLifetimeBound::BoundedByRequiredKwarg(kwarg_name) => {
+                        // Op needs a required cap kwarg in lifetime mode.
+                        // Two acceptable shapes:
+                        //   1. Integer kwarg (n / samples / num_buckets) →
+                        //      must be present and > 0.
+                        //   2. Array kwarg (buckets: Vec<f64>) → must be
+                        //      present and non-empty.
+                        let kwarg_value_u64 = params
+                            .and_then(|p| p.get(kwarg_name))
+                            .and_then(|v| v.as_u64());
+                        let kwarg_value_array_nonempty = params
+                            .and_then(|p| p.get(kwarg_name))
+                            .and_then(|v| v.as_array())
+                            .map(|a| !a.is_empty())
+                            .unwrap_or(false);
+                        let valid = matches!(kwarg_value_u64, Some(n) if n > 0)
+                            || kwarg_value_array_nonempty;
+                        if valid {
+                            // Has the required cap kwarg with a positive /
+                            // non-empty value — accept.
+                            continue;
+                        }
+                        // Missing or invalid required kwarg — reject with a
+                        // suggested default that mirrors the cap class.
+                        let suggested_default = match kwarg_name {
+                            "n" => "n=5",
+                            "samples" => "samples=100",
+                            "buckets" => "buckets=[10, 50, 100, 500]",
+                            _ => "<value>",
+                        };
+                        let reason = format!(
+                            "Aggregation op `{op_str}` requires explicit memory bound \
+                             in v0 — the `{kwarg_name}` kwarg is missing or invalid. \
+                             Add `{suggested_default}` (or your chosen cap) to the op \
+                             params, or add `windowed=\"<duration>\"` (e.g. \
+                             windowed=\"60s\") to use the rolling 64-bucket window. \
+                             See .planning/phases/12.8-memory-governance/12.8-CONTEXT.md \
+                             for the full lifetime-bound contract."
+                        );
+                        return Some(FeatureRemovedError {
+                            code: "unbounded_op_in_lifetime_mode",
+                            op_label: Box::leak(op_str.to_string().into_boxed_str()),
+                            path,
+                            reason,
+                        });
+                    }
+                    OpLifetimeBound::Unbounded => {
+                        // Unknown / unclassified op (typo or new op missing
+                        // from the classification table) — reject with the
+                        // generic v0-framing message.
+                        let reason = format!(
+                            "Aggregation op `{op_str}` requires explicit memory bound \
+                             in v0. Add a `windowed=\"<duration>\"` kwarg (e.g. \
+                             windowed=\"60s\") to use the rolling 64-bucket window, \
+                             or add the op-specific cap kwarg (e.g. histogram \
+                             requires num_buckets=256, top_k requires k=N, \
+                             first_n/last_n/lag require n=N). See \
+                             .planning/phases/12.8-memory-governance/12.8-CONTEXT.md \
+                             for the full lifetime-bound contract."
+                        );
+                        return Some(FeatureRemovedError {
+                            code: "unbounded_op_in_lifetime_mode",
+                            // op_label carries the op kind verbatim. Box::leak the
+                            // attacker-controlled string identically to 12.7-01's
+                            // pattern for `unsupported_node_kind`.
+                            op_label: Box::leak(op_str.to_string().into_boxed_str()),
+                            path,
+                            reason,
+                        });
+                    }
+                }
             }
         }
     }
@@ -2455,15 +2606,22 @@ mod tests_pre_check_unbounded_op_in_lifetime_mode {
         })
     }
 
+    /// Sentinel op-string that does not appear in `lifetime_bound_for_op_str`
+    /// — used by the rejection-tests below as a stand-in for any genuinely-
+    /// unclassified op. Plan 01's tests originally used "count", but Plan 04
+    /// classified count as O1, so these tests switched to a typo sentinel
+    /// that round-trips through `Unbounded` deterministically.
+    const UNCLASSIFIED_OP: &str = "nonexistent_op_zzz";
+
     #[test]
-    fn pre_check_unbounded_op_returns_some_for_unbounded_count() {
-        // Plan 01's stub classifier returns Unbounded for every op-string.
-        // A windowless count therefore must be rejected.
-        let body = payload_with_op(Some("ByUser"), "cnt", "count", false);
+    fn pre_check_unbounded_op_returns_some_for_unbounded_op() {
+        // Plan 04: only genuinely-unclassified op-strings hit Unbounded.
+        // The sentinel `nonexistent_op_zzz` is the catch-all canary.
+        let body = payload_with_op(Some("ByUser"), "cnt", UNCLASSIFIED_OP, false);
         let err = pre_check_unbounded_op_in_lifetime_mode(&body)
-            .expect("windowless count should be rejected (stub classifies all as Unbounded)");
+            .expect("windowless unclassified op should be rejected (catch-all → Unbounded)");
         assert_eq!(err.code, "unbounded_op_in_lifetime_mode");
-        assert_eq!(err.op_label, "count");
+        assert_eq!(err.op_label, UNCLASSIFIED_OP);
         assert_eq!(err.path, "nodes[1].ByUser.ops[0].agg.cnt");
         assert!(
             err.reason.contains("requires explicit memory bound in v0"),
@@ -2471,7 +2629,7 @@ mod tests_pre_check_unbounded_op_in_lifetime_mode {
             err.reason
         );
         assert!(
-            err.reason.contains("count"),
+            err.reason.contains(UNCLASSIFIED_OP),
             "reason should name the op, got: {}",
             err.reason
         );
@@ -2481,10 +2639,13 @@ mod tests_pre_check_unbounded_op_in_lifetime_mode {
     fn pre_check_unbounded_op_skips_windowed_op() {
         // params.window present → windowed path is naturally bounded by the
         // 64-bucket cap; the shim must skip and return None.
-        let body = payload_with_op(Some("ByUser"), "cnt_60s", "count", true);
+        // (Tested with the unclassified sentinel — even unclassified ops
+        // bypass the bound check when windowed.)
+        let body = payload_with_op(Some("ByUser"), "cnt_60s", UNCLASSIFIED_OP, true);
         assert!(
             pre_check_unbounded_op_in_lifetime_mode(&body).is_none(),
-            "windowed op should bypass the bound check"
+            "windowed op should bypass the bound check (even when op-string is \
+             unclassified — the windowed runtime imposes its own 64-bucket cap)"
         );
     }
 
@@ -2510,7 +2671,7 @@ mod tests_pre_check_unbounded_op_in_lifetime_mode {
     #[test]
     fn pre_check_unbounded_op_path_format_named_derivation() {
         // Named derivation → path is `nodes[N].<name>.ops[K].agg.<feature>`.
-        let body = payload_with_op(Some("MyDeriv"), "feat_a", "count", false);
+        let body = payload_with_op(Some("MyDeriv"), "feat_a", UNCLASSIFIED_OP, false);
         let err = pre_check_unbounded_op_in_lifetime_mode(&body).unwrap();
         assert_eq!(err.path, "nodes[1].MyDeriv.ops[0].agg.feat_a");
     }
@@ -2519,7 +2680,7 @@ mod tests_pre_check_unbounded_op_in_lifetime_mode {
     fn pre_check_unbounded_op_path_format_unnamed_derivation() {
         // Unnamed derivation (no `name` field) → path falls back to
         // `nodes[N].ops[K].agg.<feature>` (no derivation-name segment).
-        let body = payload_with_op(None, "feat_a", "count", false);
+        let body = payload_with_op(None, "feat_a", UNCLASSIFIED_OP, false);
         let err = pre_check_unbounded_op_in_lifetime_mode(&body).unwrap();
         assert_eq!(err.path, "nodes[1].ops[0].agg.feat_a");
     }

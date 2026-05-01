@@ -1,18 +1,23 @@
-//! Phase 12.8 Plan 01 — Register-time rejection of unbounded ops in lifetime mode.
+//! Phase 12.8 Plan 01 + 04 — Register-time rejection of unbounded ops in lifetime mode.
 //!
 //! Per CONTEXT.md D-03 ("Hard reject at register-time"), Beava v0 commits that
 //! every lifetime aggregation declares a finite per-entity memory ceiling. The
 //! 4th JSON-prelude shim `pre_check_unbounded_op_in_lifetime_mode` walks the
 //! register payload's derivation nodes and rejects any windowless op whose
-//! lifetime memory bound is `Unbounded` per `lifetime_bound_for_op_str`.
+//! lifetime memory bound is `Unbounded` (typo / unclassified) OR is
+//! `BoundedByRequiredKwarg` with the kwarg missing per `lifetime_bound_for_op_str`.
 //!
-//! **Wave-1 contract (this plan):** the bound classifier helper is a stub that
-//! returns `Unbounded` for every op-string. Plan 12.8-04 (Wave 2) populates the
-//! per-op classification table; Plan 12.8-06 (Wave 3) flips the env-gate
-//! `BEAVA_MEMORY_GOV_ENFORCE` default from OFF to ON. Wave 1 keeps the workspace
-//! green by gating the shim entirely behind the env-var: if unset (the
-//! `cargo test --workspace` default), the shim is a no-op and existing
-//! lifetime-op registrations succeed exactly as they did pre-12.8.
+//! **History:**
+//! - **Plan 01 (Wave 1)** shipped the shim with a placeholder helper that
+//!   returned `Unbounded` for every op-string + an env-gate
+//!   `BEAVA_MEMORY_GOV_ENFORCE` defaulting OFF. This file's tests originally
+//!   used `count` as the rejection target (Plan-01-stub behavior).
+//! - **Plan 04 (Wave 2)** populated the 53-variant / 54-op-string
+//!   classification table. `count` is now O1 (accepted); `histogram` without
+//!   `buckets` is rejected via `BoundedByRequiredKwarg`. The rejection-tests
+//!   below were updated to use `histogram` (no buckets) as the canonical
+//!   rejected example.
+//! - **Plan 06 (Wave 3)** flips `BEAVA_MEMORY_GOV_ENFORCE` default OFF→ON.
 //!
 //! Per CONTEXT.md D-02 framing: error code is `unbounded_op_in_lifetime_mode`
 //! (forward-looking — "requires explicit memory bound in v0"), NOT a
@@ -57,9 +62,12 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
 
     let ts = TestServer::spawn().await.expect("spawn");
 
-    // Tx event + a derivation that group_by user_id and runs a windowless count.
-    // Plan 01's stub `lifetime_bound_for_op_str` returns Unbounded for every op
-    // string — so this windowless count gets rejected by the 4th shim.
+    // Tx event + a derivation that group_by user_id and runs a windowless
+    // `histogram` op WITHOUT the required `buckets` cap kwarg. Per Plan 04
+    // classification, histogram is `BoundedByRequiredKwarg("buckets")` —
+    // missing buckets in lifetime mode → reject. (Pre-Plan-04 this test used
+    // `count`, but count is now O1 / accepted; histogram-without-buckets is
+    // the canonical post-Plan-04 rejection example.)
     let payload = json!({
         "nodes": [
             {
@@ -80,12 +88,12 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
                         "op": "group_by",
                         "keys": ["user_id"],
                         "agg": {
-                            "cnt": {"op": "count", "params": {}}
+                            "h": {"op": "histogram", "params": {"field": "amount"}}
                         }
                     }
                 ],
                 "schema": {
-                    "fields": {"user_id": "str", "cnt": "i64"},
+                    "fields": {"user_id": "str", "h": "f64"},
                     "optional_fields": []
                 }
             }
@@ -118,8 +126,8 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
          in v0', got: {reason}"
     );
     assert!(
-        reason.contains("count"),
-        "reason should name the rejected op `count`, got: {reason}"
+        reason.contains("histogram"),
+        "reason should name the rejected op `histogram`, got: {reason}"
     );
 }
 
@@ -187,9 +195,10 @@ async fn test_no_enforcement_when_env_unset() {
 
     let ts = TestServer::spawn().await.expect("spawn");
 
-    // SAME windowless-count payload as test 1. WITHOUT the env var, the 4th
-    // shim must short-circuit and accept the registration. This is the
-    // workspace-stays-green guarantee for Wave 1.
+    // SAME windowless-histogram-without-buckets payload as test 1. WITHOUT
+    // the env var, the 4th shim must short-circuit and accept the registration
+    // (which would otherwise be rejected with the env-gate ON). This is the
+    // workspace-stays-green guarantee for the default-OFF gate.
     let payload = json!({
         "nodes": [
             {
@@ -210,12 +219,12 @@ async fn test_no_enforcement_when_env_unset() {
                         "op": "group_by",
                         "keys": ["user_id"],
                         "agg": {
-                            "cnt": {"op": "count", "params": {}}
+                            "h": {"op": "histogram", "params": {"field": "amount"}}
                         }
                     }
                 ],
                 "schema": {
-                    "fields": {"user_id": "str", "cnt": "i64"},
+                    "fields": {"user_id": "str", "h": "f64"},
                     "optional_fields": []
                 }
             }
@@ -230,8 +239,9 @@ async fn test_no_enforcement_when_env_unset() {
 
     assert!(
         (200..300).contains(&status),
-        "without BEAVA_MEMORY_GOV_ENFORCE, the 4th shim must be a no-op (Wave 1 \
-         default-OFF gate); got status={status}, body={body_text}"
+        "without BEAVA_MEMORY_GOV_ENFORCE, the 4th shim must be a no-op \
+         (default-OFF gate, even for would-be-rejected ops like histogram \
+         without buckets); got status={status}, body={body_text}"
     );
 }
 
@@ -242,9 +252,10 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
 
     let ts = TestServer::spawn().await.expect("spawn");
 
-    // 2 derivations: derivation 1 is windowed (fine), derivation 2 is windowless
-    // (rejected). Per first-occurrence semantics the shim returns the path of
-    // the FIRST offender — which is the second derivation's count op.
+    // 2 derivations: derivation 1 has a windowed count (fine), derivation 2 has
+    // a windowless histogram WITHOUT `buckets` (rejected post-Plan-04). Per
+    // first-occurrence semantics the shim returns the path of the FIRST
+    // offender — which is the second derivation's histogram op.
     let payload = json!({
         "nodes": [
             {
@@ -284,12 +295,12 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
                         "op": "group_by",
                         "keys": ["user_id"],
                         "agg": {
-                            "cnt_total": {"op": "count", "params": {}}
+                            "h_total": {"op": "histogram", "params": {"field": "amount"}}
                         }
                     }
                 ],
                 "schema": {
-                    "fields": {"user_id": "str", "cnt_total": "i64"},
+                    "fields": {"user_id": "str", "h_total": "f64"},
                     "optional_fields": []
                 }
             }
@@ -305,18 +316,18 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
 
     assert_eq!(
         status, 400,
-        "windowless count in derivation 2 must be rejected, got \
+        "windowless histogram in derivation 2 must be rejected, got \
          status={status}, body={body_text}"
     );
     let body: serde_json::Value = serde_json::from_str(&body_text).expect("body json");
     assert_eq!(body["error"]["code"], "unbounded_op_in_lifetime_mode");
     let path = body["error"]["path"].as_str().unwrap_or_default();
-    // nodes[2] = "Lifetime" derivation, ops[0] = group_by, agg.cnt_total = the
-    // windowless count feature whose op-string is "count" and whose lifetime
-    // bound is Unbounded (Plan 01 stub).
+    // nodes[2] = "Lifetime" derivation, ops[0] = group_by, agg.h_total = the
+    // windowless histogram feature whose op-string is "histogram" and which
+    // is BoundedByRequiredKwarg("buckets") with the kwarg missing.
     assert_eq!(
-        path, "nodes[2].Lifetime.ops[0].agg.cnt_total",
-        "error.path should be nodes[2].Lifetime.ops[0].agg.cnt_total \
+        path, "nodes[2].Lifetime.ops[0].agg.h_total",
+        "error.path should be nodes[2].Lifetime.ops[0].agg.h_total \
          (first-offender semantics across derivations), got: {path}"
     );
 }
@@ -328,9 +339,10 @@ async fn test_message_suggests_windowed_kwarg() {
 
     let ts = TestServer::spawn().await.expect("spawn");
 
-    // Same windowless-count payload as test 1 — the rejection reason text must
-    // help the user migrate. Per CONTEXT D-03, the message names the cap kwarg
-    // they should add.
+    // Windowless histogram WITHOUT `buckets` — the rejection reason text must
+    // help the user migrate. Per CONTEXT D-03 + Plan 04 BoundedByRequiredKwarg
+    // path, the message names the missing cap kwarg AND offers the `windowed=`
+    // alternative.
     let payload = json!({
         "nodes": [
             {
@@ -351,12 +363,12 @@ async fn test_message_suggests_windowed_kwarg() {
                         "op": "group_by",
                         "keys": ["user_id"],
                         "agg": {
-                            "cnt": {"op": "count", "params": {}}
+                            "h": {"op": "histogram", "params": {"field": "amount"}}
                         }
                     }
                 ],
                 "schema": {
-                    "fields": {"user_id": "str", "cnt": "i64"},
+                    "fields": {"user_id": "str", "h": "f64"},
                     "optional_fields": []
                 }
             }
@@ -370,7 +382,10 @@ async fn test_message_suggests_windowed_kwarg() {
     enforce_off();
     ts.shutdown().await.ok();
 
-    assert_eq!(status, 400, "windowless count rejected, got {body_text}");
+    assert_eq!(
+        status, 400,
+        "windowless histogram rejected, got {body_text}"
+    );
     let body: serde_json::Value = serde_json::from_str(&body_text).expect("body json");
     let reason = body["error"]["reason"]
         .as_str()
@@ -378,15 +393,13 @@ async fn test_message_suggests_windowed_kwarg() {
     // The message should suggest the `windowed=` kwarg so the user has a
     // clear migration path.
     assert!(
-        reason.contains("windowed=\"60s\"") || reason.contains("windowed=\"60s\""),
+        reason.contains("windowed=\"60s\""),
         "reason should suggest a `windowed=\"60s\"` migration, got: {reason}"
     );
-    // Also must suggest at least one cap kwarg vocabulary fragment so users on
-    // bounded-by-config ops (histogram etc.) see the cap-kwarg path even though
-    // Plan 01's stub classifies everything as Unbounded.
+    // Also must name the missing cap kwarg vocabulary fragment so the user
+    // knows what specific param to add for their op (`buckets=` for histogram).
     assert!(
-        reason.contains("num_buckets") || reason.contains("k=N") || reason.contains("n=N"),
-        "reason should mention at least one cap kwarg (num_buckets / k=N / n=N), \
-         got: {reason}"
+        reason.contains("buckets"),
+        "reason should mention the missing kwarg `buckets`, got: {reason}"
     );
 }

@@ -16,7 +16,7 @@
 //! 54-row match.
 
 use beava_core::register_validate::{
-    OpLifetimeBound, lifetime_bound_for_op_str, pre_check_unbounded_op_in_lifetime_mode,
+    lifetime_bound_for_op_str, pre_check_unbounded_op_in_lifetime_mode, OpLifetimeBound,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -73,17 +73,41 @@ fn every_aggkind_has_classified_bound() {
     // Sourced from `parse_agg_kind` in agg_compile.rs — every match-arm op-string.
     let all_op_strings: &[&str] = &[
         // Phase 5 core (8)
-        "count", "sum", "avg", "min", "max", "variance", "stddev", "ratio",
+        "count",
+        "sum",
+        "avg",
+        "min",
+        "max",
+        "variance",
+        "stddev",
+        "ratio",
         // Phase 8 point/ordinal (5)
-        "first", "last", "first_n", "last_n", "lag",
+        "first",
+        "last",
+        "first_n",
+        "last_n",
+        "lag",
         // Phase 8 recency markers (6)
-        "first_seen", "last_seen", "age", "has_seen", "time_since", "time_since_last_n",
+        "first_seen",
+        "last_seen",
+        "age",
+        "has_seen",
+        "time_since",
+        "time_since_last_n",
         // Phase 8 streaks (3)
-        "streak", "max_streak", "negative_streak",
+        "streak",
+        "max_streak",
+        "negative_streak",
         // Phase 8 windowed recency (1)
         "first_seen_in_window",
         // Phase 9 decay (6 + 1 alias = 7 op-strings)
-        "ewma", "ema", "ewvar", "ew_zscore", "decayed_sum", "decayed_count", "twa",
+        "ewma",
+        "ema",
+        "ewvar",
+        "ew_zscore",
+        "decayed_sum",
+        "decayed_count",
+        "twa",
         // Phase 9 velocity (8)
         "rate_of_change",
         "inter_arrival_stats",
@@ -96,7 +120,11 @@ fn every_aggkind_has_classified_bound() {
         // Phase 9 z-score (1)
         "z_score",
         // Phase 10 sketches (5)
-        "count_distinct", "percentile", "top_k", "bloom_member", "entropy",
+        "count_distinct",
+        "percentile",
+        "top_k",
+        "bloom_member",
+        "entropy",
         // Phase 11 buffer ops (7)
         "histogram",
         "hour_of_day_histogram",
@@ -106,7 +134,10 @@ fn every_aggkind_has_classified_bound() {
         "most_recent_n",
         "reservoir_sample",
         // Phase 11 geo ops (4)
-        "geo_velocity", "geo_distance", "geo_spread", "distance_from_home",
+        "geo_velocity",
+        "geo_distance",
+        "geo_spread",
+        "distance_from_home",
     ];
     // 8 + 5 + 6 + 3 + 1 + 7 + 8 + 1 + 5 + 7 + 4 = 55 — but we count "ewma"+"ema"
     // as two op-strings even though they map to the same `AggKind::Ewma`. Plan
