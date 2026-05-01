@@ -54,10 +54,6 @@ name = "phase8_agg"
 harness = false
 
 [[bench]]
-name = "temporal_mvcc"
-harness = false
-
-[[bench]]
 name = "phase9_decay_velocity"
 harness = false
 

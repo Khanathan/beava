@@ -2180,10 +2180,6 @@ fn encode_glue_response_http(
             });
             (405, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 12.6-14: temporal /upsert /delete /retract /table — body
-        // pre-serialised by `temporal_http::*_via_mio` to match legacy
-        // axum response shapes byte-for-byte.
-        GlueResponse::TemporalResponse { http_status, body } => (*http_status, body.to_vec()),
         // Plan 12.6-14: 415 Unsupported Media Type for POST endpoints.
         // Body matches legacy axum register handler `RegisterErrorBody`
         // shape (`error.code = "unsupported_media_type"`).

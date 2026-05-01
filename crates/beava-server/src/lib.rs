@@ -19,7 +19,6 @@ pub mod runtime_core_glue;
 pub mod server;
 pub mod shutdown;
 pub mod snapshot_task;
-pub mod temporal_http;
 pub mod wal_config;
 
 #[cfg(any(feature = "testing", test))]

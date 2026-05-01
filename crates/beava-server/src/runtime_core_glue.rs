@@ -7,8 +7,7 @@
 //! TCP and HTTP connections into typed `WireRequest` values. This module is
 //! the bridge: it takes those requests and calls the wire-agnostic helpers
 //! (`apply_shard::dispatch_*_sync`, `register::register_outcome_to_glue`,
-//! `temporal_http::*_via_mio`, `feature_query::parse_entity_key`). No
-//! business logic lives here.
+//! `feature_query::parse_entity_key`). No business logic lives here.
 //!
 //! # Architecture (D-10, 18-CONTEXT.md)
 //!
@@ -101,12 +100,6 @@ pub enum GlueResponse {
     /// Plan 12.6-01: HTTP path matched a route but with the wrong method.
     /// Encoded as `405 Method Not Allowed`.
     HttpMethodNotAllowed { method: String, path: String },
-    /// Plan 12.6-14: temporal-table or retract response — body is
-    /// pre-serialised by the apply-thread `temporal_http` helpers
-    /// (matching the legacy axum upsert/delete/retract/table_get handler
-    /// shapes exactly).  `http_status` is whatever the helper returned
-    /// (200, 400, 404, 409, 501, 503).
-    TemporalResponse { http_status: u16, body: Bytes },
     /// Plan 12.6-14: 415 Unsupported Media Type for POST endpoints whose
     /// Content-Type header was missing or not `application/json`. Body
     /// matches the legacy axum register handler `RegisterErrorBody`

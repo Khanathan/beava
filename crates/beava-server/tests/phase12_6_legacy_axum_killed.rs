@@ -11,9 +11,14 @@
 //!    declares `pub async fn dispatch_wire_request(`.
 //! 4. `beava_dev_endpoints_env_var_deleted` — no `.rs` file under
 //!    `crates/beava-server/src/` mentions `BEAVA_DEV_ENDPOINTS`.
-//! 5. `temporal_http_axum_handlers_deleted` — temporal_http.rs has zero
-//!    `axum::` references; helpers (`json_object_to_row`, `entity_key_from_body`,
-//!    `row_to_json`) are still present.
+//! 5. `temporal_http_axum_handlers_deleted` — **Plan 12.7-04** deleted the
+//!    entire `temporal_http.rs` source file (events-only strip per
+//!    `project_v0_events_only_scope`). The test now asserts the file is
+//!    absent on disk; the original axum-symbol grep is moot once the file
+//!    itself is gone. The 12.7 architectural-test pair
+//!    (`phase12_7_legacy_table_handlers_killed::legacy_table_files_deleted`)
+//!    is the canonical assertion of file absence; this preserved test stays
+//!    here for back-compat with the Plan 12.6-07 architectural-test scaffold.
 //! 6. `shutdown_signal_preserved_and_used_by_serverv18` — shutdown.rs still
 //!    declares `pub async fn shutdown_signal`, doc-comment no longer cites
 //!    `axum::serve`, and main.rs continues to invoke `shutdown_signal`.
@@ -126,38 +131,29 @@ fn beava_dev_endpoints_env_var_deleted() {
     );
 }
 
+/// Plan 12.6-07 originally asserted `temporal_http.rs` had zero `axum::`
+/// references and that the `*_via_mio` helpers were preserved.
+///
+/// **Plan 12.7-04** deleted the entire file as part of the events-only
+/// strip (`project_v0_events_only_scope`, locked 2026-04-30). With the file
+/// gone the original 12.6-07 grep checks are moot. The test is repointed at
+/// the new invariant: `temporal_http.rs` MUST NOT exist on disk.
+///
+/// Companion architectural test
+/// `phase12_7_legacy_table_handlers_killed::legacy_table_files_deleted` is
+/// the canonical 12.7-side assertion (it covers `temporal.rs` and the
+/// `python/beava/_tables.py` SDK module too). This shim preserves the
+/// 12.6-07 test name so the historical CI signal stays attached to the
+/// same invariant after the v0 surface reduction completed in Plan 12.7-04.
 #[test]
 fn temporal_http_axum_handlers_deleted() {
     let root = workspace_root();
     let temporal_rs = root.join("crates/beava-server/src/temporal_http.rs");
-    let src = std::fs::read_to_string(&temporal_rs).expect("temporal_http.rs exists");
     assert!(
-        !src.contains("axum::"),
-        "temporal_http.rs must have zero `axum::` references post-Plan-12.6-07 (mio handles upsert/delete/retract/table)"
+        !temporal_rs.exists(),
+        "crates/beava-server/src/temporal_http.rs must be deleted post-Plan-12.7-04 \
+         (events-only strip per project_v0_events_only_scope)"
     );
-    for token in [
-        "upsert_handler",
-        "delete_handler",
-        "retract_handler",
-        "table_get_handler",
-        "temporal_router",
-    ] {
-        assert!(
-            !src.contains(token),
-            "axum {token} must be deleted from temporal_http.rs (use *_via_mio helpers instead)"
-        );
-    }
-    // Helpers preserved.
-    for token in [
-        "fn json_object_to_row",
-        "fn entity_key_from_body",
-        "fn row_to_json",
-    ] {
-        assert!(
-            src.contains(token),
-            "{token} helper must remain in temporal_http.rs (consumed by ServerV18 mio path)"
-        );
-    }
 }
 
 #[test]

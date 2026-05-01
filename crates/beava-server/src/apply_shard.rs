@@ -779,21 +779,14 @@ impl ApplyShard {
         }
         let t_bk_counters = t0.map(|t| t.elapsed());
 
-        // 10. Record event ID entry for retract routing.
-        {
-            use crate::registry_debug::EventIdEntry;
-            let mut idx = self.state.dev_agg.event_id_index.lock();
-            idx.insert(
-                ack_lsn,
-                EventIdEntry::Stream {
-                    // Plan 18-12 D-3: refcount bump on the registry-resident
-                    // Arc<str> — no per-push heap alloc. `descriptor` is the
-                    // Arc<EventDescriptor> from the Plan 18-11 D-6 lookup at
-                    // step 2; `name_arc` was populated at registration.
-                    event_name: Arc::clone(&descriptor.name_arc),
-                },
-            );
-        }
+        // Plan 12.7-04: step 10 (record event_id_index entry for retract
+        // routing) deleted alongside the table/retract surface. Per
+        // `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
+        // events-only — there is no retract path to populate the side-table.
+        // `t_bk_evid` is fed by the same monotonic clock as the surrounding
+        // stages so the trace stays well-formed; with the work gone the
+        // delta `t_bk_evid - t_bk_counters` is the noise of two `Instant::now`
+        // calls (~5 ns).
         let t_bk_evid = t0.map(|t| t.elapsed());
 
         // 11. Cache on dedupe path.

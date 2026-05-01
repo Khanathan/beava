@@ -1,4 +1,4 @@
-//! Dev-state types — `DevAggState`, `EventIdEntry`, `RegistryDump`, and
+//! Dev-state types — `DevAggState`, `RegistryDump`, and
 //! `build_registry_dump`.
 //!
 //! **Plan 12.6-10 (single hot-path entry):** the legacy in-source
@@ -14,16 +14,25 @@
 //! `recovery.rs::replay_*` (WAL replay) callers. Removing the orphans makes
 //! `crates/beava-server/tests/phase12_6_mio_only_dataplane.rs` pass green.
 //!
+//! **Plan 12.7-04 (events-only strip):** the per-table `temporal_stores` map
+//! and the `event_id_index` (originally Phase 11.5 D-10 retract-routing
+//! side-table) have been deleted from `DevAggState`. The `EventIdEntry::
+//! TableWrite` enum variant and the `TemporalStore` import are gone with
+//! them. Per `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
+//! events-only — there is no retract path to populate, no MVCC store to
+//! consult, and no event-id → entry side-table consumer. The single
+//! surviving `EventIdEntry::Stream` variant is unused at the time of strip;
+//! the enum + the bookkeeping write-site in `apply_shard.rs` are deleted
+//! together. Production reset: when v0.1+ revives tables / retraction the
+//! enum and side-table can return, but as new architecture, not as the
+//! pre-12.7 shape.
+//!
 //! What survives in this module is the pure data-state surface consumed by
 //! the live mio data plane:
 //!
 //! - **`DevAggState`** — single-writer `state_tables` + `registry` + atomic
-//!   counters + `temporal_stores` + `event_id_index`, owned by `AppState`,
-//!   updated on the apply thread by `apply_shard.rs::dispatch_push_sync`,
-//!   read by GET handlers + recovery.
-//! - **`EventIdEntry`** — `Stream { event_name: Arc<str> } | TableWrite { ... }`
-//!   side-table consumed by `apply_shard.rs::dispatch_push_sync` and
-//!   `temporal_http::*_via_mio`.
+//!   counters, owned by `AppState`, updated on the apply thread by
+//!   `apply_shard.rs::dispatch_push_sync`, read by GET handlers + recovery.
 //! - **`RegistryDump`** + **`build_registry_dump`** — built once per mio
 //!   `/registry` request from `apply_shard.rs::dispatch_one`'s
 //!   `WireRequest::HttpRegistry` arm; gated on `AppState.dev_endpoints`.
@@ -35,37 +44,11 @@
 
 use beava_core::agg_state_table::StateTables;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, Registry, TableDescriptor};
-use beava_core::temporal::TemporalStore;
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-
-/// Phase 11.5 D-10/D-12 — runtime side-table that maps an event_id (LSN) to
-/// the kind of WAL record at that LSN. The retract handler uses this to
-/// route stream events to 501, table writes to MVCC retraction, and unknown
-/// IDs to 404 — without re-walking the WAL on the hot path.
-///
-/// Plan 18-12: `Stream.event_name` is `Arc<str>` (was `String`) so the
-/// dispatch_push_sync bookkeeping site can clone the Arc — refcount bump,
-/// no heap alloc per push — instead of calling `event_name.to_string()`.
-/// `Arc<str>` derefs to `&str` and serializes/displays the same way; consumers
-/// reading the event_name as a string slice work unchanged.
-#[derive(Debug, Clone)]
-pub enum EventIdEntry {
-    /// A pushed stream event. Retraction is unimplemented in v0; the
-    /// handler returns 501 with `stream_retraction_unimplemented`.
-    Stream { event_name: Arc<str> },
-    /// A table write — temporal or non-temporal. The retract handler
-    /// inspects the descriptor at retract-time to decide between 400
-    /// (table_not_temporal) and the actual MVCC retraction path.
-    TableWrite {
-        table_name: String,
-        entity_key: Vec<u8>,
-        retracted: bool,
-    },
-}
 
 /// Full registry dump. `_dev_only: true` is a permanent wire sentinel so SDK
 /// authors know this endpoint is unstable.
@@ -131,20 +114,6 @@ pub struct DevAggState {
     ///
     /// AtomicU64 (cast from i64) for lock-free reads from the GET hot path.
     pub query_time_ms: Arc<AtomicU64>,
-
-    /// Phase 11.5 D-01 — per-table MVCC stores. Key = table name. Created
-    /// lazily on first push-table for a temporal table.
-    pub temporal_stores: Arc<Mutex<HashMap<String, TemporalStore>>>,
-
-    /// Phase 11.5 D-10 — event_id → entry index (see EventIdEntry).
-    /// Populated at apply-time by /push/{event_name} and
-    /// /push-table/{table_name}; consumed at retract-time.
-    ///
-    /// Plan 18-06 follow-up: swapped from `std::collections::HashMap` (which
-    /// hashes `u64` keys with SipHash, ~150–250 ns/insert) to
-    /// `hashbrown::HashMap` with `FxBuildHasher` (~50–80 ns/insert). On the
-    /// per-push hot path the bookkeeping `bk_evid` substage drops by ~150 ns.
-    pub event_id_index: Arc<Mutex<hashbrown::HashMap<u64, EventIdEntry, fxhash::FxBuildHasher>>>,
 }
 
 impl DevAggState {
@@ -154,10 +123,6 @@ impl DevAggState {
             registry,
             next_event_id: Arc::new(AtomicU64::new(0)),
             query_time_ms: Arc::new(AtomicU64::new(0)),
-            temporal_stores: Arc::new(Mutex::new(HashMap::new())),
-            event_id_index: Arc::new(Mutex::new(hashbrown::HashMap::with_hasher(
-                fxhash::FxBuildHasher::default(),
-            ))),
         }
     }
 }
@@ -166,7 +131,10 @@ impl DevAggState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Plan 12.7-04: the prior `use super::*;` import is removed since the
+    // only surviving test in this module uses `include_str!` + std-lib only;
+    // it was previously consumed by `event_id_entry_stream_takes_arc_str`
+    // which was deleted alongside the `EventIdEntry` enum.
 
     /// Phase 12.6 Plan 06 (Task 2.a / RED) — guards the D-03 hard-rip surface
     /// at the AppState level. Reads the source via `include_str!` and asserts
@@ -194,27 +162,8 @@ mod tests {
             "Phase 12.6 Plan 06 D-03: DevAggState must not carry a `{forbidden_field}` field/atomic after the hard rip. Found in registry_debug.rs source."
         );
     }
-
-    #[test]
-    fn event_id_entry_stream_takes_arc_str() {
-        let arc_name: Arc<str> = Arc::from("Txn");
-        let entry = EventIdEntry::Stream {
-            event_name: arc_name.clone(),
-        };
-
-        match entry {
-            EventIdEntry::Stream { event_name } => {
-                assert_eq!(
-                    event_name.as_ref(),
-                    "Txn",
-                    "Stream.event_name must round-trip the input Arc<str> content"
-                );
-                assert!(
-                    Arc::ptr_eq(&event_name, &arc_name),
-                    "Stream.event_name must hold the SAME Arc allocation, not a re-derive"
-                );
-            }
-            EventIdEntry::TableWrite { .. } => panic!("expected EventIdEntry::Stream variant"),
-        }
-    }
+    // Plan 12.7-04: `event_id_entry_stream_takes_arc_str` removed alongside
+    // the `EventIdEntry` enum (retract bookkeeping side-table). Per
+    // `project_v0_events_only_scope` (locked 2026-04-30) v0 ships events-only
+    // — there is no retract path, so the side-table and its tests are gone.
 }

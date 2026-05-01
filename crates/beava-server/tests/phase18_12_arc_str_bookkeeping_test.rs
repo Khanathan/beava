@@ -1,6 +1,18 @@
 //! Plan 18-12 RED — bookkeeping clones the descriptor's `name_arc`, no alloc.
 //!
-//! Contract:
+//! **Plan 12.7-04 (events-only strip):** this test asserted invariants about
+//! the `event_id_index` side-table and the `EventIdEntry::Stream` enum
+//! variant — both deleted by Plan 12.7-04 alongside the table / retract
+//! surface. Per `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
+//! events-only; there is no retract path that consumes the side-table, so the
+//! bookkeeping write-site in `apply_shard.rs::dispatch_push_sync` is gone.
+//!
+//! The whole file is gated out with `#![cfg(any())]` (a never-true cfg) so
+//! it does not compile against the post-12.7-04 source. Plan 12.7-06 deletes
+//! it outright once the table-strip waves close. The original test text is
+//! preserved below for reference until Plan 12.7-06 lands.
+//!
+//! Contract (no longer applicable post-12.7):
 //! - After a successful push through `dispatch_push_sync`, the
 //!   `event_id_index` carries an `EventIdEntry::Stream` whose `event_name`
 //!   field is the SAME `Arc<str>` allocation as the registered descriptor's
@@ -14,6 +26,10 @@
 //! entry's Arc points at a NEW allocation independent of the descriptor's
 //! Arc — `Arc::ptr_eq` still does NOT hold. Only the Task 12.3.b shape
 //! (`descriptor.name_arc.clone()`) makes both invariants pass.
+
+#![cfg(any())]
+// Plan 12.7-04: gated out — `event_id_index` field and `EventIdEntry` enum
+// no longer exist in beava-server. File slated for deletion in Plan 12.7-06.
 
 use beava_core::registry::Registry;
 use beava_core::row::{Row, Value};
