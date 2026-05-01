@@ -136,7 +136,7 @@ class App:
           - Bad return type
 
         Args:
-            *descriptors: Descriptor objects returned by ``@bv.event`` / ``@bv.table``.
+            *descriptors: Descriptor objects returned by ``@bv.event``.
 
         Returns:
             ``list[ValidationError]`` — empty list means the batch is valid.
@@ -175,7 +175,7 @@ class App:
              ``status``, ``added``, ``already_present``, etc.).
 
         Args:
-            *descriptors: Descriptor objects returned by ``@bv.event`` / ``@bv.table``.
+            *descriptors: Descriptor objects returned by ``@bv.event``.
 
         Returns:
             Server response dict (e.g. ``{"registry_version": 1, "status": "ok", ...}``).
@@ -210,50 +210,6 @@ class App:
         # Step 4: dispatch
         result: dict[str, Any] = transport.send_register(payload_bytes)
         return result
-
-    def upsert(self, table_type: Any, row_dict: dict[str, Any]) -> dict[str, Any]:
-        """POST /upsert/{table_name} — write a row to a source table.
-
-        Args:
-            table_type: Descriptor returned by ``@bv.table``.
-            row_dict: Row fields as a plain dict.
-
-        Returns:
-            Server response dict (e.g. ``{"ack_lsn": 42, "registry_version": 1}``).
-
-        Raises:
-            RuntimeError: Called on a closed App or embed mode without context manager.
-        """
-        transport = self._require_transport()
-        table_name = table_type._name
-        payload_bytes = json.dumps(row_dict, ensure_ascii=False).encode("utf-8")
-        return transport._client.post(
-            f"/upsert/{table_name}",
-            content=payload_bytes,
-            headers={"Content-Type": "application/json"},
-        ).json()
-
-    def delete(self, table_type: Any, *, key: Any) -> dict[str, Any]:
-        """POST /delete/{table_name} — tombstone a row by primary key.
-
-        Args:
-            table_type: Descriptor returned by ``@bv.table``.
-            key: Primary key value to delete.
-
-        Returns:
-            Server response dict.
-
-        Raises:
-            RuntimeError: Called on a closed App or embed mode without context manager.
-        """
-        transport = self._require_transport()
-        table_name = table_type._name
-        payload_bytes = json.dumps({"key": key}, ensure_ascii=False).encode("utf-8")
-        return transport._client.post(
-            f"/delete/{table_name}",
-            content=payload_bytes,
-            headers={"Content-Type": "application/json"},
-        ).json()
 
     def get(self, feature: str, key: str) -> Any:
         """Plan 12-09: read one feature for one entity key.

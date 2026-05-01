@@ -1,4 +1,4 @@
-"""SDK-OPS-09 unit tests: op methods on EventSource/EventDerivation + TableSource/TableDerivation.
+"""SDK-OPS-09 unit tests: op methods on EventSource / EventDerivation.
 
 Every test in this file is a unit test — no server required.
 
@@ -7,10 +7,13 @@ Tests verify:
   - No mutation of `self` (strict immutability).
   - Each op appends the correct dict to the ops list.
   - Chaining composes left-to-right.
-  - Table-specific: drop rejects key fields; rename cascades key list.
   - Cast client-side validates target type.
 
-These tests are RED until Task 1.b implements the op methods.
+Plan 12.7-06: Table-specific assertions removed per
+`project_v0_events_only_scope` (locked 2026-04-30). v0 ships events-only;
+the `@bv.table` decorator + TableSource / TableDerivation are stripped.
+The events surface (filter / select / drop / rename / with_columns / map /
+cast / fillna chaining) is intact.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ import pytest
 
 import beava as bv
 from beava._events import EventDerivation
-from beava._tables import TableDerivation
 
 # ---------------------------------------------------------------------------
 # Shared descriptors (defined at module scope so they are not re-created per test)
@@ -33,10 +35,7 @@ class Transaction:
     ts: int
 
 
-@bv.table(key="user_id")
-class UserProfile:
-    user_id: str
-    score: float
+# Plan 12.7-06: UserProfile @bv.table fixture removed (v0 events-only).
 
 
 # ---------------------------------------------------------------------------
@@ -173,27 +172,9 @@ def test_source_reference_preserved_through_chain() -> None:
     assert d1.upstream is Transaction
 
 
-# ---------------------------------------------------------------------------
-# Table-specific: SDK-OPS-03 (drop rejects key) + SDK-OPS-04 (rename cascades)
-# ---------------------------------------------------------------------------
-
-
-def test_table_drop_rejects_key_fields() -> None:
-    with pytest.raises(ValueError, match="cannot drop key"):
-        UserProfile.drop("user_id")
-    # Dropping a non-key field works fine.
-    d1 = UserProfile.drop("score")
-    assert isinstance(d1, TableDerivation)
-    assert d1.ops == [{"op": "drop", "fields": ["score"]}]
-
-
-def test_table_rename_cascades_into_key_list() -> None:
-    d1 = UserProfile.rename(user_id="uid")
-    assert isinstance(d1, TableDerivation)
-    # The key list in the resulting derivation must reflect the renamed field.
-    assert d1.key == ["uid"]
-    # ops list carries the rename op.
-    assert d1.ops == [{"op": "rename", "mapping": {"user_id": "uid"}}]
+# Plan 12.7-06: Table-specific tests removed per project_v0_events_only_scope.
+# The drop-rejects-key and rename-cascades-key behaviors were table-only
+# (events have no primary key). Return in v0.1+ if tables revive.
 
 
 # ---------------------------------------------------------------------------
@@ -214,9 +195,7 @@ def test_op_method_returns_type_matches_source() -> None:
     # EventSource -> EventDerivation
     ev_d = Transaction.filter(bv.col("amount") > 0)
     assert isinstance(ev_d, EventDerivation)
-    # TableSource -> TableDerivation
-    tbl_d = UserProfile.filter(bv.col("score") > 0)
-    assert isinstance(tbl_d, TableDerivation)
+    # Plan 12.7-06: TableSource -> TableDerivation case removed (v0 events-only).
 
 
 # ---------------------------------------------------------------------------

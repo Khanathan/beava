@@ -28,8 +28,11 @@ class TestNewSurface:
     def test_stream_decorator_callable(self):
         assert callable(tl.stream)
 
-    def test_table_decorator_callable(self):
-        assert callable(tl.table)
+    # Plan 12.7-06: tl.table assertions removed per project_v0_events_only_scope
+    # (v0 ships events-only). The `tally` SDK's table surface is out of v0
+    # scope; if the tally package surfaces tl.table after this plan, that's
+    # a separate audit (tally is a parallel/historical SDK, not the beava
+    # public surface).
 
     def test_col_callable(self):
         assert callable(tl.col)
@@ -45,8 +48,7 @@ class TestNewSurface:
     def test_stream_runtime_type(self):
         assert isinstance(tl.Stream, type)
 
-    def test_table_runtime_type(self):
-        assert isinstance(tl.Table, type)
+    # Plan 12.7-06: tl.Table assertion removed per project_v0_events_only_scope.
 
     def test_app_still_exported(self):
         assert isinstance(tl.App, type)
@@ -154,18 +156,6 @@ class TestRegisterIntegration:
         assert opcode == tl.OP_REGISTER
         assert b"Clicks" in payload
 
-    def test_table_registers_via_mock_app(self):
-        @tl.table(key="user_id")
-        class Users:
-            user_id: str
-            name: str
-
-        app = tl.App.__new__(tl.App)
-        mock = _MockClient()
-        app._client = mock
-        app.register(Users)
-
-        assert len(mock.sent) == 1
-        opcode, payload = mock.sent[0]
-        assert opcode == tl.OP_REGISTER
-        assert b"Users" in payload
+    # Plan 12.7-06: test_table_registers_via_mock_app removed per
+    # project_v0_events_only_scope (v0 ships events-only via @bv.event /
+    # @tl.stream). Table register tests return in v0.1+ if tables revive.

@@ -2,6 +2,10 @@
 
 All tests in this file are pure-Python (no server needed).  RED commit: all fail because
 _validate.py does not exist yet.
+
+Plan 12.7-06: TableSource imports + _make_table helper + tests using
+@bv.table removed per `project_v0_events_only_scope` (locked 2026-04-30).
+v0 ships events-only.
 """
 
 from __future__ import annotations
@@ -10,7 +14,6 @@ import beava as bv
 from beava._errors import ValidationError
 from beava._events import EventDerivation, EventSource
 from beava._schema import FieldSpec
-from beava._tables import TableSource
 
 # ---------------------------------------------------------------------------
 # Helpers: build minimal descriptors without using the decorators
@@ -46,15 +49,7 @@ def _make_derivation(name: str, upstreams: list[str]) -> EventDerivation:
     )
 
 
-def _make_table(name: str, key: str = "id") -> TableSource:
-    """Return a minimal TableSource."""
-    return TableSource(
-        name=name,
-        schema={key: FieldSpec(name=key, py_type=str, optional=False)},
-        primary_key=[key],
-        ttl_ms=None,
-        mode="upsert",
-    )
+# Plan 12.7-06: _make_table TableSource helper removed (v0 events-only).
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +162,11 @@ def test_missing_upstream_detected() -> None:
 
 
 def test_validate_succeeds_for_valid_descriptors() -> None:
-    """One event + one table with no issues → empty error list."""
+    """Two valid events with no issues → empty error list.
+
+    Plan 12.7-06: UserProfile @bv.table removed; replaced with a second event
+    descriptor (v0 events-only).
+    """
     from beava._validate import validate_descriptors
 
     @bv.event
@@ -175,12 +174,12 @@ def test_validate_succeeds_for_valid_descriptors() -> None:
         amount: float
         user_id: str
 
-    @bv.table(key="user_id")
-    class UserProfile:  # type: ignore[no-redef]
+    @bv.event
+    class LoginEvent:  # type: ignore[no-redef]
         user_id: str
-        balance: float
+        session_id: str
 
-    errs = validate_descriptors([Transaction, UserProfile])
+    errs = validate_descriptors([Transaction, LoginEvent])
     assert errs == [], f"Expected no errors, got: {errs}"
 
 
@@ -219,12 +218,12 @@ def test_validate_returns_validation_error_instances() -> None:
     errs = validate_descriptors([a])
     assert all(isinstance(e, ValidationError) for e in errs)
     # Plan 12.6-08: event_time_field_invalid removed per no-event-time pivot.
+    # Plan 12.7-06: table_key_invalid removed per v0 events-only.
     assert errs[0].kind in {
         "cycle",
         "missing_upstream",
         "duplicate_name",
         "unknown_field_type",
-        "table_key_invalid",
         "bad_return_type",
         "schema_mismatch",
         "registration_conflict",

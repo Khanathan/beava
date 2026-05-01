@@ -279,8 +279,8 @@ class EventDerivation(_EventOpsMixin):
     """Descriptor for a function-form @bv.event declaration OR a fluent-op derivation.
 
     Produced when the decorator is applied to a function whose parameters are
-    annotated with upstream EventSource / TableSource descriptors, or when an
-    op method (`.filter()`, `.select()`, etc.) is called on an EventSource /
+    annotated with upstream EventSource descriptors, or when an op method
+    (`.filter()`, `.select()`, etc.) is called on an EventSource /
     EventDerivation.
 
     Exposes:
@@ -329,6 +329,9 @@ class EventDerivation(_EventOpsMixin):
                 },
                 "optional_fields": [n for n, s in self._schema.items() if s.optional],
             },
+            # Plan 12.7-06: `table_primary_key` retained as a wire-protocol
+            # field (server still parses it for derivation descriptors); v0
+            # events-only events have no primary key, so always None.
             "table_primary_key": None,
         }
 
@@ -411,8 +414,8 @@ def _decorate_event_function(
     for param_name, param in sig.parameters.items():
         # Read the annotation directly from the parameter object.
         # This works even when the annotated type is a local variable (a decorated
-        # EventSource / TableSource) that would not be resolvable by
-        # typing.get_type_hints() in the function's defining module namespace.
+        # EventSource) that would not be resolvable by typing.get_type_hints()
+        # in the function's defining module namespace.
         upstream_cls = param.annotation
         if (
             upstream_cls is inspect.Parameter.empty
@@ -421,7 +424,7 @@ def _decorate_event_function(
         ):
             raise TypeError(
                 f"@bv.event function form: parameter {param_name!r} must be annotated "
-                f"with a @bv.event- or @bv.table-decorated descriptor "
+                f"with a @bv.event-decorated descriptor "
                 f"(got {upstream_cls!r})"
             )
         upstream_names.append(upstream_cls._name)

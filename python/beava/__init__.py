@@ -9,9 +9,12 @@ Public API (Phase 3 Plan 03-05):
   - col: expression DSL constructor (Plan 03-02)
   - Col: _ExprAST base class for isinstance checks (Plan 03-02)
   - event: @bv.event decorator (class + function form) (Plan 03-03)
-  - table: @bv.table decorator (class + function form) (Plan 03-03)
   - parse_url_to_transport: URL-scheme dispatch (Plan 03-04)
   - App: sync client — register, validate, ping (Plan 03-05)
+
+v0 ships events-only per `project_v0_events_only_scope` (locked 2026-04-30).
+Tables, table-aggregation, and session windows return in v0.1+ if/when
+justified by demand. See .planning/phases/12.7-table-strip/ for context.
 """
 
 from ._agg import (
@@ -50,13 +53,11 @@ from ._errors import (
     ValidationError,
 )
 from ._events import event
-from ._tables import table
 from ._transport import parse_url_to_transport
 from ._types import Field, Optional
 
 __all__ = [
     "event",
-    "table",
     "col",
     "Col",
     "App",

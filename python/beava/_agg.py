@@ -525,7 +525,11 @@ def z_score(field: str, *, baseline_window: str, where: Any = None) -> AggDescri
 class GroupBy:
     """Returned by EventSource/EventDerivation.group_by(*keys).
 
-    Call ``.agg(**named_features)`` to produce a TableDerivation.
+    Plan 12.7-06: ``.agg(...)`` raises ``RuntimeError`` per
+    `project_v0_events_only_scope` (locked 2026-04-30). v0 ships
+    events-only; aggregation requires tables, which are not supported in
+    v0. The class survives so legacy import paths don't break and the
+    builder shape is preserved for v0.1+ revival.
     """
 
     def __init__(self, upstream: Any, keys: list[str]) -> None:
@@ -533,73 +537,20 @@ class GroupBy:
         self._keys = keys
 
     def agg(self, **named_features: AggDescriptor) -> Any:
-        """Build a TableDerivation from named aggregation descriptors.
+        """Plan 12.7-06: aggregation is not supported in v0.
 
-        Each keyword argument name becomes a feature column in the output table.
-        The value must be an AggDescriptor (from bv.count/sum/avg/etc.).
-
-        Args:
-            **named_features: Mapping of output feature name → AggDescriptor.
-
-        Returns:
-            TableDerivation with output_kind="table", primary_key=group_keys,
-            and a ``group_by`` op-node appended to the ops list.
+        Per `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
+        events-only via ``@bv.event``. The previous behavior — returning a
+        ``TableDerivation`` from ``.agg()`` — required tables, which are
+        stripped from v0. Tables, table-aggregation, and session windows
+        return in v0.1+ if/when justified by demand.
 
         Raises:
-            TypeError: If any value is not an AggDescriptor.
+            RuntimeError: Always, with v0 framing.
         """
-        # Validate: every value must be an AggDescriptor (T-05-07-02)
-        for name, desc in named_features.items():
-            if not isinstance(desc, AggDescriptor):
-                raise TypeError(
-                    f"agg(...) kwarg {name!r} must be an AggDescriptor "
-                    f"(from bv.count/sum/avg/min/max/variance/stddev/ratio); "
-                    f"got {type(desc).__name__!r}"
-                )
-
-        # Build the REGISTER JSON GroupBy op-node
-        agg_map = {name: desc.to_agg_spec() for name, desc in named_features.items()}
-        op_node: dict[str, Any] = {
-            "op": "group_by",
-            "keys": list(self._keys),
-            "agg": agg_map,
-        }
-
-        # Construct the TableDerivation — import inside method to avoid circular deps
-        from ._schema import FieldSpec  # noqa: PLC0415
-        from ._tables import TableDerivation  # noqa: PLC0415
-
-        upstream_name: str = getattr(self._upstream, "_name", None)  # type: ignore[assignment]
-        if upstream_name is None:
-            raise TypeError(
-                "group_by() upstream must have a _name attribute "
-                "(EventSource / EventDerivation expected)"
-            )
-
-        existing_ops: list[Any] = list(getattr(self._upstream, "_ops", []))
-        upstream_schema: dict[str, Any] = getattr(self._upstream, "_schema", {})
-
-        # Build output schema: group-by keys (from upstream) + aggregated features.
-        # count/ratio → int; all other ops → float.
-        output_schema: dict[str, FieldSpec] = {}
-        for key in self._keys:
-            if key in upstream_schema:
-                output_schema[key] = upstream_schema[key]
-            else:
-                # Key not found in upstream — fall back to str (server will validate)
-                output_schema[key] = FieldSpec(name=key, py_type=str)
-        for feat_name, desc in named_features.items():
-            if desc.op in ("count",):
-                output_schema[feat_name] = FieldSpec(name=feat_name, py_type=int)
-            else:
-                output_schema[feat_name] = FieldSpec(name=feat_name, py_type=float)
-
-        return TableDerivation(
-            name=f"{upstream_name}_by_{'_'.join(self._keys)}",
-            schema=output_schema,
-            upstreams=[upstream_name],
-            ops=[*existing_ops, op_node],
-            output_kind="table",
-            table_primary_key=list(self._keys),
-            upstream=self._upstream,
+        raise RuntimeError(
+            "Aggregation is not supported in v0; v0 ships events-only via "
+            "@bv.event. Tables, table-aggregation, and session windows return "
+            "in v0.1+ if/when justified by demand. See "
+            ".planning/phases/12.7-table-strip/ for context."
         )

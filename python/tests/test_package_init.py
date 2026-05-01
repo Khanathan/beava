@@ -20,11 +20,13 @@ def test_public_exports_present() -> None:
 
 
 def test_package_exports_stubs_for_phase3() -> None:
-    """Stub attributes event, table, col, App must exist.
+    """Stub attributes event, col, App must exist.
 
-    These may raise NotImplementedError when called; the attribute itself must be present.
+    Plan 12.7-06: ``bv.table`` removed per `project_v0_events_only_scope`
+    (locked 2026-04-30) — v0 ships events-only. Stubs return in v0.1+ if
+    tables revive.
     """
     assert hasattr(bv, "event")
-    assert hasattr(bv, "table")
+    assert not hasattr(bv, "table"), "bv.table must be absent in v0 (events-only)"
     assert hasattr(bv, "col")
     assert hasattr(bv, "App")

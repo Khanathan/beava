@@ -17,7 +17,7 @@ Validation rules (Phase 3 scope — mirrors server register_validate.rs):
   3. cycle                   — DFS three-color cycle detection on the upstream graph.
   4. unknown_field_type      — a schema field's type string is not one of the 6 valid ones.
   5. (removed 2026-04-30 per no-event-time pivot — was event_time_field_invalid).
-  6. table_key_invalid        — primary_key field(s) not all in schema.
+  6. (removed 2026-05-01 per Plan 12.7-06 v0 events-only — was table_key_invalid).
   7. bad_return_type          — derivation's _beava_kind is not one of the three valid values.
   8. schema_mismatch          — Phase 3 no-op placeholder (stateless ops land in Phase 4).
 
@@ -42,7 +42,7 @@ _VALID_FIELD_TYPES: frozenset[str] = frozenset(
     {"str", "i64", "f64", "bool", "bytes", "datetime"}
 )
 
-_VALID_BEAVA_KINDS: frozenset[str] = frozenset({"event", "table", "derivation"})
+_VALID_BEAVA_KINDS: frozenset[str] = frozenset({"event", "derivation"})
 
 # Mapping from Python type objects to wire type strings (defensive re-check).
 # Mirrors _types.py, but we compare the FieldSpec.py_type rather than re-doing
@@ -63,7 +63,7 @@ _PY_TYPE_TO_WIRE: dict[type, str] = {
 
 
 def _descriptor_name(desc: Any) -> str:
-    """Return the descriptor's _name attribute (guaranteed by EventSource/TableSource/etc.)."""
+    """Return the descriptor's _name attribute (guaranteed by EventSource/etc.)."""
     return str(desc._name)
 
 
@@ -78,14 +78,8 @@ def _get_schema_fields(desc: Any) -> dict[str, Any]:
     return dict(getattr(desc, "_schema", {}))
 
 
-def _get_primary_key(desc: Any) -> list[str]:
-    """Return primary_key list (TableSource) or empty list."""
-    key: list[str] = getattr(desc, "_primary_key", [])
-    return list(key)
-
-
 def _get_beava_kind(desc: Any) -> str:
-    """Return the _beava_kind attribute (e.g. 'event', 'table', 'derivation')."""
+    """Return the _beava_kind attribute (e.g. 'event', 'derivation')."""
     return str(getattr(desc, "_beava_kind", ""))
 
 
@@ -152,7 +146,7 @@ def topo_sort(descriptors: Sequence[Any]) -> list[Any]:
     Preserves input order as the tiebreaker for nodes with the same in-degree.
 
     Args:
-        descriptors: Sequence of descriptor objects (EventSource, TableSource, etc.)
+        descriptors: Sequence of descriptor objects (EventSource, etc.)
 
     Returns:
         New list in dependency order.
@@ -243,27 +237,6 @@ def _check_field_types(desc: Any, errors: list[ValidationError]) -> None:
             )
 
 
-def _check_table_primary_key(desc: Any, errors: list[ValidationError]) -> None:
-    """Rule 6: all primary_key fields must exist in schema."""
-    name = _descriptor_name(desc)
-    pk = _get_primary_key(desc)
-    if not pk:
-        return
-    schema = _get_schema_fields(desc)
-    for k in pk:
-        if k not in schema:
-            errors.append(
-                ValidationError(
-                    kind="table_key_invalid",
-                    path=f"{name}.primary_key",
-                    message=(
-                        f"primary_key field {k!r} is not in schema; "
-                        f"available: {sorted(schema.keys())}"
-                    ),
-                )
-            )
-
-
 def _check_bad_return_type(desc: Any, errors: list[ValidationError]) -> None:
     """Rule 7: _beava_kind must be one of the valid kinds."""
     name = _descriptor_name(desc)
@@ -295,7 +268,7 @@ def validate_descriptors(descriptors: Sequence[Any]) -> list[ValidationError]:
       3. cycle                — DFS cycle detection on the upstream graph
       4. unknown_field_type   — unsupported field type in any schema
       5. (removed 2026-04-30 per no-event-time pivot — was event_time_field_invalid)
-      6. table_key_invalid    — primary_key fields not in schema
+      6. (removed 2026-05-01 per Plan 12.7-06 v0 events-only — was table_key_invalid)
       7. bad_return_type      — invalid _beava_kind
       8. schema_mismatch      — Phase 3 no-op placeholder (ops are empty in Phase 3)
 
@@ -323,10 +296,11 @@ def validate_descriptors(descriptors: Sequence[Any]) -> list[ValidationError]:
     # Collect unique names for upstream checks (use first occurrence)
     name_set: set[str] = set(seen_names.keys())
 
-    # Rules 4-7: per-descriptor checks (rule 5 removed 2026-04-30 per no-event-time pivot)
+    # Rules 4 + 7: per-descriptor checks (rule 5 removed 2026-04-30 per
+    # no-event-time pivot; rule 6 removed 2026-05-01 per Plan 12.7-06
+    # — v0 ships events-only, so primary_key validation is dead code).
     for desc in desc_list:
         _check_field_types(desc, errors)
-        _check_table_primary_key(desc, errors)
         _check_bad_return_type(desc, errors)
 
     # Rule 2: missing upstream (derivations only)

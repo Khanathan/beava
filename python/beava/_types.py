@@ -125,7 +125,7 @@ def Field(*, desc: str | None = None, default: Any = MISSING) -> _FieldMarker:
 # Field type mapping: Python type → server FieldType string
 # ---------------------------------------------------------------------------
 #
-# Must be imported by _events.py and _tables.py at decoration time.
+# Must be imported by _events.py at decoration time.
 # Raises TypeError on unsupported types with a helpful message.
 # ---------------------------------------------------------------------------
 

@@ -4,14 +4,18 @@ Each test maps to one Phase 3 ROADMAP success criterion. Tests run against a rea
 Rust ``beava`` binary via the ``beava_server`` fixture (Plans 03-04).
 
 Module-level descriptors are defined for reuse across criterion tests.
+
+Plan 12.7-06: Table-using fixtures and SC2 (`@bv.table` both forms) removed
+per `project_v0_events_only_scope` (locked 2026-04-30). v0 ships events-only.
+SC1, SC3, SC4, SC5, SC6, SC7 retained with event-only fixtures. Tables
+return in v0.1+ if/when justified by demand.
 """
 
 import httpx
-import pytest
+import pytest  # noqa: F401  (some retained tests use pytest.raises)
 
 import beava as bv
 from beava._events import EventDerivation, EventSource
-from beava._tables import TableDerivation, TableSource
 
 # ---------------------------------------------------------------------------
 # Module-level shared descriptors
@@ -36,13 +40,7 @@ class LoginEvent:
     session_id: str
 
 
-# Table source keyed on user_id
-@bv.table(key="user_id")
-class UserProfileTable:
-    """Per-user lookup table."""
-
-    user_id: str
-    balance: float
+# Plan 12.7-06: UserProfileTable @bv.table fixture removed (v0 events-only).
 
 
 # Function-form event derivation (passthrough — no op chain in Phase 3)
@@ -53,7 +51,8 @@ def CheckoutDerivation(src: TxEvent):  # type: ignore[no-untyped-def]
 
 
 # ---------------------------------------------------------------------------
-# SC6 descriptors — two independent events + one table for the star test.
+# SC6 descriptors — two independent events for the cross-transport parity test.
+# Plan 12.7-06: SC6Table removed; SC6 narrows to events-only registry parity.
 # Defined at module scope so decoration happens before any server starts.
 # ---------------------------------------------------------------------------
 
@@ -69,10 +68,7 @@ class SC6EventB:
     session_id: str
 
 
-@bv.table(key="user_id")
-class SC6Table:
-    user_id: str
-    balance: float
+# Plan 12.7-06: SC6Table @bv.table fixture removed (v0 events-only).
 
 
 # ---------------------------------------------------------------------------
@@ -129,56 +125,12 @@ def test_c1_event_decorator_both_forms() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SC2 — @bv.table both forms
+# SC2 — @bv.table both forms — REMOVED 2026-05-01 by Plan 12.7-06
 # ---------------------------------------------------------------------------
-
-
-def test_c2_table_decorator_both_forms() -> None:
-    """ROADMAP Phase 3 success criterion #2.
-
-    @bv.table(key=..., ttl=...) class + function forms; key validation at decoration.
-    """
-    # Class form: produces TableSource with primary_key
-    assert isinstance(UserProfileTable, TableSource), (
-        f"Expected TableSource, got {type(UserProfileTable)}"
-    )
-    assert UserProfileTable._name == "UserProfileTable"
-    assert UserProfileTable._primary_key == ["user_id"]
-    assert UserProfileTable._beava_kind == "table"
-
-    # Class form with TTL
-    @bv.table(key="user_id", ttl="7d")
-    class TemporaryProfile:
-        user_id: str
-        score: float
-
-    assert isinstance(TemporaryProfile, TableSource)
-    assert TemporaryProfile._ttl_ms is not None
-    assert TemporaryProfile._ttl_ms == 7 * 24 * 60 * 60 * 1000
-
-    # Function form: produces TableDerivation
-    @bv.table(key="user_id")
-    def UserScoreTable(src: TxEvent):  # type: ignore[no-untyped-def]
-        return src
-
-    assert isinstance(UserScoreTable, TableDerivation), (
-        f"Expected TableDerivation, got {type(UserScoreTable)}"
-    )
-    assert UserScoreTable._name == "UserScoreTable"
-    assert "TxEvent" in UserScoreTable._upstreams
-    assert UserScoreTable._table_primary_key == ["user_id"]
-
-    # Key validation: missing key field raises TypeError at decoration time
-    with pytest.raises(TypeError, match="user_id"):
-        @bv.table(key="user_id")
-        class BadTable:
-            amount: float  # user_id not declared
-
-    # Bare @bv.table without key= raises TypeError
-    with pytest.raises(TypeError, match="key="):
-        @bv.table  # type: ignore[arg-type]
-        class NoKeyTable:
-            user_id: str
+#
+# Per `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
+# events-only; the @bv.table decorator is stripped from the SDK. SC2
+# returns in v0.1+ if tables revive.
 
 
 # ---------------------------------------------------------------------------
@@ -224,22 +176,25 @@ def test_c4_register_both_transports(beava_server: tuple[str, str]) -> None:
     """ROADMAP Phase 3 success criterion #4.
 
     app.register(*descriptors) dispatches HTTP/TCP per URL scheme, returns registry_version.
+
+    Plan 12.7-06: UserProfileTable replaced with LoginEvent + CheckoutDerivation
+    (v0 events-only).
     """
     http_url, tcp_url = beava_server
 
-    # HTTP transport: register TxEvent + UserProfileTable → version 1
+    # HTTP transport: register TxEvent + LoginEvent → version 1
     with bv.App(http_url) as app:
-        resp = app.register(TxEvent, UserProfileTable)
+        resp = app.register(TxEvent, LoginEvent)
 
     assert resp.get("status") == "ok", f"HTTP register returned: {resp}"
     assert resp.get("registry_version") == 1, (
         f"Expected registry_version=1, got: {resp}"
     )
 
-    # TCP transport: same server already has TxEvent/UserProfileTable at version 1.
-    # Register an additional descriptor to bump to version 2.
+    # TCP transport: same server already has events at version 1.
+    # Register an additional derivation to bump to version 2.
     with bv.App(tcp_url) as app:
-        resp2 = app.register(LoginEvent)
+        resp2 = app.register(TxEvent, CheckoutDerivation)
 
     assert resp2.get("status") == "ok", f"TCP register returned: {resp2}"
     assert resp2.get("registry_version") == 2, (
@@ -280,7 +235,8 @@ def test_c5_validate_no_io(beava_server: tuple[str, str]) -> None:
     )
 
     # Valid batch returns empty list
-    valid_errs = bv.App(http_url).validate(TxEvent, UserProfileTable)
+    # Plan 12.7-06: UserProfileTable replaced with LoginEvent (v0 events-only).
+    valid_errs = bv.App(http_url).validate(TxEvent, LoginEvent)
     assert valid_errs == [], f"Expected no errors for valid batch, got: {valid_errs}"
 
 
@@ -294,12 +250,14 @@ def test_c6_identical_registry_state_across_transports(
 ) -> None:
     """ROADMAP Phase 3 success criterion #6.
 
-    Register 2 events + 1 table once via http:// and once via tcp://;
+    Register 2 events once via http:// and once via tcp://;
     GET /registry shows identical state both times.
+
+    Plan 12.7-06: SC6Table removed; events-only registry parity check.
     """
     from beava._embed import spawn_embedded_server, teardown_process
 
-    descriptors = [SC6EventA, SC6EventB, SC6Table]
+    descriptors = [SC6EventA, SC6EventB]
 
     # Round 1: register via http://
     proc_a, http_url_a, _tcp_url_a = spawn_embedded_server()

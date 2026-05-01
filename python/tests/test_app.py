@@ -47,7 +47,10 @@ def _make_derivation(name: str, upstreams: list[str]) -> EventDerivation:
 
 
 # ---------------------------------------------------------------------------
-# Transaction / UserProfile descriptors used across multiple tests
+# Transaction / LoginEvent descriptors used across multiple tests.
+#
+# Plan 12.7-06: UserProfile @bv.table fixture replaced with LoginEvent
+# (v0 events-only per `project_v0_events_only_scope`).
 # ---------------------------------------------------------------------------
 
 
@@ -57,10 +60,10 @@ class Transaction:  # type: ignore[no-redef]
     user_id: str
 
 
-@bv.table(key="user_id")
-class UserProfile:  # type: ignore[no-redef]
+@bv.event
+class LoginEvent:  # type: ignore[no-redef]
     user_id: str
-    balance: float
+    session_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +107,7 @@ def test_app_register_http_success(beava_server: tuple[str, str]) -> None:
     """app.register() over HTTP returns registry_version and status."""
     http_url, _tcp_url = beava_server
     with bv.App(http_url) as app:
-        resp = app.register(Transaction, UserProfile)
+        resp = app.register(Transaction, LoginEvent)
     assert isinstance(resp, dict)
     assert resp.get("registry_version") == 1
     assert resp.get("status") == "ok"
@@ -114,7 +117,7 @@ def test_app_register_tcp_success(beava_server: tuple[str, str]) -> None:
     """app.register() over TCP returns registry_version and status."""
     _http_url, tcp_url = beava_server
     with bv.App(tcp_url) as app:
-        resp = app.register(Transaction, UserProfile)
+        resp = app.register(Transaction, LoginEvent)
     assert isinstance(resp, dict)
     assert resp.get("registry_version") == 1
     assert resp.get("status") == "ok"
@@ -134,10 +137,10 @@ def test_app_register_returns_registry_version_on_additive_repost(
         r1 = app.register(Transaction)
         assert r1["registry_version"] == 1
 
-        r2 = app.register(Transaction, UserProfile)
+        r2 = app.register(Transaction, LoginEvent)
         assert r2["registry_version"] == 2
 
-        r3 = app.register(Transaction, UserProfile)
+        r3 = app.register(Transaction, LoginEvent)
         assert r3["registry_version"] == 2
 
 
@@ -211,7 +214,7 @@ def test_app_validate_returns_list_without_network_io(
 
     app = bv.App(http_url)
     try:
-        errs = app.validate(Transaction, UserProfile)
+        errs = app.validate(Transaction, LoginEvent)
         assert errs == [], f"Expected no errors, got: {errs}"
 
         r_before = httpx.get(f"{http_url}/registry")

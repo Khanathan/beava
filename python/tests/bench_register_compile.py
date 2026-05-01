@@ -8,6 +8,11 @@ NOTE: No 'from __future__ import annotations' — @bv.event function-form reads
 param.annotation directly at decoration time (must be the live descriptor object,
 not a string).  All 10 descriptors are defined at module scope.
 
+Plan 12.7-06: Per `project_v0_events_only_scope` (locked 2026-04-30) the
+4 @bv.table descriptors were replaced with 4 additional event sources +
+derivations to keep the 10-descriptor DAG shape. Tables return in v0.1+
+if/when justified by demand.
+
 Run:
     pytest tests/bench_register_compile.py -v
     pytest tests/bench_register_compile.py --benchmark-only
@@ -73,31 +78,31 @@ def bench_tx_final(src: bench_tx_big):  # type: ignore[no-untyped-def]
     return src.select("user_id", "amount", "is_big")
 
 
-# -- table sources (2) --
+# -- additional event sources (2) — Plan 12.7-06: replace table sources --
 
 
-@bv.table(key="user_id")
+@bv.event
 class BenchUserBaseline:
     user_id: str
     lifetime_spend: float
     last_seen: int
 
 
-@bv.table(key="user_id")
+@bv.event
 class BenchUserFlags:
     user_id: str
     is_vip: bool
 
 
-# -- table derivations (2): filter on BenchUserBaseline + standalone table source --
+# -- additional event derivations (2) — Plan 12.7-06: replace table derivations --
 
 
-@bv.table(key="user_id")
+@bv.event
 def bench_user_filtered(base: BenchUserBaseline):  # type: ignore[no-untyped-def]
     return base.filter(bv.col("lifetime_spend") > 0)
 
 
-@bv.table(key=["user_id", "ip"])
+@bv.event
 class BenchLoginHistory:
     user_id: str
     ip: str

@@ -22,8 +22,6 @@
 //! | 0x0010   | push             | Implemented          | Phase 8 (folded) |
 //! | 0x0011   | push_sync        | Reserved             | Phase 12 |
 //! | 0x0012   | push_many        | Reserved             | Phase 12 |
-//! | 0x0013   | push_table       | Reserved             | Phase 12 |
-//! | 0x0014   | delete_table     | Reserved             | Phase 12 |
 //! | 0x0020   | get              | Implemented          | Phase 12-07 |
 //! | 0x0021   | mget             | Implemented          | Phase 12-07 |
 //! | 0x0022   | get_multi        | Implemented          | Phase 12-07 |
@@ -31,6 +29,12 @@
 //! | 0x0030   | set              | Reserved             | Phase 12 |
 //! | 0x0031   | mset             | Reserved             | Phase 12 |
 //! | 0xFFFF   | error_response   | Implemented          | Phase 2.5 |
+//!
+//! Plan 12.7-06: 0x0013/0x0014 (push_table/delete_table) deleted per
+//! `project_v0_events_only_scope` (locked 2026-04-30). v0 ships events-only;
+//! tables return in v0.1+ if/when justified by demand. Unknown opcodes
+//! (including 0x0013/0x0014 if a stale client sends them) return
+//! `OP_ERROR_RESPONSE` with code `unknown_op`.
 //!
 //! Reserved opcodes return `OP_ERROR_RESPONSE` with payload
 //! `{error: {code: "op_not_implemented", message: "opcode 0xHHHH (name) reserved for Phase N"}, registry_version: N}`.
@@ -68,11 +72,9 @@ pub const OP_PUSH_SYNC: u16 = 0x0011;
 /// Batched push (N events in one frame). Reserved Phase 12.
 pub const OP_PUSH_MANY: u16 = 0x0012;
 
-/// Table upsert. Reserved Phase 12.
-pub const OP_PUSH_TABLE: u16 = 0x0013;
-
-/// Table tombstone. Reserved Phase 12.
-pub const OP_DELETE_TABLE: u16 = 0x0014;
+// 0x0013 (push_table) and 0x0014 (delete_table) deleted by Plan 12.7-06
+// per `project_v0_events_only_scope` (locked 2026-04-30). v0 ships
+// events-only; tables return v0.1+ if/when justified by demand.
 
 /// Single-key feature read. Reserved Phase 12.
 pub const OP_GET: u16 = 0x0020;
@@ -116,8 +118,6 @@ pub fn opcode_name(op: u16) -> Option<&'static str> {
         OP_PUSH => Some("push"),
         OP_PUSH_SYNC => Some("push_sync"),
         OP_PUSH_MANY => Some("push_many"),
-        OP_PUSH_TABLE => Some("push_table"),
-        OP_DELETE_TABLE => Some("delete_table"),
         OP_GET => Some("get"),
         OP_MGET => Some("mget"),
         OP_GET_MULTI => Some("get_multi"),
@@ -135,7 +135,9 @@ pub fn reserved_phase(op: u16) -> Option<&'static str> {
     match op {
         // OP_PUSH wired in Phase 8 (folded scope: TCP push handler).
         // OP_GET / OP_MGET / OP_GET_MULTI / OP_GET_RESPONSE wired in Phase 12-07.
-        OP_PUSH_SYNC | OP_PUSH_MANY | OP_PUSH_TABLE | OP_DELETE_TABLE => Some("Phase 12"),
+        // 0x0013/0x0014 (push_table/delete_table) deleted by Plan 12.7-06
+        // per `project_v0_events_only_scope`; treated as unknown_op.
+        OP_PUSH_SYNC | OP_PUSH_MANY => Some("Phase 12"),
         OP_SET | OP_MSET => Some("Phase 12"),
         _ => None,
     }
@@ -267,8 +269,7 @@ mod tests {
         assert_eq!(OP_PUSH, 0x0010);
         assert_eq!(OP_PUSH_SYNC, 0x0011);
         assert_eq!(OP_PUSH_MANY, 0x0012);
-        assert_eq!(OP_PUSH_TABLE, 0x0013);
-        assert_eq!(OP_DELETE_TABLE, 0x0014);
+        // 0x0013 / 0x0014 deleted by Plan 12.7-06 (events-only).
         assert_eq!(OP_GET, 0x0020);
         assert_eq!(OP_MGET, 0x0021);
         assert_eq!(OP_GET_MULTI, 0x0022);
@@ -291,8 +292,9 @@ mod tests {
         assert_eq!(opcode_name(OP_PUSH), Some("push"));
         assert_eq!(opcode_name(OP_PUSH_SYNC), Some("push_sync"));
         assert_eq!(opcode_name(OP_PUSH_MANY), Some("push_many"));
-        assert_eq!(opcode_name(OP_PUSH_TABLE), Some("push_table"));
-        assert_eq!(opcode_name(OP_DELETE_TABLE), Some("delete_table"));
+        // 0x0013 / 0x0014 deleted by Plan 12.7-06 — opcode_name returns None.
+        assert_eq!(opcode_name(0x0013), None);
+        assert_eq!(opcode_name(0x0014), None);
         assert_eq!(opcode_name(OP_GET), Some("get"));
         assert_eq!(opcode_name(OP_MGET), Some("mget"));
         assert_eq!(opcode_name(OP_GET_MULTI), Some("get_multi"));
@@ -315,8 +317,10 @@ mod tests {
         assert_eq!(reserved_phase(OP_PUSH), None);
         assert_eq!(reserved_phase(OP_PUSH_SYNC), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_PUSH_MANY), Some("Phase 12"));
-        assert_eq!(reserved_phase(OP_PUSH_TABLE), Some("Phase 12"));
-        assert_eq!(reserved_phase(OP_DELETE_TABLE), Some("Phase 12"));
+        // 0x0013 / 0x0014 deleted by Plan 12.7-06 — fall through to None
+        // (treated as unknown_op by handlers, not Reserved).
+        assert_eq!(reserved_phase(0x0013), None);
+        assert_eq!(reserved_phase(0x0014), None);
         // Plan 12-07: OP_GET / OP_MGET / OP_GET_MULTI / OP_GET_RESPONSE are now implemented.
         assert_eq!(reserved_phase(OP_GET), None);
         assert_eq!(reserved_phase(OP_MGET), None);
@@ -347,8 +351,7 @@ mod tests {
             OP_PUSH,
             OP_PUSH_SYNC,
             OP_PUSH_MANY,
-            OP_PUSH_TABLE,
-            OP_DELETE_TABLE,
+            // 0x0013 / 0x0014 deleted by Plan 12.7-06 (events-only).
             OP_GET,
             OP_MGET,
             OP_GET_MULTI,
@@ -665,8 +668,9 @@ mod tests {
             "push",
             "push_sync",
             "push_many",
-            "push_table",
-            "delete_table",
+            // 0x0013 / 0x0014 (push_table / delete_table) deleted by Plan 12.7-06
+            // per `project_v0_events_only_scope`. The doc table no longer carries
+            // them as rows; this guard only enforces surviving v0 mnemonics.
             "get",
             "mget",
             "get_multi",

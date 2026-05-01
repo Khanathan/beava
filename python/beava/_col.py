@@ -338,7 +338,7 @@ def col(name: str) -> _ExprAST:
     return _Field(name)
 
 
-# Public alias for isinstance checks in _events / _tables.
+# Public alias for isinstance checks in _events.
 Col = _ExprAST
 
 
