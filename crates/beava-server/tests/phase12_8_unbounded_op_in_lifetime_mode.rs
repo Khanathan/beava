@@ -18,6 +18,12 @@
 //!   below were updated to use `histogram` (no buckets) as the canonical
 //!   rejected example.
 //! - **Plan 06 (Wave 3)** flips `BEAVA_MEMORY_GOV_ENFORCE` default OFF→ON.
+//!   Test `test_no_enforcement_when_env_unset` (which asserted "unset env →
+//!   no enforcement") was renamed `test_default_enforcement_on_when_env_unset`
+//!   and inverted to assert "unset env → enforcement ON" — the complementary
+//!   escape-hatch test (`BEAVA_MEMORY_GOV_ENFORCE=0` → enforcement OFF) lives
+//!   in `phase12_8_metrics_endpoint.rs::test_env_var_zero_disables_enforcement`
+//!   per the Plan 06 wave-3 file-ownership shift.
 //!
 //! Per CONTEXT.md D-02 framing: error code is `unbounded_op_in_lifetime_mode`
 //! (forward-looking — "requires explicit memory bound in v0"), NOT a
@@ -188,17 +194,23 @@ async fn test_windowed_op_passes_when_enforcement_enabled() {
     );
 }
 
+/// Plan 12.8-06 (Wave 3): the env-gate default flipped OFF → ON. This test
+/// was originally written for the Wave-1 default-OFF posture: "no env var
+/// set → enforcement OFF → unbounded ops accepted." Plan 06's `must_haves.truths[0]`
+/// flips that semantics: now "no env var set → enforcement ON → unbounded ops
+/// REJECTED." The complementary `test_env_var_zero_disables_enforcement` test
+/// (lives in `phase12_8_metrics_endpoint.rs` per Plan 06's wave-3 ownership
+/// shift) covers the explicit `BEAVA_MEMORY_GOV_ENFORCE=0` escape hatch.
 #[tokio::test]
-async fn test_no_enforcement_when_env_unset() {
+async fn test_default_enforcement_on_when_env_unset() {
     let _guard = ENV_LOCK.lock().await;
     enforce_off();
 
     let ts = TestServer::spawn().await.expect("spawn");
 
-    // SAME windowless-histogram-without-buckets payload as test 1. WITHOUT
-    // the env var, the 4th shim must short-circuit and accept the registration
-    // (which would otherwise be rejected with the env-gate ON). This is the
-    // workspace-stays-green guarantee for the default-OFF gate.
+    // SAME windowless-histogram-without-buckets payload as test 1.
+    // Plan 06 default-ON: this MUST now reject (post-flip) — the symmetric
+    // assertion to test 1's enforce_on() variant.
     let payload = json!({
         "nodes": [
             {
@@ -237,11 +249,16 @@ async fn test_no_enforcement_when_env_unset() {
 
     ts.shutdown().await.ok();
 
-    assert!(
-        (200..300).contains(&status),
-        "without BEAVA_MEMORY_GOV_ENFORCE, the 4th shim must be a no-op \
-         (default-OFF gate, even for would-be-rejected ops like histogram \
-         without buckets); got status={status}, body={body_text}"
+    assert_eq!(
+        status, 400,
+        "Plan 12.8-06: env-gate default flipped to ON — unset BEAVA_MEMORY_GOV_ENFORCE \
+         must now REJECT histogram-without-buckets at register time; got \
+         status={status}, body={body_text}"
+    );
+    let body: serde_json::Value = serde_json::from_str(&body_text).expect("body json");
+    assert_eq!(
+        body["error"]["code"], "unbounded_op_in_lifetime_mode",
+        "expected unbounded_op_in_lifetime_mode rejection, got body={body}"
     );
 }
 

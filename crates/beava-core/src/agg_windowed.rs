@@ -146,6 +146,10 @@ impl WindowedOp {
     /// Evict the oldest-epoch bucket. Called when `len >= max_buckets` and a
     /// new-epoch entry is about to be pushed. AGG-CORE-09: 64-bucket cap.
     fn evict_oldest_bucket(&mut self) {
+        // Plan 12.8-06: bump the process-static bucket-reclaim counter for the
+        // /metrics endpoint (`beava_bucket_reclaim_total`). Inline atomic
+        // fetch_add — Relaxed ordering, no allocation.
+        crate::agg_state::BucketReclaimCounter::inc();
         if let Some(min_pos) = self
             .buckets
             .iter()

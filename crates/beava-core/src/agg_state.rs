@@ -1351,6 +1351,99 @@ impl EntropyStateWrap {
     }
 }
 
+// ─── Plan 12.8-06: process-static counters for memory-governance metrics ─────
+//
+// Mirrors the `EntropyStateWrap::categories_capped_count` pattern (above). Each
+// counter is a stateless wrapper around a single `AtomicU64` with `.inc()` /
+// `.count()` on it. Apply-side writes use `Relaxed` ordering (counters are
+// monotonic and commutative; no causal dependency on other state); admin-side
+// reads via `/metrics` use `Relaxed` for the same reason.
+//
+// Per Plan 06 frontmatter `must_haves.truths[3]`:
+//   "Counter increments are inline in the apply hot path with bounded cost
+//    (≤ 5 ns per metric increment via atomic ordering Relaxed); never lock;
+//    never allocate"
+//
+// The counters live in `beava-core` (NOT in `beava-server`) so the apply-path
+// call sites in `agg_apply.rs` (cold-eviction inc) and `agg_windowed.rs`
+// (bucket-reclaim inc) can call them without a circular dep on the server
+// crate. `crates/beava-server/src/http_admin.rs::metrics_handler` reads via
+// `.count()` for the Prometheus exposition.
+
+/// Plan 12.8-06: counts cold-TTL eviction firings on the apply path.
+///
+/// Incremented by `agg_apply.rs::apply_event_to_aggregations` when
+/// `AggStateTable::evict_entity_by_shape_if_cold` returns `true` (i.e. the
+/// touched entity's `last_seen_ms` was older than the source's
+/// `cold_after_ms`). Read by the admin sidecar's `/metrics` handler for
+/// `beava_cold_entity_evictions_total`.
+static COLD_ENTITY_EVICTIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub struct ColdEntityEvictionCounter;
+impl ColdEntityEvictionCounter {
+    /// Apply-path call site — single-thread mio data plane, Relaxed ordering.
+    #[inline]
+    pub fn inc() {
+        COLD_ENTITY_EVICTIONS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Admin-path read — `/metrics` handler exposes via `beava_cold_entity_evictions_total`.
+    #[inline]
+    pub fn count() -> u64 {
+        COLD_ENTITY_EVICTIONS_TOTAL.load(Ordering::Relaxed)
+    }
+}
+
+/// Plan 12.8-06: counts trailing-bucket evictions on windowed operators.
+///
+/// Incremented by `agg_windowed.rs::WindowedOp::evict_oldest_bucket` (the apply
+/// hot path that fires when `self.buckets.len() >= self.max_buckets` and a new
+/// epoch is about to be pushed; AGG-CORE-09 64-bucket cap). Read by `/metrics`
+/// for `beava_bucket_reclaim_total`.
+static BUCKET_RECLAIM_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub struct BucketReclaimCounter;
+impl BucketReclaimCounter {
+    #[inline]
+    pub fn inc() {
+        BUCKET_RECLAIM_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+    #[inline]
+    pub fn count() -> u64 {
+        BUCKET_RECLAIM_TOTAL.load(Ordering::Relaxed)
+    }
+}
+
+/// Plan 12.8-06: process-static snapshot of total resident entity count.
+///
+/// Updated by the apply path (`apply_shard.rs::dispatch_push_sync`) post-update
+/// — sums `AggStateTable::entity_count()` across all state tables and stores
+/// the total via `.store(Relaxed)`. Read by the `/metrics` admin handler with
+/// `.load(Relaxed)` for the `beava_entity_count_resident` gauge.
+///
+/// This is a process-static `AtomicU64` (same shape as the counters above)
+/// rather than an `Arc<AtomicUsize>` plumbed through `AdminState` — consistent
+/// with the existing `EntropyStateWrap::categories_capped_count` pattern and
+/// avoids modifying the `BoundAdminServer::bind(...)` signature for v0.
+/// Per-source labels (the eventual plumb-via-Arc upgrade) are deferred to
+/// v0.0.x per Plan 06 frontmatter `must_haves.truths[5]`.
+///
+/// We use `AtomicU64` (not `AtomicUsize`) for portability — `usize` may be
+/// 32-bit on edge-deployed targets; entity counts above 4 billion are
+/// theoretically possible on a Big Box. The handler stores via
+/// `count as u64` and reads via `.load() as u64`.
+static ENTITY_COUNT_RESIDENT: AtomicU64 = AtomicU64::new(0);
+pub struct EntityCountResidentSnapshot;
+impl EntityCountResidentSnapshot {
+    /// Apply-path write — full replace (gauge semantics).
+    #[inline]
+    pub fn store(total: u64) {
+        ENTITY_COUNT_RESIDENT.store(total, Ordering::Relaxed);
+    }
+    /// Admin-path read — `/metrics` handler exposes via `beava_entity_count_resident`.
+    #[inline]
+    pub fn load() -> u64 {
+        ENTITY_COUNT_RESIDENT.load(Ordering::Relaxed)
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

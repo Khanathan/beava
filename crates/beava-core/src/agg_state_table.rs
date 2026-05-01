@@ -603,6 +603,12 @@ impl AggStateTable {
     }
 
     /// Return the number of distinct entities across all three sub-maps.
+    ///
+    /// Plan 12.8-06: also used by the `/metrics` admin sidecar to populate
+    /// `beava_entity_count_resident`. The apply path sums this across all
+    /// state tables and writes the total into a process-static
+    /// `Arc<AtomicUsize>` snapshot the admin handler reads with `.load(Relaxed)`
+    /// — zero-lock metric exposition.
     pub fn entity_count(&self) -> usize {
         self.single_u64.len() + self.single_str.len() + self.multi.len()
     }

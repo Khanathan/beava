@@ -184,22 +184,24 @@ impl ApplyShard {
                     // posture; per CONTEXT D-02 forward-looking framing
                     // (`unbounded_op_in_lifetime_mode`).
                     //
-                    // Wave 1 gate: behavior is opt-in via env `BEAVA_MEMORY_GOV_ENFORCE=1`.
-                    // The classifier helper in Plan 12.8-01 returns `Unbounded`
-                    // for every op-string, so without the env-gate the 4th shim
-                    // would reject every legacy registration during Wave 1.
-                    // Plan 12.8-04 populates the per-op bound table; Plan 12.8-06
-                    // (Wave 3) flips the env-gate default from OFF to ON. This
-                    // scaffolding stays in place; only the helper body changes
-                    // when Plan 06 lands.
+                    // **Wave 3 (Plan 12.8-06): env-gate default flipped OFF → ON.**
+                    // Now defaults to ENABLED — every `/register` validates
+                    // declarations against the per-op classification table from
+                    // Plan 12.8-04. Explicit escape hatch:
+                    // `BEAVA_MEMORY_GOV_ENFORCE=0` disables enforcement
+                    // (operator override; valid use cases include legacy
+                    // fixtures during migration, dev-only experiments).
+                    // Anything else (including unset) is treated as enabled.
                     fn memory_gov_enforce_enabled() -> bool {
                         // Per-call env read. Register-time validation is a COLD
                         // path (called once per /register request), so the cost
                         // of `std::env::var` per call is irrelevant. A cached
                         // OnceLock variant would memoize the FIRST process-wide
                         // read and break the integration tests that flip the
-                        // env between cases inside the same test binary.
-                        std::env::var("BEAVA_MEMORY_GOV_ENFORCE").ok().as_deref() == Some("1")
+                        // env between cases inside the same test binary
+                        // (Plan 12.8-06 frontmatter `must_haves.truths[0]`,
+                        // B-02 fix).
+                        std::env::var("BEAVA_MEMORY_GOV_ENFORCE").ok().as_deref() != Some("0")
                     }
                     if memory_gov_enforce_enabled() {
                         if let Some(removed) =
@@ -807,6 +809,15 @@ impl ApplyShard {
                 &mut tables,
                 descriptor.cold_after_ms,
             );
+            // Plan 12.8-06: refresh the process-static
+            // `beava_entity_count_resident` snapshot under the same lock the
+            // apply path is already holding. O(N_tables) sum of three
+            // HashMap.len() values — typically < 30 tables in production
+            // (one per registered aggregation), so well under 100 ns even
+            // with cache misses. Acceptable per CONTEXT D-04
+            // "inline-cheap or amortized" for the apply hot path.
+            let total_entities: usize = tables.iter().map(|t| t.entity_count()).sum();
+            beava_core::agg_state::EntityCountResidentSnapshot::store(total_entities as u64);
         }
         let t_agg = t0.map(|t| t.elapsed());
 

@@ -413,9 +413,14 @@ pub fn apply_event_to_aggregations(
         // entity's Vec<AggOp> + sidecar entry so the next
         // `get_or_init_by_shape` call below allocates a fresh row.
         if let Some(ttl_ms) = cold_after_ms {
-            let _evicted = table.evict_entity_by_shape_if_cold(shape, now_ms as u64, ttl_ms);
-            // _evicted return value: ignored here; Plan 06 wires
-            // cold_entity_evictions_total{source=...} via this signal.
+            let evicted = table.evict_entity_by_shape_if_cold(shape, now_ms as u64, ttl_ms);
+            // Plan 12.8-06: increment process-static cold-entity-eviction
+            // counter on eviction firing. Read by the admin sidecar's /metrics
+            // handler for `beava_cold_entity_evictions_total` (UNLABELED v0
+            // — per-source labels deferred to v0.0.x per Plan 06 Step 3).
+            if evicted {
+                crate::agg_state::ColdEntityEvictionCounter::inc();
+            }
         }
 
         let entity_row = table.get_or_init_by_shape(shape, &desc);

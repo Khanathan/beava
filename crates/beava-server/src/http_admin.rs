@@ -16,7 +16,9 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use beava_core::agg_state::EntropyStateWrap;
+use beava_core::agg_state::{
+    BucketReclaimCounter, ColdEntityEvictionCounter, EntityCountResidentSnapshot, EntropyStateWrap,
+};
 use std::sync::{Arc, RwLock};
 use tokio::net::TcpListener;
 
@@ -91,7 +93,29 @@ async fn metrics_handler(State(state): State<AdminState>) -> impl IntoResponse {
     // Plan 18-04.6 Task 4.6.5: add beava_runtime_kind gauge to identify
     // which runtime is serving the data plane.
     // Plan 19.2-06 (D-05a): add beava_entropy_categories_capped_total counter.
+    // Plan 12.8-06: add 5 new memory-governance metric families
+    //   - beava_cold_entity_evictions_total      (counter; Plan 03 cold-TTL evictions)
+    //   - beava_lifetime_op_cap_hit_total        (counter; entropy categories_capped + future top_k/histogram)
+    //   - beava_entity_count_resident            (gauge; resident entity count snapshot)
+    //   - beava_bucket_reclaim_total             (counter; WindowedOp::evict_oldest_bucket firings)
+    //   - beava_bytes_per_entity_p99             (gauge; static v0 estimate per PROJECT.md)
+    // All counters are UNLABELED in v0 — per-source labels deferred to v0.0.x per
+    // Plan 06 Step 3 (`Claude's Discretion` + the v0 simplicity bias).
     let entropy_capped = EntropyStateWrap::categories_capped_count();
+    let cold_evictions = ColdEntityEvictionCounter::count();
+    let bucket_reclaims = BucketReclaimCounter::count();
+    let entity_count = EntityCountResidentSnapshot::load();
+    // Plan 12.8-06: bytes_per_entity_p99 is a STATIC v0 placeholder per
+    // PROJECT.md "Memory" budget line ("~7KB per entity for a rich 30-feature
+    // pack"). A periodic re-sampler is out of scope for v0; if Phase 13
+    // ship-gate needs accuracy, a follow-up plan upgrades to dynamic sampling.
+    const BYTES_PER_ENTITY_P99_V0_PLACEHOLDER: u64 = 7000;
+    // For v0 the lifetime_op_cap_hit aggregate counter wraps the existing
+    // entropy categories_capped_count. top_k displacement + histogram bucket
+    // drop hooks aren't currently surfaced as inc()-able sites; they re-join
+    // here when the operator internals expose them in v0.0.x.
+    let op_cap_hits = entropy_capped;
+
     let body = format!(
         "# HELP beava_registry_version Registry version (monotonic).\n\
          # TYPE beava_registry_version gauge\n\
@@ -104,10 +128,30 @@ async fn metrics_handler(State(state): State<AdminState>) -> impl IntoResponse {
          beava_runtime_kind{{runtime=\"mio\"}} 1\n\
          # HELP beava_entropy_categories_capped_total Total new-category insertions dropped due to max_categories cap.\n\
          # TYPE beava_entropy_categories_capped_total counter\n\
-         beava_entropy_categories_capped_total {entropy_capped}\n",
+         beava_entropy_categories_capped_total {entropy_capped}\n\
+         # HELP beava_cold_entity_evictions_total Total cold-TTL entity evictions since process start (Plan 12.8-03). Increments when an entity arrives after `now_ms - last_seen_ms > cold_after_ms`.\n\
+         # TYPE beava_cold_entity_evictions_total counter\n\
+         beava_cold_entity_evictions_total {cold_evictions}\n\
+         # HELP beava_lifetime_op_cap_hit_total Total cap-hit events across lifetime aggregation operators (Plan 12.8-06). Currently aggregates entropy `categories_capped`; top_k displacements + histogram bucket drops join when their internals expose hooks.\n\
+         # TYPE beava_lifetime_op_cap_hit_total counter\n\
+         beava_lifetime_op_cap_hit_total {op_cap_hits}\n\
+         # HELP beava_entity_count_resident Current resident entity count across all sources / aggregations (Plan 12.8-06). Snapshot refreshed by the apply path post-update — admin reads via process-static atomic load (zero-lock).\n\
+         # TYPE beava_entity_count_resident gauge\n\
+         beava_entity_count_resident {entity_count}\n\
+         # HELP beava_bucket_reclaim_total Total trailing-bucket evictions on windowed operators (Plan 12.8-06). Increments on each WindowedOp::evict_oldest_bucket call (AGG-CORE-09 64-bucket cap).\n\
+         # TYPE beava_bucket_reclaim_total counter\n\
+         beava_bucket_reclaim_total {bucket_reclaims}\n\
+         # HELP beava_bytes_per_entity_p99 Static v0 estimate of per-entity memory footprint (~7 KB for a rich 30-feature pack per PROJECT.md). Phase 13 ship-gate may upgrade to dynamic sampling.\n\
+         # TYPE beava_bytes_per_entity_p99 gauge\n\
+         beava_bytes_per_entity_p99 {bytes_per_entity_p99}\n",
         registry_version = snap.version,
         node_count = snap.node_count,
         entropy_capped = entropy_capped,
+        cold_evictions = cold_evictions,
+        op_cap_hits = op_cap_hits,
+        entity_count = entity_count,
+        bucket_reclaims = bucket_reclaims,
+        bytes_per_entity_p99 = BYTES_PER_ENTITY_P99_V0_PLACEHOLDER,
     );
 
     (
