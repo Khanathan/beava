@@ -1,19 +1,26 @@
 ---
 context: v0-ship-correctness-path
 created: 2026-04-29
-revised: 2026-05-01 — Phase 12.7 CLOSED (PASS); v0 critical path advances to Phase 13 (final v0 ship); both architectural-pivot phases (12.6 PASS-WITH-WARN + 12.7 PASS) closed on schedule
+revised: 2026-05-01 — Phase 12.8 CLOSED (PASS-WITH-WARN); v0 critical path advances to Phase 13 (final v0 ship); three pre-ship phases (12.6 PASS-WITH-WARN + 12.7 PASS + 12.8 PASS-WITH-WARN) closed on schedule
 status: post-pivot-events-only
 ---
 
-# Correctness path to v0 OSS ship — REVISED 2026-05-01 (Phase 12.7 closure)
+# Correctness path to v0 OSS ship — REVISED 2026-05-01 (Phase 12.8 closure)
 
-**MAJOR PIVOT 2026-04-30:** Architectural simplification — no event-time / no watermarks / no joins / no PIT, ever. Phases 14, 14.1, 15 archived. **Phase 12.6 (v0 surface-reduction blocker) CLOSED 2026-04-30 (PASS-WITH-WARN).** **Phase 12.7 (v0 table strip) CLOSED 2026-05-01 (PASS).** The original "Phase 14 streaming bug" P0 item is **DELETED** — the bug class disappeared with event-time itself.
+**MAJOR PIVOT 2026-04-30:** Architectural simplification — no event-time / no watermarks / no joins / no PIT, ever. Phases 14, 14.1, 15 archived. **Phase 12.6 (v0 surface-reduction blocker) CLOSED 2026-04-30 (PASS-WITH-WARN).** **Phase 12.7 (v0 table strip) CLOSED 2026-05-01 (PASS).** **Phase 12.8 (memory governance — cold-entity TTL + lifetime aggregation contract + 5 Prometheus metric families) CLOSED 2026-05-01 (PASS-WITH-WARN; fraud-team throughput WARN flagged for Phase 13).** The original "Phase 14 streaming bug" P0 item is **DELETED** — the bug class disappeared with event-time itself.
 
 See `project_redis_shaped_no_event_time_ever` + `project_v0_events_only_scope` (memories) for the full architectural commitment.
 
-## Priority tier (post-12.7-closure)
+## Priority tier (post-12.8-closure)
 
 ### 🟢 CLOSED — completed v0 ship-blockers
+
+#### Phase 12.8 — Memory governance — ✅ CLOSED 2026-05-01 (PASS-WITH-WARN)
+- **Severity:** was CRITICAL — final pre-ship architectural commitment (per-entity memory ceilings explicit at registration)
+- **Status:** ✅ CLOSED 2026-05-01 (PASS-WITH-WARN) — 9 plans landed (Plans 01-09) across 5 waves; workspace 1095/0/4
+- **What landed:** Two-tier memory hygiene + lifetime aggregation contract. (1) Cold-entity TTL opt-in via `@bv.event(cold_after='<dur>')` decorator with FRESH-state-on-resurrect (D-01). (2) Per-event bucket reclaim during existing `update_at()` (D-04). (3) 4th JSON-prelude shim `pre_check_unbounded_op_in_lifetime_mode` enforcing 53-variant lifetime memory-bound classification (D-03). (4) 5 Prometheus metric families on `/metrics`. (5) `BEAVA_MEMORY_GOV_ENFORCE` env-gate flipped default ON (escape via `=0`). (6) `phase12_8_lifetime_ops_have_bounds.rs` architectural-test CI tripwire. (7) REQUIREMENTS.md `V0-MEM-GOV-01/02/03` positive anchors. (8) CLAUDE.md `§ Memory Governance Invariant (locked Phase 12.8)` block.
+- **Verdict basis:** all 14 ROADMAP success criteria PASS; all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench cold-TTL on/off **-2.6%** within ±5% gate (TTL is essentially free per-event); throughput regression-gate `small/tcp` **-2.5%** PASS within ±10%; 6 of 8 throughput cells PASS. **PASS-WITH-WARN basis:** 2 fraud-team cells flagged WARN (`fraud-team/tcp` -21.3%, `fraud-team/http` -29.8%) — root cause: O(N_tables) `entity_count_resident` snapshot, fraud-team has 9 tables vs 1-4 simpler shapes. NOT GATING per CLAUDE.md §Performance Discipline (gate cell PASSED). Phase 13 amortization rework candidate (sample on table-grow/shrink only OR every N events).
+- **Artifacts:** `.planning/phases/12.8-memory-governance/12.8-SUMMARY.md` + `.planning/phases/12.8-memory-governance/12.8-VERIFICATION.md`
 
 #### Phase 12.7 — v0 table strip — ✅ CLOSED 2026-05-01 (PASS)
 - **Severity:** was CRITICAL — was the events-only commitment predecessor to final ship phase
@@ -29,9 +36,10 @@ See `project_redis_shaped_no_event_time_ever` + `project_v0_events_only_scope` (
 - **Verdict basis:** all 7 ROADMAP success criteria PASS or PASS-WITH-WARN; all 5 CONTEXT decisions D-01..D-05 honored verbatim; PASS-WITH-WARN on the deadcode buckets (planning-target overshoots categorized as strict-deny test fixtures + post-pivot doc-comments + out-of-plan-scope `tally/` legacy package; clippy-warning floor is 0 warnings)
 - **Artifacts:** `.planning/phases/12.6-v0-surface-reduction/12.6-SUMMARY.md` (phase narrative) + `.planning/phases/12.6-v0-surface-reduction/12.6-VERIFICATION.md` (mechanical pass/fail)
 
-### 🔴 P0 — v0 ship blockers (post-Phase-12.7 closure + v0-events-only commitment 2026-04-30)
+### 🔴 P0 — v0 ship blockers (post-Phase-12.8 closure + v0-events-only commitment 2026-04-30)
 
-#### 1. Phase 13 — SDK polish + benchmarks + ship (FINAL v0 phase, NEXT) — REFRAMED 2026-04-30
+#### 1. Phase 13 — SDK polish + benchmarks + ship (FINAL v0 phase, NEXT) — REFRAMED 2026-04-30; expanded with 12.8 follow-ups
+**P0 #1 — the only remaining v0 ship-blocker.** Inherits Phase 12.8 follow-up items: (a) fraud-team throughput root-cause fix (entity_count_resident amortization — sample on table-grow/shrink only, OR every N events); (b) `top_k` → `BoundedByRequiredKwarg` promotion (currently soft default for backward-compat); (c) `bytes_per_entity_p99` dynamic sampling (currently static placeholder = 7000); (d) per-source metric labels (deferred to v0.0.x — confirm at Phase 13 entry).
 - **Severity:** CRITICAL — final v0 ship gate (NEXT on critical path post-Phase-12.7-closure)
 - **Status:** 🟡 PARTIAL (Plan 13-01 `/metrics` Prometheus + Plan 13-03 `env_var_overrides` hermetic fix shipped on `phase-13-ship` @ `2ef5afc`; remaining plans need rescoping post-Phase-12.7-closure)
 - **Scope (REFRAMED — drop bv.fork + playground + structured logs):** SDK polish on the events-only surface (`@bv.event` + 54-op catalogue + /push + /get + /register); perf gates on THREE pipelines (simple fraud / complex fraud / recommendation) ≥3M EPS, <10ms P99 batch-get; minimum-viable docs (quickstart → operators → http-api → architecture); `/metrics` Prometheus (already partially shipped); PyPI + Docker Hub image + GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); CI green; ship-ready tag. **DROPPED:** `bv.fork` subcommand, `playground.beava.dev`, structured logs.
