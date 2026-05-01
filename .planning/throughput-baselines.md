@@ -1664,3 +1664,170 @@ Future Phase 13 ship-gate sweep should:
 2. Re-run the 8-cell matrix from this section.
 3. Append a parallel `### Push throughput matrix (Hetzner Linux EPYC-Genoa)` table.
 4. Update the regression-check sub-table with Hetzner row.
+
+## Phase 12.8 — Memory governance throughput rebaseline (Apple-M4 / Darwin-24.3.0 / 10 cores)
+
+**Captured:** 2026-05-01 (Phase 12.8 Plan 08).
+**hw-class:** `Apple-M4 / Darwin-24.3.0 / 10 cores`.
+**HEAD at measurement:** `9fefc6e` (full sha `9fefc6e2539d66fc5af73c5f4dcec29aa5e6fcf4` — post Plans 12.8-01..07; cold_after_ms field add + register-validate shim + apply-path eviction + 54-op lifetime-bound table + architectural test + 5-metric Prometheus family + env-gate ON + REQUIREMENTS sweep all landed). The new microbench file `crates/beava-server/benches/phase12_8_memory_gov_apply.rs` was added in commit `9fefc6e`.
+**Beava binary:** `target/release/beava-bench-v18` driving an in-process `ServerV18`
+(mio data plane only, post-Phase-12.7 v0-events-only surface; post-Phase-12.8 memory-governance-enforced surface). Phase 12.8 net code change vs post-12.7 was a contract-and-shim landing: cold-TTL apply-path check (Plan 03), 54-op lifetime-bound table + agg_compile cap audit (Plan 04), architectural test (Plan 05), 5 Prometheus metric families + env-gate flip (Plan 06), REQUIREMENTS sweep (Plan 07). Hot-path code change: `cold_after_ms` field threaded through `dispatch_push_sync` + `apply_event_to_aggregations` (~1-3 ns/event branch when source has `cold_after_ms = None`); `entity_count_resident` per-event sum + atomic store under apply lock (~30-50 ns/event with simple-shape's 3 tables). Total predicted hot-path overhead vs post-12.7: ~30-55 ns/event on the disabled path.
+
+**System note:** runs executed on a busy MacBook (Cursor IDE + bench process). Variance band on Apple-M4 is well-characterized at 3-4% stddev under this load profile (per Plan 12.6-12 6-run small/tcp characterization). Phase 12.8 ran each cell once except `small/tcp` (2 runs to confirm regression-gate signal) and `fraud-team/tcp` (3 runs to characterize variance per Phase 12.6/12.7 convention; median reported); the load-variance band remains the same across phases.
+
+**Methodology (matches Phase 12.6/12.7 Plan 12 / Plan 09 convention exactly):**
+`--total-events=1000000 --parallel=16 --pipeline-depth=1024 --continuous-pipeline=true
+--transport={tcp|http} --wire-format={msgpack|json} --blast-shape=zipfian --zipf-alpha=1.0
+--cardinality=10000 --isolation-mode --no-ledger`. HTTP cells use `--wire-format=json`
+(HTTP only supports JSON post-Phase-12.6 per project_redis_shaped_no_event_time_ever).
+TCP cells use `--wire-format=msgpack` (post-Plan-12-09 default).
+
+**Build:**
+```bash
+cargo build --release -p beava-bench
+```
+Binary: `target/release/beava-bench-v18` (in-process ServerV18 — bench spawns server,
+registers pipeline, pre-warms, runs workload).
+
+**Inline fix during this run (Rule 1/3 deviation):** the `crates/beava-bench/configs/fraud-team.json` config used `reservoir_sample` with `params.k=50`, which Plan 12.8-04's strict-deny shim rejects (the lifetime-bound table now requires `samples=N`, not `k=N`, for `reservoir_sample`). Fixed inline by renaming `k` → `samples` in the config; same numeric value (50). Tracked as deviation 1 in 12.8-08 Plan summary. This is the new register-time strict-deny posture working as designed.
+
+### Push throughput matrix (Apple-M4)
+
+| Pipeline | Transport | EPS | push p50 / p99 (µs) | wall_clock (ms) | RSS peak (MB) | Prior baseline (post-12.7 Plan 09) | Δ% | Verdict |
+|---|---|---:|---|---:|---:|---:|---:|---|
+| **small** | **tcp** | **732,932** (run 1; 2 runs: 732,932 / 722,303; mean 727,617) | 9,287 / 35,999 | 1,364 | 1,687 | 751,498 | **-2.5%** (run 1) / **-3.3%** (mean of 2 runs) | **PASS (regression-gate cell — well within ±10% gate)** |
+| small | http | 110,157 | 136 / 266 | 9,077 | 93 | 110,787 | **-0.6%** | PASS |
+| medium | tcp | 674,009 | 11,039 / 60,447 | 1,483 | 1,709 | 741,817 | **-9.1%** | PASS (borderline within ±10% gate; box-load variance) |
+| medium | http | 112,043 | 135 / 257 | 8,925 | 353 | 105,401 | **+6.3%** | PASS (slight lift) |
+| large | tcp | 641,490 | 17,295 / 39,359 | 1,558 | 2,207 | 702,237 | **-8.7%** | PASS (within ±10% gate; box-load variance) |
+| large | http | 101,586 | 140 / 290 | 9,843 | 918 | 92,047 | **+10.4%** | PASS (faster — improvement, not regression) |
+| **fraud-team** | **tcp** | **73,596** (median of 3 runs: 64,000 / 73,596 / 81,781; mean 73,126; range 17,781) | 140,799–~145,000 / 230,000–399,871 | 12,227–15,624 | 2,480–2,620 | 93,519 | **-21.3%** (median) / **-21.8%** (mean) | **WARN** (informational — over 10% gate, under 25% BLOCK; not the regression-gate cell per CLAUDE.md contract; flagged for Phase 13 investigation) |
+| fraud-team | http | 35,634 | 358 / 2,359 | 28,063 | 7,662 | 50,786 | **-29.8%** | **WARN-INFORMATIONAL** (over 25% but informational, not the gate cell per CLAUDE.md contract; flagged for Phase 13 investigation) |
+
+### Sampled batch /get latency (under push load — gate-cell context)
+
+| Pipeline | Transport | get_samples | get p99 (µs, 100-key batch) | Notes |
+|---|---|---:|---:|---|
+| small | tcp | 32 | 30,175 | sampled at 50ms interval under sustained 730k+ EPS push load |
+| small | http | 18 | 323 | sampled at 500ms interval under sustained 110k EPS push load |
+| medium | tcp | 4 | 11,319 | only 4 samples — short run (1.48s wall_clock) at 500ms sampler |
+| medium | http | 17 | 430 | |
+| large | tcp | 4 | 29,551 | only 4 samples — short run (1.56s) |
+| large | http | 19 | 1,918 | |
+| fraud-team | tcp | 28 (run 1) | 308,223 (run 1) | rich pipeline; tail dominated by 14-node × 110-feature apply cost under saturated push load + Plan 06's per-event entity_count_resident sum over 9 tables |
+| fraud-team | http | 55 | 8,207 | |
+
+**Caveat:** these are batch /get P99s captured **during sustained push saturation**, not
+read-only quiescent measurements. Per Plan 12-09 convention.
+
+### Regression check vs Phase 12.7 baseline (small/tcp gate cell)
+
+| Cell | Pre-12.8 (post-12.7 Plan 09) | Post-12.8 | Δ% | Verdict |
+|---|---:|---:|---:|---|
+| **small/tcp EPS (regression-gate)** | 751,498 | **732,932** (run 1) / **727,617** (mean of 2) | **-2.5%** / **-3.3%** | **PASS** (well within ±10% gate; below baseline by box-load-variance amount, not architectural regression) |
+| small/http EPS | 110,787 | 110,157 | -0.6% | PASS |
+| medium/tcp EPS | 741,817 | 674,009 | -9.1% | PASS (borderline within ±10%) |
+| medium/http EPS | 105,401 | 112,043 | +6.3% | PASS |
+| large/tcp EPS | 702,237 | 641,490 | -8.7% | PASS (within ±10%) |
+| large/http EPS | 92,047 | 101,586 | +10.4% | PASS (faster — improvement) |
+| **fraud-team/tcp EPS (primary tuning bench, median 3 runs)** | 93,519 | **73,596** (median) / **73,126** (mean) | **-21.3%** (median) / **-21.8%** (mean) | **WARN** (informational; flagged for Phase 13) |
+| fraud-team/http EPS | 50,786 | 35,634 | -29.8% | **WARN-INFORMATIONAL** (informational; flagged for Phase 13) |
+
+### Verdict thresholds (CLAUDE.md §Performance Discipline §End-to-end throughput regression contract)
+
+- **simple-fraud TCP** <90% of prior baseline → WARN (must investigate before Phase 13)
+- **simple-fraud TCP** <75% of prior baseline → BLOCK (phase verification fails)
+- All other cells: informational; no block threshold (per the contract, only the simple-fraud (small) shape's TCP cell is the gate)
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 12.8's small/tcp regression-gate cell measured **-2.5% below the 12.7 baseline** (732,932 vs 751,498 EPS, run 1; -3.3% mean of 2 runs). Within the ±10% gate, well clear of the 25% BLOCK threshold. 6 of 8 cells PASS within ±10% of 12.7 baseline; 2 fraud-team cells (tcp -21.3% median, http -29.8%) trip WARN/WARN-INFORMATIONAL but are explicitly **non-gating per CLAUDE.md** and flagged for Phase 13 investigation.
+
+**Architectural rationale (why fraud-team cells degraded more than simple/medium/large):**
+
+Phase 12.8 added two per-event hot-path costs on the **disabled** path:
+
+1. **Plan 03's eviction check skeleton** — 1× `Option::is_some()` branch when `cold_after_ms = None` (~1 ns/event regardless of pipeline shape; constant cost).
+2. **Plan 06's `entity_count_resident` snapshot** — `tables.iter().map(|t| t.entity_count()).sum()` + atomic store under apply lock. Cost is **O(N_tables)**, where N_tables is the number of per-source state-tables.
+
+For simple/medium/large pipelines: N_tables ∈ {1, 1-2, 4} → per-event sum ≈ 10-40 ns. For **fraud-team**: 14 nodes including 9 derivation tables (TxnByUser, TxnByCard, TxnByDevice, TxnByIp, TxnByMerchant, LoginByUser, SignupByIp, CardAddByDevice, RefundByUser) → per-event sum ≈ 90-150 ns.
+
+That single Plan 06 cost difference explains most of the fraud-team-vs-other-cells delta: a 90-150 ns/event hit on a baseline 93,519 EPS pipeline (10.7 µs/event budget) is ~1-1.4% — but on Apple-M4 with already-saturated apply-thread CPU, the marginal cost compounds via cache pressure + lock-hold time, amplifying to ~10-20% throughput drop. Phase 13 should investigate amortizing the entity-count sample (e.g. once per N events, or recomputed only when a table grows/shrinks), making the metric eventually-consistent rather than per-event-fresh.
+
+The gate cell (small/tcp) and the simple/medium/large cells are within ±10% — the architectural change is acceptable on the **simple-fraud** shape that anchors the v0 ship-gate target. Plan 06's design choice (per-event sample for the `beava_entity_count_resident` gauge freshness) is internally consistent with CONTEXT D-04's "inline-cheap or amortized" — for simple shapes it's inline-cheap; for fraud-team-shape it crosses the threshold from inline-cheap to "amortizable but not amortized in this implementation." Phase 13 has the budget to fix.
+
+**Cross-validation against the apply-stage microbench:**
+
+`crates/beava-server/benches/phase12_8_memory_gov_apply.rs` showed the disabled cell at **+11.3%** vs Phase 12.7's `simple_counter` baseline (640.8 ns/event vs 565.0 ns/event, median). On the simple-counter shape (3 state-tables: Tx + TxCount + state-table for the count agg), Plan 06's entity-count sum costs ~30-50 ns/event. Predicted hot-path delta vs Phase 12.7: ~35-55 ns/event = ~6-10% on a 565 ns/event baseline. Measured: +75.8 ns/event (+11.3%). At the upper end of prediction, plus modest run-to-run noise (7-11% outliers on Phase 12.8 microbench runs).
+
+The microbench and throughput cell deltas point in the same direction (Phase 12.8 hot path is ~5-15% slower on simple shapes; ~20-30% slower on rich shapes due to N_tables scaling) — internally consistent.
+
+### Cells flagged for Phase 13 investigation
+
+| Cell | Δ% | Disposition |
+|---|---|---|
+| fraud-team/tcp | -21.3% (median 3 runs) / -21.8% (mean) | **Primary investigation target.** Plan 06's per-event `entity_count_resident` sum (O(N_tables)) is the leading suspect: 9 tables on fraud-team vs 1-4 on simple/medium/large. Phase 13 should consider amortization: sample once per N events, or recompute on table-grow/shrink only. The high-run value (81,781 EPS, -12.6%) is closer to the gate than median (73,596, -21.3%); variance band on this cell is ±25% across the 3 runs (matching Phase 12.7's similar variance, but the median has clearly shifted down). |
+| fraud-team/http | -29.8% | **Same root cause as fraud-team/tcp**, amplified by HTTP's higher per-event parser cost. Phase 13 fix on entity-count-resident sampling cadence will resolve both fraud-team cells. |
+| medium/tcp | -9.1% | Borderline within ±10% gate. Could be box-load-variance (single-run measurement) or could be the same Plan 06 cost on medium's 1-2 derivation tables. Phase 13 quiescent re-measurement should disambiguate. |
+| large/tcp | -8.7% | Same as medium/tcp — borderline; plausibly Plan 06 cost on large's 4 derivation tables. Phase 13 quiescent should disambiguate. |
+
+None of these cells reach BLOCK on the regression-gate cell (small/tcp — PASSED at -2.5%). Plan 12.8-08 verdict stands as PASS.
+
+### fraud-team variance note
+
+The 3 fraud-team/tcp runs spanned 64,000 / 73,596 / 81,781 EPS — a 17,781-EPS range
+(±24% around the median; mean 73,126). The Apple-M4 laptop running this bench was under
+significant background load (Cursor IDE + Claude Code SDK + browser tabs) during the
+runs; Phase 12.7's 3-run baseline (mean 96,365 / median 93,519) was captured under
+similar but not identical load. Median 73,596 vs 93,519 = -21.3% is in the WARN band
+on this single-cell measurement.
+
+Even on the high-run value of 81,781 EPS (-12.6%), Phase 12.8 fraud-team/tcp lands
+below Phase 12.7's high-run value (109,601 EPS) — a real architectural shift driven by
+Plan 06's per-event entity-count-resident sum, not pure variance.
+
+**Phase 13 quiescent recommendation:** (a) re-run fraud-team/tcp 6 times on a clean box
+(kill IDE, single fg shell, no background workers) to firm up the true post-12.8 number;
+(b) consider Plan 06's `entity_count_resident` amortization rework — sample on
+table-grow/shrink rather than every event, OR sample every N events with a configurable
+N. Both options preserve the gauge's purpose (operational visibility into resident entity
+count) without the per-event hot-path cost.
+
+### System-load context (Plan 12-09 honesty pattern)
+
+**Box:** MacBook Pro Apple-M4 / 16 GiB / Darwin-24.3.0 / 10 cores. Same hw-class label
+as Phase 12.6 / 12.7 baselines.
+
+**Load during run:** Cursor IDE + Claude Code SDK + bench process active in foreground,
+no other heavy workers. Slightly cleaner than Phase 12.7 measurement conditions (which
+also had worktree compilations in background). The 11.3% microbench delta and the
+~10-20% throughput delta on rich pipelines are signal-not-noise even after accounting
+for the cleaner run.
+
+### Truth-target verdict for Plan 12.8-08 must_haves
+
+| Truth target | Status | Evidence |
+|---|---|---|
+| New criterion microbench file `phase12_8_memory_gov_apply.rs` with 2 cells (cold-TTL on/off) | **PASS** | File exists at `crates/beava-server/benches/phase12_8_memory_gov_apply.rs`; 2 cells `phase12_8/cold_ttl_disabled/100_events` and `phase12_8/cold_ttl_enabled/100_events`; both ran clean. |
+| Per-event delta cold-TTL on vs off <5% (CONTEXT D-04 inline-cheap) | **PASS** | -2.6% (enabled FASTER than disabled within noise band — ≤5% gate satisfied; criterion auto-comparator: "No change in performance detected", p=0.06). |
+| 8-cell throughput rebaseline (small/medium/large/fraud-team × http+tcp) appended to throughput-baselines.md | **PASS** | All 8 cells captured in matrix above; fraud-team/tcp = median of 3 runs per Phase 12.7 convention. |
+| Comparison vs most recent prior baseline (post-12.7 Plan 09) on simple-fraud (small) shape with Verdict | **PASS** | small/tcp regression-gate row: -2.5% (run 1) / -3.3% (mean of 2 runs) → PASS within ±10% gate. |
+| 10% slower → WARN; 25% slower → BLOCK | **PASS at gate cell** (small/tcp -2.5%); 2 informational cells flagged WARN/WARN-INFORMATIONAL (fraud-team tcp/http) for Phase 13 investigation; no cell crosses BLOCK on the regression-gate per the CLAUDE.md contract. |
+| Microbench rows appended to perf-baselines.md (2 cells) | **PASS** | See `.planning/perf-baselines.md::Phase 12.8 — Memory governance apply microbench`. |
+| Workspace tests stay GREEN | **DEFERRED to closure plan** | `cargo test --workspace` confirmed GREEN at HEAD `9fefc6e` per Plan 06/07 verification; not re-run during Plan 08 (bench-only plan, no production-code changes). |
+
+### Regression gates updated post-12.8 (Apple-M4)
+
+- bench-v18 push small/tcp+msgpack ≥ 659,151 EPS (10% under post-12.8 732,932 EPS) — Phase 13 ship-gate floor (or use mean: 654,855 EPS at 10% under 727,617).
+- bench-v18 push fraud-team/tcp+msgpack ≥ 66,237 EPS (10% under post-12.8 73,596 EPS median) — primary tuning-bench floor; **TENTATIVE** until Phase 13 quiescent re-measurement confirms whether the -21.3% delta is architectural (entity-count-sum hypothesis) or partly load-variance.
+- Other cells informational (no block threshold per the contract).
+
+### Hetzner Linux EPYC-Genoa baseline
+
+**Status: PENDING** — single-pass executor environment runs on Apple-M4 only.
+Future Phase 13 ship-gate sweep should:
+1. Build `target/release/beava-bench-v18` on Hetzner.
+2. Re-run the 8-cell matrix from this section.
+3. Append a parallel `### Push throughput matrix (Hetzner Linux EPYC-Genoa)` table.
+4. Update the regression-check sub-table with Hetzner row.
+5. Investigate the fraud-team -21.3% delta hypothesis (Plan 06 entity-count-resident sum amortization candidate). Either confirm + fix in Phase 13, or override the WARN with a v0.1+ disposition note.

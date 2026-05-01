@@ -461,7 +461,7 @@
                 "op": "reservoir_sample",
                 "params": {
                   "field": "amount",
-                  "k": 50
+                  "samples": 50
                 }
               },
               "geo_kmh": {
