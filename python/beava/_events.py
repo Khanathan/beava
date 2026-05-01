@@ -243,15 +243,22 @@ class EventSource(_EventOpsMixin):
         dedupe_key: str | None,
         dedupe_window_ms: int | None,
         keep_events_for_ms: int | None,
+        cold_after_ms: int | None = None,
     ) -> None:
         # Plan 12.6-08 (no-event-time pivot): event_time_field and
         # tolerate_delay_ms parameters were deleted. Sources only carry
         # processing-time-safe metadata.
+        #
+        # Plan 12.8-02 (D-01): cold_after_ms is the per-source cold-entity
+        # TTL in milliseconds; None means no expiry. The Python decorator
+        # parses cold_after='<duration>' to ms and passes the value here.
+        # The eviction LOGIC lands in Plan 12.8-03 (apply hot path).
         self._name = name
         self._schema = schema
         self._dedupe_key = dedupe_key
         self._dedupe_window_ms = dedupe_window_ms
         self._keep_events_for_ms = keep_events_for_ms
+        self._cold_after_ms = cold_after_ms
         self._upstreams: list[str] = []
         self._ops: list[Any] = []
 
@@ -269,6 +276,12 @@ class EventSource(_EventOpsMixin):
             "dedupe_key": self._dedupe_key,
             "dedupe_window_ms": self._dedupe_window_ms,
             "keep_events_for_ms": self._keep_events_for_ms,
+            # Plan 12.8-02 (D-01): cold-entity TTL (per-source, opt-in).
+            # `None` (omitted via cold_after=None) means no expiry. Server-
+            # side `EventDescriptor.cold_after_ms: Option<u64>` has
+            # `#[serde(default)]` so older payloads omitting the key are
+            # forward-compatible.
+            "cold_after_ms": self._cold_after_ms,
         }
 
     def __repr__(self) -> str:
@@ -350,6 +363,7 @@ def _decorate_event_class(
     keep_events_for: str | None,
     dedupe_key: str | None,
     dedupe_window: str | None,
+    cold_after_ms: int | None = None,
 ) -> EventSource:
     """Apply @bv.event semantics to a class, returning an EventSource descriptor."""
     schema = extract_schema(cls)
@@ -390,6 +404,7 @@ def _decorate_event_class(
         dedupe_key=dedupe_key,
         dedupe_window_ms=dedupe_window_ms,
         keep_events_for_ms=keep_events_for_ms,
+        cold_after_ms=cold_after_ms,
     )
 
 
@@ -399,6 +414,7 @@ def _decorate_event_function(
     keep_events_for: str | None,
     dedupe_key: str | None,
     dedupe_window: str | None,
+    cold_after_ms: int | None = None,
 ) -> EventDerivation:
     """Apply @bv.event semantics to a function, returning an EventDerivation descriptor.
 
@@ -451,6 +467,7 @@ def event(
     keep_events_for: str | None = None,
     dedupe_key: str | None = None,
     dedupe_window: str | None = None,
+    cold_after: str | None = None,
     **legacy_kwargs: Any,
 ) -> Any:
     """Decorator to declare an event source or derivation.
@@ -482,6 +499,15 @@ def event(
         keep_events_for: Duration string for event retention (e.g. ``"7d"``).
         dedupe_key: Schema field name used for idempotency deduplication.
         dedupe_window: Deduplication window duration (e.g. ``"24h"``).
+        cold_after: Phase 12.8 D-01 — per-source cold-entity TTL. When set,
+            an entity whose ``last_seen`` is older than ``now - cold_after``
+            is treated as a fresh entity on its next event (state cleared,
+            Redis TTL pattern — locked permanent on resurrect). Default
+            ``None`` means no expiry (existing behavior preserved). Range:
+            ``1s ≤ cold_after ≤ 365d``. ``'forever'`` is REJECTED — use
+            ``cold_after=None`` (omit) for unbounded retention. The
+            eviction logic itself lands in Plan 12.8-03; this kwarg only
+            adds the wire surface + registry persistence.
 
     Returns:
         An :class:`EventSource` (class form) or :class:`EventDerivation` (function form),
@@ -495,6 +521,8 @@ def event(
             per the 2026-04-30 no-event-time pivot).
           * If ``tolerate_delay`` or ``event_time_field`` is passed as a
             keyword argument (no longer supported per the same pivot).
+          * If ``cold_after`` is out of range ``[1s, 365d]`` or set to
+            ``'forever'`` (Phase 12.8 D-01).
     """
     # Plan 12.6-08 strict-deny: legacy event-time keyword arguments are
     # rejected at decorator time. Per D-03 (CONTEXT.md) the no-event-time
@@ -519,10 +547,40 @@ def event(
             f"event() got an unexpected keyword argument {first!r}"
         )
 
+    # Plan 12.8-02 D-01: parse + range-validate cold_after at decoration
+    # time. Reuses the existing Phase 5 duration parser
+    # (`validate_duration_string` + `duration_to_ms`) — same s|m|h|d|ms
+    # suffixes the existing dedupe_window / keep_events_for parsers accept.
+    # Range: [1s, 365d] inclusive. 'forever' is REJECTED (use cold_after=None
+    # for unbounded). Error framing is forward-looking ("must be ≥ 1s",
+    # "must be ≤ 365d in v0") per CONTEXT D-01 / 12.7 D-02 convention.
+    cold_after_ms: int | None = None
+    if cold_after is not None:
+        if cold_after == "forever":
+            raise TypeError(
+                "cold_after='forever' is not supported in v0; use cold_after=None "
+                "(omit the kwarg) for unbounded retention. Per Phase 12.8 D-01, "
+                "cold_after is per-source opt-in cold-entity TTL — 'forever' would "
+                "defeat the purpose."
+            )
+        validate_duration_string(cold_after)
+        cold_after_ms = duration_to_ms(cold_after)
+        if cold_after_ms < 1_000:
+            raise TypeError(
+                f"cold_after must be ≥ 1s; got {cold_after!r} = {cold_after_ms}ms. "
+                f"Sub-second cold-TTL is not supported in v0 (Phase 12.8 D-01)."
+            )
+        if cold_after_ms > 365 * 86_400_000:
+            raise TypeError(
+                f"cold_after must be ≤ 365d in v0; got {cold_after!r} = "
+                f"{cold_after_ms}ms. Use cold_after=None for unbounded retention."
+            )
+
     kwargs = {
         "keep_events_for": keep_events_for,
         "dedupe_key": dedupe_key,
         "dedupe_window": dedupe_window,
+        "cold_after_ms": cold_after_ms,
     }
 
     if arg is None:

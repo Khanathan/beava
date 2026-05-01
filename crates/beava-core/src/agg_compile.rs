@@ -1096,6 +1096,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],

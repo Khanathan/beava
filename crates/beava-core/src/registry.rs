@@ -45,6 +45,20 @@ pub struct EventDescriptor {
     pub dedupe_window_ms: Option<u64>,
     #[serde(default)]
     pub keep_events_for_ms: Option<u64>,
+    /// Plan 12.8-02 D-01: per-source cold-entity TTL (opt-in). When set,
+    /// the apply hot path (Plan 12.8-03) treats an entity whose
+    /// `last_seen_ms` is older than `now_ms - cold_after_ms` as a fresh
+    /// entity (clear state, increment `cold_entity_evictions_total{source=...}`
+    /// per CONTEXT D-04). `None` (omitted from wire) = no expiry; preserves
+    /// existing behavior for sources that don't opt in. Range is enforced
+    /// at decorator-time on the Python side: 1_000 ≤ cold_after_ms ≤
+    /// 365 * 86_400_000.
+    ///
+    /// Locked permanent on resurrect: FRESH state (Redis TTL pattern, D-04
+    /// in CONTEXT). No partial-state preservation; reviving requires
+    /// explicit user override + new ADR.
+    #[serde(default)]
+    pub cold_after_ms: Option<u64>,
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
@@ -86,6 +100,7 @@ impl EventDescriptor {
             && self.dedupe_key == other.dedupe_key
             && self.dedupe_window_ms == other.dedupe_window_ms
             && self.keep_events_for_ms == other.keep_events_for_ms
+            && self.cold_after_ms == other.cold_after_ms
     }
 }
 
@@ -1362,6 +1377,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 1,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1391,6 +1407,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1540,6 +1557,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1564,6 +1582,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1577,6 +1596,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1601,6 +1621,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1620,6 +1641,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1653,6 +1675,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1765,6 +1788,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1832,6 +1856,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -1917,6 +1942,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
@@ -2009,6 +2035,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""), // server overwrites at install; value here is a placeholder
             apply_field_names: vec![],
@@ -2057,6 +2084,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""), // overwritten server-side at apply_registration
             apply_field_names: vec![],
@@ -2125,6 +2153,7 @@ mod tests {
                 dedupe_key: None,
                 dedupe_window_ms: None,
                 keep_events_for_ms: None,
+                cold_after_ms: None,
                 registered_at_version: 0,
                 name_arc: Arc::from(""),
                 apply_field_names: vec![],
@@ -2311,6 +2340,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![], // <-- this is what the resolver must populate
@@ -2433,6 +2463,7 @@ mod tests {
             dedupe_key: None,
             dedupe_window_ms: None,
             keep_events_for_ms: None,
+            cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
             apply_field_names: vec![],
