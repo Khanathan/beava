@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-02T00:34:32.026Z",
+  "phase": "12.8",
+  "phase_name": "memory-governance",
+  "phase_dir": ".planning/phases/12.8-memory-governance",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused-post-closure",
+  "completed_tasks": [
+    {"id": "12.8-01", "name": "JSON-prelude shim + env-gate", "status": "done", "commit": "9803272"},
+    {"id": "12.8-02", "name": "cold_after decorator + EventDescriptor field", "status": "done", "commit": "72e4d1f"},
+    {"id": "12.8-03", "name": "Cold-TTL eviction on apply hot path", "status": "done", "commit": "aa90198"},
+    {"id": "12.8-04", "name": "53-row lifetime bound classification table", "status": "done", "commit": "b096f7c"},
+    {"id": "12.8-05", "name": "Architectural test phase12_8_lifetime_ops_have_bounds", "status": "done", "commit": "e39314d"},
+    {"id": "12.8-06", "name": "5 Prometheus metric families + env-gate flip", "status": "done", "commit": "41b2f68"},
+    {"id": "12.8-07", "name": "REQUIREMENTS.md V0-MEM-GOV anchors", "status": "done", "commit": "1fe058e"},
+    {"id": "12.8-08", "name": "Microbench + 8-cell throughput rebaseline", "status": "done", "commit": "3f03c66"},
+    {"id": "12.8-09", "name": "SUMMARY + VERIFICATION + CLAUDE.md + STATE/ROADMAP/CORRECTNESS-PATH closure", "status": "done", "commit": "8953fe3"},
+    {"id": "ORPHAN", "name": "perf(12.8): amortize entity_count_resident snapshot — UNVERIFIED, REVERT PENDING", "status": "uncommitted_to_plan", "commit": "c9597c7"}
+  ],
+  "remaining_tasks": [
+    {"id": "REVERT-c9597c7", "name": "Revert orphan perf-fix commit; verified +0% within noise on c7i.4xlarge across 4 configurations (single-pinned, single-unpinned, 4-shard pinned, deep-pipeline)", "status": "not_started", "priority": "high"},
+    {"id": "MULTI-POD-TEST", "name": "Multi-pod cross-node 4-server-pods + 4-client-pods scale-out validation (deferred to next session per user request)", "status": "not_started", "priority": "medium"},
+    {"id": "PHASE-13", "name": "/gsd-discuss-phase 13 — final v0 ship phase: SDK polish + perf benchmarks + min-viable docs + PyPI/Docker/GitHub Releases packaging. Inherits 12.8 follow-ups: top_k → BoundedByRequiredKwarg promotion, bytes_per_entity_p99 dynamic sampling, per-source metric labels, fraud-team root-cause from 12.8 PLANNER-SURFACED CONCERNS", "status": "not_started", "priority": "next-on-critical-path"}
+  ],
+  "blockers": [
+    {"description": "Detached HEAD on c9597c7. Branch v2/greenfield is checked out in worktree .claude/worktrees/agent-a1fddbff33c497f85; main repo is in detached state.", "type": "git_state", "workaround": "Switch back: cd to that worktree OR git worktree remove and checkout v2/greenfield in main repo."}
+  ],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "Revert orphan perf-fix c9597c7 next session", "rationale": "Verified +0 to +4% within noise across 4 test configurations (Apple-M4 unpinned, c7i.4xlarge unpinned, c7i.4xlarge 2-CPU pinned, c7i.4xlarge 4-shard simultaneous). Predicted ~13% lift didn't materialize because apply path isn't the bottleneck. Code is architecturally clean but unverified perf claim shouldn't ship outside a plan boundary.", "phase": "12.8"},
+    {"decision": "Multi-pod cross-node test deferred to next session", "rationale": "Setting up 4 server pods + 4 client pods + Service per replica + ConfigMap for register payload + autoscaler scheduling realistically 30-45 min of careful kubectl orchestration. Current session at 28% context budget — risk of context truncation mid-experiment exceeds value. Single-pod 4-shard test (182k aggregate, <1% per-shard variance) provides strong evidence for linear scale-out architectural claim already.", "phase": "12.8"},
+    {"decision": "Pod beava-bench in test/ ns DELETED on pause", "rationale": "User explicitly requested cleanup. Cluster autoscaler will scale down ip-172-31-23-11 c7i.4xlarge node when idle.", "phase": "12.8"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Switch back from detached HEAD to v2/greenfield branch (currently checked out in worktree .claude/worktrees/agent-a1fddbff33c497f85). Then revert c9597c7 cleanly. Then either /gsd-discuss-phase 13 OR set up multi-pod cross-node test.",
+  "context_notes": "Phase 12.8 is OFFICIALLY CLOSED at commit 8953fe3 (PASS-WITH-WARN; fraud-team WARN flagged for Phase 13). The post-closure session focused on verifying the orphan perf-fix commit c9597c7 via cluster-based benchmarking. Findings: perf-fix delivers +0% within noise; bench client Pool=N pre-build dominates RAM (~2GB per worker per 250k frames); pipeline depth is the most important client tuning knob (5x EPS lift from pd=1 to pd=256); 4-shard scale-out is genuinely linear (182k aggregate, <1% variance); each Beava instance wants ~2 physical cores (1 apply + 1 IoPool/clients). Production extrapolation: 4x Hetzner AX52 ($340/mo) ≈ 700k EPS for 1M users. Next session priorities: (1) revert orphan commit, (2) multi-pod cross-node test for cleaner per-shard isolation OR (3) advance to Phase 13."
+}
