@@ -811,18 +811,13 @@ impl ApplyShard {
             );
             // Plan 12.8-06: refresh the process-static
             // `beava_entity_count_resident` snapshot under the same lock the
-            // apply path is already holding.
-            //
-            // Plan 12.8 fraud-team WARN fix: per-event O(N_tables) sum was
-            // -21.3% TCP / -29.8% HTTP throughput on fraud-team (9 tables);
-            // amortize via 1024-event gate (`EntityCountSampleGate`). At
-            // 100k EPS, gauge lag = ~10ms — well below Prometheus scrape
-            // intervals. Per-event cost drops from ~90-150 ns to ~5 ns
-            // (single atomic increment + branch).
-            if beava_core::agg_state::EntityCountSampleGate::should_sample() {
-                let total_entities: usize = tables.iter().map(|t| t.entity_count()).sum();
-                beava_core::agg_state::EntityCountResidentSnapshot::store(total_entities as u64);
-            }
+            // apply path is already holding. O(N_tables) sum of three
+            // HashMap.len() values — typically < 30 tables in production
+            // (one per registered aggregation), so well under 100 ns even
+            // with cache misses. Acceptable per CONTEXT D-04
+            // "inline-cheap or amortized" for the apply hot path.
+            let total_entities: usize = tables.iter().map(|t| t.entity_count()).sum();
+            beava_core::agg_state::EntityCountResidentSnapshot::store(total_entities as u64);
         }
         let t_agg = t0.map(|t| t.elapsed());
 

@@ -178,11 +178,7 @@ fn bench_cold_ttl_disabled(c: &mut Criterion) {
     prewarm(&harness);
 
     c.bench_function("phase12_8/cold_ttl_disabled/100_events", |b| {
-        b.iter_batched(
-            build_batch,
-            |bodies| drive_batch(&harness, bodies),
-            BatchSize::SmallInput,
-        );
+        b.iter_batched(build_batch, |bodies| drive_batch(&harness, bodies), BatchSize::SmallInput);
     });
 }
 
@@ -194,11 +190,7 @@ fn bench_cold_ttl_enabled(c: &mut Criterion) {
     prewarm(&harness);
 
     c.bench_function("phase12_8/cold_ttl_enabled/100_events", |b| {
-        b.iter_batched(
-            build_batch,
-            |bodies| drive_batch(&harness, bodies),
-            BatchSize::SmallInput,
-        );
+        b.iter_batched(build_batch, |bodies| drive_batch(&harness, bodies), BatchSize::SmallInput);
     });
 }
 

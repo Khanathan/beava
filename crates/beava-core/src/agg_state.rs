@@ -1444,50 +1444,6 @@ impl EntityCountResidentSnapshot {
     }
 }
 
-/// **Phase 12.8 fraud-team WARN fix (amortization gate for entity_count_resident).**
-///
-/// The naïve per-event O(N_tables) `tables.iter().map(t.entity_count()).sum()` from
-/// Plan 06 produced -21.3% TCP / -29.8% HTTP throughput regressions on fraud-team
-/// (9 tables) per Plan 08 measurement, while small/medium/large (1-4 tables) stayed
-/// within ±10%. Root cause: per-event sum is fine when N_tables is small but
-/// punishes multi-table workloads.
-///
-/// Fix: amortize via per-event atomic increment + modulo gate. At default sample
-/// interval of 1024, the sum runs 0.1% of events → per-event amortized cost
-/// drops from ~90-150 ns (fraud-team) to ~5 ns (single atomic increment + branch).
-/// Gauge lag at 100k EPS = 10ms — well below Prometheus scrape interval (15-60s).
-///
-/// 1024 chosen as power-of-two for cheap modulo via bitwise AND (`& 0x3FF`).
-static ENTITY_COUNT_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
-pub struct EntityCountSampleGate;
-impl EntityCountSampleGate {
-    /// Sample interval — every 1024th event triggers an entity-count snapshot.
-    /// Power-of-two enables bitwise-AND modulo on the hot path.
-    pub const SAMPLE_INTERVAL_MASK: u64 = 0x3FF; // 1024 - 1
-
-    /// Warm-up window — first 32 events always sample so low-volume tests
-    /// and just-started servers get accurate gauge readings before the first
-    /// 1024-event interval kicks in. Cost is bounded: 32 × ~100 ns = ~3 µs
-    /// total amortization debt at process start, paid once.
-    pub const WARMUP_EVENTS: u64 = 32;
-
-    /// Apply-path gate — call once per event, returns true during warm-up
-    /// (first 32 events) and on every 1024th event thereafter.
-    #[inline]
-    pub fn should_sample() -> bool {
-        let n = ENTITY_COUNT_SAMPLE_TICKER.fetch_add(1, Ordering::Relaxed);
-        n < Self::WARMUP_EVENTS || (n & Self::SAMPLE_INTERVAL_MASK) == 0
-    }
-
-    /// Reset ticker — primarily for tests that need deterministic warm-up
-    /// behavior across the process-static counter (cross-test contamination).
-    /// Production code does not call this; left public to avoid feature-flag
-    /// gymnastics for integration tests in sibling crates.
-    pub fn reset() {
-        ENTITY_COUNT_SAMPLE_TICKER.store(0, Ordering::Relaxed);
-    }
-}
-
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
