@@ -724,11 +724,29 @@ examples/
 └── ADR-002-polars-op-rename.md            ← Q4 wire op renames
 ```
 
-**Plans (estimated, ~10 plans across 3 waves):**
+**Plans:** 15 plans across 3 waves
 
-- Wave 1 (3-4 plans, parallel): wire-spec.md / http-api.md / sdk-api/{python,typescript,go,shared}.md / ADR-001 + ADR-002
-- Wave 2 (3-4 plans, parallel): pipeline-dsl/{overview,expressions,compilation-rules}.md / operators/{catalog,core,ordinal-recency,decay-velocity,sketches,buffer-geo}.md / schema-evolution.md / error-codes.md
-- Wave 3 (2-3 plans, parallel): concepts/* / quickstart.md / architecture/* / examples/wire/* + examples/{python,typescript,go}/*
+Plans:
+- [ ] 13.0-01-PLAN.md — Setup: NUKE 13 stale docs/*.md + create new dir tree + ADR-001 + ADR-002 + memory pointer
+- [ ] 13.0-02-PLAN.md — docs/wire-spec.md + 13 JSON Schema 2020-12 contracts + 16+ example fixtures + validator script
+- [ ] 13.0-03-PLAN.md — docs/http-api.md (verb-style POST routes for 6 v0 endpoints + admin sidecar)
+- [ ] 13.0-04-PLAN.md — 4 SDK API specs (shared / python / typescript / go)
+- [ ] 13.0-05-PLAN.md — Operator catalog scaffold: 54 op page stubs + master index + 2 catalog scripts
+- [ ] 13.0-06-PLAN.md — Polish 13 op pages: core (8) + sketch (5) + 2 family index pages
+- [ ] 13.0-07-PLAN.md — Polish 15 op pages: point-ordinal (5) + recency (10) + 2 family index pages
+- [ ] 13.0-08-PLAN.md — Polish 7 decay-family op pages + family index page
+- [ ] 13.0-09-PLAN.md — Polish 8 velocity-family op pages + family index page
+- [ ] 13.0-10-PLAN.md — Polish 7 bounded-buffer op pages
+- [ ] 13.0-11-PLAN.md — Polish 4 geo op pages + buffer-geo/ family index (all 11 ops)
+- [ ] 13.0-12-PLAN.md — pipeline-DSL (3 docs) + schema-evolution.md + error-codes.md
+- [ ] 13.0-13-PLAN.md — 9 concept + architecture docs (4 concepts + 5 architecture)
+- [ ] 13.0-14-PLAN.md — 9 vertical demos (Python+TS+Go × adtech+fraud+ecommerce) + 3 mock backends + smoke test
+- [ ] 13.0-15-PLAN.md — Closure: SUMMARY + VERIFICATION + docs/index.md + STATE/ROADMAP advance
+
+Wave structure:
+- Wave 1 (parallel after 01 lands): 13.0-02, 13.0-03, 13.0-04 (depends_on: [01])
+- Wave 2 (after 05 scaffold + Wave 1 specs): 13.0-06, 13.0-07, 13.0-08, 13.0-09, 13.0-10, 13.0-11, 13.0-12
+- Wave 3 (final): 13.0-13, 13.0-14 parallel; 13.0-15 closure last
 
 **Memory + ADR housekeeping (Wave 1):**
 - ADR-001 documents the partial overturn of `project_v0_events_only_scope` for `@bv.table` aggregation-output decorator
