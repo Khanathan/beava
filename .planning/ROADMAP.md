@@ -50,7 +50,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 12.6 | v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + mio-only enforcement | Remove legacy axum (`Server`, `push.rs`, `http.rs`, `push_and_get.rs`, `tcp.rs` ~7475 LOC actual vs 3500 estimated — orphan tcp.rs + in-source test mods cascaded out) + TestServer drop-in rewrite to ServerV18 (D-01) + phase11_smoke set-membership fix (D-02); strip `event_time_ms` from wire (push payload + WAL record schema bump v1→v2 + snapshot v1→v2) per D-03 hard rip; remove `tolerate_delay_ms` + `event_time_field` decorator + `DEFAULT_TOLERATE_DELAY_MS` + `AppState.max_event_time_ms` (renamed `query_time_ms`); switch 14+ windowed operators to `now_ms()` server clock (Path X — preserves 55-op catalogue); delete `OpNode::Join` + `JoinType` + `OpNode::Union` + Python SDK helpers; register-time validator rejects join/union payloads + legacy event-time keys with structured codes `feature_removed_no_*_v0` / `unknown_field_*_v0`; mio-only architectural test (`phase12_6_mio_only_dataplane.rs`) + CLAUDE.md `§Conventions § mio-only Hot-Path Invariant` documentation; REQUIREMENTS.md surgical sweep; Phase 12.5 + 13.3 archival banner sweep. Single hot-path entry through `apply_shard.rs::dispatch_*_sync` enforced. | 15 | ✅ **COMPLETED 2026-04-30 (PASS-WITH-WARN)** — 15 plans across 8 waves (inclusive of Wave-1.5 gap closure 14+15); workspace 1067/0/3; clippy + fmt clean; microbench (Plan 11) + throughput rebaseline (Plan 12) PASS; small/tcp regression-gate -0.94% vs post-12-08 baseline. SUMMARY + VERIFICATION at `.planning/phases/12.6-v0-surface-reduction/`. |
 | 12.7 | v0 table strip — events-only commitment | Strip `@bv.table` decorator + `POST /upsert/{table_name}` + `POST /delete` + `POST /retract` + `GET /table/{name}` mio handlers (added by Phase 12.6 Plan 14) + `temporal_http.rs` helpers + `TemporalStore` MVCC machinery + `app.retract(event_id)` SDK verb + ~12 table-related tests (`phase11_5_temporal_smoke`, `phase18_07_upsert_delete_rename_test`, `phase12_6_14_mio_temporal`, plus python/tests table-related). Walks back Phase 11.5 + Phase 12.6 Plan 14's mio table surface. v0 commits to events-only per `project_v0_events_only_scope`. Tables return in v0.1+ alongside joins/aggregation. | 10 | ✅ **COMPLETED 2026-05-01 (PASS)** — 10 plans across 4 waves; workspace 1049/0/4; cargo clippy + fmt clean; architectural test pair (phase12_7_no_table_surface 3 tests + phase12_7_legacy_table_handlers_killed 6 tests) GREEN BY DEFAULT; ~5,500 LOC removed (temporal_http.rs / temporal.rs / _tables.py + temporal_throughput.rs + Plans 03/04/06 surgery); FORMAT_VERSION RESET 2→1 across 3 schemas (D-01); all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench -25 to -30% (3 cells SIGNIFICANTLY FASTER vs 12.6); throughput +7.3% on small/tcp regression-gate cell. SUMMARY + VERIFICATION at `.planning/phases/12.7-table-strip/`. |
 | 12.8 | Memory governance — cold-entity TTL + bucket-level reclaim + lifetime aggregation contract | Two-tier memory hygiene before final ship. **Tier 1 (entity-level):** opt-in cold-entity TTL eviction via per-source `@bv.event(cold_after='<dur>')` decorator (default OFF; range [1s, 365d]); FRESH state on resurrect (Redis TTL pattern, locked permanent). **Tier 2 (bucket-level — always on):** existing `update_at(now_ms)` per-event reclaim; `BucketReclaimCounter::inc` on bucket trim. **Lifetime aggregation contract:** implicit via `windowed=` omission (D-02 — no new SDK kwarg); each of 53 AggKind variants classifies as O1 / BoundedSketchN / BoundedByRequiredKwarg / BoundedByConfig at register-time; 4th JSON-prelude shim `pre_check_unbounded_op_in_lifetime_mode` rejects Unbounded ops with structured error code (forward-looking framing — NOT `feature_removed_*`). `BEAVA_MEMORY_GOV_ENFORCE=0` is the explicit escape hatch (default ON post-Plan-06). 5 Prometheus metric families on `/metrics` (`cold_entity_evictions_total`, `lifetime_op_cap_hit_total`, `entity_count_resident`, `bytes_per_entity_p99` static placeholder = 7000, `bucket_reclaim_total`). 4 architectural-test CI tripwires. CLAUDE.md `§ Memory Governance Invariant (locked Phase 12.8)` block. | 9 | ✅ **COMPLETED 2026-05-01 (PASS-WITH-WARN)** — 9 plans across 5 waves; workspace 1095/0/4; cargo clippy + fmt clean; all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench cold-TTL on/off -2.6% (within ±5% gate); throughput regression-gate `small/tcp` -2.5% PASS; **fraud-team WARN flagged for Phase 13** (-21.3% TCP / -29.8% HTTP — root cause: O(N_tables) entity_count_resident snapshot, fraud-team has 9 tables vs 1-4 simpler shapes; NOT gating). REQUIREMENTS V0-MEM-GOV-01/02/03 anchors. SUMMARY + VERIFICATION at `.planning/phases/12.8-memory-governance/`. |
-| 13 | **SDK polish + benchmarks + ship** (v0 final) — REFRAMED 2026-04-30 | Final v0 ship phase. SDK polish on the events-only surface (`@bv.event` + 54-op catalogue + /push + /get + /register); perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get; minimum-viable docs (quickstart → operators → http-api → architecture); `/metrics` Prometheus (already partially shipped on `phase-13-ship` @ `2ef5afc`); PyPI + Docker Hub image + GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); CI green; ship-ready tag. **DROPPED 2026-04-30:** `bv.fork` subcommand (out of v0); `playground.beava.dev` hosted tutorial (deferred to v0.0.x); structured logs (already adequate). | ~10 | 🟡 **PARTIAL** (Plan 13-01 `/metrics` + Plan 13-03 `env_var_overrides` shipped on `phase-13-ship`; remaining plans need rescoping after Phase 12.7 closes) |
+| 12.9 | **AggOp memory boxing — fraud-team 22 KB → 7 KB budget fix** | Inserted 2026-05-03 from post-Phase-12.8 r8g maxcard bench. `size_of::<AggOp>() = 600 bytes` because of unboxed `SeasonalDeviationState`; every `Vec<AggOp>` slot consumes 600 B regardless of variant. Box the 7 fat-payload variants (SeasonalDeviation, HourOfDayHistogram, EventTypeMix, GeoVelocity, GeoSpread, GeoDistance, DistanceFromHome — same pattern Phase 10 sketches and `WindowedOp` already use) → `size_of::<AggOp>()` drops 600 → ~72 bytes (8× shrink); fraud-team `user_id` entity inline cost drops 46.8 KB → 5.6 KB; weighted-avg per-entity drops ~22 KB → ~6 KB (clears CLAUDE.md 7 KB budget with headroom). Free side effect: `WindowedOp` bucket inner ops also shrink (same enum). Mechanical change (~10 LOC + match-arm derefs); requires `FORMAT_VERSION` bump 1→2 across WAL/snapshot (just RESET to 1 by Phase 12.7 — bundle with rejection-test for old-format). Investigation doc: `.planning/ideas/per-entity-memory-budget.md`. | 1 | 📋 **PLANNED 2026-05-03** — gates Phase 13 ship-pitch numbers |
+| 13 | **SDK polish + benchmarks + ship** (v0 final) — REFRAMED 2026-04-30 | Final v0 ship phase. SDK polish on the events-only surface (`@bv.event` + 54-op catalogue + /push + /get + /register); perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get; minimum-viable docs (quickstart → operators → http-api → architecture); `/metrics` Prometheus (already partially shipped on `phase-13-ship` @ `2ef5afc`); PyPI + Docker Hub image + GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); CI green; ship-ready tag. **DROPPED 2026-04-30:** `bv.fork` subcommand (out of v0); `playground.beava.dev` hosted tutorial (deferred to v0.0.x); structured logs (already adequate). | ~10 | 🟡 **PARTIAL** (Plan 13-01 `/metrics` + Plan 13-03 `env_var_overrides` shipped on `phase-13-ship`; remaining plans need rescoping after Phase 12.9 closes) |
 | 13.1 | Perf regression fix — fsync off the runtime thread | `spawn_blocking` for WAL fsync; restored 17k EPS at parallel=64 on macOS | 1 | ✅ **COMPLETE** |
 | ~~13.2~~ | ~~Batch coalescing~~ | ~~ApplyConfig 6-knob + ApplyBuffer skeleton~~ | — | ❌ **ABANDONED** — superseded by Phase 13.3 (RefCell + LocalSet, simpler/faster Redis-shaped approach). Branch `phase-13.2-coalesce` is not to be merged; ApplyBuffer primitive is not reused. |
 | ~~13.3~~ | ~~Lockless apply via RefCell + LocalSet~~ | ~~Replace apply-state Mutex with single-thread `RefCell` + `LocalSet`~~ | ~~~4~~ | ❌ **REJECTED 2026-04-26** — locked architectural decision: Beava commits to a single-threaded data plane forever (Redis-cluster pattern). Per-instance ceiling = single apply thread; users scale out via multiple Beava instances sharded at entity-key level. Worktree `phase-13.3-lockless-apply` archived (deleted 2026-04-26). Plans 13.3-01..04 in `.planning/phases/13.3-lockless-apply/` retained for historical reference. |
@@ -61,8 +62,9 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | ~~17~~ | ~~Table aggregation tiered modifiability (v0.1)~~ | ~~`@bv.table.group_by(...).agg(...)` Tier B/C scope~~ | — | ❌ **ARCHIVED-INDEFINITELY 2026-04-30** — depends on `@bv.table` which is being stripped in Phase 12.7 (v0 is events-only). Returns alongside tables in v0.1+ if/when joins land per `project_v0_events_only_scope`. |
 | 18 | Redis-shaped hand-rolled hot path | 2/2 | Complete   | 2026-04-26 |
 | ~~25~~ | ~~Session window operator family (v0.1+)~~ | ~~`bv.session(gap_ms=..., inner=bv.<op>(...))` activity-based grouping~~ | — | ❌ **ARCHIVED-INDEFINITELY 2026-04-30** — out of v0 scope per `project_v0_events_only_scope`. Users can compose count/sum with processing-time windowed ops for v0 demos. Returns in a future minor release if demand arises. |
+| 26 | **Valkey-style I/O architecture rework** (v0.1+) | Inserted 2026-05-03 from post-Phase-12.8 bench session. Beava's IO worker design diverges from the "Valkey 8 model" comments claim: each worker owns a `mio::Poll` and independently polls its assigned client subset (N+1 epoll instances), sending parsed RingItems to apply via crossbeam channel. Valkey IO threads are pure SPSC/SPMC consumers (verified `valkey-io/valkey/src/io_threads.c::IOThreadMain`). 4-phase migration (A measure → B consolidate → C maxclients/backpressure → D validate); Phase A is the **GATE** — abandon if cross-thread channel overhead < 5% of total push CPU. Apply-CPU is 88% of total push time per session's per-stage trace, so the upside is bounded. Plan doc: `.planning/ideas/valkey-io-architecture-rework.md`. **NOT v0 ship-blocker** — pure architecture-debt cleanup if Phase A confirms the cost is real. | ~5 | 💡 **PROPOSED 2026-05-03 (v0.1+)** — gated on Phase A measurement |
 
-**Total active phases:** 20 (post-2026-04-30 v0-events-only commitment + Phase 12.8 memory governance inserted 2026-05-01). v0 ship critical path = **Phase 13 (final v0 ship — SDK polish + benchmarks + ship) — NEXT**. Phase 12.7 (table strip) ✅ CLOSED 2026-05-01. Phase 12.8 (memory governance) ✅ CLOSED 2026-05-01 (PASS-WITH-WARN).
+**Total active phases:** 21 (post-2026-04-30 v0-events-only commitment + Phase 12.8 memory governance + Phase 12.9 AggOp memory boxing inserted 2026-05-03). v0 ship critical path = **Phase 12.9 (AggOp boxing) → Phase 13 (final ship — SDK polish + benchmarks + docs + packaging) — NEXT**. Phase 12.7 (table strip) ✅ CLOSED 2026-05-01. Phase 12.8 (memory governance) ✅ CLOSED 2026-05-01 (PASS-WITH-WARN). Phase 26 (Valkey IO rework) is v0.1+, not a ship-blocker.
 
 **Insertion / archive history:**
 - Phase 2.5 inserted 2026-04-23 (dual HTTP+TCP wire); Phase 5.5 inserted 2026-04-23 (perf harness + retroactive baselines + regression gates); Phase 7.5 inserted 2026-04-23 (end-to-end throughput harness + per-phase ledger convention)
@@ -76,7 +78,9 @@ Feature authoring as composable Python code that ships to production unchanged. 
 - **Phase 12.6 inserted 2026-04-30** (v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + windowed-op time-source swap + join/union removal + REQUIREMENTS sweep + mio-only enforcement) — CLOSED 2026-04-30 PASS-WITH-WARN
 - **Phase 12.7 inserted 2026-04-30, CLOSED 2026-05-01 PASS** (table strip — `@bv.table` + temporal store + retraction stripped per `project_v0_events_only_scope`; 10 plans across 4 waves; ~5,500 LOC removed; FORMAT_VERSION RESET 2→1; all 4 CONTEXT decisions honored verbatim; microbench -25 to -30% lift; throughput +7.3% on regression-gate cell)
 - **Phase 12.8 inserted 2026-05-01, CLOSED 2026-05-01 PASS-WITH-WARN** (memory governance — opt-in cold-entity TTL via `@bv.event(cold_after=)` + always-on bucket-level reclaim during `update_at()` + lifetime aggregation contract via 4th JSON-prelude shim `unbounded_op_in_lifetime_mode`; 5 Prometheus metric families; `BEAVA_MEMORY_GOV_ENFORCE` env-gate default ON; 9 plans across 5 waves; all 4 CONTEXT decisions honored verbatim; microbench -2.6%, throughput regression-gate -2.5% PASS; fraud-team WARN flagged for Phase 13 — root cause O(N_tables) entity_count_resident snapshot)
+- **Phase 12.9 inserted 2026-05-03** (AggOp memory boxing — fraud-team 22 KB/entity → 7 KB CLAUDE.md budget fix). Triggered by post-Phase-12.8 r8g maxcard bench: `size_of::<AggOp>() = 600` because of unboxed `SeasonalDeviationState`. Box 7 fat variants → 600 → ~72 B (8× shrink); fraud-team weighted-avg per-entity 22 KB → ~6 KB. Investigation: `.planning/ideas/per-entity-memory-budget.md`. Tests: `crates/beava-core/tests/per_entity_size_dump.rs`. Gates Phase 13 ship-pitch numbers.
 - Phase 25 added 2026-04-30 (session window operator family) — **ARCHIVED-INDEFINITELY 2026-04-30 per v0-events-only commitment**
+- **Phase 26 added 2026-05-03 (Valkey-style I/O architecture rework — v0.1+)** — Beava IO workers diverge from Valkey's pure-consumer pattern (verified `valkey-io/valkey/src/io_threads.c::IOThreadMain`). 4-phase migration; Phase A is the GATE (abandon if channel overhead < 5% of push CPU). Apply-CPU is 88% per session's trace so upside is bounded. NOT a v0 ship-blocker. Plan doc: `.planning/ideas/valkey-io-architecture-rework.md`.
 - **Phase 13 reframed 2026-04-30** to slim ship scope: SDK polish (events surface) + perf benchmarks + minimum-viable docs + packaging. **Dropped:** `bv.fork`, `playground.beava.dev`, structured logs.
 
 **Architectural commitments locked 2026-04-30** (see `project_redis_shaped_no_event_time_ever` + `project_v0_events_only_scope`): no event-time anywhere; no watermarks; no joins; no PIT; no tables (`@bv.table` stripped Phase 12.7); no aggregation beyond the existing 54-op catalogue; no session windows; processing-time-only semantics; mio-only data-plane entry; `event_time_ms` removed from wire; windowed operators on server-side `now_ms()`. v0 = pure events: `@bv.event` + 54 ops + /push + /get + /register + WAL/snapshot durability + Python SDK. Tables/joins/aggregation return together in v0.1+ if/when justified by demand.
@@ -569,24 +573,61 @@ Plans:
 - [ ] 12.8-09-PLAN.md — Wave 5 — Phase 12.8 SUMMARY + VERIFICATION + CLAUDE.md `§ Memory Governance Invariant (locked Phase 12.8)` block + STATE/ROADMAP/CORRECTNESS-PATH closure (advance v0 critical-path → Phase 13); section-ownership contract per 12.7 Plan 10 — depends on Plans 01-08
 
 
-### Phase 13: Observability + performance + docs + packaging + `bv.fork` — ship — 🟡 PARTIAL
+### Phase 12.9: AggOp memory boxing — fraud-team 22 KB → 7 KB budget fix — 📋 PLANNED 2026-05-03
 
-**Status:** Plans 13-01 (`/metrics` Prometheus + middleware) and 13-03 (`env_var_overrides` hermetic fix) shipped on branch `phase-13-ship` @ `2ef5afc`. Plan 13-02 (cold-entity GC sweep), Plan 13-04 (perf gate), and metric-counter wiring pending on worktree `.claude/worktrees/phase-13-followup`. Plans 13-05..13-08 (docs site, `bv.fork`, PyPI/Docker/Releases, playground) deferred to v0.0.x point releases per Phase 13 CONTEXT D-16.
+**Status:** Inserted 2026-05-03 from post-Phase-12.8 maxcard bench investigation. Investigation doc + size_of test landed at HEAD `316e32e`. PLAN.md not yet drafted; expected 3 plans across 2 waves.
 
-**Goal:** Ship-ready v0. Metrics, perf gates cleared, docs live on `beava.dev`, binaries + PyPI + Docker published, `beava fork` subcommand works.
+**Goal:** Close the 22 KB → 7 KB fraud-team per-entity memory gap measured on r8g.4xlarge. Box 7 fat-payload AggOp variants so `size_of::<AggOp>()` drops from 600 B → ~72 B (8× shrink), bringing weighted-avg fraud-team per-entity from ~22 KB to ~6 KB and clearing the CLAUDE.md `~7 KB per entity for a rich 30-feature pack` budget with headroom.
 
-**Depends on:** Phases 8–12 all complete.
+**Why it gates Phase 13:** Phase 13 ships the v0 perf-pitch numbers. Without this fix, the marketing claim "~7 KB / entity → 700 GB for 100M entities" doesn't survive contact with the fraud-team workload — users on heavy sketch pipelines see 3× the budget. Fixing it pre-ship lets the docs and PROJECT.md numbers hold up under scrutiny.
 
-**Requirements:** OBS-01 through OBS-04, PERF-01 through PERF-04, DOC-01 through DOC-06, PKG-01 through PKG-05, SDK-FORK-01 through SDK-FORK-04, TEST-01 through TEST-07 — ~16 REQ-IDs plus the test suite gate.
+**Depends on:** Phase 12.7 (FORMAT_VERSION just RESET to 1; this phase bumps to 2). Phase 12.8 (memory governance baseline; metrics already in place to verify the lift).
+
+**Locked context (from `.planning/ideas/per-entity-memory-budget.md`):**
+- Fix: box `SeasonalDeviation`, `HourOfDayHistogram`, `EventTypeMix`, `GeoVelocity`, `GeoSpread`, `GeoDistance`, `DistanceFromHome` in `crates/beava-core/src/agg_op.rs` (same pattern Phase 10 sketches and `WindowedOp` already use)
+- Match-arm derefs in `agg_apply.rs` + `agg_compile.rs` (~10 LOC mechanical)
+- WAL `FORMAT_VERSION = 1 → 2`, snapshot `SNAPSHOT_BODY_FORMAT_VERSION = 1 → 2`, `SNAPSHOT_FORMAT_VERSION = 1 → 2` (mirrors Phase 12.6's bump and Phase 12.7's RESET — third schema change in 4 days, needs care with the persistence-test matrix)
+- Phase 12.8's static `bytes_per_entity_p99 = 7000` placeholder → dynamic-sampled in same plan (Phase 12.8 follow-up)
+- TrendResidual (72 B) and BurstCount (64 B) are borderline; deferred until primary fix lands and the next-largest unboxed variant becomes the visible bottleneck
+
+**Plans (estimated, 3 plans across 2 waves):**
+- 12.9-01 — Wave 1 (red) — extend `crates/beava-core/tests/per_entity_size_dump.rs` to assert `size_of::<AggOp>() <= 80`. Confirms RED.
+- 12.9-02 — Wave 1 (green) — box the 7 fat variants in `agg_op.rs` + match-arm derefs in `agg_apply.rs` / `agg_compile.rs` + `FORMAT_VERSION` bump 1→2 across WAL/snapshot/snapshot_body + recovery test for old-format rejection (Phase 12.7's pattern) + dynamic-sample `bytes_per_entity_p99` from process-static placeholder. Workspace + clippy + fmt clean.
+- 12.9-03 — Wave 2 — re-run maxcard bench on r8g.4xlarge (or whatever EKS cluster is up); confirm fraud-team weighted-avg per-entity ≤ 7 KB; update `.planning/throughput-baselines.md` post-fix row; amend CLAUDE.md `Memory:` line with `(verified Phase 12.9, 2026-05-XX)` footnote. Phase SUMMARY + VERIFICATION.
 
 **Success criteria:**
-1. `/metrics` exposes per-operator, per-endpoint, WAL, snapshot, registry-version metrics
-2. Perf benchmark harness: ≥3M EPS on THREE pipeline shapes — simple fraud (5 aggregations, 1 entity type), complex fraud (15+ aggregations, 3 entity types + stream-stream join), recommendation (windowed counts + geo-velocity + user baselines + top-k). P99 batch-get < 10ms on each. (Expanded from single-shape 2026-04-23 per user request.)
-3. Docs live: quickstart → operators → concepts → http-api → architecture; `README.md` 3-command smoke works
-4. `playground.beava.dev` hosts an interactive tutorial — JS in docs calls real HTTP against a shared beava instance (per-session namespace); users see real `registry_version` bumps + validation errors + feature values without installing anything. Single VM/container; ~$10-20/mo infra. Note: v0.1+ roadmap ships a browser-WASM `@beava/browser` npm library for fully-serverless interactivity — deferred because `beava-core` is already WASM-portable by project invariant (syscall-free)
-5. `pip install beava` works; `docker run beava/beava:v0` works; GitHub Release binaries available for 3 platforms
-6. `bv.fork(...)` spawns a local scoped replica; features queryable against fork; fork cleans up on context exit
-7. All TEST-* requirements pass; CI green; ship-ready tag
+1. `cargo test -p beava-core --test per_entity_size_dump` asserts `size_of::<AggOp>() <= 80`
+2. Maxcard bench on r8g (or equivalent 120 GiB-class node) shows fraud-team weighted-avg per-entity ≤ 7 KB
+3. `phase12_8_metrics_endpoint.rs` updated to verify `bytes_per_entity_p99` is dynamically sampled (not 7000 static)
+4. WAL/snapshot recovery test confirms `FORMAT_VERSION = 1` files are rejected with structured error (Phase 12.7 pattern)
+5. Throughput regression-gate `small/tcp` within ±10% vs Phase 12.8 baseline (no perf surprise from extra heap allocations)
+6. Workspace + clippy + fmt clean
+
+
+### Phase 13: SDK polish + benchmarks + ship — final v0 — 🟡 PARTIAL
+
+**Status (refreshed 2026-05-03):** Plans 13-01 (`/metrics` Prometheus + middleware) and 13-03 (`env_var_overrides` hermetic fix) shipped on branch `phase-13-ship` @ `2ef5afc`. Old pre-pivot plans (13-02 cold-entity GC sweep — superseded by Phase 12.8; 13-04 perf gate; metric-counter wiring) need rescoping after Phase 12.9 closes. Plans 13-05..13-08 (docs site, `bv.fork`, PyPI/Docker/Releases, playground) DROPPED 2026-04-30 from v0 — `bv.fork` and `playground.beava.dev` are explicit non-goals; docs site and packaging stay but get minimum-viable scope.
+
+**Goal:** Ship v0. Events-only API surface, perf gates green on 3 pipeline shapes, minimum-viable docs live on `beava.dev`, packaging published, ship-ready tag cut.
+
+**Depends on:** Phases 8–12 complete (✅), Phase 12.6 ✅, Phase 12.7 ✅, Phase 12.8 ✅, **Phase 12.9 (AggOp boxing — gates ship-pitch numbers)**.
+
+**Requirements:** OBS-01..04 (most landed via Phase 12.8 + Plan 13-01), PERF-01..04, DOC-01..06 (rescoped to minimum-viable), PKG-01..05, TEST-01..07. SDK-FORK-* and the playground REQ-IDs DROPPED 2026-04-30. Final REQ-ID list pending Phase 12.9 closure + plan-rescoping pass.
+
+**Success criteria (refreshed 2026-05-03 to match post-pivot scope):**
+1. `/metrics` exposes per-operator, per-endpoint, WAL, snapshot, registry-version, memory-governance metrics (Phase 12.8 baseline + any Phase 13 additions)
+2. Perf benchmark harness: ≥3M EPS on THREE pipeline shapes — **simple fraud** (5 aggregations, 1 entity type), **complex fraud** (15+ aggregations, multiple group_by axes — fraud-team.json shape), **recommendation** (windowed counts + geo-velocity + top-k + user baselines). P99 batch-get < 10ms on each. Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`. (Reframed: **no joins**; **no event-time**; complex-fraud is multi-axis events-only.)
+3. Per-entity memory ≤ 7 KB on the fraud-team shape (verified by Phase 12.9 maxcard rebench)
+4. Minimum-viable docs live on `beava.dev`: quickstart → operators → http-api → architecture. README.md 3-command smoke works (`pip install beava`, `beava run`, `python quickstart.py`)
+5. `pip install beava` works (PyPI); `docker run beava/beava:v0` works (Docker Hub); GitHub Release binaries for 3 platforms (Linux x86_64, Linux ARM64, macOS ARM64)
+6. CI green on `v2/greenfield`; `v0.0.0` tag cut
+7. All TEST-* requirements pass
+
+**Explicitly DROPPED from v0:**
+- `bv.fork(...)` local scoped replica subcommand (deferred — no v0.0.x roadmap entry)
+- `playground.beava.dev` hosted interactive tutorial (deferred to v0.1+ if/when browser-WASM `@beava/browser` ships)
+- Stream-stream / event↔table joins in success criterion #2 (joins removed permanently 2026-04-30 per `project_redis_shaped_no_event_time_ever`)
+- Structured logs phase work (existing logs deemed adequate)
 
 ### Phase 13.1: Perf regression fix — fsync off the runtime thread — ✅ COMPLETE
 
@@ -670,6 +711,37 @@ Per-instance throughput ceiling at v0 ship time: ~470–520k EPS for simple-frau
 3. WAL replay reproduces session state byte-identically
 4. Per-event session-state update cost < 50 ns on Apple-M4
 5. Throughput on simple-fraud × session-window pipeline within 5% of pre-session baseline
+
+### Phase 26: Valkey-style I/O architecture rework — 💡 PROPOSED 2026-05-03 (v0.1+)
+
+**Status:** Inserted 2026-05-03 from post-Phase-12.8 bench session on r8g.4xlarge. **NOT v0 ship-blocker.** Architecture-debt cleanup with bounded upside; gated on a Phase A measurement that may abandon the rework.
+
+**Goal:** Reconcile beava's IO architecture with the "Valkey 8 model" comments in `crates/beava-runtime-core/src/io_thread_worker.rs` claim. Beava currently diverges:
+
+- **Valkey** (verified `valkey-io/valkey/src/io_threads.c::IOThreadMain`): ONE `epoll_wait` on main thread; IO threads are pure SPSC/SPMC consumers that never call `epoll_wait`.
+- **Beava current**: N+1 `mio::Poll` instances; each IO worker independently polls its assigned client subset and sends parsed RingItems to apply via crossbeam channel; apply thread spin-loops on `try_recv` then falls to 50 µs `recv_timeout`.
+
+For workloads with few hot connections at high pipeline depth (the typical bench shape), this overhead is wasted. But apply-CPU is **88%** of total push time per session's per-stage trace, so the upside is bounded.
+
+**Why post-v0:** The fix is a wire-stack rewrite (not a correctness fix). v0 ships the events-only Redis-shaped surface; this is the next-tier architectural cleanup if/when the bench shape shifts toward many-cold-connections workloads.
+
+**Depends on:** Phase 13 ship (need v0 stable baseline before measuring lift).
+
+**Plan doc:** `.planning/ideas/valkey-io-architecture-rework.md` — 4-phase migration:
+
+1. **Phase A — measure (1 day, GATE):** instrument the existing channel hop. Compute `t_in_channel_recv / t_total_push` over fraud-team zipfian + cold-connection workloads. **Abandon if < 5%.**
+2. **Phase B — consolidate poll on apply thread (3-5 days):** apply thread owns the single `mio::Poll`; IO workers become pure SPSC consumers reading from per-worker `crossbeam_queue::ArrayQueue<ConnId>` filled by apply.
+3. **Phase C — maxclients + slow-client backpressure (1-2 days):** Valkey-style; required to make consolidated poll safe under load.
+4. **Phase D — validate at scale (2 days):** rerun maxcard + worker-sweep benches on r8g; confirm Phase A's measured overhead is recovered.
+
+**Success criteria:**
+1. `t_in_channel_recv / t_total_push` measured before-and-after with concrete numbers (must be ≥ 5% pre-rework or the phase is abandoned at A)
+2. Functional parity with v0 wire stack (HTTP/1.1 + framed TCP, all 6 data-plane endpoints, all op codes)
+3. EPS lift on the workload shape that motivated the rework (likely few-hot-connections / high pipeline depth)
+4. No regression on simple-fraud / fraud-team / recommendations baselines
+5. Architectural test pair (similar to `phase12_6_mio_only_dataplane.rs`) locks the consolidated-poll invariant in CI
+
+**NOT a v0 ship-blocker.** If Phase A confirms < 5% overhead, abandon and remove the Valkey-model claim from the io_thread_worker.rs comments instead.
 
 ### Phase 18: Redis-shaped hand-rolled hot path — 🔄 IN PROGRESS
 

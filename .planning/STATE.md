@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: Phase 12.8 CLOSED 2026-05-01 (PASS-WITH-WARN); Phase 13 NEXT (final v0 ship)
-last_updated: "2026-05-01T22:30:00.000Z"
+status: "Phase 12.8 CLOSED 2026-05-01 (PASS-WITH-WARN); Phase 12.9 (AggOp memory boxing) inserted 2026-05-03 between 12.8 and 13; v0 critical path = 12.9 → 13"
+last_updated: "2026-05-03T08:30:00.000Z"
 progress:
-  total_phases: 38
+  total_phases: 39
   completed_phases: 19
-  total_plans: 166
+  total_plans: 169
   completed_plans: 141
-  percent: 85
+  percent: 83
 ---
 
 <!-- Session continuity (resume) -->
@@ -23,9 +23,13 @@ progress:
 
 <!-- Resume next: /gsd-discuss-phase 13 (final v0 ship — SDK polish + perf benchmarks on three pipelines + minimum-viable docs + PyPI/Docker/GitHub Releases packaging). Phase 13 candidates from 12.8 follow-ups: (a) fraud-team throughput root-cause fix (entity_count_resident amortization); (b) top_k → BoundedByRequiredKwarg promotion; (c) bytes_per_entity_p99 dynamic sampling; (d) per-source metric labels. -->
 
+<!-- Phase 12.9 INSERTED 2026-05-03 between 12.8 and 13 (gates Phase 13 ship-pitch numbers). Triggered by post-Phase-12.8 r8g maxcard bench investigation (this session): size_of::<AggOp>() = 600 bytes because of unboxed SeasonalDeviationState. Box 7 fat variants (SeasonalDeviation + HourOfDayHistogram + EventTypeMix + GeoVelocity + GeoSpread + GeoDistance + DistanceFromHome) → drops to ~72 bytes (8× shrink); fraud-team weighted-avg per-entity ~22 KB → ~6 KB (clears CLAUDE.md 7 KB budget). Investigation doc: .planning/ideas/per-entity-memory-budget.md. Tests: crates/beava-core/tests/per_entity_size_dump.rs (size_of dump + per-derivation projection). Estimated 3 plans across 2 waves (red/green/verify). Requires FORMAT_VERSION bump 1→2 (third schema change in 4 days — care with persistence test matrix). Phase 26 (Valkey IO rework) added as v0.1+ slot — NOT a v0 ship-blocker. New v0 critical path: /gsd-discuss-phase 12.9 → execute → /gsd-discuss-phase 13 → execute → ship. -->
+
 <!-- Plan 12.8-06 closed 2026-05-01 at HEAD 41b2f68. 5 Prometheus metric families on /metrics admin sidecar (cold_entity_evictions_total counter, lifetime_op_cap_hit_total counter aggregating EntropyStateWrap::categories_capped_count, entity_count_resident gauge, bucket_reclaim_total counter, bytes_per_entity_p99 gauge static = 7000 per PROJECT.md). 3 process-static atomic counters in agg_state.rs (ColdEntityEvictionCounter, BucketReclaimCounter, EntityCountResidentSnapshot) mirroring the existing EntropyStateWrap pattern; AdminState plumbing skipped per Rule 3 deviation (process-static is consistent with sibling counters; per-source labels still v0.0.x deferred). Counter inc()-sites wired at agg_apply.rs Plan 03 eviction site + agg_windowed.rs::evict_oldest_bucket; gauge store-site wired in apply_shard.rs::dispatch_push_sync post-apply block (under existing table lock; O(N_tables) sum). Env-gate BEAVA_MEMORY_GOV_ENFORCE flipped OFF→ON (apply_shard.rs::memory_gov_enforce_enabled now `!= Some("0")`); per-call read preserved (no OnceLock per Plan 06 B-02 fix). Test fixture sweep: phase12_8_unbounded_op_in_lifetime_mode.rs::test_no_enforcement_when_env_unset → renamed test_default_enforcement_on_when_env_unset, semantic-flipped to assert default-ON behavior; Test 21 (test_env_var_zero_disables_enforcement) lives in phase12_8_metrics_endpoint.rs per Plan 06 wave-3 ownership shift. v0 ships UNLABELED counters (no `{source=...}` block); per-source labels v0.0.x deferred. Workspace 1095/0; clippy/fmt clean. RED commit 8295259 (526-LOC test file); GREEN commit 41b2f68 (8 substeps atomically). SUMMARY: .planning/phases/12.8-memory-governance/12.8-06-SUMMARY.md. -->
 
 <!-- Plan 12.8-07 closed 2026-05-01 at HEAD 1fe058e. REQUIREMENTS.md V0-MEM-GOV-01/02/03 positive anchors added under existing § V0-INVARIANT subsection (line 200, created by 12.7-07 alongside V0-EVENTS-ONLY-01). 3 anchors land at lines 203–205 between V0-EVENTS-ONLY-01 (line 202) and § SRV-REG (line 207); blank-line discipline preserved. V0-MEM-GOV-01 cites phase12_8_cold_entity_eviction.rs + Plans 02/03/06 (cold-entity TTL opt-in + FRESH-on-resurrect Redis pattern); V0-MEM-GOV-02 cites phase12_8_lifetime_ops_have_bounds.rs + op_lifetime_bounds.rs + Plans 01/04/05 (lifetime ops declare bounds at register-time, 4th JSON-prelude shim, default-ON via BEAVA_MEMORY_GOV_ENFORCE); V0-MEM-GOV-03 cites BucketReclaimCounter + agg_windowed.rs test mod + Plan 06 (per-event bucket reclaim during update_at, no new mechanism, locks the existing contract). Section-ownership held: only `.planning/REQUIREMENTS.md` modified in commit 1fe058e (STATE.md / ROADMAP.md / CORRECTNESS-PATH.md / CLAUDE.md owned by closure Plan 09). +3 / -0 LOC. Single docs(12.8-07): commit per CLAUDE.md TDD §Note 4 doc-only-plan exemption. SUMMARY: .planning/phases/12.8-memory-governance/12.8-07-SUMMARY.md. Wave 3 COMPLETE — all 3 of Plans 05+06+07 landed. Remaining: Plan 08 (Wave 4 microbench + throughput rebaseline), Plan 09 (Wave 5 closure). -->
+
+<!-- Session resumed 2026-05-03 — /gsd-resume-work read HANDOFF.json post-bench follow-ups; user picked Track 1 (per-entity memory investigation). Proceeding via /gsd-quick: write microbench that registers each AggOp variant individually, prints std::mem::size_of of the AggOp state + per-entity overhead summed for fraud-team's actual aggregation declarations vs measured ~22 KB, then write .planning/ideas/per-entity-memory-budget.md. Empirical r8g maxcard data: small ~1 KB / medium ~5.6 KB / large_phase9 ~18 KB / fraud-team ~22 KB vs CLAUDE.md 7 KB budget — 3× over. Likely heaviest contributors to investigate: HLL count_distinct, UDDSketch percentile, TopK SpaceSaving, histogram bounded-buffer ops, bv.entropy categorical buckets, Phase 9 EWMA + inter_arrival_stats ring buffers. Output decides v0 ship-pitch numbers (cut overhead 3× / reframe pitch / recommend bigger node / combo). HANDOFF.json renamed → HANDOFF.consumed-2026-05-03.json; .continue-here.md retained as durable narrative. Track 2 (commit bench-v2 + valkey doc) and Track 3 (open Phase 13) deferred until investigation lands. -->
 
 # State: Beava v2 — v0 OSS Launch
 
@@ -110,7 +114,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 
 **Locked.** State is `f(arrival-order events, query time)`. mio data plane is the only hot-path entry. Phases 14, 14.1, 15 archived. Phase 12 retitled "push/get API completion (joins/unions REMOVED)". Phase 17 reworked. Phase 12.5 archived (superseded by Plan 12-10). NEW Phase 12.6 inserted (v0 surface reduction — legacy axum kill + event-time strip + dead-code/redundancy sweep + windowed-op time-source swap + join/union removal + REQUIREMENTS sweep + mio-only enforcement). NEW Phase 25 inserted (session window operator family — v0.1+).
 
-**v0 critical path post-pivot:** ~~Plan 12-10 (push-and-get on mio)~~ DEFERRED per Phase 12.6 D-04 → ~~Phase 12.6 (surface reduction)~~ ✅ **CLOSED 2026-04-30 (PASS-WITH-WARN)** → ~~Phase 12.7 (table strip)~~ ✅ **CLOSED 2026-05-01 (PASS)** → ~~Phase 12.8 (memory governance)~~ ✅ **CLOSED 2026-05-01 (PASS-WITH-WARN)** → **Phase 13 (final v0 ship — SDK polish + perf benchmarks + minimum-viable docs + PyPI/Docker/GitHub Releases) — NEXT**. Phase 25 (session windows) is v0.1+. Phases 14/14.1/15 are dead architecture — do not unarchive without explicit user override + new ADR.
+**v0 critical path post-pivot (refreshed 2026-05-03):** ~~Plan 12-10 (push-and-get on mio)~~ DEFERRED per Phase 12.6 D-04 → ~~Phase 12.6 (surface reduction)~~ ✅ **CLOSED 2026-04-30 (PASS-WITH-WARN)** → ~~Phase 12.7 (table strip)~~ ✅ **CLOSED 2026-05-01 (PASS)** → ~~Phase 12.8 (memory governance)~~ ✅ **CLOSED 2026-05-01 (PASS-WITH-WARN)** → **Phase 12.9 (AggOp memory boxing — fraud-team 22 KB → 7 KB) — NEXT** → **Phase 13 (final v0 ship — SDK polish + perf benchmarks + minimum-viable docs + PyPI/Docker/GitHub Releases)**. Phase 25 (session windows) and Phase 26 (Valkey IO rework) are v0.1+. Phases 14/14.1/15 are dead architecture — do not unarchive without explicit user override + new ADR.
 
 ## Current Focus
 
