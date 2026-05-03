@@ -206,12 +206,7 @@ fn load_pipeline(path: &PathBuf) -> Result<Pipeline> {
             .to_string();
         let fields: Vec<(String, String)> = schema
             .iter()
-            .map(|(k, ty)| {
-                (
-                    k.clone(),
-                    ty.as_str().unwrap_or("str").to_string(),
-                )
-            })
+            .map(|(k, ty)| (k.clone(), ty.as_str().unwrap_or("str").to_string()))
             .collect();
         events.push(EventDef {
             name: ev_name,
@@ -333,10 +328,10 @@ fn build_event_body(event: &EventDef, key: u64, seq: u64, _rng: &mut StdRng) -> 
                     let masked = match name.as_str() {
                         "ip_address" | "ip_block" => h & 0xFFFF, // ~65k unique
                         "ip" => h & 0xFFFF,
-                        "device_id" => h & 0x3FFFF,           // ~262k unique
-                        "card_fp" => h & 0xFFFFF,             // ~1M unique
-                        "merchant_id" => h & 0xFFFF,          // ~65k unique
-                        _ => h & 0xFFFFFFFF,                  // ~4B unique fallback
+                        "device_id" => h & 0x3FFFF,  // ~262k unique
+                        "card_fp" => h & 0xFFFFF,    // ~1M unique
+                        "merchant_id" => h & 0xFFFF, // ~65k unique
+                        _ => h & 0xFFFFFFFF,         // ~4B unique fallback
                     };
                     Value::String(format!("{}_{:x}", name, masked))
                 }
@@ -384,6 +379,7 @@ struct WorkerCtx {
     worker_id: u64,
     pipeline: Arc<Pipeline>,
     keygen: Arc<dyn KeyGen>,
+    #[allow(dead_code)]
     shard_strategy: ShardStrategy,
     pipeline_depth: u32,
     seed: u64,
@@ -422,8 +418,9 @@ async fn run_worker(ctx: WorkerCtx) -> Result<()> {
     let (mut reader, mut writer) = stream.into_split();
 
     // FIFO of (send_time) so receiver can compute latency.
-    let send_times: Arc<AsyncMutex<VecDeque<Instant>>> =
-        Arc::new(AsyncMutex::new(VecDeque::with_capacity(pipeline_depth as usize * 2)));
+    let send_times: Arc<AsyncMutex<VecDeque<Instant>>> = Arc::new(AsyncMutex::new(
+        VecDeque::with_capacity(pipeline_depth as usize * 2),
+    ));
     let inflight = Arc::new(AtomicU64::new(0));
     let inflight_notify = Arc::new(Notify::new());
     let recv_done = Arc::new(AtomicBool::new(false));
@@ -457,7 +454,9 @@ async fn run_worker(ctx: WorkerCtx) -> Result<()> {
                             let _ = h.record(latency_us.max(1));
                         }
                         if frame.op == OP_ERROR_RESPONSE {
-                            counters_for_recv.server_errors.fetch_add(1, Ordering::Relaxed);
+                            counters_for_recv
+                                .server_errors
+                                .fetch_add(1, Ordering::Relaxed);
                         }
                         inflight_recv.fetch_sub(1, Ordering::Relaxed);
                         notify_recv.notify_one();
@@ -605,7 +604,12 @@ async fn scrape_once(
     bytes_cumulative: u64,
 ) -> Option<MetricSample> {
     let url = format!("http://{}/metrics", addr);
-    let resp = client.get(&url).timeout(Duration::from_secs(2)).send().await.ok()?;
+    let resp = client
+        .get(&url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?;
     let text = resp.text().await.ok()?;
     let mut sample = MetricSample {
         ts_ms: SystemTime::now()
@@ -702,8 +706,11 @@ async fn run_cell(
 
     // Counters per target. Each worker has its OWN histogram (no contention);
     // we merge per-shard at end-of-run.
-    let counters: Arc<Vec<Arc<ShardCounters>>> =
-        Arc::new((0..n_targets).map(|_| Arc::new(ShardCounters::default())).collect());
+    let counters: Arc<Vec<Arc<ShardCounters>>> = Arc::new(
+        (0..n_targets)
+            .map(|_| Arc::new(ShardCounters::default()))
+            .collect(),
+    );
     let worker_histograms: Arc<Vec<Arc<AsyncMutex<Histogram<u64>>>>> = {
         let mut v = Vec::with_capacity(n_workers as usize);
         for _ in 0..n_workers {
@@ -847,7 +854,8 @@ async fn run_cell(
         let target_idx = w % n_targets;
         let h = hist_arc.lock().await;
         for v in h.iter_recorded() {
-            let _ = shard_histograms[target_idx].record_n(v.value_iterated_to(), v.count_at_value());
+            let _ =
+                shard_histograms[target_idx].record_n(v.value_iterated_to(), v.count_at_value());
         }
     }
 
@@ -959,13 +967,7 @@ fn print_cell_summary(cell: &CellResult) {
     for sh in &cell.per_shard {
         println!(
             "  [{}] pushes={}  EPS={:>9.0}  errs={}/{} (push/server)  p99={}µs  max={}µs",
-            sh.target,
-            sh.pushes,
-            sh.eps,
-            sh.errors,
-            sh.server_errors,
-            sh.p99_us,
-            sh.max_us,
+            sh.target, sh.pushes, sh.eps, sh.errors, sh.server_errors, sh.p99_us, sh.max_us,
         );
     }
     if !cell.metrics_initial.is_empty() {
@@ -1003,9 +1005,7 @@ fn write_markdown(path: &PathBuf, cells: &[CellResult]) -> Result<()> {
     out.push_str(
         "| cell | targets | workers | pushes | EPS | p50 | p95 | p99 | p999 | max | bytes |\n",
     );
-    out.push_str(
-        "|---|---|---|---|---|---|---|---|---|---|---|\n",
-    );
+    out.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n");
     for c in cells {
         out.push_str(&format!(
             "| {} | {} | {} | {} | {:.0} | {}µs | {}µs | {}µs | {}µs | {}µs | {:.1} MiB |\n",
@@ -1050,7 +1050,9 @@ fn write_markdown(path: &PathBuf, cells: &[CellResult]) -> Result<()> {
                 "| {} | {} | {} | {} | {} | {} | {} |\n",
                 c.cell_label,
                 s.target,
-                s.entity_count_resident.map(|n| n.to_string()).unwrap_or("?".into()),
+                s.entity_count_resident
+                    .map(|n| n.to_string())
+                    .unwrap_or("?".into()),
                 s.process_resident_memory_bytes
                     .map(|b| (b / (1024 * 1024)).to_string())
                     .unwrap_or("?".into()),
