@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/ping.request.schema.json",
+  "title": "OP_PING request body",
+  "description": "Empty body. OP_PING (0x0000) is a health probe; useful for liveness, transport keepalive, and version discovery.",
+  "type": "object",
+  "properties": {},
+  "unevaluatedProperties": false
+}

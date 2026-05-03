@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/register.request.schema.json",
+  "title": "OP_REGISTER request body",
+  "description": "DAG of event sources, table aggregation-output nodes, and derivations to register with the beava server. Discriminated union on the descriptor 'kind' field: event | table | derivation. Per ADR-001 the table kind is aggregation-output only (no upsert/delete/retract). Per ADR-002 op-string names use the new Polars conventions (mean / var / std / n_unique / quantile).",
+  "type": "object",
+  "properties": {
+    "descriptors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Descriptor" },
+      "minItems": 1
+    },
+    "force": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, allow destructive schema changes (e.g., changing a field's type)."
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, validate and return the diff without applying anything."
+    }
+  },
+  "required": ["descriptors"],
+  "unevaluatedProperties": false,
+  "$defs": {
+    "Descriptor": {
+      "oneOf": [
+        { "$ref": "#/$defs/EventDescriptor" },
+        { "$ref": "#/$defs/TableDescriptor" },
+        { "$ref": "#/$defs/DerivationDescriptor" }
+      ]
+    },
+    "EventDescriptor": {
+      "type": "object",
+      "description": "@bv.event source descriptor.",
+      "properties": {
+        "kind": { "const": "event" },
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "schema": {
+          "type": "object",
+          "description": "Field name → type. Types: 'str' | 'i64' | 'f64' | 'bool' (v0)."
+        },
+        "keep_events_for": {
+          "type": ["string", "null"],
+          "pattern": "^([0-9]+(ms|s|m|h|d)|forever)$",
+          "description": "How long to retain raw events in WAL (e.g., '30d', '1h', 'forever'). Null = use server default."
+        },
+        "cold_after_ms": {
+          "type": ["integer", "null"],
+          "minimum": 1000,
+          "maximum": 31536000000,
+          "description": "Per Phase 12.8 memory governance: how long an entity stays resident before reclaim (ms)."
+        },
+        "dedupe_key": {
+          "type": ["string", "null"],
+          "description": "Field name to use as idempotency key for replay-safe push."
+        },
+        "dedupe_window": {
+          "type": ["string", "null"],
+          "pattern": "^([0-9]+(ms|s|m|h|d))$",
+          "description": "Window for dedupe key replay collapse (e.g., '5m')."
+        }
+      },
+      "required": ["kind", "name", "schema"],
+      "unevaluatedProperties": false
+    },
+    "TableDescriptor": {
+      "type": "object",
+      "description": "@bv.table aggregation-output descriptor per ADR-001 (no upsert/delete/retract; no MVCC).",
+      "properties": {
+        "kind": { "const": "table" },
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "key": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "upstreams": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "agg": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/AggOpSpec" },
+          "description": "Map of feature_name → agg-op spec."
+        },
+        "ops": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OpSpec" },
+          "description": "Optional pre-aggregation chain (filter / select / with_columns)."
+        }
+      },
+      "required": ["kind", "name", "key", "upstreams"],
+      "unevaluatedProperties": false
+    },
+    "DerivationDescriptor": {
+      "type": "object",
+      "description": "Derived event or table node (filter/select/with_columns/group_by/agg chain).",
+      "properties": {
+        "kind": { "const": "derivation" },
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "upstreams": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "ops": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OpSpec" }
+        },
+        "output_kind": {
+          "enum": ["event", "table"],
+          "description": "Whether the derivation emits events (push-shaped) or a table (key-shaped row materialisation)."
+        }
+      },
+      "required": ["kind", "name", "upstreams", "output_kind"],
+      "unevaluatedProperties": false
+    },
+    "OpSpec": {
+      "type": "object",
+      "description": "A single chain operation (filter / select / with_columns / group_by / agg / etc.).",
+      "properties": {
+        "op": { "type": "string" },
+        "expr": { "type": "string" },
+        "fields": { "type": "array", "items": { "type": "string" } },
+        "mapping": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "required": ["op"],
+      "unevaluatedProperties": false
+    },
+    "AggOpSpec": {
+      "type": "object",
+      "description": "An aggregation op spec. Op names follow Polars conventions per ADR-002 (mean / var / std / n_unique / quantile).",
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "Op name per ADR-002 (Polars conventions)."
+        },
+        "params": {
+          "type": "object",
+          "description": "Op-specific parameters (field, window, q, etc.)."
+        }
+      },
+      "required": ["op"],
+      "unevaluatedProperties": false
+    }
+  }
+}

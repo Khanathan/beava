@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/push.response.schema.json",
+  "title": "OP_PUSH response body",
+  "description": "Sync push acknowledgement. ack_lsn is the server-assigned monotonic Log Sequence Number for this event (idempotency anchor). registry_version reflects the server's registry state at push time. idempotent_replay is true if the dedupe key matched a prior push within the dedupe window.",
+  "type": "object",
+  "properties": {
+    "ack_lsn": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Server-assigned monotonic LSN for this event."
+    },
+    "registry_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "idempotent_replay": {
+      "type": "boolean",
+      "description": "True when the dedupe key matched a prior push within the dedupe window."
+    }
+  },
+  "required": ["ack_lsn", "registry_version"],
+  "unevaluatedProperties": false
+}

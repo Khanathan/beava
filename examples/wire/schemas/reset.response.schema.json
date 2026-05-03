@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/reset.response.schema.json",
+  "title": "OP_RESET response body",
+  "description": "Reset acknowledgement. Returned synchronously after the WAL truncation completes; the next event push to the same connection observes the cleared state.",
+  "type": "object",
+  "properties": {
+    "status": { "const": "ok" }
+  },
+  "required": ["status"],
+  "unevaluatedProperties": false
+}

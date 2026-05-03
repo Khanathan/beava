@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/batch_get.response.schema.json",
+  "title": "OP_BATCH_GET response body",
+  "description": "List of row-shape dicts; results[i] corresponds to requests[i]. Per-entry cold-start is {} (not an error). Ordering matches request-order.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": ["results"],
+  "unevaluatedProperties": false
+}

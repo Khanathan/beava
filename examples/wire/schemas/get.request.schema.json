@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/get.request.schema.json",
+  "title": "OP_GET request body",
+  "description": "Single-row feature read. table is a registered table name; key is a string for single-key tables or a homogeneous [string|number|boolean] array for composite-key tables. features (optional) limits the response to a subset.",
+  "type": "object",
+  "properties": {
+    "table": { "type": "string" },
+    "key": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": { "type": ["string", "number", "boolean"] }
+        }
+      ]
+    },
+    "features": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional subset of features to return; omit for all features."
+    }
+  },
+  "required": ["table", "key"],
+  "unevaluatedProperties": false
+}

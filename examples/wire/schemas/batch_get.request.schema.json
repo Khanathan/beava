@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beava.dev/schemas/batch_get.request.schema.json",
+  "title": "OP_BATCH_GET request body",
+  "description": "Heterogeneous batch lookup — the requests array can mix different table values across entries. The server processes entries in order; the response array preserves request-order. NEW in v0 (post-12.7) per ROADMAP §13.4. Per-entry errors turn the whole frame into an error response (no partial success in v0).",
+  "type": "object",
+  "properties": {
+    "requests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "table": { "type": "string" },
+          "key": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "array",
+                "items": { "type": ["string", "number", "boolean"] }
+              }
+            ]
+          },
+          "features": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["table", "key"],
+        "unevaluatedProperties": false
+      }
+    }
+  },
+  "required": ["requests"],
+  "unevaluatedProperties": false
+}
