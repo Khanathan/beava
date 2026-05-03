@@ -1,0 +1,14 @@
+{
+  "descriptors": [
+    {
+      "kind": "event",
+      "name": "Txn",
+      "schema": {
+        "user_id": "str",
+        "amount": "i64",
+        "currency": "str"
+      }
+    }
+  ],
+  "force": true
+}

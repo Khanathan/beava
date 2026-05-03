@@ -1,0 +1,5 @@
+{
+  "code": "registration_conflict",
+  "path": "descriptors[1].schema.amount",
+  "message": "Field type changed from f64 to i64; this is not supported in v0 without force=true. Set force=true for a destructive update or revert the schema change."
+}

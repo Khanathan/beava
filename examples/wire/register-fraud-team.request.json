@@ -1,0 +1,30 @@
+{
+  "descriptors": [
+    {
+      "kind": "event",
+      "name": "Txn",
+      "schema": {
+        "user_id": "str",
+        "card_id": "str",
+        "amount": "f64",
+        "merchant": "str",
+        "ip": "str"
+      },
+      "keep_events_for": "30d",
+      "cold_after_ms": 86400000
+    },
+    {
+      "kind": "table",
+      "name": "UserTxnFeatures",
+      "key": ["user_id"],
+      "upstreams": ["Txn"],
+      "agg": {
+        "tx_count_1h": { "op": "count", "params": { "window": "1h" } },
+        "tx_sum_1h": { "op": "sum", "params": { "field": "amount", "window": "1h" } },
+        "tx_mean_1h": { "op": "mean", "params": { "field": "amount", "window": "1h" } },
+        "tx_p99_1h": { "op": "quantile", "params": { "field": "amount", "q": 0.99, "window": "1h" } },
+        "tx_unique_merchants_1h": { "op": "n_unique", "params": { "field": "merchant", "window": "1h" } }
+      }
+    }
+  ]
+}
