@@ -1,18 +1,19 @@
-//! Per-entity memory size_of dump.
+//! Per-entity memory size_of dump + Phase 12.9 regression gate.
 //!
-//! Investigation tool (post-Phase 12.8): prints `std::mem::size_of` for every
-//! AggOp variant's state struct, plus the AggOp enum itself, plus WindowedOp
-//! overhead. Used to reconcile the empirical fraud-team measurement of
-//! ~22 KB/entity against the CLAUDE.md 7 KB budget.
+//! Originally an investigation tool (post-Phase 12.8); promoted to a
+//! permanent CI-enforced size_of regression gate by Phase 12.9.
+//!
+//! Asserts `size_of::<AggOp>() <= AGGOP_SIZE_CAP_BYTES` (80 bytes post-12.9).
+//! Future operator additions that exceed the cap force a deliberate review
+//! decision: either Box the new variant (preferred — preserves the cap) or
+//! explicitly raise the cap with a documented rationale.
+//!
+//! Also dumps `std::mem::size_of` for every AggOp variant's state struct +
+//! the AggOp enum + WindowedOp overhead + a per-derivation projection
+//! against fraud-team.json's actual feature counts.
 //!
 //! Run with:
 //!   cargo test -p beava-core --test per_entity_size_dump -- --nocapture
-//!
-//! Output is a markdown table that gets pasted into
-//! `.planning/ideas/per-entity-memory-budget.md`.
-//!
-//! Source: ad-hoc investigation, not a regression gate. May be deleted after
-//! the doc lands.
 
 use std::mem::size_of;
 
@@ -41,6 +42,32 @@ use beava_core::agg_state_velocity::{
     RateOfChangeState, TrendResidualState, TrendState, ValueChangeCountState, ZScoreState,
 };
 use beava_core::agg_windowed::WindowedOp;
+
+/// Phase 12.9 regression gate: AggOp must stay ≤ 80 bytes inline.
+///
+/// Phase 11 D-08 originally accepted ~600 B AggOp slots (driven by
+/// `SeasonalDeviationState`'s 24-hour bucket array) to avoid per-event
+/// box indirection. Phase 12.9 reversed this 2026-05-03 after the r8g
+/// maxcard bench measured fraud-team at ~22 KB/entity (3× the CLAUDE.md
+/// 7 KB budget).
+///
+/// 80 B = `TrendResidualState` (72 B; the largest unboxed variant
+/// post-12.9) plus discriminant + alignment headroom. Raising this cap
+/// requires either boxing a new variant or surfacing the trade-off in
+/// review.
+const AGGOP_SIZE_CAP_BYTES: usize = 80;
+
+#[test]
+fn aggop_size_within_cap() {
+    let actual = size_of::<AggOp>();
+    assert!(
+        actual <= AGGOP_SIZE_CAP_BYTES,
+        "size_of::<AggOp>() = {actual} bytes — exceeds Phase 12.9 cap of {AGGOP_SIZE_CAP_BYTES} bytes. \
+         A new fat-payload variant was likely added unboxed. Either Box the variant in agg_op.rs \
+         (same pattern as CountDistinct/Percentile/Windowed) or raise AGGOP_SIZE_CAP_BYTES with \
+         a documented rationale. See .planning/phases/12.9-aggop-memory-boxing/12.9-CONTEXT.md."
+    );
+}
 
 #[test]
 fn dump_per_entity_sizes() {
