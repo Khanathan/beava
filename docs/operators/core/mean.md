@@ -1,55 +1,117 @@
 # bv.mean
 
-> Arithmetic mean of a numeric field.
+> Arithmetic mean of a numeric field over a window.
 
 ## Signature
 
 ```python
-bv.mean(...) -> AggDescriptor
+bv.mean(
+    field: str,
+    *,
+    window: str,
+    where: bv.Col | None = None,
+) -> AggDescriptor
 ```
 
 > Previously called `bv.avg`. Renamed to `mean` per [ADR-002](../../../.planning/decisions/ADR-002-polars-op-rename.md) for Polars-convention consistency. The old name remains as a deprecation alias in v0.0.x and is removed in v0.1.
 
 ## Description
 
-> TODO (Plan 13.0-06): 2-3 paragraphs describing what this op
-> computes, mathematically and informally. When to use it. What category
-> it belongs to.
+`bv.mean` returns the arithmetic mean of a numeric field — the running sum
+divided by the matching event count. State is `(running_sum, observation_count)`
+maintained per-entity; the division happens at query time. This is the standard
+Welford-friendly accumulator and is numerically stable for the typical fraud /
+ad-tech magnitudes.
+
+Use `bv.mean("amount", window="1h")` for "average transaction size in the last
+hour", or `bv.mean("score", window="24h", where=bv.col("ok"))` for "average
+ranking score among successful events today". Like `bv.sum`, both `field` and
+`window` are required; the field must be `i64` or `f64` (rejected at register
+time with `schema_mismatch` otherwise).
+
+`bv.mean` belongs to the **core** family. Tier 1 cost (~8 ns floor / ~25 ns
+measured) and `O(1)` per-entity memory.
 
 ## Parameters
 
-> TODO (Plan 13.0-06): table with Name | Type | Required | Default | Description.
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `field` | `str` | Yes | — | Name of the numeric field (`i64` or `f64`). |
+| `window` | `str` | Yes | — | Duration string matching `\d+(ms\|s\|m\|h\|d)` or `"forever"`. |
+| `where` | `bv.Col` | No | `None` | Boolean expression on event fields; only matching events contribute. |
 
 ## Returns
 
-> TODO (Plan 13.0-06): output type and shape (scalar / list / dict / windowed).
+A single `f64`. When the entity has seen zero matching events, the result is
+`null` (returned as Python `None`) — no division-by-zero, just cold-start
+behavior.
 
 ## Complexity
 
 | Resource | Bound |
 |----------|-------|
-| CPU per event | TODO Tier 1/2/3 — see [cost-class.md](../cost-class.md) |
-| Memory per entity | O1 |
-| Lifetime mode | TODO Allowed / Required-kwarg / Forbidden |
+| CPU per event | **Tier 1** (~8 ns algorithm floor / ~25 ns measured) — see [cost-class.md](../cost-class.md#tier-1-fast-40-nscall--38-ops) |
+| Memory per entity | `O(1)` — `(sum, count)` plus bucket array (≤64 buckets) |
+| Lifetime mode (`window="forever"`) | **Allowed** — `O(1)` footprint per [Phase 12.8 V0-MEM-GOV-02](../../../.planning/REQUIREMENTS.md) |
 
 ## Examples
 
-> TODO (Plan 13.0-06): 1-2 worked Python examples + JSON wire form.
+### Example 1: Average transaction amount per user, hourly
+
+```python
+import beava as bv
+
+@bv.event
+class Txn:
+    user_id: str
+    amount: float
+
+@bv.table(key="user_id")
+def UserMean(txns) -> bv.Table:
+    return (
+        txns.group_by("user_id")
+            .agg(avg_amount_1h=bv.mean("amount", window="1h"))
+    )
+
+# Push events
+app.push("Txn", {"user_id": "alice", "amount": 10.00})
+app.push("Txn", {"user_id": "alice", "amount": 30.00})
+
+# Query
+result = app.get("UserMean", "alice")
+# result == {"avg_amount_1h": 20.0}
+```
+
+### Example 2: Average successful-payment latency over a day
+
+```python
+@bv.table(key="user_id")
+def PaymentLatency(payments) -> bv.Table:
+    return (
+        payments.group_by("user_id")
+                .agg(mean_latency_ok=bv.mean("latency_ms",
+                                              window="24h",
+                                              where=bv.col("status") == "ok"))
+    )
+```
 
 ## Wire
 
-JSON wire form (in a register payload):
+JSON wire form in a register payload:
 
 ```json
 {
   "kind": "derivation",
-  "name": "<Name>",
+  "name": "UserMean",
   "output_kind": "table",
-  "key": ["<key>"],
+  "key": ["user_id"],
   "agg": {
-    "<feature>": {
+    "avg_amount_1h": {
       "op": "mean",
-      "params": {}
+      "params": {
+        "field": "amount",
+        "window": "1h"
+      }
     }
   }
 }
@@ -59,11 +121,17 @@ See [examples/wire/register-fraud-team.request.json](../../../examples/wire/regi
 
 ## Edge cases
 
-> TODO (Plan 13.0-06): empty stream, NaN inputs, lifetime mode,
-> structured-error code if applicable.
+- **Empty stream / cold-start:** result is `null` — no events ⇒ no mean to report (no division-by-zero error).
+- **Non-numeric field:** rejected at register time with `schema_mismatch`.
+- **Missing `window=`:** `ValueError` at SDK-helper-call time. Use `window="forever"` for explicit lifetime mean.
+- **NaN inputs:** a single NaN poisons the running sum. Filter with `where=~bv.col("amount").isnull()` if your source can emit NaN.
+- **Lifetime mode (`window="forever"`):** explicitly allowed; mean is `O(1)` per entity. Long-lived entities will eventually hit `f64` precision floor on the running sum (~`2^53` matching events for double-precision exactness — not observed in practice).
 
 ## See also
 
-- [cost-class.md](../cost-class.md) — performance tier
-- TODO related ops in same family
+- [cost-class.md](../cost-class.md) — performance tier (Tier 1)
+- [bv.sum](./sum.md) — running total (the numerator behind the mean)
+- [bv.var](./var.md) / [bv.std](./std.md) — companion second-moment estimators (Welford)
+- [bv.ewma](../decay/ewma.md) — exponentially-weighted moving average (decay-based, not window-based)
+- [bv.twa](../decay/twa.md) — time-weighted average (gauge-style fields)
 - [pipeline-dsl/compilation-rules.md](../../pipeline-dsl/compilation-rules.md) — chain compilation rules
