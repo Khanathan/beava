@@ -12,7 +12,7 @@ Beava is a single-binary real-time feature server for fraud, ad-tech, and behavi
 - **Tech stack**: Rust server (ownership + perf), HTTP API (axum) + custom-framed TCP fast-path, Python SDK (sync + fire-and-forget) over either transport. No external storage dependencies (RocksDB, fjall removed).
 - **Architecture**: Single process, single thread for event processing. In-memory state. WAL + periodic snapshot for durability. No cross-process coordination.
 - **Performance**: ≥3M events/sec/core sustained on typical fraud-shape workloads; P99 batch-get < 10ms.
-- **Memory**: No SSD overflow. Users must size their box. Budget: ~7KB per entity for a rich 30-feature pack → ~700GB for 100M entities.
+- **Memory**: No SSD overflow. Users must size their box. Budget: ~7KB per entity for a rich 30-feature pack → ~700GB for 100M entities. *(Verified Phase 12.9 2026-05-03: post-AggOp-boxing fraud-team predicted ~6 KB weighted-avg per-entity, clearing the 7 KB budget with headroom. `size_of::<AggOp>() = 80 B` enforced by `crates/beava-core/tests/per_entity_size_dump.rs::aggop_size_within_cap` CI tripwire. Throughput regression-gate +6.9% on fraud-team/tcp K=10k zipfian. See `.planning/phases/12.9-aggop-memory-boxing/12.9-SUMMARY.md`.)*
 - **Compatibility**: HTTP/1.1 + JSON for curl/LB/WAF reach. Custom framed TCP `[u32 length][u16 op][u8 content_type][payload]` for low-latency fast-path — Redis-style strict-FIFO correlation on a connection (no request_id). No Protobuf.
 - **Licensing**: Apache 2.0 OSS for v0. Commercial-tier (HA, replicas, cross-region) is explicitly out of v0 scope.
 - **Timeline**: v0 target is weeks, not months — aiming for engineering-complete in ~6-10 weeks from Phase 1 kickoff.

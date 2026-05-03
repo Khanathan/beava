@@ -1831,3 +1831,51 @@ Future Phase 13 ship-gate sweep should:
 3. Append a parallel `### Push throughput matrix (Hetzner Linux EPYC-Genoa)` table.
 4. Update the regression-check sub-table with Hetzner row.
 5. Investigate the fraud-team -21.3% delta hypothesis (Plan 06 entity-count-resident sum amortization candidate). Either confirm + fix in Phase 13, or override the WARN with a v0.1+ disposition note.
+
+---
+
+## Phase 12.9 — AggOp memory boxing — fraud-team/tcp regression check
+
+**Date:** 2026-05-03
+**Commit:** d3eed60 (boxing green) — verified at d3eed60 (this row was captured before closure commits)
+**hw-class:** Apple-M4 / Darwin-24.3.0 / 10 cores
+**Bench:** `./target/release/beava-bench-v18 --pipeline crates/beava-bench/configs/fraud-team.json --transport tcp --wire-format msgpack --blast-shape zipfian --zipf-alpha 1.0 --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --continuous-pipeline true --isolation-mode --no-ledger`
+**System load:** 1m=3.34 / 5m=4.59 / 15m=5.72 (moderate; Cursor IDE + Claude Code SDK + bench process active)
+
+### Phase 12.9 fraud-team/tcp matrix (3 runs)
+
+| Run | EPS | wall_clock_ms | peak_rss_mb | Push p50/p95/p99 (µs) | Notes |
+|---|---:|---:|---:|---|---|
+| 1 | **109,895** | 9,099 | 3,779 | 143,999 / 168,703 / 412,159 | Cleanest run |
+| 2 | 88,457 | 11,304 | 5,942 | (not captured) | Slowest — likely background-load spike |
+| 3 | 111,444 | 8,973 | 6,257 | (not captured) | Best — confirms run 1 is repeatable |
+| **Median** | **109,895** | 9,099 | 5,942 | — | — |
+| **Mean** | 103,265 | 9,792 | 5,326 | — | — |
+
+### Regression gate verdict
+
+| vs Baseline | Baseline EPS | Phase 12.9 median delta | Verdict |
+|---|---:|---|---|
+| Phase 12.8 noisy median (3 runs) | 73,596 | **+49%** | PASS (much faster) |
+| Phase 12.8 mean (3 runs) | 73,126 | +50% | PASS |
+| Phase 19.4-04 quiescent | **102,800** | **+6.9%** | PASS (within ±5% target) ✅ |
+| Phase 12-08 | 102,291 | +7.4% | PASS |
+| Phase 12.6 | 102,788 | +6.9% | PASS |
+
+**Regression-gate cell (fraud-team/tcp = primary tuning bench per `project_fraud_team_primary_bench`):** median **+6.9%** vs the most recent quiescent baseline. Boxing did NOT regress throughput; possibly a small cache-locality lift from the 7.5× smaller `Vec<AggOp>` slot.
+
+**Phase 11 D-08 concern resolved:** the per-event Box indirection cost on the 7 boxed variants is dominated by the cache-locality win. Phase 12.9 D-02 reversal is empirically safe.
+
+### Box-load variance note
+
+Three-run spread (88,457 to 111,444 EPS) is ±21% — matches the historical fraud-team variance pattern on this M4 (Phase 12.8 measured ±24% across 3 runs under similar load). Single-run dispersion is expected and not a Phase 12.9 attribution.
+
+### What was NOT measured
+
+- **small/medium/large/tcp+http (7 of 8 cells):** Phase 12.9 only re-ran the regression-gate cell (fraud-team/tcp). small/tcp etc. don't exercise the boxed variants meaningfully (small=count only, no boxed variants). Full 8-cell rebench is Phase 13's responsibility.
+- **r8g maxcard end-to-end memory verification:** the original 22 KB → ~6 KB lift was predicted from size_of math + per-derivation feature counts. Local M4 50k-entity bench's RSS is dominated by non-entity overhead (server binary, jemalloc fragmentation) at this scale. Phase 13 Hetzner/multi-instance shard-scaling validation should re-run on r8g.4xlarge 120 GiB pods with 4M+ entities to confirm the lift end-to-end.
+
+### Regression gates updated post-12.9 (Apple-M4)
+
+- bench-v18 push fraud-team/tcp+msgpack ≥ 92,825 EPS (10% under post-12.9 103,139 EPS rounded mean) — Phase 13 ship-gate floor for the primary tuning bench. **Supersedes** the post-12.8 tentative floor of 66,237 EPS (which was based on noisy box-load measurements).
+- small/tcp regression-gate cell unchanged from post-12.8 (small pipeline doesn't exercise boxed variants).

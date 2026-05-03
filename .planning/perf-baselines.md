@@ -801,3 +801,57 @@ The `cold_ttl_disabled` cell is **+11.3%** slower than Phase 12.7's `phase12_6/s
 Plan 03's cold-TTL check is the only new code on the apply hot path; it runs once per `apply_event_to_aggregations` call regardless of which `AggOp` variants the source has registered. Measuring 1 cell-pair on the simple-counter shape isolates the new cost cleanly. Phase 12.6's `phase12_6_post_axum_kill_apply.rs` retains the windowed/sketch coverage and will continue to be re-measured when downstream phases touch the windowed-op or sketch state machines (next likely candidates: Phase 13 perf-tuning sweeps, post-v0).
 
 **Outlier note:** Run 1 had 13% high-severe outliers on the disabled cell vs 4% on run 2; run 1's slope estimate (65.929 µs) was inflated relative to its median (62.860 µs). On run 2 (cleaner box), slope and median converged within 2% on both cells. The recorded numbers above are from run 2; run 1 numbers are preserved in `target/criterion/phase12_8_*` `base/` directories for forensic comparison if needed. Same Apple-M4 macOS noise profile as Phase 12.6/12.7 — Phase 13 should re-run on Hetzner Linux EPYC-Genoa in a quieter environment for the production-shipping baseline.
+
+---
+
+## Phase 12.9 — AggOp memory boxing — size_of measurements (Apple-M4)
+
+**Date:** 2026-05-03
+**Commit:** d3eed60 (boxing green)
+**Bench:** `cargo test -p beava-core --test per_entity_size_dump dump_per_entity_sizes -- --nocapture`
+**File:** `crates/beava-core/tests/per_entity_size_dump.rs`
+
+This is a SIZE measurement, not a perf microbench — but logged under perf-baselines because it's the load-bearing artifact that justifies the Phase 12.9 boxing trade-off and locks the Phase 11 D-08 → Phase 12.9 reversal.
+
+### `size_of::<AggOp>()` shrink
+
+| Quantity | Pre-12.9 | Post-12.9 | Delta |
+|---|---:|---:|---|
+| `size_of::<AggOp>()` | 600 B | **80 B** | **-87% (7.5× shrink)** |
+| Floor-setter variant | `SeasonalDeviationState` (600 B) | `TrendResidualState` (72 B) + 8 B discriminant + alignment | next-largest unboxed |
+
+### Boxed variants (Phase 12.9 D-01)
+
+| Variant | State struct | Pre-12.9 inline | Post-12.9 (Box<…>) |
+|---|---|---:|---:|
+| `SeasonalDeviation` | SeasonalDeviationState | 600 B | 8 B inline + 600 B heap |
+| `HourOfDayHistogram` | HourOfDayHistogramState | 192 B | 8 B inline + 192 B heap |
+| `EventTypeMix` | EventTypeMixState | 128 B | 8 B inline + 128 B heap |
+| `DistanceFromHome` | DistanceFromHomeState | 120 B | 8 B inline + 120 B heap |
+| `GeoVelocity` | GeoVelocityState | 88 B | 8 B inline + 88 B heap |
+| `GeoSpread` | GeoSpreadState | 88 B | 8 B inline + 88 B heap |
+| `GeoDistance` | GeoDistanceState | 80 B | 8 B inline + 80 B heap |
+
+### Per-entity inline-slot cost (fraud-team derivations)
+
+| Derivation | Features | Pre-12.9 inline (× 600 B) | Post-12.9 inline (× 80 B) | Reduction |
+|---|---:|---:|---:|---|
+| TxnByUser (user_id) | 62 | 37,200 B | 4,960 B | -86% |
+| LoginByUser (user_id) | 8 | 4,800 B | 640 B | -87% |
+| RefundByUser (user_id) | 8 | 4,800 B | 640 B | -87% |
+| **user_id total** (3 derivs) | **78** | **46,800 B** | **6,240 B** | **-87%** |
+| TxnByCard (card_fp) | 8 | 4,800 B | 640 B | -87% |
+| TxnByDevice (device_id) | 6 | 3,600 B | 480 B | -87% |
+| CardAddByDevice (device_id) | 3 | 1,800 B | 240 B | -87% |
+| TxnByIp (ip_address) | 8 | 4,800 B | 640 B | -87% |
+| SignupByIp (ip_address) | 4 | 2,400 B | 320 B | -87% |
+| TxnByMerchant (merchant_id) | 4 | 2,400 B | 320 B | -87% |
+
+### CI tripwire
+
+- `crates/beava-core/tests/per_entity_size_dump.rs::aggop_size_within_cap` asserts `size_of::<AggOp>() <= 80`.
+- Future operator additions exceeding the cap force a deliberate review decision (Box the new variant, or raise the cap with documented rationale).
+
+### Throughput verification
+
+- See `.planning/throughput-baselines.md::Phase 12.9 — AggOp memory boxing — fraud-team/tcp regression check` for the perf-gate verdict (median +6.9% vs Phase 19.4-04 quiescent baseline; PASS).
