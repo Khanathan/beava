@@ -51,7 +51,13 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 12.7 | v0 table strip — events-only commitment | Strip `@bv.table` decorator + `POST /upsert/{table_name}` + `POST /delete` + `POST /retract` + `GET /table/{name}` mio handlers (added by Phase 12.6 Plan 14) + `temporal_http.rs` helpers + `TemporalStore` MVCC machinery + `app.retract(event_id)` SDK verb + ~12 table-related tests (`phase11_5_temporal_smoke`, `phase18_07_upsert_delete_rename_test`, `phase12_6_14_mio_temporal`, plus python/tests table-related). Walks back Phase 11.5 + Phase 12.6 Plan 14's mio table surface. v0 commits to events-only per `project_v0_events_only_scope`. Tables return in v0.1+ alongside joins/aggregation. | 10 | ✅ **COMPLETED 2026-05-01 (PASS)** — 10 plans across 4 waves; workspace 1049/0/4; cargo clippy + fmt clean; architectural test pair (phase12_7_no_table_surface 3 tests + phase12_7_legacy_table_handlers_killed 6 tests) GREEN BY DEFAULT; ~5,500 LOC removed (temporal_http.rs / temporal.rs / _tables.py + temporal_throughput.rs + Plans 03/04/06 surgery); FORMAT_VERSION RESET 2→1 across 3 schemas (D-01); all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench -25 to -30% (3 cells SIGNIFICANTLY FASTER vs 12.6); throughput +7.3% on small/tcp regression-gate cell. SUMMARY + VERIFICATION at `.planning/phases/12.7-table-strip/`. |
 | 12.8 | Memory governance — cold-entity TTL + bucket-level reclaim + lifetime aggregation contract | Two-tier memory hygiene before final ship. **Tier 1 (entity-level):** opt-in cold-entity TTL eviction via per-source `@bv.event(cold_after='<dur>')` decorator (default OFF; range [1s, 365d]); FRESH state on resurrect (Redis TTL pattern, locked permanent). **Tier 2 (bucket-level — always on):** existing `update_at(now_ms)` per-event reclaim; `BucketReclaimCounter::inc` on bucket trim. **Lifetime aggregation contract:** implicit via `windowed=` omission (D-02 — no new SDK kwarg); each of 53 AggKind variants classifies as O1 / BoundedSketchN / BoundedByRequiredKwarg / BoundedByConfig at register-time; 4th JSON-prelude shim `pre_check_unbounded_op_in_lifetime_mode` rejects Unbounded ops with structured error code (forward-looking framing — NOT `feature_removed_*`). `BEAVA_MEMORY_GOV_ENFORCE=0` is the explicit escape hatch (default ON post-Plan-06). 5 Prometheus metric families on `/metrics` (`cold_entity_evictions_total`, `lifetime_op_cap_hit_total`, `entity_count_resident`, `bytes_per_entity_p99` static placeholder = 7000, `bucket_reclaim_total`). 4 architectural-test CI tripwires. CLAUDE.md `§ Memory Governance Invariant (locked Phase 12.8)` block. | 9 | ✅ **COMPLETED 2026-05-01 (PASS-WITH-WARN)** — 9 plans across 5 waves; workspace 1095/0/4; cargo clippy + fmt clean; all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench cold-TTL on/off -2.6% (within ±5% gate); throughput regression-gate `small/tcp` -2.5% PASS; **fraud-team WARN flagged for Phase 13** (-21.3% TCP / -29.8% HTTP — root cause: O(N_tables) entity_count_resident snapshot, fraud-team has 9 tables vs 1-4 simpler shapes; NOT gating). REQUIREMENTS V0-MEM-GOV-01/02/03 anchors. SUMMARY + VERIFICATION at `.planning/phases/12.8-memory-governance/`. |
 | 12.9 | **AggOp memory boxing — fraud-team 22 KB → 6 KB budget fix** | Inserted 2026-05-03 from post-Phase-12.8 r8g maxcard bench. `size_of::<AggOp>() = 600 bytes` because of unboxed `SeasonalDeviationState`; every `Vec<AggOp>` slot consumes 600 B regardless of variant. Box the 7 fat-payload variants (SeasonalDeviation, HourOfDayHistogram, EventTypeMix, GeoVelocity, GeoSpread, GeoDistance, DistanceFromHome — same pattern Phase 10 sketches and `WindowedOp` already use) → `size_of::<AggOp>()` drops 600 → 80 bytes (7.5× shrink); fraud-team `user_id` entity inline cost drops 46.8 KB → 6.2 KB; weighted-avg per-entity drops ~22 KB → ~6 KB (clears CLAUDE.md 7 KB budget with headroom). Free side effect: `WindowedOp` bucket inner ops also shrink (same enum). Mechanical change (~10 LOC, no match-arm derefs needed — `Box::DerefMut` auto-deref); NO `FORMAT_VERSION` bump (D-03: serde Box<T> is transparent, bincode wire format unchanged). Investigation doc: `.planning/ideas/per-entity-memory-budget.md`. | 3 | ✅ **COMPLETED 2026-05-03 (PASS)** — 3 plans (boxing red+green / perf gate / closure); workspace 1097/0/4; clippy + fmt clean; size_of cap test promoted to permanent CI tripwire (≤ 80 B); fraud-team/tcp +6.9% median (no regression — possibly cache-locality lift); Phase 11 D-08 explicit-no-boxing comment empirically overridden. SUMMARY + VERIFICATION at `.planning/phases/12.9-aggop-memory-boxing/`. |
-| 13 | **SDK polish + benchmarks + ship** (v0 final) — REFRAMED 2026-04-30 | Final v0 ship phase. SDK polish on the events-only surface (`@bv.event` + 54-op catalogue + /push + /get + /register); perf gates on THREE pipelines (simple fraud, complex fraud, recommendations) ≥3M EPS, <10ms P99 batch get; minimum-viable docs (quickstart → operators → http-api → architecture); `/metrics` Prometheus (already partially shipped on `phase-13-ship` @ `2ef5afc`); PyPI + Docker Hub image + GitHub Releases binaries (Linux x86_64, Linux ARM64, macOS ARM64); CI green; ship-ready tag. **DROPPED 2026-04-30:** `bv.fork` subcommand (out of v0); `playground.beava.dev` hosted tutorial (deferred to v0.0.x); structured logs (already adequate). | ~10 | 🟡 **PARTIAL** (Plan 13-01 `/metrics` + Plan 13-03 `env_var_overrides` shipped on `phase-13-ship`; remaining plans need rescoping after Phase 12.9 closes) |
+| 13 | **v0 Launch — UMBRELLA** (RESTRUCTURED 2026-05-03) | Umbrella for 6 sub-phases (13.0 + 13.4–13.8) implementing the v0 launch from a 2026-05-03 design session. Sub-phase 13.0 (design contract + spec docs) is the bottleneck; after it lands, 4 implementation phases (13.4 engine / 13.5 Python+bench / 13.6 TS+Go SDKs / 13.7 docs site) run in parallel; 13.8 (packaging + GA tag) is the sequential ship phase. 20 design decisions locked in the session (see Phase 13 detail block). 3 SDK ports: Python + TypeScript (npm) + Go. | ~30 across 6 sub-phases | 📋 **RESTRUCTURED 2026-05-03** — kicks off with `/gsd-discuss-phase 13.0` for design contract |
+| 13.0 | **Design contract + spec documentation** (THE BOTTLENECK) | Produce ship-quality specs for every contract (wire / SDK API per language / pipeline DSL / schema evolution / error codes / 53-op catalog). These docs ARE the v0 documentation rendered into beava.dev. ADR-001 (`@bv.table` partial overturn) + ADR-002 (Polars op rename). Memory updates: `project_v0_events_only_scope` partial overturn pointer. | ~10 | 📋 **PLANNED 2026-05-03** — 5-7 days; everyone waits |
+| 13.4 | **Engine prep** (Rust server changes against the wire spec) | Op renames (`avg→mean` etc.); GET response → row-shape; new `OP_BATCH_GET` opcode; verb-style HTTP routes; `force=True` + `dry_run=True` register flags; in-memory persistence backend; `OP_RESET` + `POST /reset`; `phase12_7_no_table_surface.rs` test update. | ~8 | 📋 **PLANNED 2026-05-03** — 4-5 days; parallel after 13.0 |
+| 13.5 | **Python SDK rewrite + `beava bench` CLI** | Delete ~2000 LOC of over-engineered SDK; new ~600 LOC core+pipeline-DSL+demo-loader+test-fixtures. Polish bench-v18/v2 into `beava bench` subcommand (3 modes: throughput/mixed/memory). Bundled `bv.demo("adtech"|"fraud"|"ecommerce")` datasets. PEP 563 fix. Module structure: core flat + `beava.test` + `beava.cli` submodules. | ~12 | 📋 **PLANNED 2026-05-03** — 7-10 days; parallel after 13.0 |
+| 13.6 | **TypeScript + Go SDKs** (parallel within phase) | `@beava/sdk` npm package (TS, ~1800 LOC) + `github.com/beava-io/beava-go` Go module (~1800 LOC). Both implement same surface as Python against the wire spec. TS uses decorators or builder; Go uses struct tags + builder. Context-aware Go methods. | ~10 | 📋 **PLANNED 2026-05-03** — 5-7 days each; parallel after 13.0 |
+| 13.7 | **Docs site (beava.dev)** | Render Phase 13.0 spec docs into beava.dev via MkDocs Material (or similar). Quickstart polish + 3 vertical guides + operator catalog + wire spec reference. Home page hero per Q17 (combined latency/throughput/memory headlines). Follow `project_beava_website_ia` IA + `feedback_beava_website_voice` (DuckDB/bun/Linear pattern). | ~5 | 📋 **PLANNED 2026-05-03** — 4-6 days; parallel after 13.0 |
+| 13.8 | **Packaging + GA tag** (SHIP) | PyPI multi-arch wheels (Linux x86_64, Linux ARM64, macOS ARM64) with bundled binary + npm `@beava/sdk` + Go module + Docker Hub multi-arch manifest + GitHub Releases × 3 platforms. CI green on all 4 repos. v0.0.0 tag everywhere. Marketing assets (README hero, HN/Twitter posts). | ~6 | 📋 **PLANNED 2026-05-03** — 5-7 days; sequential after 13.4–13.7 |
 | 13.1 | Perf regression fix — fsync off the runtime thread | `spawn_blocking` for WAL fsync; restored 17k EPS at parallel=64 on macOS | 1 | ✅ **COMPLETE** |
 | ~~13.2~~ | ~~Batch coalescing~~ | ~~ApplyConfig 6-knob + ApplyBuffer skeleton~~ | — | ❌ **ABANDONED** — superseded by Phase 13.3 (RefCell + LocalSet, simpler/faster Redis-shaped approach). Branch `phase-13.2-coalesce` is not to be merged; ApplyBuffer primitive is not reused. |
 | ~~13.3~~ | ~~Lockless apply via RefCell + LocalSet~~ | ~~Replace apply-state Mutex with single-thread `RefCell` + `LocalSet`~~ | ~~~4~~ | ❌ **REJECTED 2026-04-26** — locked architectural decision: Beava commits to a single-threaded data plane forever (Redis-cluster pattern). Per-instance ceiling = single apply thread; users scale out via multiple Beava instances sharded at entity-key level. Worktree `phase-13.3-lockless-apply` archived (deleted 2026-04-26). Plans 13.3-01..04 in `.planning/phases/13.3-lockless-apply/` retained for historical reference. |
@@ -64,7 +70,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | ~~25~~ | ~~Session window operator family (v0.1+)~~ | ~~`bv.session(gap_ms=..., inner=bv.<op>(...))` activity-based grouping~~ | — | ❌ **ARCHIVED-INDEFINITELY 2026-04-30** — out of v0 scope per `project_v0_events_only_scope`. Users can compose count/sum with processing-time windowed ops for v0 demos. Returns in a future minor release if demand arises. |
 | 26 | **Valkey-style I/O architecture rework** (v0.1+) | Inserted 2026-05-03 from post-Phase-12.8 bench session. Beava's IO worker design diverges from the "Valkey 8 model" comments claim: each worker owns a `mio::Poll` and independently polls its assigned client subset (N+1 epoll instances), sending parsed RingItems to apply via crossbeam channel. Valkey IO threads are pure SPSC/SPMC consumers (verified `valkey-io/valkey/src/io_threads.c::IOThreadMain`). 4-phase migration (A measure → B consolidate → C maxclients/backpressure → D validate); Phase A is the **GATE** — abandon if cross-thread channel overhead < 5% of total push CPU. Apply-CPU is 88% of total push time per session's per-stage trace, so the upside is bounded. Plan doc: `.planning/ideas/valkey-io-architecture-rework.md`. **NOT v0 ship-blocker** — pure architecture-debt cleanup if Phase A confirms the cost is real. | ~5 | 💡 **PROPOSED 2026-05-03 (v0.1+)** — gated on Phase A measurement |
 
-**Total active phases:** 21 (post-2026-04-30 v0-events-only commitment + Phase 12.8 memory governance + Phase 12.9 AggOp memory boxing both closed 2026-05-03). v0 ship critical path = **Phase 13 (final ship — SDK polish + benchmarks + docs + packaging) — NEXT**. Phase 12.7 (table strip) ✅ CLOSED 2026-05-01. Phase 12.8 (memory governance) ✅ CLOSED 2026-05-01 (PASS-WITH-WARN). Phase 12.9 (AggOp boxing) ✅ CLOSED 2026-05-03 (PASS). Phase 26 (Valkey IO rework) is v0.1+, not a ship-blocker.
+**Total active phases:** 27 (Phase 13 RESTRUCTURED 2026-05-03 from a single ship phase into 6 sub-phases — 13.0 + 13.4–13.8 — for the v0-launch design-session deliverables). v0 ship critical path = **Phase 13.0 (design contract + spec docs) — NEXT**, then 13.4–13.7 in parallel, then 13.8 (packaging + GA tag). Phase 12.7 (table strip) ✅ CLOSED 2026-05-01. Phase 12.8 (memory governance) ✅ CLOSED 2026-05-01 (PASS-WITH-WARN). Phase 12.9 (AggOp boxing) ✅ CLOSED 2026-05-03 (PASS). Phase 25 (session windows) and Phase 26 (Valkey IO rework) are v0.1+, not ship-blockers.
 
 **Insertion / archive history:**
 - Phase 2.5 inserted 2026-04-23 (dual HTTP+TCP wire); Phase 5.5 inserted 2026-04-23 (perf harness + retroactive baselines + regression gates); Phase 7.5 inserted 2026-04-23 (end-to-end throughput harness + per-phase ledger convention)
@@ -82,6 +88,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 - Phase 25 added 2026-04-30 (session window operator family) — **ARCHIVED-INDEFINITELY 2026-04-30 per v0-events-only commitment**
 - **Phase 26 added 2026-05-03 (Valkey-style I/O architecture rework — v0.1+)** — Beava IO workers diverge from Valkey's pure-consumer pattern (verified `valkey-io/valkey/src/io_threads.c::IOThreadMain`). 4-phase migration; Phase A is the GATE (abandon if channel overhead < 5% of push CPU). Apply-CPU is 88% per session's trace so upside is bounded. NOT a v0 ship-blocker. Plan doc: `.planning/ideas/valkey-io-architecture-rework.md`.
 - **Phase 13 reframed 2026-04-30** to slim ship scope: SDK polish (events surface) + perf benchmarks + minimum-viable docs + packaging. **Dropped:** `bv.fork`, `playground.beava.dev`, structured logs.
+- **Phase 13 RESTRUCTURED 2026-05-03** from the v0-launch design session. Phase 13 is now an umbrella for 6 sub-phases (13.0 / 13.4 / 13.5 / 13.6 / 13.7 / 13.8). 20 SDK design decisions locked. 3 SDK ports confirmed (Python + TypeScript + Go; Java deferred). Phase 13.0 is the bottleneck (design contract + spec docs); 13.4–13.7 run in parallel after 13.0 lands; 13.8 (packaging + GA) is sequential. Q1 partial overturn of `project_v0_events_only_scope` to revive `@bv.table` decorator (aggregation-output only — NOT user-mutable; no upsert/delete/retract). ADRs 001 + 002 documented in 13.0. Total wall-clock estimate: ~6-7 weeks solo / ~3-4 weeks with 3+ contributors.
+- **`@bv.table` partial overturn 2026-05-03** of `project_v0_events_only_scope`. Phase 12.7's strip of `@bv.table` was over-broad — it killed both the `app.upsert/delete/retract` user-mutable surface AND the aggregation-output decorator. v0 launch revives ONLY the aggregation-output decorator (function-form `@bv.table(key=...) def Name(ev) -> bv.Table: return ev.group_by(...).agg(...)`). MVCC, TemporalStore, temporal_http.rs, and user-mutable verbs STAY KILLED. ADR-001 (lands in Phase 13.0) is the authoritative record.
 
 **Architectural commitments locked 2026-04-30** (see `project_redis_shaped_no_event_time_ever` + `project_v0_events_only_scope`): no event-time anywhere; no watermarks; no joins; no PIT; no tables (`@bv.table` stripped Phase 12.7); no aggregation beyond the existing 54-op catalogue; no session windows; processing-time-only semantics; mio-only data-plane entry; `event_time_ms` removed from wire; windowed operators on server-side `now_ms()`. v0 = pure events: `@bv.event` + 54 ops + /push + /get + /register + WAL/snapshot durability + Python SDK. Tables/joins/aggregation return together in v0.1+ if/when justified by demand.
 
@@ -604,30 +612,298 @@ Plans:
 6. Workspace + clippy + fmt clean
 
 
-### Phase 13: SDK polish + benchmarks + ship — final v0 — 🟡 PARTIAL
+### Phase 13: v0 Launch — UMBRELLA — 📋 RESTRUCTURED 2026-05-03
 
-**Status (refreshed 2026-05-03):** Plans 13-01 (`/metrics` Prometheus + middleware) and 13-03 (`env_var_overrides` hermetic fix) shipped on branch `phase-13-ship` @ `2ef5afc`. Old pre-pivot plans (13-02 cold-entity GC sweep — superseded by Phase 12.8; 13-04 perf gate; metric-counter wiring) need rescoping after Phase 12.9 closes. Plans 13-05..13-08 (docs site, `bv.fork`, PyPI/Docker/Releases, playground) DROPPED 2026-04-30 from v0 — `bv.fork` and `playground.beava.dev` are explicit non-goals; docs site and packaging stay but get minimum-viable scope.
+**Status:** RESTRUCTURED 2026-05-03 from the v0-launch design session. Phase 13 is now an **umbrella** for 6 sub-phases (13.0 + 13.4 through 13.8). The legacy plan list (13-01..13-08) is superseded by the new structure.
 
-**Goal:** Ship v0. Events-only API surface, perf gates green on 3 pipeline shapes, minimum-viable docs live on `beava.dev`, packaging published, ship-ready tag cut.
+The user's 4 launch dimensions (benchmark / SDK shape / UI/UX / first-1-min magic) collapse into 6 sub-phases with one foundational bottleneck phase that locks all design contracts in writing, after which 4 implementation phases run in parallel.
 
-**Depends on:** Phases 8–12 complete (✅), Phase 12.6 ✅, Phase 12.7 ✅, Phase 12.8 ✅, **Phase 12.9 (AggOp boxing — gates ship-pitch numbers)**.
+**Sub-phases:**
 
-**Requirements:** OBS-01..04 (most landed via Phase 12.8 + Plan 13-01), PERF-01..04, DOC-01..06 (rescoped to minimum-viable), PKG-01..05, TEST-01..07. SDK-FORK-* and the playground REQ-IDs DROPPED 2026-04-30. Final REQ-ID list pending Phase 12.9 closure + plan-rescoping pass.
+```
+Phase 13.0 (design contract + spec docs)  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5-7 days
+                              ┃
+                              ┃ ALL specs locked + docs drafted
+                              ▼
+              ┏━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━┓
+              ┃               ┃               ┃
+   13.4 engine     13.5 Python+bench   13.6 TS+Go SDKs   13.7 docs site
+   ━━━━ 4-5d      ━━━━━━━━━━ 7-10d   ━━━━━ 5-7d         ━━━━ 4-6d
+              ┗━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━┛
+                              ┃ all converge
+                              ▼
+                          Phase 13.8 (packaging + GA tag)  ━━━━━━━ 5-7d
+```
 
-**Success criteria (refreshed 2026-05-03 to match post-pivot scope):**
-1. `/metrics` exposes per-operator, per-endpoint, WAL, snapshot, registry-version, memory-governance metrics (Phase 12.8 baseline + any Phase 13 additions)
-2. Perf benchmark harness: ≥3M EPS on THREE pipeline shapes — **simple fraud** (5 aggregations, 1 entity type), **complex fraud** (15+ aggregations, multiple group_by axes — fraud-team.json shape), **recommendation** (windowed counts + geo-velocity + top-k + user baselines). P99 batch-get < 10ms on each. Hetzner Linux baseline + multi-instance shard-scaling validation per `project_no_sharded_apply`. (Reframed: **no joins**; **no event-time**; complex-fraud is multi-axis events-only.)
-3. Per-entity memory ≤ 7 KB on the fraud-team shape (verified by Phase 12.9 maxcard rebench)
-4. Minimum-viable docs live on `beava.dev`: quickstart → operators → http-api → architecture. README.md 3-command smoke works (`pip install beava`, `beava run`, `python quickstart.py`)
-5. `pip install beava` works (PyPI); `docker run beava/beava:v0` works (Docker Hub); GitHub Release binaries for 3 platforms (Linux x86_64, Linux ARM64, macOS ARM64)
-6. CI green on `v2/greenfield`; `v0.0.0` tag cut
-7. All TEST-* requirements pass
+**Total wall-clock (1 person): ~6-7 weeks. Total wall-clock (3+ people parallelized): ~3-4 weeks.**
 
-**Explicitly DROPPED from v0:**
-- `bv.fork(...)` local scoped replica subcommand (deferred — no v0.0.x roadmap entry)
-- `playground.beava.dev` hosted interactive tutorial (deferred to v0.1+ if/when browser-WASM `@beava/browser` ships)
-- Stream-stream / event↔table joins in success criterion #2 (joins removed permanently 2026-04-30 per `project_redis_shaped_no_event_time_ever`)
-- Structured logs phase work (existing logs deemed adequate)
+**Locked decisions from the design session (20 total):**
+- `@bv.event` + `@bv.table` decorators (table revival as aggregation-output only, no upsert/delete/retract)
+- Dict-style push, single push/get, Redis-shaped client
+- Row-shape get + heterogeneous batch_get
+- Cross-language: JSON wire is contract, SDKs are thin compilers
+- Polars-style chained syntax (chains compile to existing wire)
+- Wire ops renamed to Polars conventions (`avg→mean`, `variance→var`, `stddev→std`, `count_distinct→n_unique`, `percentile→quantile`)
+- Full HTTP data plane parity, verb-style routes (all POST + JSON body)
+- 53-op coverage hand-written, full Python SDK
+- Cold-start `{}`, schema/field errors raise, batch atomic
+- `bv.App()` no-URL = embed mode (in-memory default); URL connects to remote
+- Schema evolution: additive default, `force=True` for destructive (with diff matrix)
+- Configurable retry, `max_retries=0` default, single TCP conn + auto-reconnect
+- 3 SDK ports: Python + TypeScript (npm) + Go (Java deferred to v0.1+)
+- Tiered demos: `bv.demo("adtech" | "fraud" | "ecommerce")`
+- `app.reset()` + `bv.App(persist_dir=...)` both in v0
+- `dry_run=True` flag on register
+- Single `beava` binary with subcommands (Redis-style)
+- Module structure: core flat + advanced submodules (`beava.test`, `beava.cli`)
+- `beava bench` CLI with 3 modes (throughput / mixed read-write / memory)
+
+**Success criteria (umbrella):**
+1. All sub-phases 13.0–13.8 ✅ closed
+2. `pip install beava && python -c "import beava as bv; bv.demo('adtech')"` works on a fresh machine
+3. `docker run -p 7380:7380 beava/beava` works (curl-only quickstart succeeds)
+4. `npm install @beava/sdk` works in TypeScript
+5. `go get github.com/beava-io/beava-go` works in Go
+6. CI green on `v2/greenfield` + 3 SDK repos
+7. `v0.0.0` tag cut on all 4 repos
+8. `beava.dev` live with 3 vertical guides + operator catalog + wire spec
+
+**Explicitly DROPPED from v0** (deferred to v0.1+ — see `.planning/ideas/v0.1-deferrals.md`):
+- `bv.fork(...)` local scoped replica subcommand
+- `playground.beava.dev` hosted interactive tutorial
+- Stream-stream / event↔table joins (forever-rejected per `project_redis_shaped_no_event_time_ever`)
+- Async / `AsyncApp`
+- `app.deregister()` / `app.migrate()`
+- Java SDK
+- Lifecycle hooks
+- Structured `ErrorCode` enum
+- Schema introspection (`app.list_descriptors()`, `app.get_schema(name)`)
+- `OP_PUSH_BATCH` / `OP_PUSH_SYNC`
+- Historical extraction engine (SpeeDB local + SlateDB S3) — see `.planning/ideas/v0.1-historical-extraction-engine.md`
+
+---
+
+### Phase 13.0: Design contract + spec documentation — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03. **THE BOTTLENECK** — every implementation phase reads from this. Until 13.0 lands, no implementation can start.
+
+**Goal:** Produce ship-quality specs for every contract (wire, SDK API per language, pipeline DSL, schema evolution, error codes, operator catalog) — these documents BOTH lock the design AND become the rendered content of beava.dev. No "what's the API shape?" Slack messages during implementation.
+
+**Depends on:** Phase 12.9 ✅ (closed 2026-05-03).
+
+**Documents produced:**
+
+```
+docs/
+├── wire-spec.md                  ← frame format + opcode table + JSON payloads
+├── http-api.md                   ← REST routes, request/response shapes, errors
+├── sdk-api/
+│   ├── python.md                 ← Python signatures, decorators, exceptions
+│   ├── typescript.md             ← TS interfaces, class signatures
+│   ├── go.md                     ← Go signatures (context-aware), structs
+│   └── shared.md                 ← cross-language semantics
+├── pipeline-dsl/
+│   ├── overview.md               ← @bv.event, @bv.table, group_by, agg
+│   ├── expressions.md            ← bv.col, .filter, .over, .alias, boolean-sum trick
+│   └── compilation-rules.md      ← polars chain → JSON wire (worked examples)
+├── operators/                    ← all 53 ops with signatures + examples
+├── schema-evolution.md           ← additive vs destructive matrix; force=True; dry_run=True
+├── error-codes.md                ← exception types, structured codes, recovery
+├── concepts/                     ← events vs tables, embed mode, lifetime aggregation
+├── quickstart.md                 ← pip install → bv.demo() → first feature query
+└── architecture/                 ← single-thread apply, mio data plane, WAL+snapshot
+
+examples/
+├── wire/                         ← sample JSON requests/responses (per command)
+├── python/                       ← 3 verticals (adtech/fraud/ecommerce)
+├── typescript/                   ← same 3 demos in TS
+└── go/                           ← same 3 demos in Go
+
+.planning/decisions/
+├── ADR-001-bv-table-partial-overturn.md   ← Q1 architectural overturn
+└── ADR-002-polars-op-rename.md            ← Q4 wire op renames
+```
+
+**Plans (estimated, ~10 plans across 3 waves):**
+
+- Wave 1 (3-4 plans, parallel): wire-spec.md / http-api.md / sdk-api/{python,typescript,go,shared}.md / ADR-001 + ADR-002
+- Wave 2 (3-4 plans, parallel): pipeline-dsl/{overview,expressions,compilation-rules}.md / operators/{catalog,core,ordinal-recency,decay-velocity,sketches,buffer-geo}.md / schema-evolution.md / error-codes.md
+- Wave 3 (2-3 plans, parallel): concepts/* / quickstart.md / architecture/* / examples/wire/* + examples/{python,typescript,go}/*
+
+**Memory + ADR housekeeping (Wave 1):**
+- ADR-001 documents the partial overturn of `project_v0_events_only_scope` for `@bv.table` aggregation-output decorator
+- ADR-002 documents the Phase 12.7-RESET → Phase 13.0-rename op-name churn rationale
+- Update `project_v0_events_only_scope` memory with the partial overturn pointer to ADR-001
+- Update `phase12_7_no_table_surface.rs` test plan (actual code update lands in Phase 13.4)
+- Update CLAUDE.md if any constraints shift (likely the Memory line + a new Polars-naming footnote)
+
+**Success criteria:**
+1. A senior engineer who has never seen beava can read `docs/sdk-api/python.md` + `docs/wire-spec.md` and implement a working Python SDK without asking questions
+2. Same for `docs/sdk-api/typescript.md` and `docs/sdk-api/go.md` (peer language SDKs)
+3. `examples/wire/` has copy-pasteable JSON for every command (request + response + every error code)
+4. `examples/python/adtech.py` is a runnable file (against a mocked engine — engine impl lands in 13.4)
+5. ADR-001 and ADR-002 reviewed + signed off
+6. `project_v0_events_only_scope` memory updated with partial overturn
+
+---
+
+### Phase 13.4: Engine prep — server-side implementation against the wire spec — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03. Implements the server-side contract from Phase 13.0. Parallel with 13.5/13.6/13.7 (all read from the same spec).
+
+**Goal:** Update the Rust server to honor the v0 wire contract. ~800 LOC of mostly mechanical changes against locked spec docs.
+
+**Depends on:** Phase 13.0 (wire-spec.md + ADRs locked).
+
+**Plans (estimated, ~8 plans across 3 waves):**
+
+- Wave 1 (parallel, ~4 plans):
+  - Op renames: `avg→mean`, `variance→var`, `stddev→std`, `count_distinct→n_unique`, `percentile→quantile` (Rust + tests + fraud-team.json + small/medium/large configs)
+  - GET response → row-shape (`OP_GET` payload + response shape change)
+  - NEW `OP_BATCH_GET (0x0024)` opcode + parser + dispatch + response
+  - HTTP route additions/redesigns: `POST /register / /push / /get / /batch_get / /reset / /ping` with consistent verb-style + JSON body
+- Wave 2 (parallel, ~3 plans, depends on Wave 1):
+  - `force=True` flag on register + diff logic + structural-pipeline-change detection (~150 LOC in `register_validate.rs`)
+  - `dry_run=True` flag on register (~30 LOC; uses the diff logic from above)
+  - In-memory persistence backend: `Persistence::Memory` enum + bounded-ring WAL (~200 LOC in `crates/beava-persistence/`)
+- Wave 3 (~1 plan):
+  - `OP_RESET` + `POST /reset` route (~30 LOC)
+  - Update `phase12_7_no_table_surface.rs` test to permit `output_kind=table` for derivations
+  - SUMMARY + VERIFICATION + STATE/ROADMAP advance
+
+**Success criteria:**
+1. All wire-spec endpoints return the documented response shape (matched against `examples/wire/*.json` from Phase 13.0)
+2. `cargo test --workspace` passes; clippy + fmt clean
+3. Throughput regression-gate `small/tcp` within ±10% of Phase 12.9 baseline (renamed-op rename should be free)
+4. New tests for: row-shape GET, batch_get heterogeneous, force=True diff (additive vs destructive), dry_run=True, in-memory mode boot, reset
+
+---
+
+### Phase 13.5: Python SDK rewrite + `beava bench` CLI — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03. Implements the Python SDK + `beava bench` CLI against the wire-spec + sdk-api specs from Phase 13.0. Parallel with 13.4/13.6/13.7.
+
+**Goal:** Ship the canonical Python client + benchmark tool. ~4200 LOC across two tracks.
+
+**Depends on:** Phase 13.0 (wire-spec.md + sdk-api/python.md locked). CAN start before Phase 13.4 lands by mocking the wire — integration tests run when 13.4 is ready.
+
+**Two tracks:**
+
+**Python SDK (~2200 LOC, ~7-10 days):**
+- DELETE: `_events.py`, `_agg.py`, `_schema.py`, `_validate.py`, `_col.py` (~2000 LOC)
+- KEEP + bug-fix: `_wire.py` (fix `OP_PUSH = 0x0010` opcode bug), `_transport.py`, `_errors.py`, `_embed.py`
+- NEW core client (~200 LOC): `App.register/push/get/batch_get/ping/reset/close` + URL-scheme dispatch + `bv.App()` no-URL embed mode
+- NEW pipeline DSL (~600 LOC): `@bv.event` class form + `@bv.table` function form + `bv.col` chained expressions + 53 operator methods + Polars-style `.filter().over().alias()` + `bv.lit()`
+- NEW demo loader (~300 LOC): `bv.demo("adtech"|"fraud"|"ecommerce")` with bundled datasets
+- NEW test fixtures (~150 LOC in `beava.test`): `fixture`, `replay`, `assert_features_eq`
+- PEP 563 fix (`get_type_hints()` instead of raw `param.annotation`)
+- Module structure: core flat (`bv.App`, `bv.event`, etc.) + submodules (`beava.test`, `beava.cli`)
+
+**`beava bench` CLI (~2000 LOC Rust, ~5-7 days):**
+- Promote `crates/beava-bench/src/bin/beava-bench-v18.rs` and `beava-bench-v2.rs` to a polished `beava bench` subcommand
+- 3 modes: throughput / mixed read-write / memory-only
+- Interactive walkthrough via `inquire` crate; `--yes` for non-interactive
+- Pre-run memory estimator (uses Phase 12.9 size_of math + per-derivation feature counts)
+- Output formats: human (default) / `--json` / `--markdown` / `--append=ledger.jsonl`
+- 3 bundled dataset generators (adtech/fraud/ecommerce, each ~300 LOC)
+
+**Success criteria:**
+1. Python SDK: `pip install -e python/` then `python examples/sdk_showcase.py` runs end-to-end (no GAP markers remaining)
+2. `beava bench --workload=adtech --size=medium --mode=throughput --yes` completes successfully
+3. All 3 demos (`bv.demo("adtech"|"fraud"|"ecommerce")`) replay cleanly
+4. Pytest fixtures from `beava.test` work (boot embed once + reset per test)
+5. mypy clean (or stated incompatibilities)
+
+---
+
+### Phase 13.6: TypeScript + Go SDKs (parallel within phase) — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03. Both SDKs implement the same surface as Python against the spec from Phase 13.0. Parallel with 13.4/13.5/13.7.
+
+**Goal:** Ship `@beava/sdk` (npm) and `github.com/beava-io/beava-go`. Each follows the Python SDK shape but adapts to native idioms.
+
+**Depends on:** Phase 13.0 (wire-spec.md + sdk-api/typescript.md + sdk-api/go.md locked). CAN start before Phase 13.4 lands by mocking the wire.
+
+**TypeScript SDK (~1800 LOC TS, ~5-7 days):**
+- Core client: `new BeavaApp(url?)` / `.register()` / `.push()` / `.get()` / `.batchGet()` / `.reset()` / `.ping()` / `.close()`
+- Pipeline DSL: TypeScript decorators (stage-3 with TS 5.0+) OR builder pattern (final shape locked in 13.0 sdk-api/typescript.md)
+- 53 operator catalog
+- Polars-style chains: `bv.col("price").filter(...).sum().over("1h")`
+- `.d.ts` declarations + bundled `.js` output for runtime
+- Tests: jest fixtures matching Python test pattern
+- Build: tsc → `dist/`; publish to npm as `@beava/sdk`
+
+**Go SDK (~1800 LOC Go, ~5-7 days):**
+- Core client: `beava.NewApp(ctx, url, opts...)` / `.Register()` / `.Push()` / `.Get()` / `.BatchGet()` / `.Reset()` / `.Ping()` / `.Close()`
+- Pipeline DSL: struct tags + builder pattern (Go has no decorators)
+- Context-aware methods (idiomatic Go): `ctx context.Context` first param, explicit errors returned
+- 53 operator catalog
+- Tests: standard `testing` + `testify`
+- Module: `github.com/beava-io/beava-go`
+
+**Success criteria:**
+1. TS SDK: `npm install @beava/sdk` then `examples/typescript/adtech.ts` runs end-to-end
+2. Go SDK: `go get github.com/beava-io/beava-go` then `examples/go/adtech_test.go` runs end-to-end
+3. Both pass the Python SDK's wire-level conformance tests against a real engine
+4. `tsc --strict` clean for TS; `go vet ./... && go test ./...` clean for Go
+
+---
+
+### Phase 13.7: Docs site (beava.dev) — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03. Renders the Phase 13.0 spec docs into a published docs site. Parallel with 13.4/13.5/13.6.
+
+**Goal:** beava.dev live with quickstart + operator catalog + 3 vertical guides + wire spec + SDK references.
+
+**Depends on:** Phase 13.0 (specs are the source content). Can polish/screenshot/integrate working examples once 13.4/13.5 lands but the structural site work starts immediately after 13.0.
+
+**Plans (estimated, ~5 plans):**
+
+- MkDocs Material (or similar) site scaffold + navigation + theme matching `feedback_beava_website_voice` (DuckDB/bun/Linear pattern, not enterprise-y)
+- Render `docs/` from 13.0 into the site (mostly mechanical)
+- Quickstart polish with screenshots / animated GIF of `bv.demo("adtech")` running
+- 3 vertical guides (adtech / fraud / ecommerce) — written prose tutorials wrapping the demo datasets
+- Home page hero per Q17 recommendation: combined latency + throughput + memory headlines (`<10ms P99 / 100K+ EPS / ~6KB per entity`)
+- Search index + cross-linking + copy-to-clipboard buttons on code blocks
+- Existing `project_beava_website_ia` memory (Priya target user; home/guide/docs/community/cloud-banner IA) already locked — follow it
+
+**Success criteria:**
+1. beava.dev live (deployed via Cloudflare Pages or Netlify)
+2. All 53 operators have a docs page with example
+3. 3 vertical guides each have a working pipeline + sample data + expected output
+4. Quickstart copy-pastes successfully on a fresh machine
+5. Wire spec reference is published (load-bearing for SDK contributors)
+
+---
+
+### Phase 13.8: Packaging + GA tag — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03. Final phase — sequential after 13.4/13.5/13.6/13.7 all land.
+
+**Goal:** Cut v0.0.0 across all 4 repos and ship.
+
+**Depends on:** Phases 13.4 + 13.5 + 13.6 + 13.7 all closed.
+
+**Plans (estimated, ~6 plans):**
+
+- PyPI multi-arch wheels: Linux x86_64 / Linux ARM64 / macOS ARM64 (3 wheels with bundled binary, ~10-20 MB each)
+- npm: `@beava/sdk` (single package, all platforms — no native binary, just TS)
+- Go module: `github.com/beava-io/beava-go` (single module)
+- Docker Hub: `beava/beava:v0.0.0` (multi-arch manifest)
+- GitHub Releases: 3 platform binaries (no bundled SDK — for direct download)
+- CI green on all 4 repos
+- v0.0.0 tag cut on all 4 repos
+- Marketing assets: README hero, HN/Twitter/Reddit posts drafted, demo video
+- `examples/quickstart.sh` curl-only path tested manually
+- Brew formula (optional, can ship in v0.0.x if not done in 13.8)
+
+**Success criteria:**
+1. `pip install beava && python -c "import beava as bv; print(bv.demo('adtech').replay())"` works on a fresh machine (Linux x86_64, Linux ARM64, macOS ARM64)
+2. `docker run -p 7380:7380 beava/beava:v0.0.0` works
+3. `npm install @beava/sdk` + sample TS code runs
+4. `go get github.com/beava-io/beava-go` + sample Go code runs
+5. v0.0.0 GitHub Release published with binaries + changelog
+6. v0 LAUNCH 🚀
 
 ### Phase 13.1: Perf regression fix — fsync off the runtime thread — ✅ COMPLETE
 
