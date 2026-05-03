@@ -26,13 +26,13 @@ use beava_core::agg_geo::{
 };
 use beava_core::agg_op::{AggKind, AggOp};
 use beava_core::agg_state::{
-    BloomMemberStateWrap, CountDistinctStateWrap, EntropyStateWrap, PercentileStateWrap,
-    TopKStateWrap,
-};
-use beava_core::agg_state::{
     AvgState, CountState, FirstNState, FirstSeenInWindowState, FirstState, LagState, LastNState,
     LastState, MaxState, MinState, NegativeStreakState, RatioState, SeenState, StreakState,
     SumState, TimeSinceLastNState, VarianceState,
+};
+use beava_core::agg_state::{
+    BloomMemberStateWrap, CountDistinctStateWrap, EntropyStateWrap, PercentileStateWrap,
+    TopKStateWrap,
 };
 use beava_core::agg_state_decay::{
     DecayedCountState, DecayedSumState, EwVarState, EwZScoreState, EwmaState, TwaState,
@@ -72,9 +72,18 @@ fn aggop_size_within_cap() {
 #[test]
 fn dump_per_entity_sizes() {
     println!("\n=== AggOp enum + descriptor sizes ===");
-    println!("size_of::<AggKind>()        = {} bytes", size_of::<AggKind>());
-    println!("size_of::<AggOp>()          = {} bytes  (enum payload, the per-feature footprint)", size_of::<AggOp>());
-    println!("size_of::<Option<AggOp>>()  = {} bytes", size_of::<Option<AggOp>>());
+    println!(
+        "size_of::<AggKind>()        = {} bytes",
+        size_of::<AggKind>()
+    );
+    println!(
+        "size_of::<AggOp>()          = {} bytes  (enum payload, the per-feature footprint)",
+        size_of::<AggOp>()
+    );
+    println!(
+        "size_of::<Option<AggOp>>()  = {} bytes",
+        size_of::<Option<AggOp>>()
+    );
 
     println!("\n=== Phase 5: core stats (8 ops, all inline payloads) ===");
     let mut rows: Vec<(&'static str, usize)> = vec![
@@ -95,11 +104,17 @@ fn dump_per_entity_sizes() {
         ("FirstNState", size_of::<FirstNState>()),
         ("LastNState", size_of::<LastNState>()),
         ("LagState", size_of::<LagState>()),
-        ("SeenState (FirstSeen/LastSeen/Age/HasSeen/TimeSince)", size_of::<SeenState>()),
+        (
+            "SeenState (FirstSeen/LastSeen/Age/HasSeen/TimeSince)",
+            size_of::<SeenState>(),
+        ),
         ("TimeSinceLastNState", size_of::<TimeSinceLastNState>()),
         ("StreakState (Streak/MaxStreak)", size_of::<StreakState>()),
         ("NegativeStreakState", size_of::<NegativeStreakState>()),
-        ("FirstSeenInWindowState", size_of::<FirstSeenInWindowState>()),
+        (
+            "FirstSeenInWindowState",
+            size_of::<FirstSeenInWindowState>(),
+        ),
     ];
     print_rows(&rows);
 
@@ -112,7 +127,10 @@ fn dump_per_entity_sizes() {
         ("DecayedCountState", size_of::<DecayedCountState>()),
         ("TwaState", size_of::<TwaState>()),
         ("RateOfChangeState", size_of::<RateOfChangeState>()),
-        ("InterArrivalStatsState", size_of::<InterArrivalStatsState>()),
+        (
+            "InterArrivalStatsState",
+            size_of::<InterArrivalStatsState>(),
+        ),
         ("BurstCountState", size_of::<BurstCountState>()),
         ("DeltaFromPrevState", size_of::<DeltaFromPrevState>()),
         ("TrendState", size_of::<TrendState>()),
@@ -126,20 +144,41 @@ fn dump_per_entity_sizes() {
     println!("\n=== Phase 10: sketches (5 ops, all Box<...>) ===");
     println!("In AggOp these are stored as Box<T> — 8B inline + heap state below.");
     rows = vec![
-        ("CountDistinctStateWrap (HLL hybrid)", size_of::<CountDistinctStateWrap>()),
-        ("PercentileStateWrap (UDDSketch wrapper)", size_of::<PercentileStateWrap>()),
-        ("TopKStateWrap (SpaceSaving wrapper)", size_of::<TopKStateWrap>()),
-        ("BloomMemberStateWrap (Bloom filter wrapper)", size_of::<BloomMemberStateWrap>()),
-        ("EntropyStateWrap (categorical histogram)", size_of::<EntropyStateWrap>()),
+        (
+            "CountDistinctStateWrap (HLL hybrid)",
+            size_of::<CountDistinctStateWrap>(),
+        ),
+        (
+            "PercentileStateWrap (UDDSketch wrapper)",
+            size_of::<PercentileStateWrap>(),
+        ),
+        (
+            "TopKStateWrap (SpaceSaving wrapper)",
+            size_of::<TopKStateWrap>(),
+        ),
+        (
+            "BloomMemberStateWrap (Bloom filter wrapper)",
+            size_of::<BloomMemberStateWrap>(),
+        ),
+        (
+            "EntropyStateWrap (categorical histogram)",
+            size_of::<EntropyStateWrap>(),
+        ),
     ];
     print_rows(&rows);
 
     println!("\n=== Phase 11: bounded buffer + geo (11 ops) ===");
     rows = vec![
         ("HistogramState", size_of::<HistogramState>()),
-        ("HourOfDayHistogramState", size_of::<HourOfDayHistogramState>()),
+        (
+            "HourOfDayHistogramState",
+            size_of::<HourOfDayHistogramState>(),
+        ),
         ("DowHourHistogramState", size_of::<DowHourHistogramState>()),
-        ("SeasonalDeviationState", size_of::<SeasonalDeviationState>()),
+        (
+            "SeasonalDeviationState",
+            size_of::<SeasonalDeviationState>(),
+        ),
         ("EventTypeMixState", size_of::<EventTypeMixState>()),
         ("MostRecentNState", size_of::<MostRecentNState>()),
         ("ReservoirSampleState", size_of::<ReservoirSampleState>()),
@@ -152,9 +191,10 @@ fn dump_per_entity_sizes() {
 
     println!("\n=== Windowed wrapper ===");
     println!("In AggOp this is stored as Box<WindowedOp> — 8B inline + heap state below.");
-    rows = vec![
-        ("WindowedOp (struct itself, no buckets)", size_of::<WindowedOp>()),
-    ];
+    rows = vec![(
+        "WindowedOp (struct itself, no buckets)",
+        size_of::<WindowedOp>(),
+    )];
     print_rows(&rows);
 
     println!("\n=== Summary: AggOp variants stored inline vs boxed ===");
@@ -165,19 +205,42 @@ fn dump_per_entity_sizes() {
     println!("regardless of the variant actually stored.");
     println!();
     println!("Largest inline (non-Box) payloads in current AggOp:");
-    println!("  SeasonalDeviationState     {} bytes  ← floor-setter", size_of::<SeasonalDeviationState>());
+    println!(
+        "  SeasonalDeviationState     {} bytes  ← floor-setter",
+        size_of::<SeasonalDeviationState>()
+    );
     println!("  HourOfDayHistogramState    {} bytes  ← second-largest (would set floor if Seasonal boxed)", size_of::<HourOfDayHistogramState>());
-    println!("  EventTypeMixState          {} bytes", size_of::<EventTypeMixState>());
-    println!("  DistanceFromHomeState      {} bytes", size_of::<DistanceFromHomeState>());
-    println!("  GeoVelocityState/GeoSpread  {} bytes", size_of::<GeoVelocityState>());
-    println!("  GeoDistanceState           {} bytes", size_of::<GeoDistanceState>());
-    println!("  TrendResidualState         {} bytes", size_of::<TrendResidualState>());
-    println!("  BurstCountState            {} bytes", size_of::<BurstCountState>());
+    println!(
+        "  EventTypeMixState          {} bytes",
+        size_of::<EventTypeMixState>()
+    );
+    println!(
+        "  DistanceFromHomeState      {} bytes",
+        size_of::<DistanceFromHomeState>()
+    );
+    println!(
+        "  GeoVelocityState/GeoSpread  {} bytes",
+        size_of::<GeoVelocityState>()
+    );
+    println!(
+        "  GeoDistanceState           {} bytes",
+        size_of::<GeoDistanceState>()
+    );
+    println!(
+        "  TrendResidualState         {} bytes",
+        size_of::<TrendResidualState>()
+    );
+    println!(
+        "  BurstCountState            {} bytes",
+        size_of::<BurstCountState>()
+    );
     println!("All boxed wrappers (CountDistinctStateWrap/PercentileStateWrap/TopKStateWrap/");
     println!("BloomMemberStateWrap/EntropyStateWrap/WindowedOp) contribute only 8 bytes inline.");
 
     println!("\n=== Per-entity slot cost — fraud-team.json derivations ===");
-    println!("(features-per-entity × size_of::<AggOp>(), inline-slot floor only — heap state extra)");
+    println!(
+        "(features-per-entity × size_of::<AggOp>(), inline-slot floor only — heap state extra)"
+    );
     let derivs: &[(&str, usize)] = &[
         ("TxnByUser (user_id)", 62),
         ("TxnByCard (card_fp)", 8),
@@ -189,8 +252,17 @@ fn dump_per_entity_sizes() {
         ("CardAddByDevice (device_id)", 3),
         ("RefundByUser (user_id)", 8),
     ];
-    println!("  {:<32}  {:>5}  {:>10}  {:>10}", "derivation", "feats", "current", "if_boxed");
-    println!("  {:<32}  {:>5}  {:>10}  {:>10}", "─".repeat(32), "─────", "──────────", "──────────");
+    println!(
+        "  {:<32}  {:>5}  {:>10}  {:>10}",
+        "derivation", "feats", "current", "if_boxed"
+    );
+    println!(
+        "  {:<32}  {:>5}  {:>10}  {:>10}",
+        "─".repeat(32),
+        "─────",
+        "──────────",
+        "──────────"
+    );
     let if_boxed_floor: usize = 72; // discriminant + next-largest after boxing 7 fat variants → ~64 + alignment
     let mut total_user_id_feats = 0;
     for (name, n) in derivs {
@@ -203,22 +275,44 @@ fn dump_per_entity_sizes() {
     }
     let cur_user = total_user_id_feats * aggop_size;
     let new_user = total_user_id_feats * if_boxed_floor;
-    println!("  {:<32}  {:>5}  {:>7} B  {:>7} B", "─".repeat(32), "─────", "──────────", "──────────");
-    println!("  {:<32}  {:>5}  {:>7} B  {:>7} B   ← single user_id entity (3 derivs)",
-        "user_id total (TxnByUser+Login+Refund)",
-        total_user_id_feats, cur_user, new_user);
+    println!(
+        "  {:<32}  {:>5}  {:>7} B  {:>7} B",
+        "─".repeat(32),
+        "─────",
+        "──────────",
+        "──────────"
+    );
+    println!(
+        "  {:<32}  {:>5}  {:>7} B  {:>7} B   ← single user_id entity (3 derivs)",
+        "user_id total (TxnByUser+Login+Refund)", total_user_id_feats, cur_user, new_user
+    );
     println!();
     println!("=== Boxing-savings projection ===");
     println!("Hypothesis: boxing the 7 fat-payload variants (SeasonalDeviation, HourOfDay,");
     println!("EventTypeMix, GeoVelocity, GeoSpread, GeoDistance, DistanceFromHome — and");
     println!("optionally TrendResidual + BurstCount) would drop size_of::<AggOp>() from");
-    println!("{} to ~{} bytes ({}× shrink).",
-        aggop_size, if_boxed_floor, aggop_size / if_boxed_floor);
+    println!(
+        "{} to ~{} bytes ({}× shrink).",
+        aggop_size,
+        if_boxed_floor,
+        aggop_size / if_boxed_floor
+    );
     println!("For a single user_id entity (78 features across 3 derivations):");
-    println!("  Current inline-slot cost:  {:>7} B ({:.1} KB)", cur_user, cur_user as f64 / 1024.0);
-    println!("  After boxing fat variants: {:>7} B ({:.1} KB)", new_user, new_user as f64 / 1024.0);
-    println!("  Savings:                   {:>7} B ({:.1} KB)",
-        cur_user - new_user, (cur_user - new_user) as f64 / 1024.0);
+    println!(
+        "  Current inline-slot cost:  {:>7} B ({:.1} KB)",
+        cur_user,
+        cur_user as f64 / 1024.0
+    );
+    println!(
+        "  After boxing fat variants: {:>7} B ({:.1} KB)",
+        new_user,
+        new_user as f64 / 1024.0
+    );
+    println!(
+        "  Savings:                   {:>7} B ({:.1} KB)",
+        cur_user - new_user,
+        (cur_user - new_user) as f64 / 1024.0
+    );
     println!();
     println!("This is the inline-slot floor only. Heap state (HLL, UDDSketch, BTreeMap,");
     println!("WindowedOp buckets) is unaffected by boxing since it's already on the heap.");

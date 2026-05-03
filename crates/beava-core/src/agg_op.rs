@@ -400,12 +400,20 @@ pub struct OutlierCountOp {
 ///
 /// AGG-CORE-01..09 per Phase 5 D-01; AGG-DECAY/VEL/Z added Phase 9.
 ///
-/// Phase 11 (D-08): buffer/geo variants enlarge the discriminant to ~600 B
-/// (driven by `SeasonalDeviationState`'s 24-hour bucket array). We accept the
-/// size delta intentionally — every aggregation entity allocates exactly one
-/// `Vec<AggOp>` for its slots, and per-feature box indirection would dominate
-/// the small per-event update path that Phase 13 needs to keep <300 ns.
-#[allow(clippy::large_enum_variant)]
+/// Phase 11 (D-08) originally chose unboxed-large variants for the buffer/geo
+/// ops, accepting ~600 B per `AggOp` slot to avoid per-event box indirection.
+/// Phase 12.9 reversed this 2026-05-03 after the r8g maxcard bench measured
+/// fraud-team at ~22 KB/entity (3× the CLAUDE.md 7 KB budget). The 7
+/// fat-payload variants — `SeasonalDeviation`, `HourOfDayHistogram`,
+/// `EventTypeMix`, `GeoVelocity`, `GeoSpread`, `GeoDistance`,
+/// `DistanceFromHome` — are now `Box`-wrapped, mirroring the pattern Phase 10
+/// sketches and `WindowedOp` already use. `size_of::<AggOp>()` dropped from
+/// 600 B to ~72 B (8× shrink); per-event update path measured within ±5% on
+/// the small/tcp regression-gate (Plan 12.9-02). Match arms below auto-deref
+/// through `Box::DerefMut`, so dispatch sites stay unchanged.
+///
+/// CI tripwire: `crates/beava-core/tests/per_entity_size_dump.rs::aggop_size_within_cap`
+/// asserts `size_of::<AggOp>() <= 80`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AggOp {
     // ── Phase 5 ──────────────────────────────────────────────────────────
@@ -469,16 +477,16 @@ pub enum AggOp {
     ZScore(ZScoreState),
     // ── Phase 11 (D-08 all windowless in v0) ─────────────────────────────────
     Histogram(HistogramState),
-    HourOfDayHistogram(HourOfDayHistogramState),
+    HourOfDayHistogram(Box<HourOfDayHistogramState>),
     DowHourHistogram(DowHourHistogramState),
-    SeasonalDeviation(SeasonalDeviationState),
-    EventTypeMix(EventTypeMixState),
+    SeasonalDeviation(Box<SeasonalDeviationState>),
+    EventTypeMix(Box<EventTypeMixState>),
     MostRecentN(MostRecentNState),
     ReservoirSample(ReservoirSampleState),
-    GeoVelocity(GeoVelocityState),
-    GeoDistance(GeoDistanceState),
-    GeoSpread(GeoSpreadState),
-    DistanceFromHome(DistanceFromHomeState),
+    GeoVelocity(Box<GeoVelocityState>),
+    GeoDistance(Box<GeoDistanceState>),
+    GeoSpread(Box<GeoSpreadState>),
+    DistanceFromHome(Box<DistanceFromHomeState>),
 }
 
 impl AggOp {
@@ -616,41 +624,37 @@ impl AggOp {
             AggKind::Histogram => AggOp::Histogram(HistogramState::new(
                 desc.ext.buckets.clone().unwrap_or_default(),
             )),
-            AggKind::HourOfDayHistogram => {
-                AggOp::HourOfDayHistogram(HourOfDayHistogramState::default())
-            }
+            AggKind::HourOfDayHistogram => AggOp::HourOfDayHistogram(Box::default()),
             AggKind::DowHourHistogram => AggOp::DowHourHistogram(DowHourHistogramState::default()),
-            AggKind::SeasonalDeviation => {
-                AggOp::SeasonalDeviation(SeasonalDeviationState::default())
-            }
-            AggKind::EventTypeMix => AggOp::EventTypeMix(EventTypeMixState::new(
+            AggKind::SeasonalDeviation => AggOp::SeasonalDeviation(Box::default()),
+            AggKind::EventTypeMix => AggOp::EventTypeMix(Box::new(EventTypeMixState::new(
                 desc.ext.max_categories.unwrap_or(256),
                 desc.ext.categories.clone(),
-            )),
+            ))),
             AggKind::MostRecentN => {
                 AggOp::MostRecentN(MostRecentNState::new(desc.ext.n.unwrap_or(10)))
             }
             AggKind::ReservoirSample => {
                 AggOp::ReservoirSample(ReservoirSampleState::new(desc.ext.k.unwrap_or(10)))
             }
-            AggKind::GeoVelocity => AggOp::GeoVelocity(GeoVelocityState::with_fields(
+            AggKind::GeoVelocity => AggOp::GeoVelocity(Box::new(GeoVelocityState::with_fields(
                 desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
                 desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
-            )),
-            AggKind::GeoDistance => AggOp::GeoDistance(GeoDistanceState::with_fields(
+            ))),
+            AggKind::GeoDistance => AggOp::GeoDistance(Box::new(GeoDistanceState::with_fields(
                 desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
                 desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
-            )),
-            AggKind::GeoSpread => AggOp::GeoSpread(GeoSpreadState::with_fields(
+            ))),
+            AggKind::GeoSpread => AggOp::GeoSpread(Box::new(GeoSpreadState::with_fields(
                 desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
                 desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
-            )),
+            ))),
             AggKind::DistanceFromHome => {
-                AggOp::DistanceFromHome(DistanceFromHomeState::with_fields(
+                AggOp::DistanceFromHome(Box::new(DistanceFromHomeState::with_fields(
                     desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
                     desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),
                     desc.ext.samples.unwrap_or(100),
-                ))
+                )))
             }
         }
     }
