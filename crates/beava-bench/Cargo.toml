@@ -46,6 +46,10 @@ path = "src/main.rs"
 name = "beava-bench-v18"
 path = "src/bin/beava-bench-v18.rs"
 
+[[bin]]
+name = "beava-bench-v2"
+path = "src/bin/beava-bench-v2.rs"
+
 [[bench]]
 name = "blast_shape_bench"
 harness = false
