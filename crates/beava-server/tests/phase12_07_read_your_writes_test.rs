@@ -234,11 +234,16 @@ async fn test_tcp_op_push_then_op_get_on_same_connection_sees_pushed_event() {
 
     // Immediately OP_GET on the same socket — ApplyShard FIFO serialises
     // the get behind the push, so we must see cnt=1.
+    //
+    // Plan 13.4.1-04 (D-01): OP_GET frame body is verb-style
+    // `{table, key, features?}`; legacy `{feature, key}` shape is rejected
+    // (D-05). Migrated by Plan 13.4.1-05 closure. Response is a FLAT feature
+    // dict (D-03) — `{"cnt": 1}`, not `{"value": 1}`.
     let resp_frame = tcp_send_one_frame_and_read_one(
         &mut sock,
         OP_GET,
         CT_JSON,
-        br#"{"feature":"cnt","key":"alice"}"#,
+        br#"{"table":"TxnAgg","key":"alice"}"#,
         &mut rx_buf,
     )
     .await;
@@ -249,8 +254,8 @@ async fn test_tcp_op_push_then_op_get_on_same_connection_sees_pushed_event() {
     );
     let v: serde_json::Value = serde_json::from_slice(&resp_frame.payload).expect("json");
     assert_eq!(
-        v["value"], 1,
-        "TCP read-your-writes failed: expected value=1, got {v:#}"
+        v["cnt"], 1,
+        "TCP read-your-writes failed: expected cnt=1, got {v:#}"
     );
 
     let _ = shutdown_tx.send(());

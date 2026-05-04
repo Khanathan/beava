@@ -2030,3 +2030,39 @@ The non-gate cell drift is therefore **measurement variance** on a noisy dev box
 **PASS.** Phase 13.5 verdict per CLAUDE.md §End-to-end throughput regression contract: PASS at the gate cell (small/tcp, −7.1%); fraud-team/tcp primary-tuning cell PASS at −2.4%. WARN cells are informational only and consistent with measurement variance on the dev box.
 
 
+
+
+---
+
+## Phase 13.4.1 — Server-side wire-spec verb-style migration — small/tcp regression-gate run (Apple-M4)
+
+**Date:** 2026-05-04
+**Harness:** `beava-bench-v18 --pipeline small --transport tcp --wire-format msgpack --blast-shape zipfian --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --no-ledger` (small/tcp gate cell — 3 runs, median)
+**Commit:** `526c9963` (Plan 13.4.1-04 GREEN cluster HEAD; closure plan 13.4.1-05 in progress)
+**hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
+**Runs (sustained_eps):** 744,250 / 631,610 / 606,174 → median **631,610 EPS**
+
+### Phase 13.4.1 small/tcp regression-gate row
+
+| Cell | Phase 13.4.1 EPS | Phase 13.5 baseline EPS | Δ% vs 13.5 | Verdict |
+|------|---------------:|------------------------:|-----------:|---------|
+| small/tcp (gate) | 631,610 | 674,108 | **−6.30%** | **PASS** (within ±10% gate band) |
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 13.4.1's small/tcp cell measured **−6.30%** vs Phase 13.5 baseline (median 631,610 EPS vs 674,108). Inside the ±10% PASS band; far from the 25% BLOCK threshold. Single-run spread (606,174 / 631,610 / 744,250) sits well within the Apple-M4 dev-box variance band documented in the Phase 13.5 SUMMARY (±10–15% on small-shape TCP cells when IDE + Claude Code SDK are co-resident).
+
+### Phase 13.4.1 root-cause analysis
+
+Phase 13.4.1 modifies these hot-path-adjacent sites in `crates/beava-server/`:
+- `apply_shard.rs::WireRequest::HttpGet` body parser — three-step ladder (new shape parse → legacy detection → InternalError fallback). Adds one extra `serde_json::from_slice<Value>` call only on the legacy-shape path; happy-path adds zero overhead beyond the new `HttpGetReq` struct (vs the old `BatchGetBody` struct).
+- `apply_shard.rs::WireRequest::TcpGet` body parser — same three-step ladder; same happy-path overhead profile.
+- `apply_shard.rs::BatchGetReqEntry` custom Deserialize impl — one bool field + visit_map traversal vs the prior derive(Deserialize). Negligible per-entry cost (~10 ns/entry).
+- `apply_shard.rs::dispatch_batch_get_sync` — adds a `for entry in &req.requests` alias-WARN scan loop (only emits WARN when `from_alias`); adds a per-entry features-filter `iter().any(...)` check inside the descriptor.features loop; flattens the response constructor (one `Value::Object` push vs one `json!({...})` macro — actually FASTER: 1 allocation vs 4).
+- `runtime_core_glue.rs::dispatch_get_single_verb_style_sync` — NEW function; single-row hot path that mirrors Case 2 of `dispatch_get_single`. Does NOT exercise on the small/tcp PUSH-shaped bench (the bench harness is push-dominated — `get_samples=1` per run); read-path attribution is therefore minimal here.
+
+The `--blast-shape zipfian --cardinality 10000` shape is push-dominated; small/tcp is the canonical regression-gate cell for the *push* hot path. Phase 13.4.1's edits are concentrated on the *read* hot path (`/get`, `/batch_get`, `OP_GET`, `OP_BATCH_GET`); the push hot path (`/push/:event_name`, `OP_PUSH`) is untouched. The −6.30% delta is therefore most plausibly **measurement variance on the dev box** rather than a structural regression — consistent with the Phase 13.5 −7.1% delta on the same gate cell with no hot-path edits.
+
+### Verdict
+
+**PASS.** Within the ±10% PASS band on the regression-gate cell; well clear of the 25% BLOCK threshold. Phase 13.4.1 verdict per CLAUDE.md §End-to-end throughput regression contract: PASS at the small/tcp gate cell. The 8-cell sweep (medium/tcp, large/tcp, fraud-team/tcp, http variants) was not re-run for this fix-up phase per CONTEXT.md `<carrying_forward>` ("Throughput regression gate — small/tcp baseline from Phase 13.5; 10% warn / 25% block thresholds") — single-cell run is sufficient for closure.

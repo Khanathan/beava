@@ -335,3 +335,16 @@ harness = false
 [[bench]]
 name = "phase12_8_memory_gov_apply"
 harness = false
+
+# ─── Plan 13.4.1-05 Task 5.c — verb-style dispatch microbench (perf-discipline gate) ───
+# Two cells covering Plan 13.4.1-04's migrated dispatch hot paths:
+#   - dispatch_get_single_verb_style_sync (single-row, 1-feature filter)
+#   - dispatch_batch_get_sync (10-entry batch × 1-feature filter; CT_JSON + CT_MSGPACK)
+# The change is a serde shape flip (NEUTRAL-to-POSITIVE delta, covered by the
+# throughput-baselines small/tcp gate); this bench is regression insurance
+# per CLAUDE.md §Performance Discipline. See
+# .planning/phases/13.4.1-server-wire-spec-verb-style-migration/13.4.1-05-PLAN.md.
+[[bench]]
+name = "phase13_4_1_dispatch_get_verb_style"
+harness = false
+required-features = ["testing"]

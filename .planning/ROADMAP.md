@@ -804,7 +804,7 @@ Wave structure:
 
 ---
 
-### Phase 13.4.1: Server-side wire-spec verb-style migration (Phase 13.4 fix-up) — 📋 PLANNED 2026-05-04
+### Phase 13.4.1: Server-side wire-spec verb-style migration (Phase 13.4 fix-up) — ✅ CLOSED 2026-05-04 (PASS)
 
 **Status:** Inserted 2026-05-04 during /gsd-plan-phase 13.5.1 verification. Goal-backward audit found that Phase 13.4 left `WireRequest::HttpGet` parsing the legacy `{keys, features}` shape and `WireRequest::TcpGet` parsing the legacy `{feature, key}` shape — neither speaks the locked verb-style `{table, key, features?}` contract from `docs/wire-spec.md` / `docs/http-api.md`. The 13.5.1 SDK transports send the verb-style shape; without this fix-up phase, all 68 v0 acceptance tests would 500 at the wire boundary. `/batch_get` response is also wrapped (`{table, entity_id, features:{...}}`) where the SDK and acceptance tests expect flat rows.
 
@@ -819,11 +819,11 @@ Wave structure:
 **Plans:** 5 plans across 4 waves (planned 2026-05-04 via `/gsd-plan-phase 13.4.1`).
 
 Plans:
-- [ ] 13.4.1-01-PLAN.md — Wave 1 (exclusive Cargo.toml owner; registers all 3 Phase 13.4.1 [[test]] entries up front) — RED: integration tests for D-01 + D-05 verb-style POST /get + OP_GET (6 tests)
-- [ ] 13.4.1-02-PLAN.md — Wave 2 (depends on 01; file-disjoint w/ 03) — RED: integration tests for D-02 + D-03 + D-06 verb-style POST /batch_get + OP_BATCH_GET (6 tests)
-- [ ] 13.4.1-03-PLAN.md — Wave 2 (depends on 01; file-disjoint w/ 02) — RED: D-04 entity_id → key alias precedent test with WARN-log assertion (4 tests)
-- [ ] 13.4.1-04-PLAN.md — Wave 3 (depends on 01+02+03) — GREEN cluster: GlueResponse::UnsupportedRequestShape variant; migrate WireRequest::HttpGet+TcpGet + BatchGetReqEntry; flatten dispatch_batch_get_sync; D-04 strict alias detection + WARN; D-05 legacy-shape ladder; flatten phase13_4_op_batch_get.rs Tests 1+2+5; v0.0.x deferral entry. Plans 01/02/03 RED → GREEN. (5 atomic commits)
-- [ ] 13.4.1-05-PLAN.md — Wave 4 (depends on 04) — Closure: examples/wire round-trip; throughput-baselines small/tcp regression-gate row vs Phase 13.5 baseline (10% warn / 25% block); perf-baselines entry; VERIFICATION.md + SUMMARY.md; ROADMAP status flip to ✅ CLOSED.
+- [x] 13.4.1-01-PLAN.md — Wave 1 (exclusive Cargo.toml owner; registers all 3 Phase 13.4.1 [[test]] entries up front) — RED: integration tests for D-01 + D-05 verb-style POST /get + OP_GET (6 tests)
+- [x] 13.4.1-02-PLAN.md — Wave 2 (depends on 01; file-disjoint w/ 03) — RED: integration tests for D-02 + D-03 + D-06 verb-style POST /batch_get + OP_BATCH_GET (6 tests)
+- [x] 13.4.1-03-PLAN.md — Wave 2 (depends on 01; file-disjoint w/ 02) — RED: D-04 entity_id → key alias precedent test with WARN-log assertion (4 tests)
+- [x] 13.4.1-04-PLAN.md — Wave 3 (depends on 01+02+03) — GREEN cluster: GlueResponse::UnsupportedRequestShape variant; migrate WireRequest::HttpGet+TcpGet + BatchGetReqEntry; flatten dispatch_batch_get_sync; D-04 strict alias detection + WARN; D-05 legacy-shape ladder; flatten phase13_4_op_batch_get.rs Tests 1+2+5; v0.0.x deferral entry. Plans 01/02/03 RED → GREEN. (5 atomic commits)
+- [x] 13.4.1-05-PLAN.md — Wave 4 (depends on 04) — Closure: examples/wire round-trip; throughput-baselines small/tcp regression-gate row vs Phase 13.5 baseline (10% warn / 25% block); perf-baselines entry; VERIFICATION.md + SUMMARY.md; ROADMAP status flip to ✅ CLOSED.
 
 **Success criteria:**
 1. `POST /get` and `OP_GET` accept `{table, key, features?}` JSON body; reject the legacy `{keys, features}` and `{feature, key}` shapes with structured error.
@@ -834,6 +834,8 @@ Plans:
 6. Throughput regression-gate `small/tcp` within ±10% of Phase 13.5 baseline (10% warn / 25% block per CLAUDE.md §End-to-end throughput regression contract).
 
 **Estimated wall-clock:** 1-2 days.
+
+**Closed:** 2026-05-04. SUMMARY: `.planning/phases/13.4.1-server-wire-spec-verb-style-migration/13.4.1-SUMMARY.md`. VERIFICATION: `.planning/phases/13.4.1-server-wire-spec-verb-style-migration/13.4.1-VERIFICATION.md`. All 6 success criteria GREEN. 16 RED tests turned GREEN across Plans 01/02/03; 3 envelope-shape assertions in `phase13_4_op_batch_get.rs` flattened (Plan 04); 11 sibling tests across 9 files migrated from legacy `{keys, features}` / `{feature, key}` shape to verb-style `{table, key}` (Plan 05 follow-through Rule 1 deviation); 3 envelope-shape assertions in `phase13_4_global_table_routing.rs` flattened (Plan 05 follow-through). Throughput regression-gate small/tcp = **−6.30%** vs Phase 13.5 baseline (median 631,610 EPS of 3 runs vs 674,108 EPS) — **PASS** within ±10% gate band. New focused criterion microbench `crates/beava-server/benches/phase13_4_1_dispatch_get_verb_style.rs` registered + measured (146 ns single-row / 5.2 µs JSON batch / 3.5 µs msgpack batch; perf-discipline gate per CLAUDE.md). **Phase 13.5.1 Plan 05 (SDK transport impl) is now unblocked.** v0.0.x cleanup followups documented in `deferred-items.md`: drop `entity_id` serde alias on BatchGetReqEntry; remove `OP_MGET (0x0021)` / `OP_GET_MULTI (0x0022)` opcodes (not in v0 wire-spec); remove `WireRequest::HttpGetSingle` legacy `GET /get/:feature/:key` route; investigate 2 pre-existing test flakes (`phase2_5_smoke::criterion_6_pipelined_registers_return_in_order`, `phase2_smoke::success_criterion_4_conflict_returns_409_with_diff`) + parallel-execution port-binding races (confirmed pre-existing on plain Plan-04 head; NOT introduced by Phase 13.4.1).
 
 ---
 
