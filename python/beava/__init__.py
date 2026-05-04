@@ -82,6 +82,7 @@ from beava._agg import (  # noqa: F401
 )
 from beava._app import App  # noqa: F401
 from beava._col import col, lit  # noqa: F401
+from beava._demo import demo  # noqa: F401
 from beava._errors import (  # noqa: F401
     BinaryNotFoundError,
     RegistrationError,
@@ -99,6 +100,7 @@ __all__ = [
     "lit",
     "event",
     "table",
+    "demo",
     # core (8)
     "count",
     "sum",
