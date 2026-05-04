@@ -262,32 +262,43 @@ fn route_table_variants_deleted() {
 ///
 /// Turned GREEN when Plan 12.7-06 landed; `#[ignore]` removed by Plan
 /// 12.7-10 closure.
+///
+/// **Phase 13.5 Plan 11 amendment (ADR-001 partial overturn 2026-05-03):**
+/// `@bv.table` is REVIVED for aggregation-output (no upsert/delete/retract;
+/// no MVCC). The forbidden artifact is the legacy `_tables` (plural) module
+/// — the OLD upsert/delete table. The new `_table` (singular) module
+/// containing only the `@bv.table` decorator is allowed and required.
 #[test]
 fn python_bv_table_re_export_deleted() {
     let root = workspace_root();
     let init_py = root.join("python/beava/__init__.py");
     let src = std::fs::read_to_string(&init_py).expect("python/beava/__init__.py must exist");
+    // The legacy plural `_tables` module is forbidden (it had upsert / delete /
+    // retract — ADR-001 explicitly does NOT revive these).
     assert!(
         !src.contains("from ._tables import"),
-        "`from ._tables import ...` re-export must be deleted from \
-         python/beava/__init__.py (v0 events-only per Plan 12.7-06)"
-    );
-    // `"table"` token in `__all__`. Match the literal `"table",` form to
-    // avoid spurious matches on `"events_table"` etc.
-    assert!(
-        !src.contains("\"table\","),
-        "`\"table\",` entry in __all__ must be deleted from \
-         python/beava/__init__.py (v0 events-only per Plan 12.7-06)"
+        "`from ._tables import ...` (plural — legacy upsert/delete) must \
+         remain deleted from python/beava/__init__.py (v0 events-only per \
+         Plan 12.7-06; ADR-001 only revives the @bv.table aggregation \
+         decorator via the singular `_table` module)"
     );
     // Sanity-positive: surviving re-exports still present.
     assert!(
-        src.contains("from ._events import event"),
+        src.contains("from beava._events import event")
+            || src.contains("from ._events import event"),
         "Sanity: `from ._events import event` re-export must remain in \
          python/beava/__init__.py (the @bv.event decorator is part of the v0 surface)"
     );
     assert!(
         src.contains("\"event\","),
         "Sanity: `\"event\",` entry must remain in __all__ (v0 events-only path)"
+    );
+    // Sanity-positive (ADR-001): the @bv.table decorator is part of v0.
+    assert!(
+        src.contains("from beava._table import table")
+            || src.contains("from ._table import table"),
+        "ADR-001 partial overturn: `from ._table import table` (singular — \
+         aggregation-output decorator) must remain re-exported"
     );
 }
 
