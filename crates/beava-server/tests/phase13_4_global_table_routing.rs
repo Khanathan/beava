@@ -286,7 +286,10 @@ async fn register_top_level_kind_table_still_rejected() {
         .expect("post /register");
     let status = resp.status().as_u16();
     let body: serde_json::Value = resp.json().await.expect("json");
-    assert_eq!(status, 400, "top-level kind=table must return 400, got: {body:#}");
+    assert_eq!(
+        status, 400,
+        "top-level kind=table must return 400, got: {body:#}"
+    );
     let code = body["error"]["code"].as_str().unwrap_or_default();
     assert_eq!(
         code, "unsupported_node_kind",

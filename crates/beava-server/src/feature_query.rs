@@ -52,6 +52,21 @@ use beava_core::row::Value;
 /// `group_keys.len()`. Callers should return a `key_parse_failure` error code in
 /// that case so it is distinguishable from `key_not_found` (WR-02).
 ///
+/// **Plan 13.4-09 / ADR-003 — global-table sentinel routing.** When
+/// `group_keys.is_empty()` (the wire-level signal for a global table per
+/// ADR-003), an empty `key_str` is the sentinel that addresses the
+/// single-slot global state. `EntityKeyShape::from_row` already produces
+/// `Multi(EntityKey(empty))` on the apply path when `group_keys` is empty
+/// (see `crates/beava-core/src/agg_state_table.rs` lines 283-305 — the
+/// compound-key branch with a zero-length loop body). The query path
+/// must mirror that: return `Some(EntityKey(empty SmallVec))` so the
+/// per-entity hashmap accepts the lookup. Per ADR-003: "the existing
+/// `&str` key path handles `\"\"` natively. No new code path inside
+/// `apply_shard.rs::dispatch_*_sync` — just the absence of a special-case
+/// rejection." Without this branch, `"".split('|').collect::<Vec<_>>()`
+/// produces `[""]` (one segment) which fails the arity check (1 != 0)
+/// and surfaces as `key_parse_failure` at GET / batch_get time.
+///
 /// **Limitation:** pipe characters inside key values must be percent-encoded as `%7C`
 /// because `|` is the multi-key separator. Full URL-decoding of `%7C` → `|` is deferred
 /// to Phase 12 API completion.
@@ -59,6 +74,13 @@ pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<E
     use beava_core::row::Value;
     use compact_str::CompactString;
     use smallvec::SmallVec;
+    // Plan 13.4-09 / ADR-003 — global-table sentinel routing. Empty
+    // entity_id + empty group_keys → single sentinel slot. The split below
+    // would produce one empty segment (1 != 0 arity mismatch); short-circuit
+    // here.
+    if group_keys.is_empty() && key_str.is_empty() {
+        return Some(EntityKey(SmallVec::new()));
+    }
     let segments: Vec<&str> = key_str.split('|').collect();
     if segments.len() != group_keys.len() {
         return None;
