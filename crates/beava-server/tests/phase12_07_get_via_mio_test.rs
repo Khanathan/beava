@@ -172,8 +172,13 @@ async fn test_http_get_batch_via_mio_returns_result_map() {
     let (http_addr, _tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
+    // Plan 13.4.1-04 (D-01): POST /get takes the verb-style single-row body
+    // `{table, key, features?}` and returns a FLAT feature dict (no
+    // `{"result": ...}` envelope, no per-row `{table, entity_id, features}`
+    // wrapper). The legacy `{keys, features}` shape is rejected with
+    // `unsupported_request_shape` (D-05). Migrated by Plan 13.4.1-05 closure.
     let client = reqwest::Client::new();
-    let req = serde_json::json!({"keys": ["alice"], "features": ["cnt"]});
+    let req = serde_json::json!({"table": "TxnAgg", "key": "alice"});
     let resp = client
         .post(format!("http://{}/get", http_addr))
         .json(&req)
@@ -187,10 +192,16 @@ async fn test_http_get_batch_via_mio_returns_result_map() {
         body.get("result").is_none(),
         "result envelope must be absent (Plan 13.4-02), got {body:#}"
     );
-    assert_eq!(
-        body["alice"]["cnt"], 1,
-        "expected alice.cnt=1, got {body:#}"
+    // Plan 13.4.1-04 (D-03): FLAT row — feature dict IS the body.
+    assert!(
+        body.get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got {body:#}"
     );
+    assert!(
+        body.get("entity_id").is_none(),
+        "FLAT row must NOT carry entity_id envelope key (D-03), got {body:#}"
+    );
+    assert_eq!(body["cnt"], 1, "expected cnt=1, got {body:#}");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
@@ -241,11 +252,16 @@ async fn test_tcp_op_get_single_returns_op_get_response() {
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
+    // Plan 13.4.1-04 (D-01): OP_GET frame body is verb-style
+    // `{table, key, features?}`; legacy `{feature, key}` shape is rejected
+    // with structured `unsupported_request_shape` (D-05). Migrated by
+    // Plan 13.4.1-05 closure. Response is a FLAT feature dict (no `value`
+    // envelope, no `{table, entity_id, features}` wrapper).
     let frame = tcp_send_and_recv(
         tcp_addr,
         OP_GET,
         CT_JSON,
-        br#"{"feature":"cnt","key":"alice"}"#,
+        br#"{"table":"TxnAgg","key":"alice"}"#,
     )
     .await;
     assert_eq!(
@@ -253,7 +269,16 @@ async fn test_tcp_op_get_single_returns_op_get_response() {
         "expected OP_GET_RESPONSE for OP_GET"
     );
     let v: serde_json::Value = serde_json::from_slice(&frame.payload).expect("json");
-    assert_eq!(v["value"], 1, "expected value=1, got {v:#}");
+    // Plan 13.4.1-04 (D-03): FLAT row — feature dict IS the body.
+    assert_eq!(v["cnt"], 1, "expected cnt=1, got {v:#}");
+    assert!(
+        v.get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got {v:#}"
+    );
+    assert!(
+        v.get("entity_id").is_none(),
+        "FLAT row must NOT carry entity_id envelope key (D-03), got {v:#}"
+    );
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;

@@ -942,3 +942,45 @@ Measures the CLI cold-path overhead (workload load + memory estimator + clap arg
 ### Phase 13.5 apply_path carry-through
 
 The Phase 13.4 `apply_path` microbench rows above remain the live regression-gate for the apply hot path. Phase 13.5 made no edits to `crates/beava-core` or `crates/beava-server` outside `tests/phase12_7_legacy_table_handlers_killed.rs` (test-only, ADR-001 alignment). The apply_path/cold_key/14_aggs gate cell at 957.91 ns remains the active baseline.
+
+---
+
+## Phase 13.4.1 — Server-side wire-spec verb-style migration — verb-style dispatch microbench (Apple-M4)
+
+**Date:** 2026-05-04
+**HEAD at measurement:** `526c9963` (Plan 13.4.1-04 GREEN cluster HEAD; closure plan 13.4.1-05 in progress)
+**hw-class:** Apple-M4 / Darwin-24.3.0 / 10 cores
+**Bench:** `crates/beava-server/benches/phase13_4_1_dispatch_get_verb_style.rs`
+**Builder:** `cargo bench --bench phase13_4_1_dispatch_get_verb_style --features testing`
+**System load:** moderate (Cursor IDE + Claude Code SDK + bench process active in foreground; consistent with Phase 12.6/12.7/12.8/12.9/13.4 measurement profile).
+
+**Phase 13.4.1 net code change vs Phase 13.4:** ~250 LOC of server-side wire-spec migration. Plan 04 introduces `GlueResponse::UnsupportedRequestShape`, migrates `WireRequest::HttpGet`/`TcpGet` body parsers to verb-style three-step ladder, rewrites `BatchGetReqEntry` with custom `Deserialize` impl (D-04 alias detection), flattens `dispatch_batch_get_sync` per-row response constructor (D-03), adds per-entry features-filter narrowing pass (D-06), and adds a NEW `dispatch_get_single_verb_style_sync` function in `runtime_core_glue.rs`. Net hot-path delta on the *read* path is structurally NEUTRAL-to-POSITIVE: custom Deserialize ~10 ns/entry, features-filter `iter().any(...)` ~15 ns/feature, FLAT-row constructor saves 3 allocations per entry. The *push* hot path is untouched.
+
+### Phase 13.4.1 microbench rows (phase13_4_1_dispatch_get_verb_style)
+
+| Cell | Phase 13.4.1 median | CI (criterion) | Notes |
+|---|---:|---|---|
+| `verb_style_dispatch/get_single_1feat` | **146.02 ns** | [145.21, 146.86] | NEW verb-style single-row dispatch (`dispatch_get_single_verb_style_sync`). Baseline anchor — no prior comparable measurement (this function did not exist before Plan 13.4.1-04). 1000 entities × 10 events warm-AppState; 1-feature filter. Used by `POST /get` + `OP_GET`. |
+| `verb_style_dispatch/get_batch_json/10x1feat` | **5,215 ns** (5.22 µs) | [4,747, 5,777] | Migrated batch dispatch (`dispatch_batch_get_sync`) with verb-style per-entry shape + per-entry features filter + FLAT-row response constructor. CT_JSON body parse + dispatch + JSON encode for 10-entry batch with 1-feature filter each. |
+| `verb_style_dispatch/get_batch_msgpack/10x1feat` | **3,503 ns** (3.50 µs) | [3,475, 3,535] | Same batch dispatch, CT_MSGPACK body parse. msgpack-vs-json body-parse savings consistent with the Phase 12-09 read-path microbench result (~33% faster on this shape). |
+
+**Driver:** Phase 13.4.1 is a server-side wire-spec migration (~250 LOC). Predicted: NEUTRAL-to-POSITIVE on dispatch hot path. Measured (first observation, no prior baseline): single-row verb-style dispatch at ~146 ns/op is well under the existing read-path microbench reference points (Phase 12-09 `read_path/get_single_json` was ~1500 ns on a comparable warm-AppState shape; the verb-style `dispatch_get_single_verb_style_sync` is structurally simpler — no batch envelope unwrap, no upfront feature-resolve loop — and the lower number is consistent with that simplification). The 10-entry batch microbench at ~5.2 µs JSON / ~3.5 µs msgpack is also consistent with Phase 12-09's `read_path/get_batch_json/10x5` numbers when normalised by feature count (10×5=50 cells in 12-09, 10×1=10 cells here; ~5× less work per call).
+
+### Regression gate verdict
+
+| Gate cell | Phase 13.4.1 | Baseline | Δ% | Verdict |
+|---|---:|---:|---:|---|
+| `verb_style_dispatch/get_single_1feat` (NEW gate) | 146.02 ns | n/a (first measurement) | — | **PASS — baseline established** |
+
+CLAUDE.md §Performance Discipline thresholds (10% slower → WARN; 25% slower → BLOCK) apply prospectively from this baseline forward. Subsequent plans modifying `runtime_core_glue.rs::dispatch_get_single_verb_style_sync` or `apply_shard.rs::dispatch_batch_get_sync` MUST re-run this microbench and compare against the rows above.
+
+### Throughput verification
+
+- See `.planning/throughput-baselines.md::Phase 13.4.1 — Server-side wire-spec verb-style migration — small/tcp regression-gate run` for the end-to-end throughput rebench. Gate cell `small/tcp` measured **−6.30% vs Phase 13.5 baseline** (median 631,610 EPS vs 674,108 EPS). PASS at the regression-gate cell.
+
+### Workspace state at measurement
+
+- `cargo fmt --all --check` — exit 0
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — exit 0 (verified during Plan 13.4.1-04 commit 90693a88)
+- `cargo bench --bench phase13_4_1_dispatch_get_verb_style --no-run --features testing` — exit 0 (compile gate)
+- `cargo test --workspace --features testing` — workspace GREEN at HEAD (verified during Plan 13.4.1-05 closure)

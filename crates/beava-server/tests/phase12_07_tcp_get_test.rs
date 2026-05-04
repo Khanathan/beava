@@ -145,12 +145,19 @@ fn setup_apply_shard_with_count_pipeline() -> ShardFixture {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-/// TcpGet (single feature, single key) routes to dispatch_get_single_sync
-/// and returns QueryResult { body: {"value": 1} } for known feature/key.
+/// TcpGet (verb-style single-row) routes to
+/// dispatch_get_single_verb_style_sync and returns QueryResult { body: FLAT
+/// feature dict } for a known table/key.
+///
+/// Plan 13.4.1-04 (D-01): TCP OP_GET body is verb-style
+/// `{table, key, features?}`; legacy `{feature, key}` is rejected with
+/// `unsupported_request_shape` (D-05). Migrated by Plan 13.4.1-05 closure.
+/// Plan 13.4.1-04 (D-03): response is the FLAT feature dict (no `value`
+/// envelope, no `{table, entity_id, features}` wrapper).
 #[test]
 fn test_apply_shard_dispatches_tcp_get_single() {
     let fx = setup_apply_shard_with_count_pipeline();
-    let body = Bytes::from_static(br#"{"feature":"cnt","key":"alice"}"#);
+    let body = Bytes::from_static(br#"{"table":"TxnAgg","key":"alice"}"#);
     let resps = fx.shard.dispatch_wire_request_with_row(
         WireRequest::TcpGet {
             body,
@@ -162,7 +169,11 @@ fn test_apply_shard_dispatches_tcp_get_single() {
     match &resps[0] {
         GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(v["value"], 1, "expected value=1, got {v:#}");
+            assert_eq!(v["cnt"], 1, "expected cnt=1, got {v:#}");
+            assert!(
+                v.get("table").is_none(),
+                "FLAT row must NOT carry table envelope key (D-03), got {v:#}"
+            );
         }
         other => panic!("expected QueryResult, got {other:?}"),
     }
@@ -231,11 +242,17 @@ fn test_apply_shard_dispatches_tcp_get_multi() {
     }
 }
 
-/// TcpGet for an unknown feature returns QueryNotFound { code: "feature_not_found" }.
+/// TcpGet for an unknown table returns QueryNotFound { code: "unknown_table" }.
+///
+/// Plan 13.4.1-04 (D-01): verb-style `OP_GET` resolves `table` (not feature)
+/// against the registry; an unregistered table name maps to `unknown_table`
+/// per `dispatch_get_single_verb_style_sync`'s `compiled_aggregation` miss
+/// path. Pre-13.4.1 this test asserted `feature_not_found` against the
+/// legacy `{feature, key}` shape — migrated by Plan 13.4.1-05 closure.
 #[test]
 fn test_apply_shard_tcp_get_unknown_feature_returns_query_not_found() {
     let fx = setup_apply_shard_with_count_pipeline();
-    let body = Bytes::from_static(br#"{"feature":"nonexistent","key":"alice"}"#);
+    let body = Bytes::from_static(br#"{"table":"DoesNotExist","key":"alice"}"#);
     let resps = fx.shard.dispatch_wire_request_with_row(
         WireRequest::TcpGet {
             body,
@@ -246,8 +263,8 @@ fn test_apply_shard_tcp_get_unknown_feature_returns_query_not_found() {
     assert_eq!(resps.len(), 1);
     match &resps[0] {
         GlueResponse::QueryNotFound { code } => {
-            assert_eq!(*code, "feature_not_found", "expected feature_not_found");
+            assert_eq!(*code, "unknown_table", "expected unknown_table");
         }
-        other => panic!("expected QueryNotFound feature_not_found, got {other:?}"),
+        other => panic!("expected QueryNotFound unknown_table, got {other:?}"),
     }
 }

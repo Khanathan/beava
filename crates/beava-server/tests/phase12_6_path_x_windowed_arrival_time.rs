@@ -122,8 +122,14 @@ async fn path_x_bucketing_is_on_arrival_not_event_time() {
     push_one(json!({"user_id": "u1", "event_time": 2_i64})).await;
 
     // Query the rolling 60s count for u1.
+    //
+    // Plan 13.4.1-04 (D-01): POST /get takes verb-style
+    // `{table, key, features?}`; legacy `{keys, features}` is rejected with
+    // `unsupported_request_shape` (D-05). Migrated by Plan 13.4.1-05 closure.
+    // Plan 13.4.1-04 (D-03): response is FLAT feature dict — `body["cnt"]`
+    // not `body["u1"]["cnt"]`.
     let resp = ts
-        .post_json("/get", &json!({"keys": ["u1"], "features": ["cnt"]}))
+        .post_json("/get", &json!({"table": "TxCount60s", "key": "u1"}))
         .await
         .expect("post /get");
     assert_eq!(
@@ -142,7 +148,7 @@ async fn path_x_bucketing_is_on_arrival_not_event_time() {
         body.get("result").is_none(),
         "result envelope must be absent (Plan 13.4-02), got {body:#}"
     );
-    let cnt = body["u1"]["cnt"].as_i64();
+    let cnt = body["cnt"].as_i64();
     assert_eq!(
         cnt,
         Some(3),

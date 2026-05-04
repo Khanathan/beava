@@ -278,7 +278,13 @@ async fn test_tcp_get_single_msgpack_round_trip() {
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
-    let req = serde_json::json!({"feature": "cnt", "key": "alice"});
+    // Plan 13.4.1-04 (D-01): TCP OP_GET body is verb-style
+    // `{table, key, features?}`; legacy `{feature, key}` is rejected (D-05).
+    // Migrated by Plan 13.4.1-05 closure. Plan 12-09 D-A/D-B carry-forward:
+    // CT_MSGPACK in → CT_MSGPACK out; serde shape flip to verb-style does
+    // not affect the codec round-trip (only the request body field names).
+    // Plan 13.4.1-04 (D-03): response is FLAT feature dict.
+    let req = serde_json::json!({"table": "TxnAgg", "key": "alice"});
     let mp_body = rmp_serde::to_vec_named(&req).expect("msgpack encode");
     let frame = tcp_send_and_recv(tcp_addr, OP_GET, CT_MSGPACK, &mp_body).await;
 
@@ -286,7 +292,7 @@ async fn test_tcp_get_single_msgpack_round_trip() {
     assert_eq!(frame.content_type, CT_MSGPACK);
     let v: serde_json::Value =
         rmp_serde::from_slice(&frame.payload).expect("payload decodes as msgpack");
-    assert_eq!(v["value"], 10, "expected value=10, got {v:#}");
+    assert_eq!(v["cnt"], 10, "expected cnt=10, got {v:#}");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;

@@ -200,10 +200,18 @@ async fn push_then_get_global_table_returns_aggregated_features() {
         .and_then(|v| v.as_array())
         .unwrap_or_else(|| panic!("expected results array, got: {body:#}"));
     assert_eq!(results.len(), 1, "single result expected, got: {body:#}");
-    assert_eq!(results[0]["table"], "GlobalCounter");
-    assert_eq!(results[0]["entity_id"], "");
+    // Plan 13.4.1-04 (D-03): FLAT row — `{table, entity_id, features}`
+    // envelope dropped; feature dict IS the row. Migrated by Plan 13.4.1-05.
+    assert!(
+        results[0].get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got: {body:#}"
+    );
+    assert!(
+        results[0].get("entity_id").is_none(),
+        "FLAT row must NOT carry entity_id envelope key (D-03), got: {body:#}"
+    );
     assert_eq!(
-        results[0]["features"]["events_total"], 5,
+        results[0]["events_total"], 5,
         "global events_total must be 5, got: {body:#}"
     );
     assert!(
@@ -334,6 +342,9 @@ async fn mixed_global_and_per_entity_in_same_registry_works() {
     }
 
     // Per-entity GET on alice.
+    // Plan 13.4.1-04 (D-03): FLAT row response — body["results"][i]
+    // is the feature dict directly, no `features` envelope. Migrated by
+    // Plan 13.4.1-05 closure.
     let req = json!({
         "requests": [{"table": "UserSpend", "entity_id": "alice"}]
     });
@@ -341,7 +352,7 @@ async fn mixed_global_and_per_entity_in_same_registry_works() {
     assert_eq!(resp.status().as_u16(), 200);
     let body: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(
-        body["results"][0]["features"]["spend_count"], 3,
+        body["results"][0]["spend_count"], 3,
         "alice spend_count=3, got: {body:#}"
     );
 
@@ -353,7 +364,7 @@ async fn mixed_global_and_per_entity_in_same_registry_works() {
     assert_eq!(resp.status().as_u16(), 200);
     let body: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(
-        body["results"][0]["features"]["events_total"], 5,
+        body["results"][0]["events_total"], 5,
         "global events_total=5 (3 alice + 2 bob), got: {body:#}"
     );
 
@@ -409,17 +420,31 @@ async fn op_batch_get_heterogeneous_per_entity_and_global_works() {
     assert_eq!(results.len(), 2);
 
     // Order preserved per Plan 03 wire contract.
-    assert_eq!(results[0]["table"], "UserSpend");
-    assert_eq!(results[0]["entity_id"], "alice");
-    assert_eq!(results[0]["features"]["spend_count"], 2);
+    // Plan 13.4.1-04 (D-03): FLAT rows — `{table, entity_id, features}`
+    // envelope dropped; feature dict IS the row. Migrated by Plan 13.4.1-05.
+    assert!(
+        results[0].get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got: {body:#}"
+    );
+    assert!(
+        results[0].get("entity_id").is_none(),
+        "FLAT row must NOT carry entity_id envelope key (D-03), got: {body:#}"
+    );
+    assert_eq!(results[0]["spend_count"], 2);
     assert!(
         results[0].get("error").is_none(),
         "alice tuple should not error, got: {body:#}"
     );
 
-    assert_eq!(results[1]["table"], "GlobalCounter");
-    assert_eq!(results[1]["entity_id"], "");
-    assert_eq!(results[1]["features"]["events_total"], 3);
+    assert!(
+        results[1].get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got: {body:#}"
+    );
+    assert!(
+        results[1].get("entity_id").is_none(),
+        "FLAT row must NOT carry entity_id envelope key (D-03), got: {body:#}"
+    );
+    assert_eq!(results[1]["events_total"], 3);
     assert!(
         results[1].get("error").is_none(),
         "global tuple should not error, got: {body:#}"

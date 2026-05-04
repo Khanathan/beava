@@ -177,11 +177,16 @@ async fn test_tcp_get_single_json_unchanged() {
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_v18().await;
     register_and_push_for_alice(http_addr).await;
 
+    // Plan 13.4.1-04 (D-01): TCP OP_GET body is verb-style
+    // `{table, key, features?}`; legacy `{feature, key}` is rejected with
+    // `unsupported_request_shape` (D-05). Migrated by Plan 13.4.1-05 closure.
+    // Plan 13.4.1-04 (D-03): response is FLAT feature dict (no `value`
+    // envelope).
     let frame = tcp_send_and_recv(
         tcp_addr,
         OP_GET,
         CT_JSON,
-        br#"{"feature":"cnt","key":"alice"}"#,
+        br#"{"table":"TxnAgg","key":"alice"}"#,
     )
     .await;
     assert_eq!(frame.op, OP_GET_RESPONSE);
@@ -195,7 +200,7 @@ async fn test_tcp_get_single_json_unchanged() {
         "JSON payload must start with '{{'"
     );
     let v: serde_json::Value = serde_json::from_slice(&frame.payload).expect("json");
-    assert_eq!(v["value"], 1);
+    assert_eq!(v["cnt"], 1);
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;

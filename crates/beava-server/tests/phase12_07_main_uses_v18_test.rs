@@ -248,8 +248,14 @@ async fn test_release_binary_responds_to_get_without_dev_endpoints_env() {
     assert_eq!(body["value"], 1, "expected value=1, got {body:#}");
 }
 
-/// RED today for the same reason as the GET test above. POST /get is the
-/// batch endpoint that feeds `read_bench.py`'s primary measurement workload.
+/// POST /get smoke against the release binary running without
+/// `BEAVA_DEV_ENDPOINTS` — confirms the verb-style read endpoint mounted by
+/// the production server boot path.
+///
+/// Phase 13.4.1-04 (D-01): POST /get takes verb-style `{table, key, features?}`
+/// and returns a FLAT feature dict; legacy `{keys, features}` is rejected
+/// with `unsupported_request_shape` (D-05). Migrated by Plan 13.4.1-05
+/// closure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_release_binary_responds_to_post_get_without_dev_endpoints_env() {
     {
@@ -262,7 +268,7 @@ async fn test_release_binary_responds_to_post_get_without_dev_endpoints_env() {
     push_event_for_alice(server.http_port).await;
 
     let client = reqwest::Client::new();
-    let body = serde_json::json!({"keys": ["alice"], "features": ["cnt"]});
+    let body = serde_json::json!({"table": "TxnAgg", "key": "alice"});
     let resp = client
         .post(format!("http://127.0.0.1:{}/get", server.http_port))
         .json(&body)
@@ -284,8 +290,10 @@ async fn test_release_binary_responds_to_post_get_without_dev_endpoints_env() {
         body.get("result").is_none(),
         "result envelope must be absent (Plan 13.4-02), got {body:#}"
     );
-    assert_eq!(
-        body["alice"]["cnt"], 1,
-        "expected alice.cnt=1, got {body:#}"
+    // Plan 13.4.1-04 (D-03): FLAT row — feature dict IS the body.
+    assert!(
+        body.get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got {body:#}"
     );
+    assert_eq!(body["cnt"], 1, "expected cnt=1, got {body:#}");
 }

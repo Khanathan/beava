@@ -100,7 +100,16 @@ async fn push_alice_two_events(ts: &TestServer) {
     }
 }
 
-// ─── Test 1 — populated entity returns flat dict (no `result` envelope) ─────
+// ─── Test 1 — populated entity returns flat dict (no envelope) ─────────────
+//
+// Phase 13.4.1 (Plan 13.4.1-04 + closure 13.4.1-05): `POST /get` now takes the
+// verb-style single-row body `{table, key, features?}` (D-01) and returns a
+// FLAT feature dict — no `{table, entity_id, features}` envelope, no
+// `{"result": ...}` wrapper. The legacy `{keys, features}` shape is rejected
+// with `unsupported_request_shape` (D-05). This test was migrated from the
+// legacy shape to the verb-style shape during the Phase 13.4.1 closure
+// (Plan 13.4.1-05 Task 5.a — Rule 1 deviation: Plan 04 flattened
+// phase13_4_op_batch_get.rs Tests 1/2/5 but overlooked this sibling file).
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_get_returns_flat_dict_no_row_envelope() {
@@ -108,26 +117,37 @@ async fn http_get_returns_flat_dict_no_row_envelope() {
     register(&ts).await;
     push_alice_two_events(&ts).await;
 
-    let req = json!({"keys": ["alice"], "features": ["cnt", "total"]});
+    // Verb-style POST /get body: {table, key, features?}.
+    let req = json!({"table": "UserSpend", "key": "alice"});
     let resp = ts.post_json("/get", &req).await.expect("post /get");
     assert_eq!(resp.status().as_u16(), 200);
     let body: serde_json::Value = resp.json().await.expect("json body");
 
-    // The load-bearing assertion: NO `result` envelope key.
+    // The load-bearing assertion: NO envelope keys.
     assert!(
         body.get("result").is_none(),
         "result envelope must be absent (Phase 13.0-15 wire-spec), got: {body:#}"
     );
-    // The historic `row` envelope should also stay absent — per the plan's
-    // wording, we want a flat dict end-to-end.
     assert!(
         body.get("row").is_none(),
         "row envelope must be absent, got: {body:#}"
     );
+    assert!(
+        body.get("table").is_none(),
+        "FLAT row must NOT carry table envelope key (D-03), got: {body:#}"
+    );
+    assert!(
+        body.get("entity_id").is_none(),
+        "FLAT row must NOT carry entity_id envelope key (D-03), got: {body:#}"
+    );
+    assert!(
+        body.get("features").is_none(),
+        "FLAT row must NOT nest features under an envelope (D-03), got: {body:#}"
+    );
 
-    // Flat-dict body: alice's row is at the top level.
-    assert_eq!(body["alice"]["cnt"], 2, "expected cnt=2, got: {body:#}");
-    let total = body["alice"]["total"]
+    // Flat-dict body: alice's features ARE the response body directly.
+    assert_eq!(body["cnt"], 2, "expected cnt=2, got: {body:#}");
+    let total = body["total"]
         .as_f64()
         .unwrap_or_else(|| panic!("total must be a number, got: {body:#}"));
     assert!(
@@ -138,7 +158,9 @@ async fn http_get_returns_flat_dict_no_row_envelope() {
     ts.shutdown().await.ok();
 }
 
-// ─── Test 2 — cold-start returns `{}` (flat dict; absent entity omitted) ────
+// ─── Test 2 — cold-start returns `{}` (flat dict; entity has no events) ────
+//
+// Migrated to verb-style by Plan 13.4.1-05.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_get_cold_start_returns_flat_dict_with_defaults() {
@@ -146,7 +168,7 @@ async fn http_get_cold_start_returns_flat_dict_with_defaults() {
     register(&ts).await;
     // No events pushed.
 
-    let req = json!({"keys": ["nobody"], "features": ["cnt", "total"]});
+    let req = json!({"table": "UserSpend", "key": "nobody"});
     let resp = ts.post_json("/get", &req).await.expect("post /get");
     assert_eq!(resp.status().as_u16(), 200);
     let body: serde_json::Value = resp.json().await.expect("json body");
@@ -161,58 +183,52 @@ async fn http_get_cold_start_returns_flat_dict_with_defaults() {
         "row envelope must be absent on cold-start, got: {body:#}"
     );
 
-    // Per wire-spec ("Cold-start returns `{}`") the absent entity is omitted
-    // from the response; the response body itself is the empty flat dict.
-    // Note: the plan's example wording suggested cold-start defaults like
-    // `{cnt: 0, total: 0}`, but the existing dispatch path silently omits
-    // empty entities (matches the wire-spec). See EXECUTOR-DEVIATION-02.md.
+    // Per wire-spec ("Cold-start returns `{}`") the absent entity's row is
+    // the empty flat dict — confirms the
+    // `examples/wire/batch_get-heterogeneous.response.json` line 5 contract
+    // for the single-row shape.
     assert!(
         body.is_object(),
         "cold-start body must be a JSON object, got: {body:#}"
     );
+    let obj = body.as_object().expect("object");
     assert!(
-        body.get("nobody").is_none(),
-        "absent entity must be omitted from the flat-dict body, got: {body:#}"
+        obj.is_empty(),
+        "cold-start body must be the empty FLAT dict, got: {body:#}"
     );
 
     ts.shutdown().await.ok();
 }
 
-// ─── Test 3 — unknown feature returns a structured error ───────────────────
+// ─── Test 3 — unknown table returns a structured error ─────────────────────
+//
+// Migrated to verb-style. With D-01, the verb-style POST /get takes
+// `{table, key, features?}`; passing an unregistered `table` returns the
+// structured 404 `unknown_table` error per
+// `dispatch_get_single_verb_style_sync`'s `compiled_aggregation` miss path.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_get_unknown_feature_returns_structured_error() {
     let ts = TestServer::spawn().await.expect("spawn");
     register(&ts).await;
 
-    let req = json!({"keys": ["alice"], "features": ["does_not_exist"]});
+    let req = json!({"table": "DoesNotExist", "key": "alice"});
     let resp = ts.post_json("/get", &req).await.expect("post /get");
 
-    // The plan's "must_have" wanted a 404 + `{"error":{"code":"unknown_table"}}`.
-    // The current /get path takes feature names (not table names) and reports
-    // `feature_not_found` via the existing `internal_error` 500 path. Aligning
-    // the response code to a structured 404 + `unknown_table` is Plan 04's
-    // remit (verb-style routes change the request shape from {keys, features}
-    // to {table, key}). For Plan 02 we keep the existing semantic and only
-    // assert the structured-error contract: status >= 400 with a JSON body
-    // containing `error.code`. See EXECUTOR-DEVIATION-02.md.
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
     assert!(
         !(200..300).contains(&status),
-        "unknown feature must NOT be a 2xx success, got status={status}, body={body_text}"
+        "unknown table must NOT be a 2xx success, got status={status}, body={body_text}"
     );
     let body: serde_json::Value =
         serde_json::from_str(&body_text).expect("error body must be JSON");
     let code = body["error"]["code"]
         .as_str()
         .unwrap_or_else(|| panic!("structured error.code missing, body={body:#}"));
-    let reason = body["error"]["reason"].as_str().unwrap_or_default();
-    assert!(
-        code == "unknown_table"
-            || code == "internal_error" && reason.contains("feature_not_found"),
-        "expected unknown_table (Plan 04+) or internal_error/feature_not_found (Plan 02 baseline), \
-         got code={code}, reason={reason}, body={body:#}"
+    assert_eq!(
+        code, "unknown_table",
+        "expected unknown_table for unregistered table per D-01 dispatch_get_single_verb_style_sync, got code={code}, body={body:#}"
     );
 
     ts.shutdown().await.ok();
