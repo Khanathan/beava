@@ -84,17 +84,25 @@ def cold_start_equivalent(value: Any) -> bool:
 
 @pytest.fixture
 def app() -> Generator[Any, None, None]:
-    """Yield a fresh ``bv.App()`` embed-mode instance per test.
+    """Yield a fresh ``bv.App(test_mode=True)`` embed-mode instance per test.
 
-    The fixture spawns a local beava subprocess on ephemeral ports via
-    bv.App() no-URL embed mode (uses ``python/beava/_embed.py`` machinery),
-    yields the entered context manager, and tears down on test exit.
+    Per Phase 13.5.1 D-05 (USER-LOCKED): every v0 acceptance test runs against
+    a real spawned subprocess with BEAVA_TEST_MODE=1, so app.reset() is callable
+    and OP_RESET frames are accepted by the engine. NO MagicMock against the
+    Transport surface — that anti-pattern masked the 0/68 deficit at Phase 13.5
+    Plan 11 close.
+
+    The fixture spawns a local beava subprocess on ephemeral ports via the
+    no-URL ``bv.App(test_mode=True)`` embed-mode path (uses python/beava/_embed.py
+    machinery; passes test_mode through to spawn_embedded_server which sets
+    env["BEAVA_TEST_MODE"]="1"), yields the entered context manager, and tears
+    down on test exit.
 
     Tests should NOT close the app explicitly — the fixture handles teardown.
     """
     import beava as bv  # noqa: PLC0415
 
-    with bv.App() as instance:
+    with bv.App(test_mode=True) as instance:
         yield instance
 
 
