@@ -35,7 +35,7 @@ def test_first_per_user_high_volume(app):
         device_id: str
 
     @bv.table(key="user_id")
-    def UserFirstDevice(logins):
+    def UserFirstDevice(logins: Login):
         return logins.group_by("user_id").agg(
             first_device=bv.first("device_id"),
         )
@@ -74,7 +74,7 @@ def test_last_per_user_high_volume(app):
         ip: str
 
     @bv.table(key="user_id")
-    def UserLastIp(beacons):
+    def UserLastIp(beacons: Beacon):
         return beacons.group_by("user_id").agg(
             last_ip=bv.last("ip"),
         )
@@ -112,7 +112,7 @@ def test_first_n_per_user_high_volume(app):
         target: str
 
     @bv.table(key="user_id")
-    def UserFirstFive(clicks):
+    def UserFirstFive(clicks: Click):
         return clicks.group_by("user_id").agg(
             opens=bv.first_n("target", n=5),
         )
@@ -153,7 +153,7 @@ def test_last_n_per_user_high_volume(app):
         action: str
 
     @bv.table(key="user_id")
-    def UserLastFive(touches):
+    def UserLastFive(touches: Touch):
         return touches.group_by("user_id").agg(
             recent=bv.last_n("action", n=5),
         )
@@ -195,7 +195,7 @@ def test_lag_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserLagged(txs):
+    def UserLagged(txs: Tx):
         return txs.group_by("user_id").agg(
             prev_amt=bv.lag("amount", n=1),
             prev_3_amt=bv.lag("amount", n=3),

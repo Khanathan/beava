@@ -56,6 +56,14 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
     the existing ``@bv.event`` convention. Silent fallback to
     ``inspect.Parameter.empty`` (which surfaced as ``AttributeError`` in
     user code) is forbidden.
+
+    Phase 13.5.1 Plan 05 deviation (Rule 3 — blocking issue auto-fix): when
+    the upstream class is defined in a function-local scope (typical pytest
+    pattern: ``@bv.event class Txn:`` inside a test fn), ``get_type_hints``
+    cannot resolve it from ``fn.__globals__`` alone. Walk the calling
+    frame's ``f_locals`` to find the class — this is the same trick the
+    typing module uses when ``localns=None``. Fallback to ``fn.__globals__``
+    last-ditch lookup matches ``_make_event_derivation``.
     """
     sig = inspect.signature(fn)
     params = list(sig.parameters.values())
@@ -63,8 +71,28 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
         raise TypeError(
             f"@bv.table function {fn.__name__!r} must take at least one parameter"
         )
+    # Walk the call stack to collect candidate localns from enclosing frames.
+    # This lets @bv.table resolve upstream classes defined inside the same
+    # function (e.g. inside a pytest test fn).
+    caller_locals: dict[str, Any] = {}
     try:
-        resolved = get_type_hints(fn)
+        # _resolve_upstream_proxies → _make_table → @bv.table closure → user code.
+        # Walk back up to ~6 frames to be safe across the decorator wrappers.
+        frame = inspect.currentframe()
+        for _ in range(8):
+            if frame is None:
+                break
+            frame = frame.f_back
+            if frame is None:
+                break
+            for name, val in frame.f_locals.items():
+                # First-seen wins (closer to the decorator call site).
+                if name not in caller_locals:
+                    caller_locals[name] = val
+    finally:
+        del frame  # break the reference cycle (CPython hygiene)
+    try:
+        resolved = get_type_hints(fn, globalns=fn.__globals__, localns=caller_locals)
     except Exception:
         resolved = {}
     proxies: list[Any] = []
@@ -77,7 +105,8 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
                 f"e.g. def {fn.__name__}({p.name}: Click): ..."
             )
         if isinstance(ann, str):
-            ann = fn.__globals__.get(ann, ann)
+            # Try caller-frame locals first, then fn.__globals__ as last-ditch.
+            ann = caller_locals.get(ann, fn.__globals__.get(ann, ann))
         proxies.append(ann)
     return proxies
 

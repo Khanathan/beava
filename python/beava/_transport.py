@@ -29,11 +29,13 @@ from beava._wire import (
     CT_JSON,
     CT_MSGPACK,
     MAX_FRAME_BYTES,
+    OP_BATCH_GET,
     OP_GET,
     OP_GET_RESPONSE,
     OP_PING,
     OP_PUSH,
     OP_REGISTER,
+    OP_RESET,
     encode_frame,
     parse_register_response,
     read_frame,
@@ -80,13 +82,17 @@ class Transport:
         *,
         table: str,
         key: str | list[Any],
+        features: list[str] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
     def send_batch_get(
         self,
         *,
-        requests: list[tuple[str, str | list[Any]]],
+        requests: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ],
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -157,6 +163,180 @@ class HttpTransport(Transport):
             errors=[],
         )
 
+    def send_push(
+        self,
+        *,
+        event_name: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """POST /push with verb-style body ``{event, data}``.
+
+        Targets the post-Phase-13.4 verb-style route — NOT the legacy
+        path-encoded ``/push/{event_name}`` form. Body shape matches the
+        live server parser at
+        ``crates/beava-runtime-core/src/http_listener.rs::parse_verb_push``
+        which expects ``{"event": "<name>", "data": {<fields>}}``. The
+        docs at ``docs/http-api.md:176`` say ``{event_name, fields}`` but
+        the impl never migrated; SDK matches the impl (a docs erratum will
+        be filed in v0.0.x — Phase 13.4 missed-rename).
+
+        Returns:
+            Parsed success body dict (``{"ack_lsn": int, ...}``).
+
+        Raises:
+            RegistrationError: Server returned non-2xx with a JSON error body.
+        """
+        body_bytes = json.dumps(
+            {"event": event_name, "data": fields}, ensure_ascii=False
+        ).encode("utf-8")
+        r = self._client.post(
+            "/push",
+            content=body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        body = r.json()
+        if r.status_code == 200:
+            return body  # type: ignore[no-any-return]
+        error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_get(
+        self,
+        *,
+        table: str,
+        key: str | list[Any],
+        features: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /get with verb-style body ``{table, key, features?}``.
+
+        Per Phase 13.4.1 wire-spec lockdown, the response is a row-shape
+        flat dict (cold-start = ``{}``). Features filter (D-03 USER-LOCKED)
+        is included when non-None and omitted when None (full row).
+
+        Returns:
+            Parsed row-shape flat dict (``{}`` on cold-start).
+
+        Raises:
+            RegistrationError: Server returned non-2xx with a JSON error body.
+        """
+        payload: dict[str, Any] = {"table": table, "key": key}
+        if features is not None:
+            payload["features"] = features
+        body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        r = self._client.post(
+            "/get",
+            content=body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        body = r.json()
+        if r.status_code == 200:
+            return body  # type: ignore[no-any-return]
+        error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_batch_get(
+        self,
+        *,
+        requests: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ],
+    ) -> list[dict[str, Any]]:
+        """POST /batch_get with verb-style body ``{requests:[{table,key,features?}, ...]}``.
+
+        Phase 13.4.1 returns ``body["results"]`` as a list of FLAT row dicts
+        (no wrapping envelope), so this method returns ``body["results"]``
+        verbatim. Per-entry ``features`` filter is supported via the
+        3-tuple form (D-03 USER-LOCKED).
+
+        Args:
+            requests: list of per-entry tuples — either ``(table, key)`` or
+                ``(table, key, features)``. ``features`` may be None to
+                request the full row.
+
+        Returns:
+            list of flat row dicts in request order.
+
+        Raises:
+            RegistrationError: Server returned non-2xx with a JSON error body.
+            TypeError: A request entry is neither a 2-tuple nor a 3-tuple.
+        """
+        wire_requests: list[dict[str, Any]] = []
+        for entry in requests:
+            if len(entry) == 2:
+                tbl, k = entry
+                wire_requests.append({"table": tbl, "key": k})
+            elif len(entry) == 3:
+                tbl, k, feats = entry
+                wire_entry: dict[str, Any] = {"table": tbl, "key": k}
+                if feats is not None:
+                    wire_entry["features"] = feats
+                wire_requests.append(wire_entry)
+            else:
+                raise TypeError(
+                    f"batch_get request entry must be a 2- or 3-tuple "
+                    f"(table, key) or (table, key, features); "
+                    f"got {len(entry)}-tuple"
+                )
+        body_bytes = json.dumps(
+            {"requests": wire_requests}, ensure_ascii=False
+        ).encode("utf-8")
+        r = self._client.post(
+            "/batch_get",
+            content=body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        body = r.json()
+        if r.status_code == 200:
+            results: list[dict[str, Any]] = body.get("results", [])
+            return results
+        error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_reset(self) -> None:
+        """POST /reset (test_mode-gated per Phase 13.4 D-03).
+
+        On non-test-mode servers the engine returns 403 ``reset_disabled``;
+        this method surfaces that as ``RegistrationError(code="reset_disabled")``.
+
+        Raises:
+            RegistrationError: Server returned non-200; in particular,
+                ``code="reset_disabled"`` if the server is not in test_mode.
+        """
+        r = self._client.post(
+            "/reset",
+            content=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        if r.status_code == 200:
+            return
+        try:
+            body = r.json()
+            error = body.get("error", {})
+        except Exception:
+            error = {"code": "unparseable_error", "message": r.text[:200]}
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
     def send_ping(self) -> dict:  # type: ignore[type-arg]
         """Not implemented for HTTP transport.
 
@@ -170,7 +350,7 @@ class HttpTransport(Transport):
             "use tcp:// transport for ping"
         )
 
-    def http_get_single(self, feature: str, key: str) -> object:
+    def _http_get_single(self, feature: str, key: str) -> object:
         """Plan 12-09: GET /get/{feature}/{key} → returns the unwrapped value.
 
         HTTP /get is JSON-only per locked decision D-D — regardless of whether
@@ -285,6 +465,157 @@ class TcpTransport(Transport):
         result: dict[str, Any] = json.loads(frame.payload.decode("utf-8"))
         return result
 
+    def send_get(
+        self,
+        *,
+        table: str,
+        key: str | list[Any],
+        features: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Send OP_GET (0x0020) frame; expect OP_GET_RESPONSE (0x0023).
+
+        D-02 USER-LOCKED: JSON default on the read path (matches send_push).
+        D-03 USER-LOCKED: ``features`` is included in the body when non-None
+        and omitted when None (full row).
+
+        Wire body (verb-style, Phase 13.4.1 contract):
+            ``{"table": ..., "key": ..., "features"?: [...]}``
+
+        Returns:
+            Parsed row-shape flat dict (cold-start = ``{}``).
+
+        Raises:
+            RegistrationError: Server returned OP_ERROR_RESPONSE or an
+                unexpected response opcode.
+        """
+        payload: dict[str, Any] = {"table": table, "key": key}
+        if features is not None:
+            payload["features"] = features
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        sock = self._ensure_connected()
+        sock.sendall(encode_frame(OP_GET, CT_JSON, body))
+        frame = read_frame(sock, self.max_frame_bytes)
+        if frame.op != OP_GET_RESPONSE:
+            try:
+                err_body = json.loads(frame.payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                err_body = {"error": {"code": "unparseable_error"}}
+            raise RegistrationError(
+                code=err_body.get("error", {}).get("code", "unexpected_frame"),
+                message=(
+                    f"expected OP_GET_RESPONSE (0x0023), "
+                    f"got op={frame.op:#06x} ct={frame.ct:#04x} body={err_body!r}"
+                ),
+            )
+        result: dict[str, Any] = json.loads(frame.payload.decode("utf-8"))
+        return result
+
+    def send_batch_get(
+        self,
+        *,
+        requests: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ],
+    ) -> list[dict[str, Any]]:
+        """Send OP_BATCH_GET (0x0024) frame; expect OP_GET_RESPONSE (0x0023).
+
+        D-02 USER-LOCKED: JSON default. D-03 USER-LOCKED: per-entry features
+        filter via 3-tuple form is supported and included on the wire when
+        non-None.
+
+        Wire body (verb-style, Phase 13.4.1 contract):
+            ``{"requests": [{"table", "key", "features"?}, ...]}``
+        Wire response: ``{"results": [<flat row>, ...]}`` — flat-row contract
+        per Phase 13.4.1; this method returns ``body["results"]`` verbatim.
+
+        Returns:
+            list of flat row dicts in request order.
+
+        Raises:
+            RegistrationError: Server returned OP_ERROR_RESPONSE or an
+                unexpected response shape.
+            TypeError: A request entry is neither a 2-tuple nor a 3-tuple.
+        """
+        wire_requests: list[dict[str, Any]] = []
+        for entry in requests:
+            if len(entry) == 2:
+                tbl, k = entry
+                wire_requests.append({"table": tbl, "key": k})
+            elif len(entry) == 3:
+                tbl, k, feats = entry
+                wire_entry: dict[str, Any] = {"table": tbl, "key": k}
+                if feats is not None:
+                    wire_entry["features"] = feats
+                wire_requests.append(wire_entry)
+            else:
+                raise TypeError(
+                    f"batch_get request entry must be a 2- or 3-tuple "
+                    f"(table, key) or (table, key, features); "
+                    f"got {len(entry)}-tuple"
+                )
+        body = json.dumps(
+            {"requests": wire_requests}, ensure_ascii=False
+        ).encode("utf-8")
+        sock = self._ensure_connected()
+        sock.sendall(encode_frame(OP_BATCH_GET, CT_JSON, body))
+        frame = read_frame(sock, self.max_frame_bytes)
+        if frame.op != OP_GET_RESPONSE:
+            try:
+                err_body = json.loads(frame.payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                err_body = {"error": {"code": "unparseable_error"}}
+            raise RegistrationError(
+                code=err_body.get("error", {}).get("code", "unexpected_frame"),
+                message=(
+                    f"expected OP_GET_RESPONSE (0x0023) for OP_BATCH_GET, "
+                    f"got op={frame.op:#06x} ct={frame.ct:#04x} body={err_body!r}"
+                ),
+            )
+        decoded = json.loads(frame.payload.decode("utf-8"))
+        if not isinstance(decoded, dict) or "results" not in decoded:
+            raise RegistrationError(
+                code="unexpected_frame",
+                message=f"expected dict with 'results' key, got {decoded!r}",
+            )
+        results: list[dict[str, Any]] = decoded["results"]
+        return results
+
+    def send_reset(self) -> None:
+        """Send OP_RESET (0x0040) frame; gated on server-side test_mode (Phase 13.4 D-03).
+
+        Successful reset: server returns OP_GET_RESPONSE (0x0023) — the
+        generic JSON success frame — with body
+        ``{"reset": true, "registry_version": N}`` (per
+        ``crates/beava-server/src/server.rs:2338-2344``). The plan-document /
+        PATTERNS.md initially predicted OP_RESET-on-success but the actual
+        server uses OP_GET_RESPONSE; SDK matches the live contract.
+
+        Disabled (non-test_mode): server returns OP_ERROR_RESPONSE with
+        ``code="reset_disabled_in_production"``.
+
+        Raises:
+            RegistrationError: OP_RESET denied (non-test_mode) or
+                unexpected response opcode.
+        """
+        sock = self._ensure_connected()
+        sock.sendall(encode_frame(OP_RESET, CT_JSON, b"{}"))
+        frame = read_frame(sock, self.max_frame_bytes)
+        if frame.op == OP_GET_RESPONSE:
+            # Success path — body is `{"reset": true, "registry_version": N}`.
+            return
+        try:
+            err_body = json.loads(frame.payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            err_body = {"error": {"code": "unparseable_error"}}
+        raise RegistrationError(
+            code=err_body.get("error", {}).get("code", "unexpected_frame"),
+            message=(
+                f"OP_RESET denied or unexpected response: "
+                f"op={frame.op:#06x} body={err_body!r}"
+            ),
+        )
+
     def send_ping(self) -> dict:  # type: ignore[type-arg]
         """Send an OP_PING frame and return the parsed response dict.
 
@@ -305,7 +636,7 @@ class TcpTransport(Transport):
         result: dict[str, object] = json.loads(frame.payload.decode("utf-8"))
         return result
 
-    def tcp_get_single(
+    def _tcp_get_single(
         self,
         feature: str,
         key: str,
@@ -438,18 +769,52 @@ class EmbedTransport(Transport):
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
         return self._tcp.send_register(payload_json)
 
+    def send_push(
+        self,
+        *,
+        event_name: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Delegate to the embedded TcpTransport."""
+        return self._tcp.send_push(event_name=event_name, fields=fields)
+
+    def send_get(
+        self,
+        *,
+        table: str,
+        key: str | list[Any],
+        features: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Delegate to the embedded TcpTransport (D-03 features filter)."""
+        return self._tcp.send_get(table=table, key=key, features=features)
+
+    def send_batch_get(
+        self,
+        *,
+        requests: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ],
+    ) -> list[dict[str, Any]]:
+        """Delegate to the embedded TcpTransport (D-03 per-entry features filter)."""
+        return self._tcp.send_batch_get(requests=requests)
+
+    def send_reset(self) -> None:
+        """Delegate to the embedded TcpTransport (test_mode-gated)."""
+        self._tcp.send_reset()
+
     def send_ping(self) -> dict:  # type: ignore[type-arg]
         return self._tcp.send_ping()
 
-    def tcp_get_single(
+    def _tcp_get_single(
         self,
         feature: str,
         key: str,
         *,
         wire_format: str = "msgpack",
     ) -> object:
-        """Delegate to the embedded TcpTransport (Plan 12-09)."""
-        return self._tcp.tcp_get_single(feature, key, wire_format=wire_format)
+        """Delegate to the embedded TcpTransport (Plan 12-09; private per D-04)."""
+        return self._tcp._tcp_get_single(feature, key, wire_format=wire_format)
 
     def close(self) -> None:
         """Close the TCP socket then terminate the embedded server process."""

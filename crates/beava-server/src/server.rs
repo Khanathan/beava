@@ -464,16 +464,19 @@ async fn build_runtime_state(
     snapshot_interval_ms: u64,
     wal_fsync_interval_ms: u64,
 ) -> Result<ServerV18State, ServerError> {
-    // Disk-mode default — preserves the pre-Plan-13.4-07 behavior. The
-    // memory-mode path is reachable only via `bind_with_config`.
-    //
-    // Plan 13.4-08 (D-03): legacy `bind()` / `bind_with_state()` callers have
-    // no Config struct — production-safe by default (test_mode=false). The
-    // env var path still works because `bind_with_config` is the ONLY
-    // constructor that resolves the env var; legacy callers do NOT pick it
-    // up. This is intentional: the env var is the deployment-knob path
-    // (paired with bind_with_config in `main.rs`), and TestServer flips
-    // test_mode via the programmatic kwarg directly.
+    // Phase 13.5.1 Plan 05 (Rule 2 — missing critical functionality):
+    // honor the `BEAVA_TEST_MODE=1` env var in legacy `bind()` /
+    // `bind_with_state()` callers (i.e. the production `main.rs`). Per
+    // Phase 13.4 D-03 (USER-LOCKED) the env var is documented as one of
+    // the two opt-in paths to enable OP_RESET / test-only opcodes; the
+    // pre-existing comment ("paired with bind_with_config in main.rs")
+    // documented an intent that was never wired — `main.rs` calls
+    // `bind()`, so without this resolution the env var was a dead knob in
+    // production. The env-var check is exactly `== "1"` (no truthy
+    // coercion, matches `bind_with_config` at line 263).
+    let effective_test_mode = std::env::var("BEAVA_TEST_MODE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
     build_runtime_state_with_persistence(
         Persistence::Disk {
             wal_dir,
@@ -482,7 +485,7 @@ async fn build_runtime_state(
         },
         snapshot_interval_ms,
         wal_fsync_interval_ms,
-        /* effective_test_mode = */ false,
+        effective_test_mode,
     )
     .await
 }

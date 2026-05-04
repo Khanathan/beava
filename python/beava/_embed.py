@@ -20,7 +20,9 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
+import time
 from pathlib import Path
 
 from beava._errors import BinaryNotFoundError
@@ -107,11 +109,27 @@ def spawn_embedded_server(
     # constructing a bare minimal dict, so DYLD_LIBRARY_PATH / locale etc. are
     # inherited when the binary needs them.  We explicitly override only the
     # keys we care about.
+    # Phase 13.5.1 Plan 05 (Rule 3 blocking-issue auto-fix): pin
+    # BEAVA_WAL_DIR + BEAVA_SNAPSHOT_DIR to unique per-spawn tmpdirs so
+    # parallel test spawns don't collide on the default ./beava-wal/
+    # location (the binary fails on "File exists" if a prior process left
+    # behind a 0-byte WAL file). Each spawn gets a fresh dir under
+    # ``$TMPDIR/beava-embed-<pid>-<unix-ms>-<unique>/``; teardown_process
+    # leaves the dirs in place (small + cheaply gc'd by tmpfs reaper).
+    unique = f"{os.getpid()}-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+    spawn_root = Path(tempfile.gettempdir()) / f"beava-embed-{unique}"
+    wal_dir = spawn_root / "wal"
+    snapshot_dir = spawn_root / "snapshots"
+    wal_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+
     env = {
         **os.environ,
         "BEAVA_LISTEN_ADDR": "127.0.0.1:0",
         "BEAVA_TCP_PORT": "0",
         "BEAVA_DEV_ENDPOINTS": "1",
+        "BEAVA_WAL_DIR": str(wal_dir),
+        "BEAVA_SNAPSHOT_DIR": str(snapshot_dir),
     }
     # Phase 13.5 D-05 (cross-amendment from 13.4 D-03): test_mode kwarg
     # propagates BEAVA_TEST_MODE=1 to the spawned binary, gating OP_RESET

@@ -13,14 +13,17 @@ Two integration tests against a freshly-spawned beava server:
 
 RED today because:
   - `App.get(feature, key)` doesn't exist yet on the Python SDK.
-  - `TcpTransport.tcp_get_single` doesn't exist.
+  - `TcpTransport._tcp_get_single` doesn't exist.
   - `App.get` over http:// has no implementation either (not yet wired).
 
 GREEN after Task 5.b adds:
-  - `TcpTransport.tcp_get_single(feature, key)` — OP_GET frame with CT_MSGPACK
+  - `TcpTransport._tcp_get_single(feature, key)` — OP_GET frame with CT_MSGPACK
     body, decode response via msgpack.
-  - `HttpTransport.http_get_single(feature, key)` — GET /get/{feature}/{key}
+    (private helper; renamed in Phase 13.5.1 D-04 — D-04 deferral list
+    in `.planning/ideas/v0.1-deferrals.md` schedules the v0.0.x removal)
+  - `HttpTransport._http_get_single(feature, key)` — GET /get/{feature}/{key}
     with JSON parsing.
+    (private helper; renamed in Phase 13.5.1 D-04)
   - `App.get(feature, key)` dispatches based on transport type.
 """
 

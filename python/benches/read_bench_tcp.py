@@ -8,7 +8,9 @@ by default on tcp:// transports.
 Key differences vs ``read_bench.py`` (HTTP+JSON):
   - Spawns the server, registers the same pipeline, warms up via HTTP /push
     (writes are JSON; the read fast-path is the test target, not writes).
-  - Reads via ``TcpTransport.tcp_get_single`` (OP_GET + CT_MSGPACK) on
+  - Reads via ``TcpTransport._tcp_get_single`` (OP_GET + CT_MSGPACK) on
+    (private helper; renamed in Phase 13.5.1 D-04 — public-API surface
+    for reads is ``send_get`` only)
     multiple long-lived sockets driven from a thread pool — strict-FIFO per
     socket, parallelism via separate sockets.
   - Reports cells/sec where each cell = one (feature, key) pair, matching
@@ -280,7 +282,7 @@ def _worker(
             k = rng.choice(keys)
             t0 = time.perf_counter()
             try:
-                _ = transport.tcp_get_single(feature, k)
+                _ = transport._tcp_get_single(feature, k)
                 local_lat.append((time.perf_counter() - t0) * 1_000_000)
                 local_ok += 1
             except Exception:  # noqa: BLE001

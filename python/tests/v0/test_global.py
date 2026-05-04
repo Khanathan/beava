@@ -57,7 +57,7 @@ def test_global_count(app):
         page: str
 
     @bv.table  # NO key= → global aggregation
-    def TotalClicks(clicks):
+    def TotalClicks(clicks: Click):
         return clicks.agg(total=bv.count(window="forever"))
 
     app.register(Click, TotalClicks)
@@ -86,7 +86,7 @@ def test_global_sum(app):
         amount: float
 
     @bv.table
-    def TotalSpend(purchases):
+    def TotalSpend(purchases: Purchase):
         return purchases.agg(total=bv.sum("amount", window="forever"))
 
     app.register(Purchase, TotalSpend)
@@ -121,7 +121,7 @@ def test_global_top_k_pages(app):
         page: str
 
     @bv.table
-    def TopPages(views):
+    def TopPages(views: PageView):
         return views.agg(top_pages=bv.top_k("page", k=3, window="forever"))
 
     app.register(PageView, TopPages)
@@ -163,7 +163,7 @@ def test_global_n_unique_users(app):
         device: str
 
     @bv.table
-    def DistinctUsers(logins):
+    def DistinctUsers(logins: Login):
         return logins.agg(n_users=bv.n_unique("user_id", window="forever"))
 
     app.register(Login, DistinctUsers)
@@ -198,7 +198,7 @@ def test_global_quantile_amount(app):
         amount: float
 
     @bv.table
-    def AmountQ(txs):
+    def AmountQ(txs: Tx):
         return txs.agg(p95=bv.quantile("amount", q=0.95, window="forever"))
 
     app.register(Tx, AmountQ)
@@ -241,12 +241,12 @@ def test_global_form_equivalence(app):
 
     # Form 1 — bare .agg()
     @bv.table
-    def TotalForm1(hits):
+    def TotalForm1(hits: Hit):
         return hits.agg(t=bv.count(window="1h"))
 
     # Form 2 — explicit empty group_by()
     @bv.table
-    def TotalForm2(hits):
+    def TotalForm2(hits: Hit):
         return hits.group_by().agg(t=bv.count(window="1h"))
 
     # Form 3 — same as Form 1 with explicit @bv.table no-key (already form 1+3 hybrid)
@@ -286,11 +286,11 @@ def test_global_app_get_arity_mismatch(app):
         url: str
 
     @bv.table  # global table — NO key=
-    def PageTotal(pvs):
+    def PageTotal(pvs: Pageview):
         return pvs.agg(total=bv.count(window="forever"))
 
     @bv.table(key="user_id")  # per-entity table
-    def UserPageTotal(pvs):
+    def UserPageTotal(pvs: Pageview):
         return pvs.group_by("user_id").agg(total=bv.count(window="forever"))
 
     app.register(Pageview, PageTotal, UserPageTotal)
@@ -347,7 +347,7 @@ def test_global_cold_start(app):
         kind: str
 
     @bv.table
-    def EmptyTotal(targets):
+    def EmptyTotal(targets: UnrelatedEvent):
         return targets.agg(total=bv.count(window="forever"))
 
     app.register(TargetEvent, UnrelatedEvent, EmptyTotal)

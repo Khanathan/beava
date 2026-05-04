@@ -47,7 +47,7 @@ def test_first_seen_per_user_high_volume(app):
         ok: bool
 
     @bv.table(key="user_id")
-    def UserFirstSeen(logins):
+    def UserFirstSeen(logins: Login):
         return logins.group_by("user_id").agg(
             first_ms=bv.first_seen(),
         )
@@ -90,7 +90,7 @@ def test_last_seen_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserLastSeen(activity):
+    def UserLastSeen(activity: Activity):
         return activity.group_by("user_id").agg(
             last_ms=bv.last_seen(),
         )
@@ -135,7 +135,7 @@ def test_age_per_user_high_volume(app):
         screen: str
 
     @bv.table(key="user_id")
-    def UserAge(taps):
+    def UserAge(taps: Tap):
         return taps.group_by("user_id").agg(
             age_ms=bv.age(),
         )
@@ -187,7 +187,7 @@ def test_has_seen_per_user_high_volume(app):
         status: str
 
     @bv.table(key="user_id")
-    def UserHasFailed(logins):
+    def UserHasFailed(logins: Login):
         return logins.group_by("user_id").agg(
             ever_failed=bv.has_seen(where=bv.col("status") == "failed"),
         )
@@ -241,7 +241,7 @@ def test_time_since_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserSilenceMs(beats):
+    def UserSilenceMs(beats: Heartbeat):
         return beats.group_by("user_id").agg(
             silence_ms=bv.time_since(),
         )
@@ -282,7 +282,7 @@ def test_time_since_last_n_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserSilenceN3(pings):
+    def UserSilenceN3(pings: Ping):
         return pings.group_by("user_id").agg(
             silence_3=bv.time_since_last_n(n=3),
         )
@@ -339,7 +339,7 @@ def test_streak_per_user_high_volume(app):
         outcome: str
 
     @bv.table(key="user_id")
-    def UserStreak(bets):
+    def UserStreak(bets: Bet):
         return bets.group_by("user_id").agg(
             current_streak=bv.streak(where=bv.col("outcome") == "win"),
         )
@@ -381,7 +381,7 @@ def test_max_streak_per_user_high_volume(app):
         outcome: str
 
     @bv.table(key="user_id")
-    def UserMaxStreak(bets):
+    def UserMaxStreak(bets: Bet):
         return bets.group_by("user_id").agg(
             max_streak=bv.max_streak(where=bv.col("outcome") == "win"),
         )
@@ -425,7 +425,7 @@ def test_negative_streak_per_user_high_volume(app):
         result: str
 
     @bv.table(key="user_id")
-    def UserNegStreak(trials):
+    def UserNegStreak(trials: Trial):
         return trials.group_by("user_id").agg(
             losing=bv.negative_streak(where=bv.col("result") == "fail"),
         )
@@ -470,7 +470,7 @@ def test_first_seen_in_window_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserActiveLastHour(actions):
+    def UserActiveLastHour(actions: Action):
         return actions.group_by("user_id").agg(
             active_1h=bv.first_seen_in_window(window="1h"),
         )

@@ -42,7 +42,7 @@ def test_histogram_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserAmountHist(txs):
+    def UserAmountHist(txs: Tx):
         return txs.group_by("user_id").agg(
             hist=bv.histogram("amount", buckets=[10.0, 50.0, 100.0, 500.0]),
         )
@@ -102,7 +102,7 @@ def test_hour_of_day_histogram_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserHourHist(beats):
+    def UserHourHist(beats: Beat):
         return beats.group_by("user_id").agg(
             hist=bv.hour_of_day_histogram(),
         )
@@ -158,7 +158,7 @@ def test_dow_hour_histogram_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserDowHourHist(beats):
+    def UserDowHourHist(beats: Beat):
         return beats.group_by("user_id").agg(
             hist=bv.dow_hour_histogram(),
         )
@@ -204,7 +204,7 @@ def test_seasonal_deviation_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserSeasonal(txs):
+    def UserSeasonal(txs: Tx):
         return txs.group_by("user_id").agg(
             sd=bv.seasonal_deviation("amount"),
         )
@@ -245,7 +245,7 @@ def test_event_type_mix_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserMix(actions):
+    def UserMix(actions: Action):
         return actions.group_by("user_id").agg(
             mix=bv.event_type_mix("kind"),
         )
@@ -296,7 +296,7 @@ def test_most_recent_n_per_user_high_volume(app):
         ip: str
 
     @bv.table(key="user_id")
-    def UserRecentIps(logins):
+    def UserRecentIps(logins: Login):
         return logins.group_by("user_id").agg(
             recent=bv.most_recent_n("ip", n=10),
         )
@@ -340,7 +340,7 @@ def test_reservoir_sample_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserSample(txs):
+    def UserSample(txs: Tx):
         return txs.group_by("user_id").agg(
             sample=bv.reservoir_sample("amount", samples=100),
         )

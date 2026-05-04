@@ -42,7 +42,7 @@ def test_rate_of_change_per_user_high_volume(app):
         v: float
 
     @bv.table(key="user_id")
-    def UserRoc(ticks):
+    def UserRoc(ticks: Tick):
         return ticks.group_by("user_id").agg(
             roc=bv.rate_of_change("v", window="1h"),
         )
@@ -84,7 +84,7 @@ def test_inter_arrival_stats_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserCadence(beats):
+    def UserCadence(beats: Beat):
         return beats.group_by("user_id").agg(
             cadence=bv.inter_arrival_stats(window="1h"),
         )
@@ -129,7 +129,7 @@ def test_burst_count_per_user_high_volume(app):
         page: str
 
     @bv.table(key="user_id")
-    def UserBursts(clicks):
+    def UserBursts(clicks: Click):
         return clicks.group_by("user_id").agg(
             max_burst=bv.burst_count(window="1h", sub_window="1m"),
         )
@@ -171,7 +171,7 @@ def test_delta_from_prev_per_user_high_volume(app):
         v: float
 
     @bv.table(key="user_id")
-    def UserDelta(m_events):
+    def UserDelta(m_events: M):
         return m_events.group_by("user_id").agg(
             delta=bv.delta_from_prev("v"),
         )
@@ -213,7 +213,7 @@ def test_trend_per_user_high_volume(app):
         v: float
 
     @bv.table(key="user_id")
-    def UserTrend(samples):
+    def UserTrend(samples: Sample):
         return samples.group_by("user_id").agg(
             slope=bv.trend("v", window="1h"),
         )
@@ -256,7 +256,7 @@ def test_trend_residual_per_user_high_volume(app):
         v: float
 
     @bv.table(key="user_id")
-    def UserResidual(points):
+    def UserResidual(points: Pt):
         return points.group_by("user_id").agg(
             resid=bv.trend_residual("v", window="1h"),
         )
@@ -301,7 +301,7 @@ def test_outlier_count_per_user_high_volume(app):
         x: float
 
     @bv.table(key="user_id")
-    def UserOutliers(values):
+    def UserOutliers(values: V):
         return values.group_by("user_id").agg(
             n_out=bv.outlier_count("x", window="1h", sigma=3.0),
         )
@@ -345,7 +345,7 @@ def test_value_change_count_per_user_high_volume(app):
         state: str
 
     @bv.table(key="user_id")
-    def UserFlips(s_events):
+    def UserFlips(s_events: S):
         return s_events.group_by("user_id").agg(
             flips=bv.value_change_count("state", window="1h"),
         )
@@ -388,7 +388,7 @@ def test_z_score_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserZScore(obs):
+    def UserZScore(obs: Obs):
         return obs.group_by("user_id").agg(
             z=bv.z_score("amount", baseline_window="1h"),
         )
