@@ -1,0 +1,15 @@
+# Cloudflare Pages config — auto-deploy on push to v2/greenfield.
+# Phase 13.7 (docs site) — beava.dev.
+# See README.md for the one-time dashboard setup steps.
+
+name = "beava-website"
+compatibility_date = "2026-05-03"
+pages_build_output_dir = "./project"
+
+[build]
+command = "npm install && npm run build"
+# After `npm run build` (which runs build:docs + build:search), `project/` contains:
+#   - All hand-rolled HTML pages (already there)
+#   - 86 rendered docs pages (from Plan 01)
+#   - _pagefind/ search index (from build-search.mjs)
+# That's the deploy artifact root.
