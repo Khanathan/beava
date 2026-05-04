@@ -47,7 +47,7 @@ def test_lit_constant_column(app):
     Tagged = Click.with_columns(source=bv.lit("web")).named("Tagged")
 
     @bv.table(key="user_id")
-    def UserClicks(tagged):
+    def UserClicks(tagged: Click):
         return tagged.group_by("user_id").agg(
             total=bv.count(window="forever"),
             web_only=bv.count(
@@ -96,11 +96,11 @@ def test_lit_explicit_filter_literal(app):
     BigExplicit = Tx.filter(bv.col("amount") > bv.lit(100)).named("BigExplicit")
 
     @bv.table(key="user_id")
-    def CountImplicit(big):
+    def CountImplicit(big: Tx):
         return big.group_by("user_id").agg(n=bv.count(window="forever"))
 
     @bv.table(key="user_id")
-    def CountExplicit(big):
+    def CountExplicit(big: Tx):
         return big.group_by("user_id").agg(n=bv.count(window="forever"))
 
     # Bind upstream-by-name — both derivations independently feed their own table.
@@ -166,7 +166,7 @@ def test_lit_force_float_division(app):
     Rated = Telemetry.with_columns(rate=bv.col("count") / bv.lit(60.0)).named("Rated")
 
     @bv.table(key="user_id")
-    def UserMeanRate(rated):
+    def UserMeanRate(rated: Telemetry):
         return rated.group_by("user_id").agg(
             mean_rate=bv.mean("rate", window="forever"),
         )
@@ -229,7 +229,7 @@ def test_lit_value_types(app):
     ).named("Filtered")
 
     @bv.table(key="user_id")
-    def UserFilteredCount(filtered):
+    def UserFilteredCount(filtered: M):
         return filtered.group_by("user_id").agg(n=bv.count(window="forever"))
 
     app.register(M, Filtered, UserFilteredCount)
@@ -292,11 +292,11 @@ def test_lit_immutability(app):
     UseB = M.filter(bv.col("n") > b).named("UseB")
 
     @bv.table(key="user_id")
-    def CountA(filt):
+    def CountA(filt: M):
         return filt.group_by("user_id").agg(n=bv.count(window="forever"))
 
     @bv.table(key="user_id")
-    def CountB(filt):
+    def CountB(filt: M):
         return filt.group_by("user_id").agg(n=bv.count(window="forever"))
 
     app.register(M, UseA, UseB, CountA, CountB)

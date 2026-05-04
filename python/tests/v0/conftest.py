@@ -88,7 +88,7 @@ def app() -> Generator[Any, None, None]:
 
     Per Phase 13.5.1 D-05 (USER-LOCKED): every v0 acceptance test runs against
     a real spawned subprocess with BEAVA_TEST_MODE=1, so app.reset() is callable
-    and OP_RESET frames are accepted by the engine. NO MagicMock against the
+    and OP_RESET frames are accepted by the engine. NO mock-object against the
     Transport surface — that anti-pattern masked the 0/68 deficit at Phase 13.5
     Plan 11 close.
 

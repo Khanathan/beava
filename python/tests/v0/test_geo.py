@@ -56,7 +56,7 @@ def test_geo_velocity_per_user_high_volume(app):
         longitude: float
 
     @bv.table(key="user_id")
-    def UserGeoVel(txs):
+    def UserGeoVel(txs: GeoTx):
         return txs.group_by("user_id").agg(
             max_kmh=bv.geo_velocity(lat="latitude", lon="longitude"),
         )
@@ -101,7 +101,7 @@ def test_geo_distance_per_user_high_volume(app):
         lon: float
 
     @bv.table(key="user_id")
-    def UserPath(moves):
+    def UserPath(moves: Move):
         return moves.group_by("user_id").agg(
             total_km=bv.geo_distance(lat="lat", lon="lon"),
         )
@@ -150,7 +150,7 @@ def test_geo_spread_per_user_high_volume(app):
         lon: float
 
     @bv.table(key="user_id")
-    def UserGeoSpread(visits):
+    def UserGeoSpread(visits: Visit):
         return visits.group_by("user_id").agg(
             spread_km=bv.geo_spread(lat="lat", lon="lon"),
         )
@@ -198,7 +198,7 @@ def test_distance_from_home_per_user_high_volume(app):
         lon: float
 
     @bv.table(key="user_id")
-    def UserHome(txs):
+    def UserHome(txs: Tx):
         return txs.group_by("user_id").agg(
             from_home=bv.distance_from_home(lat="lat", lon="lon", samples=50),
         )

@@ -88,8 +88,33 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
         # @bv.table descriptor.
         chain = getattr(d, "_chain", []) or []
         key_cols = getattr(d, "_key_cols", []) or []
+        # Walk back through parents to find the root upstream (an
+        # EventSource OR a named EventDerivation registered separately).
+        # For ``@bv.table def F(x: SomeEvent)`` the parent IS already the
+        # named upstream — just use it. For chained derivations the root
+        # is the original event source.
         parent = getattr(d, "_parent", None)
-        upstreams = [getattr(parent, "_name", "")] if parent is not None else []
+        # If parent is a derivation that was given a stable name via
+        # .named(...), prefer that as the upstream (it'll be registered
+        # as a separate node). Otherwise walk to the root.
+        if parent is not None:
+            parent_kind = getattr(parent, "_kind", None)
+            parent_name = getattr(parent, "_name", "")
+            # Named-derivation upstreams (from .named(...)) keep their
+            # stable name; intermediate auto-named ones (Foo__derived_N)
+            # should resolve to the root.
+            if parent_kind == "event_source" or "__derived_" not in parent_name:
+                upstreams = [parent_name] if parent_name else []
+            else:
+                root: Any = parent
+                while True:
+                    p = getattr(root, "_parent", None)
+                    if p is None:
+                        break
+                    root = p
+                upstreams = [getattr(root, "_name", "")]
+        else:
+            upstreams = []
         ops = _chain_to_ops(chain)
         # Phase 13.5.1 Plan 05 (Rule 3 — schema is required by the server's
         # `DerivationDescriptor` deserializer). Compute schema.fields from
@@ -107,15 +132,34 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
         }
     if kind in ("event_derivation", "aggregation"):
         chain = getattr(d, "_chain", []) or []
-        parent = getattr(d, "_parent", None)
-        upstreams = [getattr(parent, "_name", "")] if parent is not None else []
+        # Walk back through the parent chain to find the original
+        # event-source. Each EventDerivation step's _parent is the previous
+        # derivation; the root EventSource is the only node with kind=event_source.
+        ev_root: Any = d
+        while True:
+            p = getattr(ev_root, "_parent", None)
+            if p is None:
+                break
+            ev_root = p
+        upstreams = (
+            [getattr(ev_root, "_name", "")] if ev_root is not d else []
+        )
         ops = _chain_to_ops(chain)
-        parent_schema = _parent_wire_schema(d)
-        fields = _infer_derivation_schema(chain, parent_schema, [])
+        # output_kind: "table" if the chain terminates in an agg step
+        # (event → table boundary); "event" otherwise (event-only
+        # transform: filter/select/with_columns/etc.).
+        has_agg = any(step.get("op") == "agg" for step in chain)
+        output_kind = "table" if has_agg else "event"
+        parent_schema = _parent_wire_schema_from_root(ev_root)
+        if has_agg:
+            fields = _infer_derivation_schema(chain, parent_schema, [])
+        else:
+            # Event-derivation: schema = upstream fields ∪ with_columns / rename targets.
+            fields = _infer_event_derivation_schema(chain, parent_schema)
         return {
             "kind": "derivation",
             "name": getattr(d, "_name", ""),
-            "output_kind": "table",
+            "output_kind": output_kind,
             "upstreams": upstreams,
             "ops": ops,
             "schema": {"fields": fields, "optional_fields": []},
@@ -293,25 +337,113 @@ def _parent_wire_schema(d: Any) -> dict[str, str]:
     Returns ``{field-name: wire-type-str}`` derived from the parent's
     ``_schema`` attribute (a ``{name: python-type}`` map populated by
     ``@bv.event``). Empty dict if the parent or schema is missing.
+
+    Walks the parent chain to find the root event source (the only one
+    with ``_kind == "event_source"`` and a populated ``_schema`` map).
     """
-    parent = getattr(d, "_parent", None)
-    if parent is None:
+    cur = getattr(d, "_parent", None)
+    while cur is not None:
+        kind = getattr(cur, "_kind", None)
+        schema_dict = getattr(cur, "_schema", None)
+        if kind == "event_source" and schema_dict:
+            out: dict[str, str] = {}
+            for fname, ftype in schema_dict.items():
+                out[fname] = _python_type_to_wire(ftype)
+            return out
+        cur = getattr(cur, "_parent", None)
+    return {}
+
+
+def _parent_wire_schema_from_root(root: Any) -> dict[str, str]:
+    """Variant of ``_parent_wire_schema`` that takes the root EventSource directly."""
+    if root is None:
         return {}
-    schema_dict = getattr(parent, "_schema", {}) or {}
+    schema_dict = getattr(root, "_schema", {}) or {}
     out: dict[str, str] = {}
     for fname, ftype in schema_dict.items():
         out[fname] = _python_type_to_wire(ftype)
     return out
 
 
+def _infer_event_derivation_schema(
+    chain: list[dict[str, Any]],
+    parent_schema_wire: dict[str, str],
+) -> dict[str, str]:
+    """Compute schema.fields for an event-derivation (no agg) chain.
+
+    Starts with the upstream event-source's schema and applies
+    ``with_columns`` / ``rename`` / ``drop`` / ``select`` op steps to
+    narrow / extend / rename the field set. Best-effort — server's own
+    schema propagation is the authoritative source; this just produces
+    a schema dict with ``len > 0`` to satisfy the registration
+    deserializer's ``derivation schema must have at least one field``
+    invariant.
+    """
+    fields: dict[str, str] = dict(parent_schema_wire)
+    for step in chain:
+        op = step.get("op")
+        if op == "with_columns" or op == "map":
+            # Add new columns; type is "str" for literal exprs (best-effort).
+            for col in step.get("exprs", {}):
+                if col not in fields:
+                    fields[col] = "str"
+        elif op == "rename":
+            mapping = step.get("mapping", {})
+            for old, new in mapping.items():
+                if old in fields:
+                    fields[new] = fields.pop(old)
+        elif op == "drop":
+            for col in step.get("cols", []):
+                fields.pop(col, None)
+        elif op == "select":
+            cols = step.get("cols", [])
+            fields = {c: fields.get(c, "str") for c in cols}
+        elif op == "cast":
+            type_map = step.get("type_map", {})
+            for col, ttype in type_map.items():
+                if col in fields:
+                    # Map cast targets to wire-type strings.
+                    fields[col] = {
+                        "str": "str",
+                        "int": "i64",
+                        "float": "f64",
+                        "bool": "bool",
+                    }.get(ttype, "str")
+        elif op == "fillna":
+            # No schema change — only fills missing values.
+            pass
+        elif op == "filter":
+            # No schema change.
+            pass
+        elif op == "rename_self":
+            # Python-side noop.
+            pass
+    # Always ensure at least one field — fallback to upstream key (best-effort).
+    if not fields and parent_schema_wire:
+        # Take the first upstream field as a placeholder.
+        first_field = next(iter(parent_schema_wire))
+        fields[first_field] = parent_schema_wire[first_field]
+    return fields
+
+
 def _chain_to_ops(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert chain steps (list of ``{"op": ..., ...}`` dicts) to wire-shape
     ops. The aggregation step shape uses ``{"op": "group_by", "keys": [...],
     "agg": {name: {"op": <op>, "params": {...}}}}``.
+
+    ``rename_self`` is a Python-side chain-noop introduced by ``.named(...)``
+    (events.py:99-106) — it tags the derivation with a stable name but is
+    not a recognized server-side op variant. Skip it here so the wire
+    payload only carries server-recognized ops.
     """
     out: list[dict[str, Any]] = []
     for step in chain:
         op = step.get("op")
+        if op == "rename_self":
+            # Python-side noop; ``_name`` is already populated on the
+            # derivation by ``.named(...)`` and emitted in
+            # ``_descriptor_to_node``. Strip from the wire payload.
+            continue
         if op == "agg":
             keys = step.get("keys", [])
             aggs = step.get("aggs", {})

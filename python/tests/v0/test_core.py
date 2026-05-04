@@ -39,7 +39,7 @@ def test_count_per_user_high_volume(app):
         page: str
 
     @bv.table(key="user_id")
-    def UserClicks(clicks):
+    def UserClicks(clicks: Click):
         return clicks.group_by("user_id").agg(
             click_count=bv.count(window="forever"),
         )
@@ -75,7 +75,7 @@ def test_sum_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserSpend(purchases):
+    def UserSpend(purchases: Purchase):
         return purchases.group_by("user_id").agg(
             total=bv.sum("amount", window="forever"),
         )
@@ -114,7 +114,7 @@ def test_mean_per_user_high_volume(app):
         value: float
 
     @bv.table(key="user_id")
-    def UserMeanOrder(orders):
+    def UserMeanOrder(orders: Order):
         return orders.group_by("user_id").agg(
             avg_value=bv.mean("value", window="forever"),
         )
@@ -154,7 +154,7 @@ def test_min_per_user_high_volume(app):
         price: float
 
     @bv.table(key="user_id")
-    def UserMinBid(bids):
+    def UserMinBid(bids: Bid):
         return bids.group_by("user_id").agg(
             lowest=bv.min("price", window="forever"),
         )
@@ -193,7 +193,7 @@ def test_max_per_user_high_volume(app):
         value: float
 
     @bv.table(key="user_id")
-    def UserMaxScore(scores):
+    def UserMaxScore(scores: Score):
         return scores.group_by("user_id").agg(
             best=bv.max("value", window="forever"),
         )
@@ -232,7 +232,7 @@ def test_var_per_user_high_volume(app):
         ms: float
 
     @bv.table(key="user_id")
-    def UserLatencyVar(measurements):
+    def UserLatencyVar(measurements: Latency):
         return measurements.group_by("user_id").agg(
             spread=bv.var("ms", window="forever"),
         )
@@ -278,7 +278,7 @@ def test_std_per_user_high_volume(app):
         value: float
 
     @bv.table(key="user_id")
-    def UserReadingStd(readings):
+    def UserReadingStd(readings: Reading):
         return readings.group_by("user_id").agg(
             sigma=bv.std("value", window="forever"),
         )
@@ -325,7 +325,7 @@ def test_ratio_per_user_high_volume(app):
         status: str
 
     @bv.table(key="user_id")
-    def UserFailRatio(logins):
+    def UserFailRatio(logins: Login):
         return logins.group_by("user_id").agg(
             failure_ratio=bv.ratio(
                 window="forever",

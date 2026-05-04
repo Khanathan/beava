@@ -51,7 +51,7 @@ def test_ewma_per_user_high_volume(app):
         value: float
 
     @bv.table(key="user_id")
-    def UserSmoothed(samples):
+    def UserSmoothed(samples: Sample):
         return samples.group_by("user_id").agg(
             smoothed=bv.ewma("value", half_life="1h"),
         )
@@ -100,7 +100,7 @@ def test_ewvar_per_user_high_volume(app):
         v: float
 
     @bv.table(key="user_id")
-    def UserSpread(readings):
+    def UserSpread(readings: Reading):
         return readings.group_by("user_id").agg(
             spread=bv.ewvar("v", half_life="1h"),
         )
@@ -147,7 +147,7 @@ def test_ew_zscore_per_user_high_volume(app):
         value: float
 
     @bv.table(key="user_id")
-    def UserZ(obs):
+    def UserZ(obs: Obs):
         return obs.group_by("user_id").agg(
             z=bv.ew_zscore("value", half_life="1h"),
         )
@@ -188,7 +188,7 @@ def test_decayed_sum_per_user_high_volume(app):
         amt: float
 
     @bv.table(key="user_id")
-    def UserDecaySum(txs):
+    def UserDecaySum(txs: Tx):
         return txs.group_by("user_id").agg(
             ds=bv.decayed_sum("amt", half_life="1h"),
         )
@@ -229,7 +229,7 @@ def test_decayed_count_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserDecayCount(hits):
+    def UserDecayCount(hits: Hit):
         return hits.group_by("user_id").agg(
             dc=bv.decayed_count(half_life="1h"),
         )
@@ -268,7 +268,7 @@ def test_twa_per_user_high_volume(app):
         v: float
 
     @bv.table(key="user_id")
-    def UserTwa(gauges):
+    def UserTwa(gauges: Gauge):
         return gauges.group_by("user_id").agg(
             avg_v=bv.twa("v", window="1h"),
         )
@@ -315,7 +315,7 @@ def test_ewma_alias_ema_per_user_high_volume(app):
         value: float
 
     @bv.table(key="user_id")
-    def UserBoth(m_events):
+    def UserBoth(m_events: M):
         return m_events.group_by("user_id").agg(
             via_ewma=bv.ewma("value", half_life="1h"),
             via_ema=bv.ema("value", half_life="1h"),

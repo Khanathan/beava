@@ -50,7 +50,7 @@ def test_n_unique_per_user_high_volume(app):
         url: str
 
     @bv.table(key="user_id")
-    def UserDistinctUrls(visits):
+    def UserDistinctUrls(visits: Visit):
         return visits.group_by("user_id").agg(
             n_distinct=bv.n_unique("url", window="forever"),
         )
@@ -100,7 +100,7 @@ def test_quantile_per_user_high_volume(app):
         amount: float
 
     @bv.table(key="user_id")
-    def UserQuantile(txns):
+    def UserQuantile(txns: Txn):
         return txns.group_by("user_id").agg(
             p50=bv.quantile("amount", q=0.5, window="forever"),
             p95=bv.quantile("amount", q=0.95, window="forever"),
@@ -152,7 +152,7 @@ def test_top_k_per_user_high_volume(app):
         page: str
 
     @bv.table(key="user_id")
-    def UserTopPages(views):
+    def UserTopPages(views: PageView):
         return views.group_by("user_id").agg(
             top_pages=bv.top_k("page", k=3, window="forever"),
         )
@@ -206,7 +206,7 @@ def test_bloom_member_per_user_high_volume(app):
         device_id: str
 
     @bv.table(key="user_id")
-    def UserDeviceBloom(logins):
+    def UserDeviceBloom(logins: Login):
         return logins.group_by("user_id").agg(
             device_seen=bv.bloom_member("device_id", capacity=2048, fpr=0.01),
         )
@@ -264,7 +264,7 @@ def test_entropy_per_user_high_volume(app):
         kind: str
 
     @bv.table(key="user_id")
-    def UserActionEntropy(actions):
+    def UserActionEntropy(actions: Action):
         return actions.group_by("user_id").agg(
             diversity=bv.entropy("kind", window="forever"),
         )
