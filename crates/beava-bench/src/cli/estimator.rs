@@ -24,11 +24,8 @@ pub struct DerivationCost {
     pub bytes_per_entity: u64,
 }
 
-const SIZE_ENTITY_COUNTS: &[(&str, u64)] = &[
-    ("small", 10_000),
-    ("medium", 100_000),
-    ("large", 1_000_000),
-];
+const SIZE_ENTITY_COUNTS: &[(&str, u64)] =
+    &[("small", 10_000), ("medium", 100_000), ("large", 1_000_000)];
 
 const PER_AGG_OP_BYTES: u64 = 80; // Phase 12.9 size_of::<AggOp>.
 const PER_ENTITY_OVERHEAD_BYTES: u64 = 256;
@@ -47,8 +44,12 @@ pub fn estimate_memory(workload_name: &str, size: &str) -> Result<MemoryEstimate
         let mut cost = n_ops * PER_AGG_OP_BYTES;
         for op in &d.op_chain {
             cost += match op.as_str() {
-                "histogram" | "hour_of_day_histogram" | "dow_hour_histogram"
-                | "seasonal_deviation" | "event_type_mix" | "most_recent_n"
+                "histogram"
+                | "hour_of_day_histogram"
+                | "dow_hour_histogram"
+                | "seasonal_deviation"
+                | "event_type_mix"
+                | "most_recent_n"
                 | "reservoir_sample" => 2_048,
                 "n_unique" => 12_288,
                 "quantile" => 2_048,
@@ -57,11 +58,26 @@ pub fn estimate_memory(workload_name: &str, size: &str) -> Result<MemoryEstimate
                 "entropy" => 512,
                 "geo_velocity" | "geo_distance" | "geo_spread" | "distance_from_home" => 256,
                 "ewma" | "ewvar" | "ew_zscore" | "decayed_sum" | "decayed_count" | "twa" => 32,
-                "trend" | "trend_residual" | "outlier_count" | "value_change_count"
-                | "burst_count" | "rate_of_change" | "inter_arrival_stats" => 256,
-                "first_seen" | "last_seen" | "age" | "has_seen" | "time_since" | "streak"
-                | "max_streak" | "negative_streak" | "first_seen_in_window" | "first" | "last"
-                | "lag" | "delta_from_prev" => 32,
+                "trend"
+                | "trend_residual"
+                | "outlier_count"
+                | "value_change_count"
+                | "burst_count"
+                | "rate_of_change"
+                | "inter_arrival_stats" => 256,
+                "first_seen"
+                | "last_seen"
+                | "age"
+                | "has_seen"
+                | "time_since"
+                | "streak"
+                | "max_streak"
+                | "negative_streak"
+                | "first_seen_in_window"
+                | "first"
+                | "last"
+                | "lag"
+                | "delta_from_prev" => 32,
                 "first_n" | "last_n" | "time_since_last_n" => 256,
                 _ => 64,
             };

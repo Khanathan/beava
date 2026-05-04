@@ -295,8 +295,7 @@ fn python_bv_table_re_export_deleted() {
     );
     // Sanity-positive (ADR-001): the @bv.table decorator is part of v0.
     assert!(
-        src.contains("from beava._table import table")
-            || src.contains("from ._table import table"),
+        src.contains("from beava._table import table") || src.contains("from ._table import table"),
         "ADR-001 partial overturn: `from ._table import table` (singular — \
          aggregation-output decorator) must remain re-exported"
     );

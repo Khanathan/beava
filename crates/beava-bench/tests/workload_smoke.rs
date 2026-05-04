@@ -7,7 +7,7 @@ fn test_adtech_registers() {
     let w = workloads::load_by_name("adtech").expect("adtech workload must be loadable");
     assert_eq!(w.name, "adtech");
     assert!(
-        w.derivations.len() >= 1,
+        !w.derivations.is_empty(),
         "adtech must have ≥ 1 derivation; got {}",
         w.derivations.len()
     );
@@ -32,9 +32,8 @@ fn test_fraud_registers() {
 
 #[test]
 fn test_ecommerce_registers() {
-    let w =
-        workloads::load_by_name("ecommerce").expect("ecommerce workload must be loadable");
-    assert!(w.derivations.len() >= 1);
+    let w = workloads::load_by_name("ecommerce").expect("ecommerce workload must be loadable");
+    assert!(!w.derivations.is_empty());
     let events: Vec<_> = (w.event_generator)(100).collect();
     assert!(events.len() >= 100);
 }
@@ -78,13 +77,7 @@ fn matches_family(op: &str, fam: &str) -> bool {
         ),
         (
             "sketch",
-            &[
-                "n_unique",
-                "quantile",
-                "top_k",
-                "entropy",
-                "bloom_member",
-            ],
+            &["n_unique", "quantile", "top_k", "entropy", "bloom_member"],
         ),
         (
             "recency",
@@ -121,6 +114,6 @@ fn matches_family(op: &str, fam: &str) -> bool {
     mapping
         .iter()
         .find(|(f, _)| *f == fam)
-        .map(|(_, ops)| ops.iter().any(|o| op == *o))
+        .map(|(_, ops)| ops.contains(&op))
         .unwrap_or(false)
 }

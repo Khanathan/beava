@@ -15,10 +15,10 @@ pub fn build_ecommerce_workload() -> Result<Workload> {
     // what the production ecommerce config will exercise; the underlying
     // config carries the actual op shape.
     if let Some(d) = w.derivations.first_mut() {
-        d.op_chain.push("ewma".into());            // decay
-        d.op_chain.push("time_since".into());      // recency
-        d.op_chain.push("most_recent_n".into());   // bounded-buffer
-        d.op_chain.push("geo_velocity".into());    // geo
+        d.op_chain.push("ewma".into()); // decay
+        d.op_chain.push("time_since".into()); // recency
+        d.op_chain.push("most_recent_n".into()); // bounded-buffer
+        d.op_chain.push("geo_velocity".into()); // geo
     }
     Ok(w)
 }

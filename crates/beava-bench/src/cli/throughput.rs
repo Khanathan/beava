@@ -38,9 +38,8 @@ pub struct ThroughputArgs {
 }
 
 pub fn run_throughput(args: ThroughputArgs) -> Result<()> {
-    let duration = humantime::parse_duration(&args.duration).map_err(|e| {
-        anyhow::anyhow!("invalid --duration {:?}: {}", args.duration, e)
-    })?;
+    let duration = humantime::parse_duration(&args.duration)
+        .map_err(|e| anyhow::anyhow!("invalid --duration {:?}: {}", args.duration, e))?;
 
     print_estimate(&args.workload, args.size.as_deref());
 

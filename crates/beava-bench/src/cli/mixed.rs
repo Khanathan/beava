@@ -32,9 +32,8 @@ pub struct MixedArgs {
 }
 
 pub fn run_mixed(args: MixedArgs) -> Result<()> {
-    let duration = humantime::parse_duration(&args.duration).map_err(|e| {
-        anyhow::anyhow!("invalid --duration {:?}: {}", args.duration, e)
-    })?;
+    let duration = humantime::parse_duration(&args.duration)
+        .map_err(|e| anyhow::anyhow!("invalid --duration {:?}: {}", args.duration, e))?;
     print_estimate(&args.workload, args.size.as_deref());
     let result: BenchResult = run_async(harness::run_mixed(
         &args.workload,

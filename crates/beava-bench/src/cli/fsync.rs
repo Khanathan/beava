@@ -35,9 +35,8 @@ pub struct FsyncArgs {
 }
 
 pub fn run_fsync(args: FsyncArgs) -> Result<()> {
-    let duration = humantime::parse_duration(&args.duration).map_err(|e| {
-        anyhow::anyhow!("invalid --duration {:?}: {}", args.duration, e)
-    })?;
+    let duration = humantime::parse_duration(&args.duration)
+        .map_err(|e| anyhow::anyhow!("invalid --duration {:?}: {}", args.duration, e))?;
     print_estimate(&args.workload, args.size.as_deref());
     let result: BenchResult = run_async(harness::run_fsync_acks_all(
         &args.workload,

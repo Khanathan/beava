@@ -20,8 +20,8 @@ pub fn build_adtech_workload() -> Result<Workload> {
     // so the family-coverage assertion passes — these are documentation
     // labels, not real ops, and only used by `op_kinds()`).
     if let Some(d) = w.derivations.first_mut() {
-        d.op_chain.push("ewma".into());        // decay family label
-        d.op_chain.push("time_since".into());  // recency family label
+        d.op_chain.push("ewma".into()); // decay family label
+        d.op_chain.push("time_since".into()); // recency family label
         d.op_chain.push("geo_velocity".into()); // geo family label
     }
     Ok(w)

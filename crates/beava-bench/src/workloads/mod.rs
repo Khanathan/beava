@@ -30,9 +30,8 @@ pub struct Workload {
     pub event_generator: EventGenFn,
 }
 
-pub type EventGenFn = Box<
-    dyn Fn(u64) -> Box<dyn Iterator<Item = GeneratedEvent> + Send> + Send + Sync,
->;
+pub type EventGenFn =
+    Box<dyn Fn(u64) -> Box<dyn Iterator<Item = GeneratedEvent> + Send> + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct DerivationInfo {
@@ -87,13 +86,16 @@ pub(crate) fn load_legacy_size_workload(size: &str) -> Result<Workload> {
 /// using the config's register payload + a synthetic event generator that
 /// stuffs the config's `extra_fields` with random values matching their
 /// declared type.
-pub(crate) fn load_workload_from_config(workload_name: &str, config_name: &str) -> Result<Workload> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| "crates/beava-bench".to_string());
+pub(crate) fn load_workload_from_config(
+    workload_name: &str,
+    config_name: &str,
+) -> Result<Workload> {
+    let manifest =
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| "crates/beava-bench".to_string());
     let path = PathBuf::from(manifest)
         .join("configs")
         .join(format!("{config_name}.json"));
-    let bytes = std::fs::read(&path)
-        .with_context(|| format!("read config {}", path.display()))?;
+    let bytes = std::fs::read(&path).with_context(|| format!("read config {}", path.display()))?;
     let cfg: PipelineConfig = serde_json::from_slice(&bytes)
         .with_context(|| format!("parse config {}", path.display()))?;
     let derivations = derivation_info_from_register(&cfg.register);
@@ -114,10 +116,7 @@ pub(crate) fn load_workload_from_config(workload_name: &str, config_name: &str) 
             remaining -= 1;
             let key_idx: u64 = rng.gen_range(0..100_000);
             let mut fields = Map::new();
-            fields.insert(
-                key_field.clone(),
-                Value::String(format!("k{key_idx:08}")),
-            );
+            fields.insert(key_field.clone(), Value::String(format!("k{key_idx:08}")));
             fields.insert(
                 "event_time".into(),
                 Value::Number((1_000_000_i64 + (100_000 - remaining as i64)).into()),
@@ -169,7 +168,10 @@ pub(crate) fn derivation_info_from_register(register: &Value) -> Vec<DerivationI
                     }
                 }
             }
-            DerivationInfo { name, op_chain: ops }
+            DerivationInfo {
+                name,
+                op_chain: ops,
+            }
         })
         .collect()
 }

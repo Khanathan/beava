@@ -86,8 +86,7 @@ fn test_json_output_format() {
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     // Output must be valid JSON.
-    serde_json::from_str::<serde_json::Value>(&stdout)
-        .expect("--json output must be valid JSON");
+    serde_json::from_str::<serde_json::Value>(&stdout).expect("--json output must be valid JSON");
 }
 
 #[test]
@@ -102,7 +101,6 @@ fn test_unknown_workload_errors_clearly() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("unknown workload")
-                .or(predicate::str::contains("not found")),
+            predicate::str::contains("unknown workload").or(predicate::str::contains("not found")),
         );
 }

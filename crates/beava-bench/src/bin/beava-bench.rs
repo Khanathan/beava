@@ -8,7 +8,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "beava-bench", version, about = "Beava performance benchmark suite")]
+#[command(
+    name = "beava-bench",
+    version,
+    about = "Beava performance benchmark suite"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Subcommands>,

@@ -59,7 +59,10 @@ pub async fn run_throughput_acks_one(
             }
             if let Some(event) = events.next() {
                 let push_start = Instant::now();
-                if push_one(&ts, &event.event_name, &event.fields).await.is_ok() {
+                if push_one(&ts, &event.event_name, &event.fields)
+                    .await
+                    .is_ok()
+                {
                     let elapsed_us = push_start.elapsed().as_micros() as u64;
                     hist.record(elapsed_us.max(1)).ok();
                     events_pushed += 1;
@@ -109,7 +112,10 @@ pub async fn run_mixed(
     while Instant::now() < deadline {
         if let Some(event) = events.next() {
             let push_start = Instant::now();
-            if push_one(&ts, &event.event_name, &event.fields).await.is_ok() {
+            if push_one(&ts, &event.event_name, &event.fields)
+                .await
+                .is_ok()
+            {
                 let elapsed_us = push_start.elapsed().as_micros() as u64;
                 hist.record(elapsed_us.max(1)).ok();
                 events_pushed += 1;
@@ -152,7 +158,10 @@ pub async fn run_memory(
     let mut events_pushed: u64 = 0;
     while events_pushed < entities {
         if let Some(event) = events.next() {
-            if push_one(&ts, &event.event_name, &event.fields).await.is_ok() {
+            if push_one(&ts, &event.event_name, &event.fields)
+                .await
+                .is_ok()
+            {
                 events_pushed += 1;
             }
         } else {
@@ -206,7 +215,10 @@ pub async fn run_fsync_acks_all(
     while Instant::now() < deadline {
         if let Some(event) = events.next() {
             let push_start = Instant::now();
-            if push_one(&ts, &event.event_name, &event.fields).await.is_ok() {
+            if push_one(&ts, &event.event_name, &event.fields)
+                .await
+                .is_ok()
+            {
                 // Approximate fsync wait via force_snapshot_now (proxy for
                 // group-commit watermark crossing). Real fsync measurement
                 // lands when push_sync wire op exposes per-call watermark.
@@ -260,7 +272,9 @@ async fn spawn_test_server() -> Result<TestServer> {
 }
 
 async fn register_workload(ts: &TestServer, workload: &workloads::Workload) -> Result<()> {
-    let resp = ts.post_json("/register", &workload.register_payload).await?;
+    let resp = ts
+        .post_json("/register", &workload.register_payload)
+        .await?;
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
