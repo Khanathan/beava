@@ -112,7 +112,20 @@ const WALK_DIRS: &[&str] = &[
 /// in phase-doc text). The full call-shape `fn retract(` only matches actual
 /// function declarations, which is the precise tripwire we want.
 const FORBIDDEN_PATTERNS: &[&str] = &[
-    "OpNode::Table",
+    // Plan 13.4-05 (D-04 USER-LOCKED) — surgical permit per ADR-001
+    // partial overturn: the bare `"OpNode::Table"` entry was over-broad
+    // (it caught the bare `OpNode::Table` token AND every variant via
+    // substring match) and prevented the aggregation-output decorator
+    // (`@bv.table` per ADR-001) from re-introducing `OpNode::Table*`
+    // for derivation `output_kind=table`. Per-variant entries below
+    // (`OpNode::TableUpsert` / `OpNode::TableDelete`) provide the
+    // precise enforcement: the user-mutable write surface STAYS killed.
+    // Phase 13.4-09 (global-table sentinel routing) and Phase 13.5
+    // (Python `@bv.table` decorator) restore the variants on the
+    // derivation-output side per ADR-001's narrow scope; companion
+    // test `phase13_4_table_derivation_allowed.rs` locks the semantics
+    // (top-level `{kind:table}` register STILL rejected via
+    // `pre_check_unsupported_node_kind` shim from Plan 12.7-01).
     "OpNode::TableUpsert",
     "OpNode::TableDelete",
     "TemporalStore",
