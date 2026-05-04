@@ -16,6 +16,9 @@ pub enum Route {
     Get,
     /// GET /get/:feature/:key — single feature read.
     GetSingle { feature: String, key: String },
+    /// POST /batch_get — heterogeneous batched feature read (Plan 13.4-03).
+    /// Body shape `{"requests":[{"table","entity_id"}, ...]}`.
+    BatchGet,
     /// POST /register — pipeline registration.
     Register,
     /// GET /health — liveness probe (Plan 12-07). Always 200 once listener
@@ -109,6 +112,14 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
+        // /batch_get (exact) — Plan 13.4-03 heterogeneous batched read.
+        if path == "/batch_get" {
+            return if method == "POST" {
+                Route::BatchGet
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
         // /register
         if path == "/register" {
             return if method == "POST" {
@@ -183,6 +194,21 @@ mod tests {
     #[test]
     fn route_get_batch() {
         assert_eq!(Router::route("POST", "/get"), Route::Get);
+    }
+
+    /// Plan 13.4-03: POST /batch_get routes to Route::BatchGet.
+    #[test]
+    fn route_batch_get_post() {
+        assert_eq!(Router::route("POST", "/batch_get"), Route::BatchGet);
+    }
+
+    /// Plan 13.4-03: GET /batch_get is a method-not-allowed (POST-only).
+    #[test]
+    fn route_batch_get_wrong_method() {
+        assert_eq!(
+            Router::route("GET", "/batch_get"),
+            Route::MethodNotAllowed
+        );
     }
 
     /// Plan 12-07 — GET /health on the data-plane HTTP port routes to Route::Health.

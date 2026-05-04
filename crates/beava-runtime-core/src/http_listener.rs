@@ -224,6 +224,9 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         },
         Route::Get => WireRequest::HttpGet { body },
         Route::GetSingle { feature, key } => WireRequest::HttpGetSingle { feature, key },
+        // Plan 13.4-03: POST /batch_get — heterogeneous batched read; same
+        // payload shape as TCP OP_BATCH_GET, JSON-only on HTTP transport.
+        Route::BatchGet => WireRequest::HttpBatchGet { body },
         Route::Register => WireRequest::Register { payload: body },
         // Plan 12-07: /health on the data-plane HTTP port — inline shim, no
         // apply-thread roundtrip. read_bench.py polls /health at startup.

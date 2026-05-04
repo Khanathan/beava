@@ -12,7 +12,8 @@
 //! `Ok(None)` (need more bytes) is returned.
 
 use beava_core::wire::{
-    decode_frame, CT_JSON, CT_MSGPACK, OP_GET, OP_GET_MULTI, OP_MGET, OP_PING, OP_PUSH, OP_REGISTER,
+    decode_frame, CT_JSON, CT_MSGPACK, OP_BATCH_GET, OP_GET, OP_GET_MULTI, OP_MGET, OP_PING,
+    OP_PUSH, OP_REGISTER,
 };
 use bytes::BytesMut;
 use std::net::SocketAddr;
@@ -833,6 +834,19 @@ pub fn parse_wire_request(
         },
         OP_GET_MULTI => match frame.content_type {
             CT_JSON | CT_MSGPACK => WireRequest::TcpGetMulti {
+                body: frame.payload,
+                body_format: frame.content_type,
+            },
+            other => WireRequest::ParseError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            },
+        },
+        // Plan 13.4-03: OP_BATCH_GET (0x0024) — heterogeneous batched read.
+        // Body shape `{"requests":[{"table","entity_id"}, ...]}` is opaque to
+        // the parser; dispatch (`apply_shard.rs::dispatch_batch_get_sync`)
+        // deserialises per body_format.
+        OP_BATCH_GET => match frame.content_type {
+            CT_JSON | CT_MSGPACK => WireRequest::TcpBatchGet {
                 body: frame.payload,
                 body_format: frame.content_type,
             },

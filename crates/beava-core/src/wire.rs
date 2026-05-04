@@ -26,6 +26,7 @@
 //! | 0x0021   | mget             | Implemented          | Phase 12-07 |
 //! | 0x0022   | get_multi        | Implemented          | Phase 12-07 |
 //! | 0x0023   | get_response     | Implemented          | Phase 12-07 |
+//! | 0x0024   | batch_get        | Implemented          | Phase 13.4-03 |
 //! | 0x0030   | set              | Reserved             | Phase 12 |
 //! | 0x0031   | mset             | Reserved             | Phase 12 |
 //! | 0xFFFF   | error_response   | Implemented          | Phase 2.5 |
@@ -90,6 +91,14 @@ pub const OP_GET_MULTI: u16 = 0x0022;
 /// for batch). Plan 12-07.
 pub const OP_GET_RESPONSE: u16 = 0x0023;
 
+/// Batched heterogeneous read — clients send a list of (table, entity_id)
+/// tuples in a single frame; server returns a single OP_GET_RESPONSE
+/// (0x0023) frame whose JSON body holds per-tuple results. Composes with
+/// the empty-string entity_id sentinel (ADR-003 — global tables).
+///
+/// Plan 13.4-03.
+pub const OP_BATCH_GET: u16 = 0x0024;
+
 /// Direct feature write. Reserved Phase 12.
 pub const OP_SET: u16 = 0x0030;
 
@@ -122,6 +131,7 @@ pub fn opcode_name(op: u16) -> Option<&'static str> {
         OP_MGET => Some("mget"),
         OP_GET_MULTI => Some("get_multi"),
         OP_GET_RESPONSE => Some("get_response"),
+        OP_BATCH_GET => Some("batch_get"),
         OP_SET => Some("set"),
         OP_MSET => Some("mset"),
         OP_ERROR_RESPONSE => Some("error_response"),
@@ -274,6 +284,7 @@ mod tests {
         assert_eq!(OP_MGET, 0x0021);
         assert_eq!(OP_GET_MULTI, 0x0022);
         assert_eq!(OP_GET_RESPONSE, 0x0023); // Plan 12-07
+        assert_eq!(OP_BATCH_GET, 0x0024); // Plan 13.4-03
         assert_eq!(OP_SET, 0x0030);
         assert_eq!(OP_MSET, 0x0031);
         assert_eq!(OP_ERROR_RESPONSE, 0xFFFF);
@@ -299,6 +310,7 @@ mod tests {
         assert_eq!(opcode_name(OP_MGET), Some("mget"));
         assert_eq!(opcode_name(OP_GET_MULTI), Some("get_multi"));
         assert_eq!(opcode_name(OP_GET_RESPONSE), Some("get_response")); // Plan 12-07
+        assert_eq!(opcode_name(OP_BATCH_GET), Some("batch_get")); // Plan 13.4-03
         assert_eq!(opcode_name(OP_SET), Some("set"));
         assert_eq!(opcode_name(OP_MSET), Some("mset"));
         assert_eq!(opcode_name(OP_ERROR_RESPONSE), Some("error_response"));
@@ -326,6 +338,8 @@ mod tests {
         assert_eq!(reserved_phase(OP_MGET), None);
         assert_eq!(reserved_phase(OP_GET_MULTI), None);
         assert_eq!(reserved_phase(OP_GET_RESPONSE), None);
+        // Plan 13.4-03: OP_BATCH_GET is implemented; not reserved.
+        assert_eq!(reserved_phase(OP_BATCH_GET), None);
         assert_eq!(reserved_phase(OP_SET), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_MSET), Some("Phase 12"));
     }
@@ -356,6 +370,7 @@ mod tests {
             OP_MGET,
             OP_GET_MULTI,
             OP_GET_RESPONSE, // Plan 12-07
+            OP_BATCH_GET,    // Plan 13.4-03
             OP_SET,
             OP_MSET,
             OP_ERROR_RESPONSE,
@@ -675,6 +690,7 @@ mod tests {
             "mget",
             "get_multi",
             "get_response", // Plan 12-07
+            "batch_get",    // Plan 13.4-03
             "set",
             "mset",
             "error_response",

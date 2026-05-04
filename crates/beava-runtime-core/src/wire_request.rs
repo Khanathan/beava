@@ -65,6 +65,20 @@ pub enum WireRequest {
     /// `body` payload encodes `{keys: [...], features: [...]}` (mirrors HTTP /get);
     /// same content_type rules.
     TcpGetMulti { body: Bytes, body_format: u8 },
+    /// OP_BATCH_GET (0x0024) — TCP heterogeneous batched read (Plan 13.4-03).
+    ///
+    /// `body` payload encodes `{requests: [{table, entity_id}, ...]}`;
+    /// `body_format` is `CT_JSON` (0x01) or `CT_MSGPACK` (0x02). Composes
+    /// natively with the global-table empty-string entity_id sentinel
+    /// (ADR-003 — Plan 13.4-09 wires register-time validation). The
+    /// dispatch layer (`apply_shard.rs::dispatch_batch_get_sync`) walks the
+    /// request list, calls per-entity feature lookup, and aggregates results
+    /// with partial-failure semantics (unknown_table becomes a per-tuple
+    /// error inside `results` rather than a whole-batch 4xx).
+    TcpBatchGet { body: Bytes, body_format: u8 },
+    /// HTTP POST /batch_get — same payload as TcpBatchGet, JSON-only.
+    /// Plan 13.4-03.
+    HttpBatchGet { body: Bytes },
     /// Plan 12.6-14: POST request whose Content-Type was not
     /// `application/json` (or absent). Encoded as 415 with the structured
     /// `unsupported_media_type` body shape used by legacy axum's register

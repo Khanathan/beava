@@ -475,6 +475,20 @@ impl ApplyShard {
                 crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body, body_format)
             }
 
+            // ─── OP_BATCH_GET / POST /batch_get — Plan 13.4-03 ─────────────────
+            // Stub arm landed by Task 3.b: the parser surface (constant + variants
+            // + parser arm + router arm + HTTP listener mapping) is wired, but
+            // the real dispatch lands in Task 3.d. Until then return a structured
+            // `not_yet_implemented` error so the match stays exhaustive and the
+            // workspace builds. Task 3.d replaces this arm with
+            // `dispatch_batch_get_sync(...)`.
+            WireRequest::TcpBatchGet { .. } | WireRequest::HttpBatchGet { .. } => {
+                GlueResponse::InternalError {
+                    reason: "not_yet_implemented: batch_get dispatch lands Plan 13.4-03 Task 3.d"
+                        .to_owned(),
+                }
+            }
+
             // Plan 12.6-14: 415 Unsupported Media Type — POST request with
             // wrong/missing Content-Type. Body matches legacy axum's
             // register handler `RegisterErrorBody` shape.
