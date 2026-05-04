@@ -304,6 +304,126 @@ pub fn dispatch_get_single_sync(
     dispatch_get_single(app, feature, key, body_format)
 }
 
+/// Phase 13.4.1 D-01 + D-06 — verb-style single-row GET dispatch.
+///
+/// `table` is an aggregation node name. `key` is the per-entity key.
+/// `features: None` returns the full row; `features: Some(filter)`
+/// narrows the row dict to those names (omit-on-absent for absent
+/// values; feature_not_found error upfront for names not in the
+/// descriptor — D-06).
+///
+/// Distinct from the legacy `dispatch_get_single` which routes via
+/// either feature-name lookup (Case 1) or aggregation-node-name lookup
+/// (Case 2); the verb-style entry-points (POST /get + OP_GET) always
+/// use Case 2 semantics (table-name only).
+///
+/// Cold-start (entity has no events / no features computed) returns an
+/// empty FLAT row `{}` per the locked wire-fixtures
+/// (`examples/wire/get-found.response.json` line 5), NOT `QueryNotFound`.
+pub fn dispatch_get_single_verb_style_sync(
+    app: &Arc<AppState>,
+    table: &str,
+    key: &str,
+    features: Option<&[String]>,
+    body_format: u8,
+) -> GlueResponse {
+    use beava_core::wire::{CT_JSON, CT_MSGPACK};
+    match body_format {
+        CT_JSON | CT_MSGPACK => {}
+        other => {
+            return GlueResponse::InternalError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            };
+        }
+    }
+    let registry = &app.dev_agg.registry;
+    let query_time_ms = {
+        let raw = app
+            .dev_agg
+            .query_time_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        if raw == 0 {
+            0i64
+        } else {
+            raw as i64
+        }
+    };
+
+    let descriptor = match registry.compiled_aggregation(table) {
+        Some(d) => d,
+        None => {
+            return GlueResponse::QueryNotFound {
+                code: "unknown_table",
+            };
+        }
+    };
+
+    // D-06 upfront features-not-in-registry validation. Mirrors the
+    // batch-path whole-batch-reject disposition in apply_shard.rs.
+    if let Some(filter) = features {
+        let mut unknown: Vec<String> = Vec::new();
+        for name in filter {
+            if !descriptor.features.iter().any(|f| &f.feature_name == name) {
+                unknown.push(name.clone());
+            }
+        }
+        if !unknown.is_empty() {
+            return GlueResponse::InternalError {
+                reason: format!("feature_not_found: missing={:?} table={}", unknown, table),
+            };
+        }
+    }
+
+    let entity_key = match parse_entity_key(key, &descriptor.group_keys) {
+        Some(k) => k,
+        None => {
+            return GlueResponse::QueryNotFound {
+                code: "key_parse_failure",
+            };
+        }
+    };
+    let tables = app.dev_agg.state_tables.lock();
+    let table_st = match tables.get(descriptor.agg_id as usize) {
+        Some(t) => t,
+        None => {
+            return GlueResponse::QueryNotFound {
+                code: "key_not_found",
+            };
+        }
+    };
+
+    // Build FLAT row dict with per-entry features filter (omit-on-absent).
+    let mut result = serde_json::Map::new();
+    for (idx, named_op) in descriptor.features.iter().enumerate() {
+        if let Some(filter) = features {
+            if !filter.iter().any(|f| f == &named_op.feature_name) {
+                continue;
+            }
+        }
+        if let Some(v) = table_st.query_feature(&entity_key, idx, query_time_ms) {
+            result.insert(named_op.feature_name.clone(), value_to_json(v));
+        }
+    }
+    drop(tables);
+
+    // Cold-start (no events for entity) returns `{}` per wire-spec —
+    // NOT QueryNotFound. Distinct from the legacy dispatch_get_single
+    // which returned QueryNotFound on empty.
+    let json_val = serde_json::Value::Object(result);
+    let resp_bytes_res: Result<Vec<u8>, String> = match body_format {
+        CT_JSON => serde_json::to_vec(&json_val).map_err(|e| e.to_string()),
+        CT_MSGPACK => rmp_serde::to_vec_named(&json_val).map_err(|e| e.to_string()),
+        _ => unreachable!("validated above"),
+    };
+    match resp_bytes_res {
+        Ok(b) => GlueResponse::QueryResult {
+            body: Bytes::from(b),
+            format: body_format,
+        },
+        Err(reason) => GlueResponse::InternalError { reason },
+    }
+}
+
 /// Sync wrapper for `dispatch_get_batch` — called from `ApplyShard` on the apply thread.
 ///
 /// See `dispatch_get_single_sync` for the `body_format` contract.

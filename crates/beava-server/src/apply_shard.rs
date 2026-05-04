@@ -449,58 +449,119 @@ impl ApplyShard {
                 resp
             }
 
-            // ─── GET batch ────────────────────────────────────────────────────
-            WireRequest::HttpGet { body } => crate::runtime_core_glue::dispatch_get_batch_sync(
-                &self.state,
-                &body,
-                beava_core::wire::CT_JSON,
-            ),
+            // ─── POST /get — Phase 13.4.1 D-01 verb-style single-row GET ──────
+            // Body parses to `{"table": "<name>", "key": "<id>",
+            // "features"?: [...]}`. Three-step ladder per PATTERNS.md
+            // cross-cutting §1: (a) try strict-deserialise the new shape;
+            // (b) on parse failure, attempt legacy-shape detection (`{keys,
+            // features}` 2D-cell or `{feature, key}` single-feature) and
+            // return D-05 `UnsupportedRequestShape`; (c) on no-match, fall
+            // through to `InternalError` so genuinely-malformed JSON still
+            // surfaces clearly.
+            WireRequest::HttpGet { body } => {
+                use beava_core::wire::CT_JSON;
+                #[derive(serde::Deserialize)]
+                struct HttpGetReq {
+                    table: String,
+                    key: String,
+                    #[serde(default)]
+                    features: Option<Vec<String>>,
+                }
+                match serde_json::from_slice::<HttpGetReq>(&body) {
+                    Ok(req) => crate::runtime_core_glue::dispatch_get_single_verb_style_sync(
+                        &self.state,
+                        &req.table,
+                        &req.key,
+                        req.features.as_deref(),
+                        CT_JSON,
+                    ),
+                    Err(parse_err) => {
+                        // Plan 13.4.1 D-05 — attempt legacy-shape detection.
+                        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
+                            let is_legacy_2d = value
+                                .get("keys")
+                                .map(|v| v.is_array())
+                                .unwrap_or(false)
+                                && value
+                                    .get("features")
+                                    .map(|v| v.is_array())
+                                    .unwrap_or(false);
+                            let is_legacy_single = value
+                                .get("feature")
+                                .map(|v| v.is_string())
+                                .unwrap_or(false)
+                                && value.get("key").map(|v| v.is_string()).unwrap_or(false);
+                            if is_legacy_2d || is_legacy_single {
+                                let hint = "POST /get expects {table, key, features?}; received legacy {keys, features} shape — see docs/http-api.md#post-get".to_string();
+                                return GlueResponse::UnsupportedRequestShape { hint };
+                            }
+                        }
+                        // Truly malformed JSON — surface the parse error.
+                        GlueResponse::InternalError {
+                            reason: parse_err.to_string(),
+                        }
+                    }
+                }
+            }
 
-            // ─── TCP /get (single) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ─────
-            // Body parses to {"feature": "<name>", "key": "<key>"} via the
-            // codec selected by the frame's content_type byte (`body_format`):
-            //   CT_JSON    -> serde_json::from_slice
-            //   CT_MSGPACK -> rmp_serde::from_slice
-            //   other      -> InternalError "unsupported content_type"
-            // The same `body_format` is then forwarded to dispatch_get_single_sync
-            // so the response is encoded in the matching codec (msgpack-in →
-            // msgpack-out per locked decision D-B).
+            // ─── TCP OP_GET — Phase 13.4.1 D-01 verb-style single-row GET ─────
+            // Same body shape as POST /get; codec selected by the frame's
+            // content_type byte (CT_JSON or CT_MSGPACK). Three-step ladder
+            // mirrors the HTTP branch above; legacy-shape detection runs on
+            // CT_JSON only (CT_MSGPACK clients are post-Plan 12-09 and
+            // already verb-style aware).
             WireRequest::TcpGet { body, body_format } => {
                 use beava_core::wire::{CT_JSON, CT_MSGPACK};
                 #[derive(serde::Deserialize)]
                 struct TcpGetReq {
-                    feature: String,
+                    table: String,
                     key: String,
+                    #[serde(default)]
+                    features: Option<Vec<String>>,
                 }
-                let req: TcpGetReq = match body_format {
-                    CT_JSON => match serde_json::from_slice(&body) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            return GlueResponse::InternalError {
-                                reason: e.to_string(),
-                            };
-                        }
-                    },
-                    CT_MSGPACK => match rmp_serde::from_slice(&body) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            return GlueResponse::InternalError {
-                                reason: e.to_string(),
-                            };
-                        }
-                    },
+                let parse_result: Result<TcpGetReq, String> = match body_format {
+                    CT_JSON => serde_json::from_slice(&body).map_err(|e| e.to_string()),
+                    CT_MSGPACK => rmp_serde::from_slice(&body).map_err(|e| e.to_string()),
                     other => {
                         return GlueResponse::InternalError {
                             reason: format!("unsupported content_type: {other:#04x}"),
                         };
                     }
                 };
-                crate::runtime_core_glue::dispatch_get_single_sync(
-                    &self.state,
-                    &req.feature,
-                    &req.key,
-                    body_format,
-                )
+                match parse_result {
+                    Ok(req) => crate::runtime_core_glue::dispatch_get_single_verb_style_sync(
+                        &self.state,
+                        &req.table,
+                        &req.key,
+                        req.features.as_deref(),
+                        body_format,
+                    ),
+                    Err(parse_err) => {
+                        // Plan 13.4.1 D-05 — legacy-shape detection on JSON only.
+                        if body_format == CT_JSON {
+                            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
+                                let is_legacy_2d = value
+                                    .get("keys")
+                                    .map(|v| v.is_array())
+                                    .unwrap_or(false)
+                                    && value
+                                        .get("features")
+                                        .map(|v| v.is_array())
+                                        .unwrap_or(false);
+                                let is_legacy_single = value
+                                    .get("feature")
+                                    .map(|v| v.is_string())
+                                    .unwrap_or(false)
+                                    && value.get("key").map(|v| v.is_string()).unwrap_or(false);
+                                if is_legacy_2d || is_legacy_single {
+                                    let hint = "OP_GET expects {table, key, features?}; received legacy {keys, features} or {feature, key} shape — see docs/wire-spec.md#op_get-0x0020".to_string();
+                                    return GlueResponse::UnsupportedRequestShape { hint };
+                                }
+                            }
+                        }
+                        GlueResponse::InternalError { reason: parse_err }
+                    }
+                }
             }
 
             // ─── TCP /mget (single feature, multi key) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ───
