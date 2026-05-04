@@ -25,6 +25,7 @@ from beava._errors import (  # noqa: F401
     RegistrationError,
     ValidationError,
 )
+from beava._events import event  # noqa: F401
 
 __all__ = [
     "App",
@@ -33,4 +34,5 @@ __all__ = [
     "ValidationError",
     "col",
     "lit",
+    "event",
 ]
