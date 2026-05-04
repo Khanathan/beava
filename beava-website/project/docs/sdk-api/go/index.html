@@ -24,6 +24,15 @@
     <div class="nav-search" id="search"></div>
   </div>
 </header>
+<link rel="stylesheet" href="/_pagefind/pagefind-ui.css">
+<script src="/_pagefind/pagefind-ui.js" defer></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    if (window.PagefindUI) {
+      new PagefindUI({ element: '#search', showSubResults: true, resetStyles: false, showImages: false });
+    }
+  });
+</script>
 <div class="docs-shell">
 <nav class="docs-sidebar" aria-label="Docs navigation">
   <div class="side-section">
@@ -102,7 +111,7 @@
   </div>
 </nav>
 <main class="docs-main" data-pagefind-body>
-<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><a href="/docs//sdk-api/">Sdk Api</a><span class="crumb-sep">›</span><span class="crumb-cur">Beava Go SDK</span></nav>
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><span>Sdk Api</span><span class="crumb-sep">›</span><span class="crumb-cur">Beava Go SDK</span></nav>
 <article class="docs-prose">
 <h1>Beava Go SDK</h1>
 <blockquote>

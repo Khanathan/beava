@@ -24,6 +24,15 @@
     <div class="nav-search" id="search"></div>
   </div>
 </header>
+<link rel="stylesheet" href="/_pagefind/pagefind-ui.css">
+<script src="/_pagefind/pagefind-ui.js" defer></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    if (window.PagefindUI) {
+      new PagefindUI({ element: '#search', showSubResults: true, resetStyles: false, showImages: false });
+    }
+  });
+</script>
 <div class="docs-shell">
 <nav class="docs-sidebar" aria-label="Docs navigation">
   <div class="side-section">
@@ -102,7 +111,7 @@
   </div>
 </nav>
 <main class="docs-main" data-pagefind-body>
-<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><a href="/docs//operators/">Operators</a><span class="crumb-sep">›</span><span class="crumb-cur">Recency Aggregation Operators</span></nav>
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><a href="/docs/operators/">Operators</a><span class="crumb-sep">›</span><span class="crumb-cur">Recency Aggregation Operators</span></nav>
 <article class="docs-prose">
 <h1>Recency Aggregation Operators</h1>
 <p>The 10 recency ops cover <strong>time-since semantics</strong> (how long since first / most-recent match), <strong>windowed-recency booleans</strong> (was the last match within window N?), and <strong>streak counters</strong> (consecutive matches and non-matches). All recency ops use <strong>server processing-time</strong> (<code>now_ms()</code> at the apply path) per <a href="https://github.com/beava-dev/beava/blob/main/.planning/PROJECT.md"><code>project_redis_shaped_no_event_time_ever</code></a> — beava intentionally has no event-time concept.</p>

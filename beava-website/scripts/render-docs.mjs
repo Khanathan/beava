@@ -300,7 +300,16 @@ function renderNav() {
     </ul>
     <div class="nav-search" id="search"></div>
   </div>
-</header>`;
+</header>
+<link rel="stylesheet" href="/_pagefind/pagefind-ui.css">
+<script src="/_pagefind/pagefind-ui.js" defer></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    if (window.PagefindUI) {
+      new PagefindUI({ element: '#search', showSubResults: true, resetStyles: false, showImages: false });
+    }
+  });
+</script>`;
 }
 
 function renderFooter() {
@@ -315,18 +324,25 @@ function renderFooter() {
 // ---------------------------------------------------------------
 // Breadcrumbs — derived from route
 // ---------------------------------------------------------------
+// Set of routes for which we have an index page on disk (computed once).
+const knownRoutes = new Set([...srcToRouteMap.values()].map(v => v.route));
+
 function renderCrumbs(route, title) {
-  const parts = route.replace(/^\/+|\/+$/g, '').split('/');
-  // route is /docs/.../<final>/ — emit clickable trail
+  const parts = route.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
   const crumbs = [];
   let acc = '';
   for (let i = 0; i < parts.length; i++) {
-    acc += '/' + parts[i] + '/';
+    acc = acc + '/' + parts[i];
+    const hrefAcc = acc + '/';
     const last = i === parts.length - 1;
     const label = last ? title : parts[i].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-    crumbs.push(last
-      ? `<span class="crumb-cur">${esc(label)}</span>`
-      : `<a href="${esc(acc)}">${esc(label)}</a>`);
+    if (last) {
+      crumbs.push(`<span class="crumb-cur">${esc(label)}</span>`);
+    } else if (knownRoutes.has(hrefAcc)) {
+      crumbs.push(`<a href="${esc(hrefAcc)}">${esc(label)}</a>`);
+    } else {
+      crumbs.push(`<span>${esc(label)}</span>`);
+    }
   }
   return `<nav class="crumbs" aria-label="Breadcrumb">${crumbs.join('<span class="crumb-sep">›</span>')}</nav>`;
 }

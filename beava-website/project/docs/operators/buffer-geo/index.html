@@ -24,6 +24,15 @@
     <div class="nav-search" id="search"></div>
   </div>
 </header>
+<link rel="stylesheet" href="/_pagefind/pagefind-ui.css">
+<script src="/_pagefind/pagefind-ui.js" defer></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    if (window.PagefindUI) {
+      new PagefindUI({ element: '#search', showSubResults: true, resetStyles: false, showImages: false });
+    }
+  });
+</script>
 <div class="docs-shell">
 <nav class="docs-sidebar" aria-label="Docs navigation">
   <div class="side-section">
@@ -102,7 +111,7 @@
   </div>
 </nav>
 <main class="docs-main" data-pagefind-body>
-<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><a href="/docs//operators/">Operators</a><span class="crumb-sep">›</span><span class="crumb-cur">Bounded Buffer + Geo Aggregation Operators</span></nav>
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><a href="/docs/operators/">Operators</a><span class="crumb-sep">›</span><span class="crumb-cur">Bounded Buffer + Geo Aggregation Operators</span></nav>
 <article class="docs-prose">
 <h1>Bounded Buffer + Geo Aggregation Operators</h1>
 <p>The <code>buffer-geo/</code> subdirectory hosts <strong>11 ops</strong> grouped into two related families: <strong>bounded buffers</strong> (count-per-bucket histograms, deques, reservoirs, categorical mixes) and <strong>geo</strong> (haversine-distance aggregations on lat/lon field pairs). Both families share the property that their state is non-<code>O(1)</code>-trivial but <strong>bounded</strong> — every op declares a finite per-entity ceiling at register time per <a href="https://github.com/beava-dev/beava/blob/main/.planning/REQUIREMENTS.md">V0-MEM-GOV-02</a>, and every op is <strong>lifetime-only</strong> (no <code>window=</code> kwarg in v0).</p>
