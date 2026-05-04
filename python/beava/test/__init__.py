@@ -1,16 +1,18 @@
-"""beava.test — pytest fixtures and assertion helpers (Plan 07 populates).
+"""beava.test — pytest fixtures and assertion helpers for Beava users.
 
-Phase 13.5 Plan 05 ships this empty submodule so import order does not
-break. Plan 07 adds:
+Public surface (per docs/sdk-api/python.md § bv.test fixtures):
 
-- ``fixture()`` — pytest fixture factory yielding a configured ``bv.App``
-- ``replay(app, events)`` — replay helper for deterministic re-runs
-- ``assert_features_eq(a, b)`` — cross-language feature equality
-- ``MockApp`` — in-memory App stub for unit tests
+- :func:`fixture` — pytest-shaped fixture yielding ``bv.App`` (embed mode,
+  ``test_mode=True`` default per Phase 13.5 D-05).
+- :func:`replay` — feed a list of event dicts into ``App.push`` in order.
+- :func:`assert_features_eq` — feature-dict comparison with float tolerance.
+- :class:`MockApp` — in-memory test double of ``bv.App``.
 """
 from __future__ import annotations
 
-# Plan 07 will populate:
-# from beava.test._fixtures import fixture, replay, assert_features_eq, MockApp
+from beava.test._assertions import assert_features_eq
+from beava.test._fixtures import fixture
+from beava.test._mock import MockApp
+from beava.test._replay import replay
 
-__all__: list[str] = []
+__all__ = ["fixture", "replay", "assert_features_eq", "MockApp"]
