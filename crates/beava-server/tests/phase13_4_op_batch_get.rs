@@ -340,11 +340,10 @@ async fn tcp_batch_get_returns_same_response_shape() {
 
 // ─── Test 5 — global table (entity_id = "" sentinel) — IGNORED until Plan 09 ──
 
-/// Plan 13.4-09 (global-table sentinel routing per ADR-003) lands the
-/// `key_cols: []` register-time acceptance. Until that plan ships, this test
-/// fails at registration with `unsupported_node_kind` or `key_cols_required`.
-/// Plan 13.4-09's closing commit removes the `#[ignore]` attribute below.
-#[ignore]
+/// Plan 13.4-09 (global-table sentinel routing per ADR-003) landed the
+/// engine-side `parse_entity_key` short-circuit so the empty-string
+/// sentinel returns `Some(EntityKey(empty))` instead of None. Re-ignoring
+/// would re-introduce `key_parse_failure` at GET time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_batch_get_with_global_table_entity_id_empty() {
     let ts = TestServer::spawn().await.expect("spawn");

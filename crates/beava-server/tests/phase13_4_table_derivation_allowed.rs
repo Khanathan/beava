@@ -124,21 +124,20 @@ async fn top_level_table_register_still_rejected() {
     ts.shutdown().await.ok();
 }
 
-/// Test 3 — Derivation with `output_kind: "table"` succeeds (GREEN-pending Plan 09).
+/// Test 3 — Derivation with `output_kind: "table"` succeeds (un-ignored Plan 09).
 ///
 /// `#[ignore]`'d in Plan 13.4-05 because the engine-side acceptance of
-/// `output_kind: "table"` (the actual `OpNode::Table*` variant
-/// resurrection + `key_cols: []` validation per ADR-003 sentinel
-/// routing) is deferred to Plan 13.4-09. Plan 09's closing commit
-/// REMOVES this `#[ignore]` attribute as the GREEN gate for that
-/// engine work. Phase 13.5 (Python `@bv.table` decorator) wires the
-/// SDK side; this test validates the wire shape end-to-end at the
-/// engine layer.
-///
-/// The asserted shape matches ADR-001 §"Deferred for Phase 13.4
-/// implementation" and the `output_kind: "table"` field plumbing
-/// described in the SCRATCH-PLANNER notes for Plan 09.
-#[ignore]
+/// `output_kind: "table"` was deferred to Plan 13.4-09. Plan 09's
+/// closing commit removes the `#[ignore]` attribute and corrects the
+/// wire shape (the original test mistakenly used a top-level
+/// `{"op": "count"}` OpNode + `key_cols` field — neither of which
+/// exists in the engine; `count` is an aggregation kind that lives
+/// inside `group_by.agg`, and the partition key for an
+/// `output_kind=table` derivation lives in `table_primary_key`, not
+/// `key_cols`). Plan 09 fixes the test wire shape under Rule 1
+/// (auto-fix bug); the asserted contract — `output_kind=table`
+/// derivations register without `unsupported_node_kind` — is
+/// preserved end-to-end via the corrected payload below.
 #[tokio::test]
 async fn derivation_with_output_kind_table_succeeds() {
     let ts = TestServer::spawn().await.expect("spawn");
@@ -157,13 +156,17 @@ async fn derivation_with_output_kind_table_succeeds() {
                 "kind": "derivation",
                 "name": "UserSpend",
                 "output_kind": "table",
-                "key_cols": ["user_id"],
                 "upstreams": ["Tx"],
-                "ops": [{"op": "count"}],
+                "ops": [{
+                    "op": "group_by",
+                    "keys": ["user_id"],
+                    "agg": {"spend_count": {"op": "count", "params": {}}}
+                }],
                 "schema": {
-                    "fields": {"user_id": "str", "count": "i64"},
+                    "fields": {"user_id": "str", "spend_count": "i64"},
                     "optional_fields": []
-                }
+                },
+                "table_primary_key": ["user_id"]
             }
         ]
     });

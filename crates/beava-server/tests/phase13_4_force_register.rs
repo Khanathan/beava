@@ -347,14 +347,14 @@ async fn register_first_time_no_force_required() {
     ts.shutdown().await.ok();
 }
 
-// ─── Test 9 (ignored — Plan 09 un-ignores) — agg removal ────────────────────
+// ─── Test 9 — agg removal (un-ignored Plan 09) ──────────────────────────────
 //
-// Covers the 6th destructive class (`agg_removal`) — depends on having the
-// `output_kind=table` derivation pathway plumbed through (Plan 13.4-09
-// global-table sentinel routing). Mark `#[ignore]` initially; Plan 09
-// removes the ignore once the table-derivation surface is fully wired.
+// Covers the 6th destructive class (`agg_removal`). Plan 13.4-09 landed
+// the `output_kind=table` end-to-end acceptance and un-ignored this test
+// — it actually passed against the existing engine even before Plan 09's
+// parse_entity_key fix because the destructive-rejection happens at
+// register-validate time (no GET path involved).
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn register_destructive_agg_removal_without_force_returns_409() {
     let ts = TestServer::spawn().await.expect("spawn");
