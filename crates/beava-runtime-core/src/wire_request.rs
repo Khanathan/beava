@@ -89,6 +89,13 @@ pub enum WireRequest {
     /// roundtrip; the dispatch layer returns `GlueResponse::HealthOk` directly
     /// so /health stays responsive even before WAL recovery completes.
     HttpHealth,
+    /// POST /ping — verb-style liveness probe (Plan 13.4-04). Distinct from
+    /// `HttpHealth` (GET /health): a verb-style symmetric endpoint that
+    /// matches the TCP `OP_PING (0x0000)` semantics. The dispatch layer
+    /// returns `GlueResponse::HealthOk` (same `200 {"status":"ok"}` shape
+    /// as /health) — keeping the two endpoints body-identical lets fixtures
+    /// poll either one.
+    HttpPing,
     /// GET /ready — readiness probe on the data-plane port (Plan 12.6-01).
     /// Mirrors the admin sidecar's /ready for back-compat with the ~20
     /// TestServer-using test files that poll `base_url()` for readiness.

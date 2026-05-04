@@ -84,10 +84,7 @@ async fn post_ping_returns_200_status_ok() {
     // Use post_json with empty object body — the route's contract says body
     // is empty, but post_json always sends JSON; an empty `{}` is valid JSON
     // and the verb-style /ping handler ignores body content.
-    let resp = ts
-        .post_json("/ping", &json!({}))
-        .await
-        .expect("post /ping");
+    let resp = ts.post_json("/ping", &json!({})).await.expect("post /ping");
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
     assert_eq!(
@@ -140,10 +137,7 @@ async fn post_push_verb_with_event_in_body_accepts() {
         "event": "Tx",
         "data": {"event_time": 1000, "user_id": "alice", "amount": 12.50}
     });
-    let resp = ts
-        .post_json("/push", &body)
-        .await
-        .expect("post /push verb");
+    let resp = ts.post_json("/push", &body).await.expect("post /push verb");
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("push body text");
     assert!(

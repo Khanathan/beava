@@ -244,24 +244,20 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
             method: method.to_owned(),
             path: path.to_owned(),
         },
-        // Plan 13.4-04 Task 4.b stubs — Task 4.d wires these through to the
-        // real dispatch (HttpPing, HttpPush via parse_verb_push body extract,
-        // HttpPushSync). Returning ParseError here keeps the compiler happy
-        // while the e2e RED test in Task 4.c documents the expected wire
-        // shape.
-        Route::Ping => WireRequest::ParseError {
-            reason: "not_yet_implemented: verb-style /ping dispatch lands Plan 13.4-04 Task 4.d"
-                .to_owned(),
-        },
-        Route::PushVerb => WireRequest::ParseError {
-            reason: "not_yet_implemented: verb-style /push dispatch lands Plan 13.4-04 Task 4.d"
-                .to_owned(),
-        },
-        Route::PushSyncVerb => WireRequest::ParseError {
-            reason:
-                "not_yet_implemented: verb-style /push-sync dispatch lands Plan 13.4-04 Task 4.d"
-                    .to_owned(),
-        },
+        // Plan 13.4-04 Task 4.d — verb-style HTTP routes wired to dispatch.
+        // POST /ping is the HTTP mirror of TCP OP_PING (0x0000). The
+        // dispatch layer returns the same `200 {"status":"ok"}` shape as
+        // /health (`GlueResponse::HealthOk`) so fixtures can poll either
+        // endpoint interchangeably.
+        Route::Ping => WireRequest::HttpPing,
+        // POST /push (verb-style — event name in JSON body). Body shape is
+        // `{"event":"Tx","data":{...}}`; we extract the event name and
+        // synthesize the existing `HttpPush` variant with the inner `data`
+        // payload as the body so dispatch composes with the legacy
+        // `/push/:event_name` apply path.
+        Route::PushVerb => parse_verb_push(&body, /* sync = */ false),
+        // POST /push-sync (verb-style) — same body shape; awaits fsync.
+        Route::PushSyncVerb => parse_verb_push(&body, /* sync = */ true),
     };
 
     Ok(Some((wire_req, keep_alive)))
@@ -274,6 +270,60 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
 fn is_json_content_type(ct: &str) -> bool {
     let media_type = ct.split(';').next().unwrap_or("").trim();
     media_type.eq_ignore_ascii_case("application/json")
+}
+
+/// Plan 13.4-04 — extract `event` from the JSON body of a verb-style
+/// `POST /push` (or `POST /push-sync`), then synthesize the corresponding
+/// `WireRequest::HttpPush` / `HttpPushSync` carrying the inner `data` payload
+/// as the body the existing apply path expects.
+///
+/// Body contract: `{"event": "<name>", "data": {<existing push body>}}`.
+///
+/// Failure modes (both surface as `WireRequest::ParseError` with a special
+/// reason; the apply-shard dispatcher special-cases these reasons to emit a
+/// structured 400 with `error.code` rather than the generic 501 fallback):
+/// - `invalid_json_body` — body isn't valid JSON.
+/// - `missing_event_name_in_body` — body parsed but lacks the `event` string.
+fn parse_verb_push(body: &[u8], sync: bool) -> WireRequest {
+    use beava_core::wire::CT_JSON;
+    let parsed: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => {
+            return WireRequest::ParseError {
+                reason: "invalid_json_body".to_owned(),
+            };
+        }
+    };
+    let event_name = match parsed.get("event").and_then(|v| v.as_str()) {
+        Some(s) => s.to_owned(),
+        None => {
+            return WireRequest::ParseError {
+                reason: "missing_event_name_in_body".to_owned(),
+            };
+        }
+    };
+    // Re-serialise the inner `data` payload — the existing dispatch layer
+    // expects the push body to be the bare event payload (matching legacy
+    // `/push/:event_name` semantics). Default to `{}` when absent so a
+    // schemaless event (no fields) still flows through validation.
+    let data = parsed
+        .get("data")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+    let body_bytes = bytes::Bytes::from(serde_json::to_vec(&data).unwrap_or_default());
+    if sync {
+        WireRequest::HttpPushSync {
+            event_name,
+            body: body_bytes,
+            body_format: CT_JSON,
+        }
+    } else {
+        WireRequest::HttpPush {
+            event_name,
+            body: body_bytes,
+            body_format: CT_JSON,
+        }
+    }
 }
 
 // ─── Chunked transfer encoding parser ─────────────────────────────────────────
