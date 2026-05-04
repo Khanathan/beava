@@ -63,3 +63,7 @@ path = "src/bin/beava-bench-v2.rs"
 [[bench]]
 name = "blast_shape_bench"
 harness = false
+
+[[bench]]
+name = "cli_dispatch"
+harness = false
