@@ -50,6 +50,12 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
 
     Mirrors ``_events._make_event_derivation`` so @bv.table works under
     ``from __future__ import annotations``.
+
+    Per Phase 13.5.1 D-01 (USER-LOCKED): raises ``TypeError`` if any decorated
+    parameter is missing an annotation — predictable, mypy-friendly, mirrors
+    the existing ``@bv.event`` convention. Silent fallback to
+    ``inspect.Parameter.empty`` (which surfaced as ``AttributeError`` in
+    user code) is forbidden.
     """
     sig = inspect.signature(fn)
     params = list(sig.parameters.values())
@@ -64,6 +70,12 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
     proxies: list[Any] = []
     for p in params:
         ann = resolved.get(p.name, p.annotation)
+        if ann is inspect.Parameter.empty:
+            raise TypeError(
+                f"@bv.table function {fn.__name__!r} parameter {p.name!r} "
+                f"must be annotated with the upstream event class — "
+                f"e.g. def {fn.__name__}({p.name}: Click): ..."
+            )
         if isinstance(ann, str):
             ann = fn.__globals__.get(ann, ann)
         proxies.append(ann)
