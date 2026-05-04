@@ -13,7 +13,7 @@
 
 use beava_core::wire::{
     decode_frame, CT_JSON, CT_MSGPACK, OP_BATCH_GET, OP_GET, OP_GET_MULTI, OP_MGET, OP_PING,
-    OP_PUSH, OP_REGISTER,
+    OP_PUSH, OP_REGISTER, OP_RESET,
 };
 use bytes::BytesMut;
 use std::net::SocketAddr;
@@ -847,6 +847,18 @@ pub fn parse_wire_request(
         // deserialises per body_format.
         OP_BATCH_GET => match frame.content_type {
             CT_JSON | CT_MSGPACK => WireRequest::TcpBatchGet {
+                body: frame.payload,
+                body_format: frame.content_type,
+            },
+            other => WireRequest::ParseError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            },
+        },
+        // Plan 13.4-08: OP_RESET (0x0040) — full state + registry clear,
+        // gated server-side on test_mode. Body is empty `{}`; the parser is
+        // body-shape-agnostic (dispatch tolerates any body for compat).
+        OP_RESET => match frame.content_type {
+            CT_JSON | CT_MSGPACK => WireRequest::TcpReset {
                 body: frame.payload,
                 body_format: frame.content_type,
             },

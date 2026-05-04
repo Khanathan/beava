@@ -104,7 +104,11 @@ async fn register(http_addr: SocketAddr) {
         .send()
         .await
         .expect("register");
-    assert!(resp.status().is_success(), "register failed: {}", resp.status());
+    assert!(
+        resp.status().is_success(),
+        "register failed: {}",
+        resp.status()
+    );
 }
 
 async fn push_one(http_addr: SocketAddr, user_id: &str, event_time_ms: i64) -> reqwest::StatusCode {

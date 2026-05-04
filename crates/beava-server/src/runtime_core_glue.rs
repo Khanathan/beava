@@ -127,6 +127,17 @@ pub enum GlueResponse {
         message: String,
         extras: serde_json::Value,
     },
+    /// Plan 13.4-08 (D-03 USER-LOCKED): `OP_RESET` succeeded (server is in
+    /// `effective_test_mode`). Body shape is `{"reset": true,
+    /// "registry_version": <new>}`. HTTP encoder emits 200; TCP encoder
+    /// emits an `OP_GET_RESPONSE` (0x0023) frame (the generic JSON success
+    /// frame, matching the OP_GET / OP_BATCH_GET response opcode reuse).
+    ResetOk { registry_version: u64 },
+    /// Plan 13.4-08 (D-03 USER-LOCKED): `OP_RESET` rejected because the
+    /// server is NOT in test_mode. HTTP encoder emits 403; TCP encoder
+    /// emits an `OP_ERROR_RESPONSE` (0xFFFF) frame. Body shape:
+    /// `{"error": {"code": "reset_disabled_in_production", "reason": ...}}`.
+    ResetForbidden,
     /// Unrecognised request type — caller maps to 404 / error frame.
     Unsupported,
 }

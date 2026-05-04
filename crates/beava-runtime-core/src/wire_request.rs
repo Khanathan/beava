@@ -79,6 +79,19 @@ pub enum WireRequest {
     /// HTTP POST /batch_get — same payload as TcpBatchGet, JSON-only.
     /// Plan 13.4-03.
     HttpBatchGet { body: Bytes },
+    /// OP_RESET (0x0040) — TCP full-clear request (Plan 13.4-08 / D-03).
+    ///
+    /// `body` payload is empty `{}` JSON (or empty msgpack `{}`); the
+    /// content is opaque to the parser. The dispatch arm
+    /// (`apply_shard.rs::dispatch_reset_sync`) honors the server's
+    /// `effective_test_mode` flag — if false, returns the
+    /// `reset_disabled_in_production` error (HTTP 403 / wire OP_ERROR_RESPONSE).
+    /// If true, drops every per-entity state table + every registered
+    /// descriptor and bumps `registry_version`.
+    TcpReset { body: Bytes, body_format: u8 },
+    /// HTTP POST /reset — same semantics as `TcpReset`. JSON-only on HTTP.
+    /// Plan 13.4-08 / D-03.
+    HttpReset { body: Bytes },
     /// Plan 12.6-14: POST request whose Content-Type was not
     /// `application/json` (or absent). Encoded as 415 with the structured
     /// `unsupported_media_type` body shape used by legacy axum's register

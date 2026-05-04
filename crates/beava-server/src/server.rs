@@ -251,14 +251,23 @@ impl ServerV18 {
         // verb-style HTTP migration is in place.
         let resolved_tcp_addr = tcp_addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
         let mut sv18 = Self::bind(http_addr, resolved_tcp_addr, admin_addr).await?;
-        // Plan 13.4-08 hook: `cfg.test_mode` is recorded on AppState (or
-        // surfaced via a dedicated channel) by Plan 08; Plan 07 plumbs the
-        // field shape only. Suppress unused-binding diagnostics until
-        // Plan 08 wires the read side.
-        let _test_mode = cfg.test_mode;
+        // Plan 13.4-08 (D-03 USER-LOCKED): boot-time test_mode resolution.
+        // Effective test_mode is the OR of `cfg.test_mode` (programmatic
+        // path: `Server::new(Config { test_mode: true, .. })` per A-10 in
+        // SCRATCH-PLANNER-NOTES) and `BEAVA_TEST_MODE=1` env var (ops/CI
+        // path). Either gate alone enables reset. Per D-03 the env-var
+        // check is exactly `== "1"` — no `=true`, no truthy-coercion.
+        // Boot-time-only resolution prevents runtime escalation: an
+        // operator who controls env at boot is already trusted.
+        let effective_test_mode = cfg.test_mode
+            || std::env::var("BEAVA_TEST_MODE")
+                .map(|v| v == "1")
+                .unwrap_or(false);
         // 60s default snapshot interval mirrors the production tuning;
         // memory mode ignores it (snapshot task not spawned).
-        let state = build_runtime_state_with_persistence(cfg.persistence, 60_000, 2).await?;
+        let state =
+            build_runtime_state_with_persistence(cfg.persistence, 60_000, 2, effective_test_mode)
+                .await?;
         sv18.prebuilt_state = Some(state);
         Ok(sv18)
     }
@@ -457,6 +466,14 @@ async fn build_runtime_state(
 ) -> Result<ServerV18State, ServerError> {
     // Disk-mode default — preserves the pre-Plan-13.4-07 behavior. The
     // memory-mode path is reachable only via `bind_with_config`.
+    //
+    // Plan 13.4-08 (D-03): legacy `bind()` / `bind_with_state()` callers have
+    // no Config struct — production-safe by default (test_mode=false). The
+    // env var path still works because `bind_with_config` is the ONLY
+    // constructor that resolves the env var; legacy callers do NOT pick it
+    // up. This is intentional: the env var is the deployment-knob path
+    // (paired with bind_with_config in `main.rs`), and TestServer flips
+    // test_mode via the programmatic kwarg directly.
     build_runtime_state_with_persistence(
         Persistence::Disk {
             wal_dir,
@@ -465,6 +482,7 @@ async fn build_runtime_state(
         },
         snapshot_interval_ms,
         wal_fsync_interval_ms,
+        /* effective_test_mode = */ false,
     )
     .await
 }
@@ -491,6 +509,7 @@ async fn build_runtime_state_with_persistence(
     persistence: Persistence,
     snapshot_interval_ms: u64,
     wal_fsync_interval_ms: u64,
+    effective_test_mode: bool,
 ) -> Result<ServerV18State, ServerError> {
     use beava_runtime_core::wal_buffer::WalBufferRing;
     use beava_runtime_core::wal_lsn::WalLsn;
@@ -614,7 +633,21 @@ async fn build_runtime_state_with_persistence(
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?
     };
 
-    let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
+    let mut app_state_inner = AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone());
+    // Plan 13.4-08 (D-03 USER-LOCKED): stamp effective_test_mode at boot time.
+    // Resolution lives at the bind_with_config / build_runtime_state call
+    // site (cfg.test_mode || env::BEAVA_TEST_MODE=="1"); this struct field is
+    // read-only after bind so reset cannot be re-enabled at runtime.
+    app_state_inner.effective_test_mode = effective_test_mode;
+    let app_state = Arc::new(app_state_inner);
+    if effective_test_mode {
+        tracing::warn!(
+            target: "beava.server",
+            kind = "server.test_mode_enabled",
+            "test_mode is ENABLED: OP_RESET will accept reset requests \
+             (D-03 USER-LOCKED). Disable for production deployments."
+        );
+    }
     // Plan 12.6-07: production data-plane `/registry` is permanently 404. The
     // tokio admin sidecar (cfg.admin_addr; default 127.0.0.1:8090) is the
     // canonical /registry surface. TestServer flips
@@ -2299,6 +2332,26 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
+        // Plan 13.4-08 (D-03): OP_RESET success — body shape
+        // `{"reset": true, "registry_version": N}`. Frame opcode is
+        // OP_GET_RESPONSE (0x0023) — the generic JSON success frame
+        // (matching the OP_GET / OP_BATCH_GET response opcode reuse).
+        GlueResponse::ResetOk { registry_version } => {
+            let body = serde_json::json!({
+                "reset": true,
+                "registry_version": registry_version,
+            });
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_GET_RESPONSE, CT_JSON, &b, buf);
+        }
+        // Plan 13.4-08 (D-03): OP_RESET rejected — frame opcode is the
+        // dedicated 0xFFFF error frame; body matches the HTTP 403 body
+        // verbatim.
+        GlueResponse::ResetForbidden => {
+            let body = reset_forbidden_body();
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        }
         // Plan 12.6-15: rich TCP error frame (op_not_implemented, unknown_op,
         // unsupported_content_type, frame_too_large). Body shape:
         // `{"error": {"code": <code>, "message": <msg>, ...extras}}` —
@@ -2445,12 +2498,28 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
             (500, serde_json::to_vec(&body).unwrap_or_default())
         }
+        // Plan 13.4-08 (D-03): OP_RESET success — HTTP 200 + body
+        // `{"reset": true, "registry_version": N}`.
+        GlueResponse::ResetOk { registry_version } => {
+            let body = serde_json::json!({"reset": true, "registry_version": registry_version});
+            (200, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        // Plan 13.4-08 (D-03): OP_RESET rejected — HTTP 403 + structured
+        // `reset_disabled_in_production` body. Reason text mentions both
+        // opt-in paths (`BEAVA_TEST_MODE` env var, `test_mode` kwarg) per
+        // Test 1 in `phase13_4_reset_default_rejected.rs`.
+        GlueResponse::ResetForbidden => {
+            let body = reset_forbidden_body();
+            (403, serde_json::to_vec(&body).unwrap_or_default())
+        }
         _ => (501, b"{\"error\":{\"code\":\"unsupported\"}}".to_vec()),
     };
 
     let status_text = match status {
         200 => "OK",
         400 => "Bad Request",
+        // Plan 13.4-08 (D-03): 403 added for `reset_disabled_in_production`.
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -2470,6 +2539,26 @@ fn encode_glue_response_http(
     );
     buf.extend_from_slice(header.as_bytes());
     buf.extend_from_slice(&body_bytes);
+}
+
+/// Plan 13.4-08 (D-03 USER-LOCKED): canonical body for the
+/// `reset_disabled_in_production` error. Used by both the HTTP encoder
+/// (403) and the TCP encoder (OP_ERROR_RESPONSE) so callers see
+/// identical body shape regardless of transport — the error.code is the
+/// stable contract per `docs/error-codes.md`.
+///
+/// Reason text mentions BOTH opt-in paths (`BEAVA_TEST_MODE` env var and
+/// `test_mode` kwarg) so users see actionable error text — pinned by
+/// `phase13_4_reset_default_rejected::default_config_no_env_var_post_reset_returns_403_structured`.
+fn reset_forbidden_body() -> serde_json::Value {
+    serde_json::json!({
+        "error": {
+            "code": "reset_disabled_in_production",
+            "reason": "OP_RESET requires server test_mode (set \
+                       BEAVA_TEST_MODE=1 or pass Config { test_mode: true \
+                       } at server construction). See docs/error-codes.md."
+        }
+    })
 }
 
 /// Encode a raw TCP framed response into `buf`.

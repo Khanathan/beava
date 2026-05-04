@@ -142,10 +142,7 @@ async fn default_config_no_env_var_post_reset_returns_403_structured() {
     // Reason text MUST mention both opt-in paths so users see actionable
     // error text. This guards against future refactors stripping the
     // explanation.
-    let reason = body["error"]["reason"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let reason = body["error"]["reason"].as_str().unwrap_or("").to_string();
     assert!(
         reason.contains("BEAVA_TEST_MODE"),
         "reason MUST mention BEAVA_TEST_MODE env var, got: {reason}"
@@ -162,7 +159,7 @@ async fn default_config_no_env_var_post_reset_returns_403_structured() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
-async fn tcp_default_config_op_reset_returns_0xFFFF_error_frame() {
+async fn tcp_default_config_op_reset_returns_0xffff_error_frame() {
     std::env::remove_var("BEAVA_TEST_MODE");
 
     let (_http_addr, tcp_addr, shutdown_tx, serve_task) = boot_default().await;

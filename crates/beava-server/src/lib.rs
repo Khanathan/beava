@@ -46,6 +46,16 @@ pub struct AppState {
     /// TestServer-builder callers can flip it post-spawn (matches the
     /// `.dev_endpoints(true)` builder method semantics).
     pub dev_endpoints: Arc<std::sync::atomic::AtomicBool>,
+    /// Plan 13.4-08 (D-03 USER-LOCKED): effective `test_mode` flag,
+    /// computed at boot time as the OR of `cfg.test_mode` and
+    /// `BEAVA_TEST_MODE=1` env var. When false, `OP_RESET` returns
+    /// `reset_disabled_in_production` (HTTP 403 / wire 0xFFFF). When true,
+    /// `OP_RESET` clears all state + registry and bumps `registry_version`.
+    ///
+    /// Default boot is `false` (production-safe). Env var must be set
+    /// explicitly OR the constructor must take `Config { test_mode: true }`
+    /// to enable. Boot-time-only resolution prevents runtime escalation.
+    pub effective_test_mode: bool,
 }
 
 impl AppState {
@@ -55,6 +65,7 @@ impl AppState {
             wal_sink,
             idem_cache,
             dev_endpoints: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            effective_test_mode: false,
         }
     }
 

@@ -444,14 +444,52 @@ sort. The SDK's local validator surfaces it as `cycle` (the
 **Path:** `<cycle path>`.
 **Recovery:** Break the cycle.
 
-### code = "reset_disabled"
+### code = "reset_disabled_in_production"
 
-**HTTP status:** 403
-**When:** `OP_RESET` invoked when the server config has
-`enable_reset_op=false` (production operators set this to forbid resets).
+**HTTP status:** 403 Forbidden
+**Wire opcode (TCP):** `OP_ERROR_RESPONSE = 0xFFFF` (JSON body shape below)
+**When:** A `POST /reset` (HTTP) or `OP_RESET` (TCP, opcode `0x0040`) request
+arrives at a server whose effective `test_mode` flag is `false`. Per D-03
+(Phase 13.4 Plan 08, USER-LOCKED), `OP_RESET` is the full state + registry
+clear — production-by-default rejects it.
 **Path:** *(no path)*
-**Recovery:** Set `enable_reset_op=true` in the server config (test environments
-only); production operators MUST keep it `false`.
+**Recovery:** Enable `test_mode` via either of two boot-time opt-ins (the
+flag is computed at boot as the OR of both):
+
+1. **Shell env var** — start the server with `BEAVA_TEST_MODE=1` in the
+   environment. Per D-03 the check is exactly `== "1"`; `=true`, `=yes`,
+   `=on`, etc. are NOT accepted.
+2. **Programmatic Rust** — `ServerV18::bind_with_config(.., ServerV18Config {
+   test_mode: true, .. })`. Used by integration tests that spawn an
+   in-process server. Equivalent kwarg in the Python SDK is
+   `bv.App(test_mode=True)` (embed mode); network mode (`bv.App(url=..,
+   test_mode=True)`) ignores the kwarg with a warning since the server
+   controls the gate.
+
+Production servers MUST NOT set either gate. Test fixtures should set the
+env var or pass `test_mode: true` to the constructor. The gate is read at
+boot and cached on `AppState.effective_test_mode` — the env var cannot be
+flipped at runtime to escalate.
+
+Response body shape:
+
+```json
+{
+  "error": {
+    "code": "reset_disabled_in_production",
+    "reason": "OP_RESET requires server test_mode (set BEAVA_TEST_MODE=1 or pass Config { test_mode: true } at server construction). See docs/error-codes.md."
+  }
+}
+```
+
+The `reason` text intentionally mentions BOTH opt-in paths so users see
+actionable error text. Test
+`phase13_4_reset_default_rejected::default_config_no_env_var_post_reset_returns_403_structured`
+pins this contract.
+
+**Source:** Phase 13.4 Plan 08 / D-03 (USER-LOCKED). Predecessor: the
+pre-D-03 sketch used the shorter code `reset_disabled` with a single-flag
+gate; this entry replaces it.
 
 ### code = "schema_invalid"
 
@@ -667,7 +705,7 @@ double the memory cost without sufficient benefit in v0.
 |--------|---------|------------------------|
 | `200` | Success | (no error code) — also `dedupe_replay` (idempotency, not an error). |
 | `400` | Client error: validation, malformed input, business-rule rejection | All `aggregation_invalid_*`, `aggregation_on_table_not_supported`, `bad_return_type`, `batch_too_large`, `bv_table_class_form_not_supported`, `cycle`, `duplicate_name`, `event_time_not_supported_in_v0`, `feature_not_in_table`, `feature_removed_no_joins_v0`, `feature_removed_no_unions_v0`, `invalid_*` (cast / expression / percentile / topk / bloom), `joins_not_supported`, `key_shape_mismatch`, `missing_field`, `missing_upstream`, `registration_cycle`, `schema_invalid`, `schema_mismatch`, `schema_propagation_failure`, `session_windows_not_supported_in_v0`, `table_key_invalid`, `topological_order_violation`, `unbounded_op_in_lifetime_mode`, `unions_not_supported_in_v0`, `unknown_field_event_time_v0`, `unknown_field_reference`, `unknown_field_tolerate_delay_v0`, `unknown_field_type`, `unknown_op`, `validation_failed`, `window_not_supported`. |
-| `403` | Forbidden — server policy rejects the operation | `reset_disabled`. |
+| `403` | Forbidden — server policy rejects the operation | `reset_disabled_in_production`. |
 | `404` | Not found | `unknown_event`, `unknown_table`. |
 | `409` | Conflict — destructive change without `force=true` | `registration_conflict`, `force_required`. |
 | `415` | Unsupported Media Type | `unsupported_content_type`. |

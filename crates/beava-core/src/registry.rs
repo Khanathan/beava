@@ -686,6 +686,35 @@ impl Registry {
     /// refinement (the docs/schema-evolution.md text covers the eventual
     /// semantic — v0 wire contract is satisfied by registry-level mutation).
     ///
+    /// Plan 13.4-08 (D-03 USER-LOCKED): drop ALL descriptors + ALL compiled
+    /// chains/aggregations + ALL reverse indices, and bump `version` by 1
+    /// so any cached client `registry_version` becomes stale.
+    ///
+    /// Used exclusively by `OP_RESET`. The bump-by-1 (rather than reset to 0)
+    /// preserves the "registry_version is monotonic" invariant that callers
+    /// rely on for idempotent-replay deduplication and stale-cache detection.
+    /// Callers that wish to observe the change without a re-register first
+    /// can do so by polling `registry().version()`.
+    ///
+    /// Per-entity state tables are NOT touched here — they live in
+    /// `DevAggState.state_tables` and are cleared by the caller (the apply
+    /// shard's `dispatch_reset_sync`).
+    pub fn clear(&self) {
+        let mut w = self.inner.write();
+        w.events.clear();
+        w.tables.clear();
+        w.derivations.clear();
+        w.compiled_chains.clear();
+        w.compiled_aggregations.clear();
+        w.feature_index.clear();
+        w.aggregations_by_source.clear();
+        w.cluster_id_by_signature.clear();
+        // next_agg_id stays monotonic — descriptors registered after a reset
+        // get fresh IDs that don't collide with any prior state-table slot.
+        // Same rationale for next_cluster_id.
+        w.version += 1;
+    }
+
     /// Returns the number of descriptors that were actually removed.
     pub fn force_remove_descriptors(&self, names: &[String]) -> usize {
         let mut w = self.inner.write();

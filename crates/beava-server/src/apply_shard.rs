@@ -596,6 +596,14 @@ impl ApplyShard {
                 dispatch_batch_get_sync(&self.state, &body, beava_core::wire::CT_JSON)
             }
 
+            // ─── Plan 13.4-08 (D-03 USER-LOCKED) — OP_RESET / POST /reset ─────
+            // Both transports route through a single dispatch_reset_sync.
+            // The `body` payload is `{}` by spec but is intentionally NOT
+            // parsed — reset is a no-arg operation; any body is tolerated.
+            WireRequest::TcpReset { .. } | WireRequest::HttpReset { .. } => {
+                dispatch_reset_sync(&self.state)
+            }
+
             // Plan 12.6-14: 415 Unsupported Media Type — POST request with
             // wrong/missing Content-Type. Body matches legacy axum's
             // register handler `RegisterErrorBody` shape.
@@ -1327,4 +1335,70 @@ pub fn dispatch_batch_get_sync(
         body: Bytes::from(body_bytes),
         format: CT_JSON,
     }
+}
+
+// ─── Plan 13.4-08 (D-03 USER-LOCKED) — OP_RESET dispatch ──────────────────────
+//
+// Honors the boot-time `effective_test_mode` flag stamped on AppState. When
+// the flag is FALSE (production-by-default boot) the dispatch returns a
+// structured `reset_disabled_in_production` error — HTTP 403 / TCP
+// OP_ERROR_RESPONSE (0xFFFF). When TRUE the dispatch:
+//
+// 1. Acquires the `state_tables` Mutex (single-writer apply discipline).
+// 2. Empties EVERY per-entity aggregation state by clearing the `Vec`.
+// 3. Drops every registered descriptor + every compiled chain/aggregation
+//    via `Registry::clear()`. The clear() call bumps `registry_version` by
+//    1 so any cached client `registry_version` becomes stale.
+// 4. Resets `next_event_id` and `query_time_ms` to 0 (cold-start state).
+// 5. Returns `GlueResponse::ResetOk { registry_version }` — the encoder
+//    layer maps this to HTTP 200 + `{"reset": true, "registry_version": N}`
+//    or TCP OP_GET_RESPONSE with the same body.
+//
+// Per-event WAL ring buffers and the legacy /register WAL sink are NOT
+// touched here — the in-memory state is the source of truth for v0; on
+// restart the disk-mode path replays the WAL and rebuilds, but a fresh
+// reset followed by a re-register starts from a clean slate. Memory mode
+// has no WAL by design.
+//
+// **Threat model coverage** (Plan 13.4-08 §threat_model):
+// - T-13.4-08-01 (Tampering: client wipes prod state): the
+//   `if !state.effective_test_mode` early-return IS the defense.
+// - T-13.4-08-03 (Spoofing: env var read at runtime): the flag is set ONCE
+//   at bind time and never re-read; runtime escalation impossible.
+pub fn dispatch_reset_sync(state: &std::sync::Arc<crate::AppState>) -> GlueResponse {
+    if !state.effective_test_mode {
+        return GlueResponse::ResetForbidden;
+    }
+
+    // 1+2 — acquire state_tables lock + empty every per-entity table.
+    {
+        let mut tables = state.dev_agg.state_tables.lock();
+        tables.clear();
+    }
+
+    // 3 — drop every descriptor + bump registry_version.
+    state.dev_agg.registry.clear();
+
+    // 4 — reset cold-start counters. event_id is cumulative for the apply
+    // path; resetting to 0 means the next push starts from event_id=1
+    // again. query_time_ms is the latest server-side wall-clock the apply
+    // path saw; resetting to 0 makes the next GET fall back to the live
+    // wall clock until the first post-reset push lands.
+    state
+        .dev_agg
+        .next_event_id
+        .store(0, std::sync::atomic::Ordering::Release);
+    state
+        .dev_agg
+        .query_time_ms
+        .store(0, std::sync::atomic::Ordering::Release);
+
+    let registry_version = state.dev_agg.registry.version();
+    tracing::info!(
+        target: "beava.server",
+        kind = "server.reset_completed",
+        registry_version,
+        "OP_RESET completed: state + registry cleared (D-03 USER-LOCKED)"
+    );
+    GlueResponse::ResetOk { registry_version }
 }

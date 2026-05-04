@@ -258,6 +258,10 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         Route::PushVerb => parse_verb_push(&body, /* sync = */ false),
         // POST /push-sync (verb-style) — same body shape; awaits fsync.
         Route::PushSyncVerb => parse_verb_push(&body, /* sync = */ true),
+        // Plan 13.4-08 — POST /reset (verb-style HTTP mirror of TCP OP_RESET).
+        // Body is opaque (empty `{}` per spec); the dispatch arm enforces
+        // the test_mode gate.
+        Route::Reset => WireRequest::HttpReset { body },
     };
 
     Ok(Some((wire_req, keep_alive)))

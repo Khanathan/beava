@@ -29,6 +29,7 @@
 //! | 0x0024   | batch_get        | Implemented          | Phase 13.4-03 |
 //! | 0x0030   | set              | Reserved             | Phase 12 |
 //! | 0x0031   | mset             | Reserved             | Phase 12 |
+//! | 0x0040   | reset            | Implemented          | Phase 13.4-08 |
 //! | 0xFFFF   | error_response   | Implemented          | Phase 2.5 |
 //!
 //! Plan 12.7-06: 0x0013/0x0014 (push_table/delete_table) deleted per
@@ -105,6 +106,20 @@ pub const OP_SET: u16 = 0x0030;
 /// Batched direct writes. Reserved Phase 12.
 pub const OP_MSET: u16 = 0x0031;
 
+/// Full state + registry clear (Plan 13.4-08 / D-03 USER-LOCKED).
+///
+/// Gated on server `test_mode` (`BEAVA_TEST_MODE=1` env var OR
+/// `Config { test_mode: true }` at server construction). When the gate is
+/// open the server clears ALL per-entity aggregation state and ALL
+/// registry descriptors, then bumps `registry_version`. When the gate is
+/// closed the server returns `reset_disabled_in_production` (HTTP 403 /
+/// wire `OP_ERROR_RESPONSE = 0xFFFF`).
+///
+/// Wire request payload: empty `{}` JSON. Wire success response: framed
+/// `OP_GET_RESPONSE (0x0023)` (the generic JSON success frame) with body
+/// `{"reset": true, "registry_version": <new>}`.
+pub const OP_RESET: u16 = 0x0040;
+
 /// Dedicated error-response opcode. Payload matches the HTTP error body.
 pub const OP_ERROR_RESPONSE: u16 = 0xFFFF;
 
@@ -134,6 +149,7 @@ pub fn opcode_name(op: u16) -> Option<&'static str> {
         OP_BATCH_GET => Some("batch_get"),
         OP_SET => Some("set"),
         OP_MSET => Some("mset"),
+        OP_RESET => Some("reset"),
         OP_ERROR_RESPONSE => Some("error_response"),
         _ => None,
     }
@@ -287,6 +303,7 @@ mod tests {
         assert_eq!(OP_BATCH_GET, 0x0024); // Plan 13.4-03
         assert_eq!(OP_SET, 0x0030);
         assert_eq!(OP_MSET, 0x0031);
+        assert_eq!(OP_RESET, 0x0040); // Plan 13.4-08
         assert_eq!(OP_ERROR_RESPONSE, 0xFFFF);
     }
 
@@ -313,6 +330,7 @@ mod tests {
         assert_eq!(opcode_name(OP_BATCH_GET), Some("batch_get")); // Plan 13.4-03
         assert_eq!(opcode_name(OP_SET), Some("set"));
         assert_eq!(opcode_name(OP_MSET), Some("mset"));
+        assert_eq!(opcode_name(OP_RESET), Some("reset")); // Plan 13.4-08
         assert_eq!(opcode_name(OP_ERROR_RESPONSE), Some("error_response"));
     }
 
@@ -342,6 +360,8 @@ mod tests {
         assert_eq!(reserved_phase(OP_BATCH_GET), None);
         assert_eq!(reserved_phase(OP_SET), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_MSET), Some("Phase 12"));
+        // Plan 13.4-08: OP_RESET is implemented; not reserved.
+        assert_eq!(reserved_phase(OP_RESET), None);
     }
 
     #[test]
@@ -373,6 +393,7 @@ mod tests {
             OP_BATCH_GET,    // Plan 13.4-03
             OP_SET,
             OP_MSET,
+            OP_RESET, // Plan 13.4-08
             OP_ERROR_RESPONSE,
         ];
         let set: std::collections::HashSet<u16> = ops.iter().copied().collect();
@@ -693,6 +714,7 @@ mod tests {
             "batch_get",    // Plan 13.4-03
             "set",
             "mset",
+            "reset", // Plan 13.4-08
             "error_response",
         ] {
             assert!(

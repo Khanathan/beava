@@ -51,6 +51,10 @@ pub enum Route {
     /// path. Legacy `POST /push-sync/:event_name` (`Route::PushSync`) stays
     /// alive per A-07.
     PushSyncVerb,
+    /// POST /reset — full state + registry clear (Plan 13.4-08 / D-03
+    /// USER-LOCKED). Gated on server `test_mode`; default boot returns
+    /// 403 + `reset_disabled_in_production`. Body is empty `{}`.
+    Reset,
     /// Path not in the table.
     NotFound,
     /// Path matched but wrong method.
@@ -133,6 +137,18 @@ impl Router {
         if path == "/ping" {
             return if method == "POST" {
                 Route::Ping
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /reset (Plan 13.4-08 — verb-style HTTP mirror of TCP OP_RESET).
+        // POST-only — GET / PUT / DELETE return 405 (router-level method
+        // check). The dispatch arm enforces the test_mode gate; routing
+        // here is unconditional so non-test_mode servers still emit a
+        // structured 403 (rather than a 404 that hides the surface).
+        if path == "/reset" {
+            return if method == "POST" {
+                Route::Reset
             } else {
                 Route::MethodNotAllowed
             };
@@ -253,6 +269,18 @@ mod tests {
     #[test]
     fn route_batch_get_wrong_method() {
         assert_eq!(Router::route("GET", "/batch_get"), Route::MethodNotAllowed);
+    }
+
+    /// Plan 13.4-08: POST /reset routes to Route::Reset.
+    #[test]
+    fn route_reset_post() {
+        assert_eq!(Router::route("POST", "/reset"), Route::Reset);
+    }
+
+    /// Plan 13.4-08: GET /reset is a method-not-allowed (POST-only).
+    #[test]
+    fn route_reset_wrong_method() {
+        assert_eq!(Router::route("GET", "/reset"), Route::MethodNotAllowed);
     }
 
     /// Plan 12-07 — GET /health on the data-plane HTTP port routes to Route::Health.
