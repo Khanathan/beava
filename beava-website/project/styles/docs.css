@@ -1,0 +1,332 @@
+/* ============================================================
+   beava docs — additive layer on top of colors_and_type.css + site.css.
+   Provides three-pane shell (sidebar / main / TOC) used by every
+   page rendered by scripts/render-docs.mjs.
+   ============================================================ */
+
+.docs-body { background: var(--bg); }
+
+/* Top nav — minimal hand-rolled (the home page uses the JSX Nav from
+   Shared.jsx; docs pages don't load Babel, so we ship a CSS-only equivalent). */
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: rgba(253, 250, 244, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.site-nav .nav-inner {
+  max-width: var(--container-docs);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 24px;
+  height: 64px;
+}
+.site-nav .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--fg1);
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+.site-nav .brand img { display: block; }
+.site-nav .nav-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+.site-nav .nav-links a {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--fg2);
+  text-decoration: none;
+  font-weight: 500;
+}
+.site-nav .nav-links a[aria-current="page"] { color: var(--accent); }
+.site-nav .nav-links a:hover { color: var(--accent); }
+.site-nav .nav-search { min-width: 220px; }
+
+/* Three-pane shell */
+.docs-shell {
+  max-width: var(--container-docs);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 220px;
+  gap: 32px;
+  padding: 24px 24px 64px;
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .docs-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  .docs-toc { display: none; }
+}
+@media (max-width: 768px) {
+  .docs-shell { grid-template-columns: minmax(0, 1fr); }
+  .docs-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 16px;
+    margin-bottom: 8px;
+  }
+}
+
+/* Sidebar */
+.docs-sidebar {
+  position: sticky;
+  top: 80px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  padding-right: 8px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+.docs-sidebar .side-section { margin-bottom: 18px; }
+.docs-sidebar .side-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--fg3);
+  margin-bottom: 6px;
+  padding: 0 6px;
+}
+.docs-sidebar .side-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.docs-sidebar .side-link {
+  display: block;
+  padding: 4px 8px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--fg2);
+  font-size: 13.5px;
+  line-height: 1.45;
+  border-left: 2px solid transparent;
+  margin-left: -2px;
+}
+.docs-sidebar .side-link:hover { color: var(--accent); background: var(--beava-orange-wash); }
+.docs-sidebar .side-link.active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  background: var(--beava-orange-wash);
+  font-weight: 600;
+}
+
+/* Right-rail TOC */
+.docs-toc {
+  position: sticky;
+  top: 80px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--fg3);
+}
+.docs-toc .toc-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--fg3);
+  margin-bottom: 6px;
+}
+.docs-toc .toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--border);
+}
+.docs-toc .toc-list a {
+  display: block;
+  padding: 4px 12px;
+  text-decoration: none;
+  color: var(--fg2);
+  font-size: 13px;
+  line-height: 1.45;
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+}
+.docs-toc .toc-list a:hover { color: var(--accent); }
+
+/* Crumbs */
+.crumbs {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--fg3);
+  margin-bottom: 16px;
+}
+.crumbs a { color: var(--fg3); text-decoration: none; }
+.crumbs a:hover { color: var(--accent); }
+.crumbs .crumb-sep { margin: 0 8px; color: var(--border-strong); }
+.crumbs .crumb-cur { color: var(--fg1); font-weight: 500; }
+
+/* Prose — anchors at headings, code, tables */
+.docs-prose { font-family: var(--font-sans); color: var(--fg1); }
+.docs-prose h1 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 42px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+}
+.docs-prose h2 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 28px;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 36px 0 12px;
+  scroll-margin-top: 90px;
+}
+.docs-prose h3 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 20px;
+  margin: 26px 0 8px;
+  scroll-margin-top: 90px;
+}
+.docs-prose h4 {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 16px;
+  margin: 20px 0 6px;
+  scroll-margin-top: 90px;
+}
+.docs-prose h2 .header-anchor,
+.docs-prose h3 .header-anchor,
+.docs-prose h4 .header-anchor {
+  color: var(--border-strong);
+  text-decoration: none;
+  margin-right: 6px;
+  font-weight: 400;
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.docs-prose h2:hover .header-anchor,
+.docs-prose h3:hover .header-anchor,
+.docs-prose h4:hover .header-anchor { opacity: 1; }
+.docs-prose p { margin: 0 0 14px; line-height: 1.65; }
+.docs-prose ul, .docs-prose ol { margin: 0 0 14px; padding-left: 22px; line-height: 1.65; }
+.docs-prose li { margin-bottom: 4px; }
+.docs-prose blockquote {
+  border-left: 3px solid var(--accent);
+  background: var(--beava-orange-wash);
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  color: var(--fg1);
+  font-style: italic;
+}
+.docs-prose blockquote p:last-child { margin-bottom: 0; }
+.docs-prose a {
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--link) 35%, transparent);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
+}
+.docs-prose a:hover { color: var(--link-hover); text-decoration-color: currentColor; }
+.docs-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-inset);
+  color: var(--code-fg);
+  padding: 0.12em 0.4em;
+  border-radius: 4px;
+  border: 1px solid var(--border-inset);
+}
+.docs-prose pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 14px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  box-shadow: var(--shadow-inset);
+  margin: 0 0 16px;
+}
+.docs-prose pre code { background: transparent; border: 0; padding: 0; font-size: inherit; }
+.docs-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 18px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+}
+.docs-prose table th,
+.docs-prose table td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.docs-prose table th {
+  background: var(--beava-cream-deep);
+  font-weight: 600;
+}
+.docs-prose img.doc-img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin: 16px 0;
+  display: block;
+}
+.docs-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 32px 0;
+}
+
+/* Footer (small) — also used by docs */
+.site-foot {
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+  padding: 24px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--fg3);
+}
+.site-foot .foot-inner {
+  max-width: var(--container-docs);
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.site-foot a { color: var(--fg3); text-decoration: none; }
+.site-foot a:hover { color: var(--accent); }
+
+/* Pagefind UI overrides — match beava palette */
+.pagefind-ui {
+  --pagefind-ui-primary: var(--accent);
+  --pagefind-ui-text: var(--fg1);
+  --pagefind-ui-background: #fff;
+  --pagefind-ui-border: var(--border);
+  --pagefind-ui-tag: var(--beava-orange-wash);
+  --pagefind-ui-border-width: 1px;
+  --pagefind-ui-border-radius: 8px;
+  --pagefind-ui-font: var(--font-sans);
+}
