@@ -33,8 +33,8 @@ fn sketch_pipeline_payload() -> serde_json::Value {
                 "output_kind": "table",
                 "upstreams": ["Tx"],
                 "ops": [{"op": "group_by", "keys": ["user_id"], "agg": {
-                    "merchants_distinct_1h": {"op": "count_distinct", "params": {"field": "merchant_id", "window": "1h"}},
-                    "amount_p99_1h":          {"op": "percentile",     "params": {"field": "amount", "q": 0.99, "window": "1h"}},
+                    "merchants_distinct_1h": {"op": "n_unique",   "params": {"field": "merchant_id", "window": "1h"}},
+                    "amount_p99_1h":          {"op": "quantile",   "params": {"field": "amount", "q": 0.99, "window": "1h"}},
                     "top_merchants_1h":       {"op": "top_k",          "params": {"field": "merchant_id", "k": 3, "window": "1h"}},
                     "device_seen":            {"op": "bloom_member",   "params": {"field": "device_id"}},
                     "category_entropy_1h":    {"op": "entropy",        "params": {"field": "category", "window": "1h"}}

@@ -155,7 +155,7 @@ fn bench_sketch_heavy(c: &mut Criterion) {
                     "keys": ["user_id"],
                     "agg": {
                         "uniq": {
-                            "op": "count_distinct",
+                            "op": "n_unique",
                             "params": {"field": "session_id", "window": "1h"}
                         }
                     }

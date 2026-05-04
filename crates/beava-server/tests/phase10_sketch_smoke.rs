@@ -1,8 +1,12 @@
 //! Phase 10 Plan 10-05: end-to-end smoke for all 5 sketch operators.
 //!
-//! Registers a pipeline that exercises count_distinct, percentile, top_k,
-//! bloom_member, and entropy. Pushes 100 events, then GETs each feature
-//! and asserts a successful response with a non-null `value`.
+//! Registers a pipeline that exercises n_unique (count_distinct),
+//! quantile (percentile), top_k, bloom_member, and entropy. Pushes 100
+//! events, then GETs each feature and asserts a successful response with
+//! a non-null `value`.
+//!
+//! Phase 13.4-01 per ADR-002: count_distinct→n_unique, percentile→quantile
+//! on the wire.
 //!
 //! Also verifies that bloom_member with `window=` is rejected at register time
 //! with kind=window_not_supported.
@@ -33,8 +37,8 @@ fn sketch_pipeline_payload() -> serde_json::Value {
                 "output_kind": "table",
                 "upstreams": ["Tx"],
                 "ops": [{"op": "group_by", "keys": ["user_id"], "agg": {
-                    "merchants_distinct_1h": {"op": "count_distinct", "params": {"field": "merchant_id", "window": "1h"}},
-                    "amount_p99_1h":          {"op": "percentile",     "params": {"field": "amount", "q": 0.99, "window": "1h"}},
+                    "merchants_distinct_1h": {"op": "n_unique",   "params": {"field": "merchant_id", "window": "1h"}},
+                    "amount_p99_1h":          {"op": "quantile",   "params": {"field": "amount", "q": 0.99, "window": "1h"}},
                     "top_merchants_1h":       {"op": "top_k",          "params": {"field": "merchant_id", "k": 3, "window": "1h"}},
                     "device_seen":            {"op": "bloom_member",   "params": {"field": "device_id"}},
                     "category_entropy_1h":    {"op": "entropy",        "params": {"field": "category", "window": "1h"}}

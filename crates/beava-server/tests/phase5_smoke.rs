@@ -283,8 +283,12 @@ async fn sc2_push_with_where_filters() {
 /// Plus 1 extra event with status="bad" for ratio testing (6 total, 5 ok → ratio 5/6).
 ///
 /// Expected values (sample variance of [10,20,30,40,50]):
-///   count=5, sum=150.0, avg=30.0, min=10.0, max=50.0, variance=250.0,
-///   stddev=sqrt(250.0)≈15.8113883..., ratio(ok)=5/6≈0.8333...
+///   count=5, sum=150.0, mean=30.0, min=10.0, max=50.0, var=250.0,
+///   std=sqrt(250.0)≈15.8113883..., ratio(ok)=5/6≈0.8333...
+///
+/// Phase 13.4-01 per ADR-002: avg→mean, variance→var, stddev→std on the wire;
+/// feature names below (`avg_amt`, `var_amt`, `std_amt`) are user-facing
+/// labels and intentionally kept stable.
 #[tokio::test]
 async fn sc3_all_8_operators_e2e() {
     let ts = TestServerBuilder::new()
@@ -308,11 +312,11 @@ async fn sc3_all_8_operators_e2e() {
                     "agg": {
                         "cnt":      {"op": "count",    "params": {"window": "1h"}},
                         "total":    {"op": "sum",      "params": {"field": "amount", "window": "1h"}},
-                        "avg_amt":  {"op": "avg",      "params": {"field": "amount", "window": "1h"}},
+                        "avg_amt":  {"op": "mean",     "params": {"field": "amount", "window": "1h"}},
                         "min_amt":  {"op": "min",      "params": {"field": "amount", "window": "1h"}},
                         "max_amt":  {"op": "max",      "params": {"field": "amount", "window": "1h"}},
-                        "var_amt":  {"op": "variance", "params": {"field": "amount", "window": "1h"}},
-                        "std_amt":  {"op": "stddev",   "params": {"field": "amount", "window": "1h"}},
+                        "var_amt":  {"op": "var",      "params": {"field": "amount", "window": "1h"}},
+                        "std_amt":  {"op": "std",      "params": {"field": "amount", "window": "1h"}},
                         "ratio_ok": {"op": "ratio",    "params": {"where": "(status == 'ok')", "window": "1h"}}
                     }
                 }],
