@@ -1148,13 +1148,100 @@ fn extract_dedupe_str_from_row(row: &beava_core::row::Row, key: &str) -> Option<
     })
 }
 
-// ─── Plan 13.4-03 — OP_BATCH_GET (0x0024) dispatch ────────────────────────────
+// ─── Plan 13.4-03 / Plan 13.4.1 — OP_BATCH_GET (0x0024) dispatch ──────────────
 
-/// One entry in the OP_BATCH_GET request payload.
-#[derive(serde::Deserialize)]
+/// Plan 13.4.1 — one entry in the OP_BATCH_GET request payload.
+///
+/// Verb-style fields per D-02:
+/// - `table`: aggregation node name (lookup key in `registry.compiled_aggregation`).
+/// - `key`: per-entity scoping value (parsed via `parse_entity_key`).
+/// - `features`: optional per-entry filter; None = return all features
+///   for the entity; Some(vec) = narrow row dict to those names
+///   (omit-on-absent per D-06).
+///
+/// D-04 — `entity_id` is accepted as a legacy alias of `key` for one
+/// release; alias removal scheduled in v0.0.x cleanup
+/// (.planning/ideas/v0.1-deferrals.md). `from_alias` tracks whether the
+/// source field was the legacy alias so the dispatch loop can emit a
+/// WARN log only on alias use (no false-positive on canonical path).
 struct BatchGetReqEntry {
     table: String,
-    entity_id: String,
+    key: String,
+    features: Option<Vec<String>>,
+    /// Internal — NOT serialised; set by custom Deserialize impl.
+    from_alias: bool,
+}
+
+// Plan 13.4.1 D-04 — custom Deserialize impl that tracks whether the source
+// field was `key` (canonical) or `entity_id` (legacy alias). Emits a serde
+// error on missing-both / both-present.
+impl<'de> serde::Deserialize<'de> for BatchGetReqEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct EntryVisitor;
+        impl<'de> Visitor<'de> for EntryVisitor {
+            type Value = BatchGetReqEntry;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a BatchGetReqEntry map with {table, key|entity_id, features?}")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut table: Option<String> = None;
+                let mut key: Option<String> = None;
+                let mut features: Option<Vec<String>> = None;
+                let mut from_alias = false;
+                while let Some(field) = map.next_key::<String>()? {
+                    match field.as_str() {
+                        "table" => {
+                            if table.is_some() {
+                                return Err(de::Error::duplicate_field("table"));
+                            }
+                            table = Some(map.next_value()?);
+                        }
+                        "key" => {
+                            if key.is_some() {
+                                return Err(de::Error::duplicate_field("key"));
+                            }
+                            key = Some(map.next_value()?);
+                            // Canonical path — leave from_alias = false unless
+                            // entity_id was already seen (rejected below).
+                        }
+                        "entity_id" => {
+                            if key.is_some() {
+                                return Err(de::Error::custom(
+                                    "BatchGetReqEntry: cannot specify both `key` and `entity_id` (entity_id is a deprecated alias)",
+                                ));
+                            }
+                            key = Some(map.next_value()?);
+                            from_alias = true;
+                        }
+                        "features" => {
+                            if features.is_some() {
+                                return Err(de::Error::duplicate_field("features"));
+                            }
+                            features = Some(map.next_value()?);
+                        }
+                        _ => {
+                            // Tolerate forward-compat fields by skipping their values.
+                            let _ignored: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+                Ok(BatchGetReqEntry {
+                    table: table.ok_or_else(|| de::Error::missing_field("table"))?,
+                    key: key.ok_or_else(|| de::Error::missing_field("key"))?,
+                    features,
+                    from_alias,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(EntryVisitor)
+    }
 }
 
 /// OP_BATCH_GET dispatch — walks `{requests:[{table, entity_id}, ...]}`,
@@ -1224,6 +1311,20 @@ pub fn dispatch_batch_get_sync(
         };
     }
 
+    // Plan 13.4.1 D-04 — emit a tracing::warn! once per entry that used
+    // the legacy `entity_id` alias (no false-positive on canonical `key`
+    // path; STRICT detection per Plan 03 Test 4 requirement). Verbatim
+    // message text per CONTEXT.md D-04 line 76.
+    for entry in &req.requests {
+        if entry.from_alias {
+            tracing::warn!(
+                kind = "batch_get.entity_id_alias",
+                table = %entry.table,
+                "BatchGetReqEntry: deprecated 'entity_id' field name; rename to 'key'; alias removed in v0.0.x"
+            );
+        }
+    }
+
     // 3. Compute query_time_ms once (D-06 — never wall clock; mirrors
     //    `dispatch_get_batch`'s policy).
     let query_time_ms = {
@@ -1240,6 +1341,44 @@ pub fn dispatch_batch_get_sync(
 
     let registry = &app.dev_agg.registry;
 
+    // Plan 13.4.1 D-06 (first clause) — whole-batch reject on registry-typo.
+    // Mirrors the precedent at runtime_core_glue.rs:382-396 and the
+    // single-row verb-style dispatch (dispatch_get_single_verb_style_sync).
+    //
+    // For each entry whose `features` filter is Some, look up the descriptor
+    // and check every requested feature name. If ANY entry has a feature name
+    // not in its table descriptor, abort the whole batch with InternalError.
+    //
+    // Skipped (still per-tuple, NOT whole-batch):
+    //   - unknown_table → Step 5's per-tuple `{"error":{"code":"unknown_table",...}}`
+    //   - key_parse_failure → Step 6's per-tuple `{"error":{"code":"key_parse_failure",...}}`
+    //   - per-entity sparsity (feature absent on entity) → omit silently in Step 4
+    for entry in &req.requests {
+        let Some(filter) = entry.features.as_deref() else {
+            continue;
+        };
+        let descriptor = match registry.compiled_aggregation(&entry.table) {
+            // Unknown table here is a per-tuple error (not D-06 first clause);
+            // let the dispatch loop below handle it.
+            Some(d) => d,
+            None => continue,
+        };
+        let mut unknown: Vec<String> = Vec::new();
+        for name in filter {
+            if !descriptor.features.iter().any(|f| &f.feature_name == name) {
+                unknown.push(name.clone());
+            }
+        }
+        if !unknown.is_empty() {
+            return GlueResponse::InternalError {
+                reason: format!(
+                    "feature_not_found: missing={:?} table={}",
+                    unknown, entry.table
+                ),
+            };
+        }
+    }
+
     // 4. Acquire the state_tables lock once for the whole batch (matches
     //    `dispatch_get_batch`'s single-critical-section discipline).
     let tables = app.dev_agg.state_tables.lock();
@@ -1251,13 +1390,12 @@ pub fn dispatch_batch_get_sync(
         let descriptor = match registry.compiled_aggregation(&entry.table) {
             Some(d) => d,
             None => {
-                // Per-tuple unknown_table error (partial-failure semantics).
+                // Plan 13.4.1 D-03 — flat per-tuple error tuple (no
+                // table/entity_id wrapping).
                 results.push(serde_json::json!({
-                    "table": entry.table,
-                    "entity_id": entry.entity_id,
                     "error": {
                         "code": "unknown_table",
-                        "reason": format!(
+                        "message": format!(
                             "table '{}' is not a registered aggregation",
                             entry.table
                         ),
@@ -1267,58 +1405,55 @@ pub fn dispatch_batch_get_sync(
             }
         };
 
-        // Per ADR-003: forward entity_id verbatim to parse_entity_key. For
+        // Per ADR-003: forward `key` verbatim to parse_entity_key. For
         // `key_cols: []` (global table) the empty string parses to a 0-arity
         // key; Plan 13.4-09 wires the register-time path that makes empty
         // group_keys legal.
-        let entity_key = match crate::feature_query::parse_entity_key(
-            &entry.entity_id,
-            &descriptor.group_keys,
-        ) {
-            Some(k) => k,
-            None => {
-                // Treat key arity mismatch as a per-tuple error — same
-                // partial-failure posture as unknown_table. Keeps the rest
-                // of the batch unaffected.
-                results.push(serde_json::json!({
-                    "table": entry.table,
-                    "entity_id": entry.entity_id,
-                    "error": {
-                        "code": "key_parse_failure",
-                        "reason": format!(
-                            "entity_id '{}' does not match table '{}' group_keys arity ({})",
-                            entry.entity_id,
-                            entry.table,
-                            descriptor.group_keys.len()
-                        ),
-                    },
-                }));
-                continue;
-            }
-        };
+        let entity_key =
+            match crate::feature_query::parse_entity_key(&entry.key, &descriptor.group_keys) {
+                Some(k) => k,
+                None => {
+                    // Plan 13.4.1 D-03 — flat per-tuple error tuple.
+                    results.push(serde_json::json!({
+                        "error": {
+                            "code": "key_parse_failure",
+                            "message": format!(
+                                "key '{}' does not match table '{}' group_keys arity ({})",
+                                entry.key,
+                                entry.table,
+                                descriptor.group_keys.len()
+                            ),
+                        },
+                    }));
+                    continue;
+                }
+            };
 
-        // Walk the descriptor's features and query each. Mirrors Case 2 of
-        // `dispatch_get_single` (aggregation-node-name lookup) but feeds
-        // results into the per-tuple `features` map.
+        // Plan 13.4.1 D-03 + D-06 — FLAT row response with per-entry features
+        // filter. Drop the `{table, entity_id, features:{...}}` envelope.
         let mut feature_map = serde_json::Map::new();
         if let Some(table) = tables.get(descriptor.agg_id as usize) {
             for (idx, named_op) in descriptor.features.iter().enumerate() {
+                // D-06 features-filter narrowing pass.
+                if let Some(filter) = entry.features.as_deref() {
+                    if !filter.iter().any(|f| f == &named_op.feature_name) {
+                        continue;
+                    }
+                }
                 if let Some(v) = table.query_feature(&entity_key, idx, query_time_ms) {
                     feature_map.insert(
                         named_op.feature_name.clone(),
                         crate::feature_query::value_to_json(v),
                     );
                 }
+                // D-06 omit-on-absent: when query_feature returns None, do
+                // NOT insert the key. Cold-start entity → empty feature_map.
             }
         }
 
-        // Cold-start (no events for this entity) → empty `features` map per
-        // wire-spec semantics ("Per-entry cold-start is `{}`, not an error").
-        results.push(serde_json::json!({
-            "table": entry.table,
-            "entity_id": entry.entity_id,
-            "features": serde_json::Value::Object(feature_map),
-        }));
+        // FLAT row — feature_map IS the result. Cold-start = `{}` per the
+        // wire-spec ("Per-entry cold-start is `{}`, not an error").
+        results.push(serde_json::Value::Object(feature_map));
     }
     drop(tables);
 

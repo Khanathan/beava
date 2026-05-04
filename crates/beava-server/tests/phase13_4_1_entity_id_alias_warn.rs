@@ -58,7 +58,7 @@
 
 use beava_server::testing::TestServer;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -163,26 +163,39 @@ async fn push_seed_events(ts: &TestServer) {
 }
 
 // ─── In-test tracing capture ──────────────────────────────────────────────
+//
+// Plan 13.4.1-04 update: the original Plan 03 RED file used
+// `tracing::subscriber::set_default` (per-thread). That doesn't work for the
+// D-04 WARN — `dispatch_batch_get_sync` runs on the apply thread (mio data
+// plane), not the test thread, so per-thread capture sees nothing. The fix
+// is a process-global `set_global_default` installed once via OnceLock,
+// fanning every WARN event into a shared `ACTIVE_SINK`. Tests 3 + 4 grab
+// the global capture lock (via `#[serial_test::serial]`), swap their own
+// `Arc<Mutex<Vec<u8>>>` into `ACTIVE_SINK`, run the request, snapshot the
+// buffer, and clear the sink. Tests 1 + 2 don't capture and don't need
+// the serial gate.
 
-/// `MakeWriter` impl that funnels every emitted line into a shared
-/// `Arc<Mutex<Vec<u8>>>`. Per-test scoped via
-/// `tracing::subscriber::set_default(...)` so each test gets its own
-/// isolated capture buffer (no global subscriber races).
+/// `MakeWriter` impl that routes every emitted line to the currently active
+/// sink (or `/dev/null` when none is set). This is process-global because
+/// `set_global_default` only fires once per process; per-test isolation
+/// happens via `swap_active_sink`.
 #[derive(Clone)]
-struct TestWriter(Arc<Mutex<Vec<u8>>>);
+struct TestWriter;
 
 impl<'a> MakeWriter<'a> for TestWriter {
     type Writer = TestWriterHandle;
     fn make_writer(&'a self) -> Self::Writer {
-        TestWriterHandle(self.0.clone())
+        TestWriterHandle
     }
 }
 
-struct TestWriterHandle(Arc<Mutex<Vec<u8>>>);
+struct TestWriterHandle;
 
 impl std::io::Write for TestWriterHandle {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(b);
+        if let Some(sink) = active_sink() {
+            sink.lock().unwrap().extend_from_slice(b);
+        }
         Ok(b.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -190,16 +203,54 @@ impl std::io::Write for TestWriterHandle {
     }
 }
 
-/// Build a scoped subscriber that writes WARN+ events into `capture` and
-/// install it as the thread-local default for the duration of the returned
-/// guard. Drop the guard at end of test scope.
-fn install_warn_capture(capture: Arc<Mutex<Vec<u8>>>) -> tracing::subscriber::DefaultGuard {
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(TestWriter(capture))
-        .with_max_level(tracing::Level::WARN)
-        .with_ansi(false)
-        .finish();
-    tracing::subscriber::set_default(subscriber)
+/// The currently-active capture sink. Tests use `swap_active_sink` to install
+/// or clear their per-test buffer; the writer routes every WARN line into it.
+fn active_sink() -> Option<Arc<Mutex<Vec<u8>>>> {
+    ACTIVE_SINK.get().and_then(|m| m.lock().unwrap().clone())
+}
+
+static ACTIVE_SINK: OnceLock<Mutex<Option<Arc<Mutex<Vec<u8>>>>>> = OnceLock::new();
+static SUBSCRIBER_INSTALLED: OnceLock<()> = OnceLock::new();
+
+fn swap_active_sink(new: Option<Arc<Mutex<Vec<u8>>>>) {
+    let cell = ACTIVE_SINK.get_or_init(|| Mutex::new(None));
+    *cell.lock().unwrap() = new;
+}
+
+/// Install the process-global tracing subscriber once. Idempotent across
+/// tests via `OnceLock`. Subsequent calls are no-ops.
+fn install_global_warn_subscriber() {
+    SUBSCRIBER_INSTALLED.get_or_init(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(TestWriter)
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .finish();
+        // It's okay if another test crate already installed a global
+        // subscriber (e.g. via env_logger or another integration test) —
+        // `set_global_default` returns Err but our local capture still
+        // routes via the newly-set writer if we win the race. In practice
+        // this binary's own tests are the only ones installing a global,
+        // so the first call wins and subsequent ones return Err which we
+        // silently drop.
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
+/// Activate per-test capture. Returns a guard that clears `ACTIVE_SINK` on
+/// drop, so capture buffers from one test don't leak into the next.
+struct WarnCaptureGuard;
+
+impl Drop for WarnCaptureGuard {
+    fn drop(&mut self) {
+        swap_active_sink(None);
+    }
+}
+
+fn install_warn_capture(capture: Arc<Mutex<Vec<u8>>>) -> WarnCaptureGuard {
+    install_global_warn_subscriber();
+    swap_active_sink(Some(capture));
+    WarnCaptureGuard
 }
 
 fn captured_logs(capture: &Arc<Mutex<Vec<u8>>>) -> String {
@@ -345,8 +396,14 @@ async fn phase13_4_1_canonical_key_deserializes() {
 }
 
 // ─── Test 3 — D-04 WARN log emitted on alias use ───────────────────────────
+//
+// `#[serial_test::serial(warn_capture)]` because Tests 3 and 4 share a
+// process-global tracing subscriber + active sink (see capture-mechanism note
+// above). Without serialisation, both tests would race on `ACTIVE_SINK` and
+// see each other's WARN events.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial(warn_capture)]
 async fn phase13_4_1_alias_entity_id_emits_warn_log() {
     let capture: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let _guard = install_warn_capture(capture.clone());
@@ -403,6 +460,7 @@ async fn phase13_4_1_alias_entity_id_emits_warn_log() {
 // ─── Test 4 — D-04 canonical path does NOT emit alias-deprecation WARN ──────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial(warn_capture)]
 async fn phase13_4_1_canonical_key_does_not_emit_alias_warn() {
     let capture: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let _guard = install_warn_capture(capture.clone());
