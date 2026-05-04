@@ -16,5 +16,5 @@ export { RegistrationError, BinaryNotFoundError } from "./errors.js";
 export * from "./wire.js";
 export { HttpTransport } from "./transport.js";
 export { TcpTransport } from "./transport-tcp.js";
-export { spawnEmbeddedServer, teardownProcess, discoverBinary } from "./embed.js";
+export { spawnEmbeddedServer, teardownProcess, teardownServer, discoverBinary } from "./embed.js";
 export type { SpawnedServer, SpawnOptions } from "./embed.js";

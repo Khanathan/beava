@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from "node:child_process";
-import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
-import { dirname, resolve as pathResolve } from "node:path";
+import { existsSync, statSync, accessSync, mkdtempSync, rmSync, constants as fsConstants } from "node:fs";
+import { dirname, resolve as pathResolve, join as pathJoin } from "node:path";
+import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { BinaryNotFoundError } from "./errors.js";
 
@@ -71,6 +72,8 @@ export interface SpawnedServer {
   proc: ChildProcess;
   httpUrl: string;
   tcpUrl: string;
+  /** Temporary CWD created for this embed instance; cleaned up on teardown. */
+  tmpDir?: string;
 }
 
 export interface SpawnOptions {
@@ -93,9 +96,14 @@ export async function spawnEmbeddedServer(opts: SpawnOptions = {}): Promise<Spaw
     env.BEAVA_TEST_MODE = "1";
   }
 
+  // Spawn in a fresh temp CWD so each embed instance gets its own WAL/snapshot
+  // dirs (default config writes to `./beava-wal` and `./beava-snapshots`).
+  const tmpDir = mkdtempSync(pathJoin(tmpdir(), "beava-embed-"));
+
   const proc = spawn(binary, ["--config", "/dev/null"], {
     env,
     stdio: ["ignore", "pipe", "ignore"],
+    cwd: tmpDir,
   });
 
   let httpAddr: string | null = null;
@@ -131,6 +139,7 @@ export async function spawnEmbeddedServer(opts: SpawnOptions = {}): Promise<Spaw
             proc,
             httpUrl: `http://${httpAddr}`,
             tcpUrl: `tcp://${tcpAddr}`,
+            tmpDir,
           });
         }
       } catch {
@@ -173,4 +182,16 @@ export async function teardownProcess(
       resolve();
     }
   });
+}
+
+/** Tear down a spawned server: kill the process and remove its temp CWD. */
+export async function teardownServer(handle: SpawnedServer, timeoutMs = 5000): Promise<void> {
+  await teardownProcess(handle.proc, timeoutMs);
+  if (handle.tmpDir) {
+    try {
+      rmSync(handle.tmpDir, { recursive: true, force: true });
+    } catch {
+      /* swallow */
+    }
+  }
 }

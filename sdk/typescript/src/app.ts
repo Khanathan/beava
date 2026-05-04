@@ -1,6 +1,6 @@
 import { HttpTransport } from "./transport.js";
 import { TcpTransport } from "./transport-tcp.js";
-import { spawnEmbeddedServer, teardownProcess, type SpawnedServer } from "./embed.js";
+import { spawnEmbeddedServer, teardownServer, type SpawnedServer } from "./embed.js";
 import {
   OP_PING,
   OP_REGISTER,
@@ -195,7 +195,7 @@ export class BeavaApp {
     }
     if (this.embedHandle) {
       try {
-        await teardownProcess(this.embedHandle.proc);
+        await teardownServer(this.embedHandle);
       } catch {
         /* swallow */
       }

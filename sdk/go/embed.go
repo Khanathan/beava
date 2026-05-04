@@ -67,6 +67,8 @@ type SpawnedServer struct {
 	Cmd     *exec.Cmd
 	HTTPURL string
 	TCPURL  string
+	// TmpDir is the per-instance temp CWD created by SpawnEmbeddedServer; cleaned up on Teardown.
+	TmpDir string
 
 	stdoutPipe io.ReadCloser
 	once       sync.Once
@@ -90,7 +92,15 @@ func SpawnEmbeddedServer(ctx context.Context, opts SpawnOptions) (*SpawnedServer
 		return nil, err
 	}
 
+	// Spawn in a fresh temp CWD so each embed instance gets its own
+	// WAL/snapshot dirs (default config writes to ./beava-wal + ./beava-snapshots).
+	tmpDir, err := os.MkdirTemp("", "beava-embed-")
+	if err != nil {
+		return nil, fmt.Errorf("beava: tmpdir: %w", err)
+	}
+
 	cmd := exec.CommandContext(ctx, binary, "--config", "/dev/null")
+	cmd.Dir = tmpDir
 	cmd.Env = append(os.Environ(),
 		"BEAVA_LISTEN_ADDR=127.0.0.1:0",
 		"BEAVA_TCP_PORT=0",
@@ -106,6 +116,7 @@ func SpawnEmbeddedServer(ctx context.Context, opts SpawnOptions) (*SpawnedServer
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
+		_ = os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("beava: spawn: %w", err)
 	}
 
@@ -147,40 +158,49 @@ func SpawnEmbeddedServer(ctx context.Context, opts SpawnOptions) (*SpawnedServer
 	case r := <-resCh:
 		if r.err != nil {
 			_ = cmd.Process.Kill()
+			_ = os.RemoveAll(tmpDir)
 			return nil, r.err
 		}
 		return &SpawnedServer{
 			Cmd:        cmd,
 			HTTPURL:    "http://" + r.http,
 			TCPURL:     "tcp://" + r.tcp,
+			TmpDir:     tmpDir,
 			stdoutPipe: stdout,
 		}, nil
 	case <-timer.C:
 		_ = cmd.Process.Kill()
+		_ = os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("beava: embed-mode server did not bind within %s", timeout)
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
+		_ = os.RemoveAll(tmpDir)
 		return nil, ctx.Err()
 	}
 }
 
-// Teardown sends SIGTERM, then SIGKILL after `timeout`.
+// Teardown sends SIGTERM, then SIGKILL after `timeout`. Removes the temp CWD too.
 func (s *SpawnedServer) Teardown(timeout time.Duration) error {
-	if s == nil || s.Cmd == nil || s.Cmd.Process == nil {
+	if s == nil {
 		return nil
 	}
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
-	_ = s.Cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- s.Cmd.Wait() }()
-	select {
-	case <-done:
-		return nil
-	case <-time.After(timeout):
-		_ = s.Cmd.Process.Kill()
-		<-done
-		return nil
+	if s.Cmd != nil && s.Cmd.Process != nil {
+		_ = s.Cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan error, 1)
+		go func() { done <- s.Cmd.Wait() }()
+		select {
+		case <-done:
+			/* exited cleanly */
+		case <-time.After(timeout):
+			_ = s.Cmd.Process.Kill()
+			<-done
+		}
 	}
+	if s.TmpDir != "" {
+		_ = os.RemoveAll(s.TmpDir)
+	}
+	return nil
 }
