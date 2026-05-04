@@ -5,7 +5,7 @@ or the closure plan; do NOT fix from inside an executor whose scope is unrelated
 
 ## Logged 2026-05-04 by Plan 13.4-02 executor
 
-### Plan 01 op-rename lockstep gap
+### Plan 01 op-rename lockstep gap (RESOLVED)
 
 After Plan 01's GREEN landed (commit `8f47c97`), seven in-tree tests still use the OLD op
 names (`avg`, `variance`, `stddev`, `count_distinct`, `percentile`) and now fail at
@@ -24,7 +24,15 @@ Owner: Plan 01 executor (or Plan 13.4-10 closure if Plan 01 is done). The Plan 0
 text mentioned "lockstep updates" but these files were missed. The fix is mechanical:
 swap each old op name for its new name.
 
-### Plan 05 clippy gap
+**Resolved 2026-05-04 by Wave 1.5 cleanup commit `9bf1c2d`** — the four server test/bench
+files updated their wire `"op"` strings to the new names; the three `agg_compile.rs`
+tests already used the new names internally (their fixtures were updated in lockstep with
+Plan 01's GREEN commit). Sibling lockstep cleanup also covered
+`crates/beava-server/benches/phase12_6_post_axum_kill_apply.rs` (one `count_distinct →
+n_unique` swap) which was not in the original list but suffered the same root cause.
+All 7 named tests pass. No clippy/fmt regression in the touched files.
+
+### Plan 05 clippy gap (RESOLVED)
 
 `crates/beava-server/tests/phase13_4_table_derivation_allowed.rs:66-70` has
 `assert!(true, "...")` which trips `clippy::assertions_on_constants` under
@@ -33,6 +41,13 @@ either to delete the assertion or to add `#[allow(clippy::assertions_on_constant
 above it (or replace with a `let _ = "...";` to keep the message).
 
 Owner: Plan 05 executor (or Plan 13.4-10 closure if Plan 05 is done).
+
+**Resolved 2026-05-04 by Wave 1.5 cleanup commit `2663ec0`** — replaced the assertion
+with `let _ = "...";` to keep the explanatory message as a string-literal noop while
+silencing `clippy::assertions_on_constants`. The file's other two tests
+(`top_level_table_register_still_rejected`, `derivation_with_output_kind_table_succeeds`
+which is `#[ignore]`'d pending Plan 09) are unchanged. Workspace clippy gate is now
+green for this file.
 
 ### Plan 03 / Plan 07 mid-stream worktree breakage (RESOLVED — was transient)
 
