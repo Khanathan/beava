@@ -1506,12 +1506,31 @@
 
     // ---------------- App ---------------- //
 
+    const ComingSoonBanner = () => (
+      <div style={{
+        maxWidth: 1000, margin: '20px auto 0', padding: '14px 20px',
+        background: 'var(--beava-orange-wash)',
+        borderLeft: '3px solid var(--accent)',
+        borderRadius: 8,
+        fontFamily: 'var(--font-sans)', fontSize: 14, lineHeight: 1.5,
+        color: 'var(--fg1)',
+      }}>
+        <strong style={{ color: 'var(--accent)' }}>This guidebook chapter is coming in v0.1.</strong>
+        {' '}Phase 13.7 ships the spec docs site; the interactive guidebook is deferred to a
+        v0.1+ follow-up. Meanwhile, see the
+        {' '}<a href="/docs/quickstart/" style={{ color: 'var(--accent)', fontWeight: 600 }}>quickstart</a>,
+        the <a href="/docs/operators/" style={{ color: 'var(--accent)', fontWeight: 600 }}>operator catalog</a>,
+        or jump straight into <a href="/docs/" style={{ color: 'var(--accent)', fontWeight: 600 }}>the docs index</a>.
+      </div>
+    );
+
     const App = () => (
       <>
         <Banner id="cloud-waitlist-v1">
           beava cloud · managed from $50/mo · self-host is always free · join the waitlist
         </Banner>
         <Nav active="guide"/>
+        <ComingSoonBanner/>
         <Hero/>
         <MeetBeava/>
         <Tutorial/>

@@ -131,12 +131,31 @@
       );
     };
 
+    const ComingSoonBanner = () => (
+      <div style={{
+        maxWidth: 1000, margin: '20px auto 0', padding: '14px 20px',
+        background: 'var(--beava-orange-wash)',
+        borderLeft: '3px solid var(--accent)',
+        borderRadius: 8,
+        fontFamily: 'var(--font-sans)', fontSize: 14, lineHeight: 1.5,
+        color: 'var(--fg1)',
+      }}>
+        <strong style={{ color: 'var(--accent)' }}>This vertical guide is coming in v0.1.</strong>
+        {' '}Phase 13.7 ships the spec docs site; interactive vertical guides
+        (adtech / fraud / ecommerce) are deferred to a v0.1+ follow-up using the
+        embedded WASM runtime. Meanwhile, see the
+        {' '}<a href="/docs/quickstart/" style={{ color: 'var(--accent)', fontWeight: 600 }}>quickstart</a> for an end-to-end walk-through, or browse the
+        {' '}<a href="/docs/operators/" style={{ color: 'var(--accent)', fontWeight: 600 }}>operator catalog</a> for the 53 aggregation primitives.
+      </div>
+    );
+
     const App = () => (
       <>
         <Banner id="cloud-waitlist-v1">
           beava cloud · managed from $50/mo · self-host is always free · join the waitlist
         </Banner>
         <Nav active="guide"/>
+        <ComingSoonBanner/>
         <GuideHero/>
         <ChapterCard/>
         <RecipeIndex/>
