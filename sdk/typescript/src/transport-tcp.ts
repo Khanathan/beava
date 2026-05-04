@@ -1,6 +1,6 @@
 import { Socket, createConnection } from "node:net";
 import { encodeFrame, decodeFrame, CT_JSON, OP_ERROR_RESPONSE } from "./wire.js";
-import { RegistrationError } from "./index.js";
+import { RegistrationError } from "./errors.js";
 
 interface PendingRequest {
   resolve: (body: unknown) => void;

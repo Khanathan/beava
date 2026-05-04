@@ -1,4 +1,4 @@
-import { RegistrationError } from "./index.js";
+import { RegistrationError } from "./errors.js";
 
 export class HttpTransport {
   constructor(

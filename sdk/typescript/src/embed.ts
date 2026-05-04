@@ -2,7 +2,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import { existsSync, statSync, accessSync, constants as fsConstants } from "node:fs";
 import { dirname, resolve as pathResolve } from "node:path";
 import { createInterface } from "node:readline";
-import { BinaryNotFoundError } from "./index.js";
+import { BinaryNotFoundError } from "./errors.js";
 
 /** 4-step binary discovery, mirroring python/beava/_embed.py. */
 export function discoverBinary(): string {
