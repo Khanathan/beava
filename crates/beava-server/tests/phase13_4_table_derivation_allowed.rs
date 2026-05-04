@@ -63,11 +63,13 @@ fn forbidden_pattern_walk_still_passes_after_d04_edit() {
     // separate test in the same crate. If Task 5.b's edit accidentally
     // violated a remaining forbidden pattern, that sibling test surfaces
     // it; this anchor exists purely as a Plan-13.4-05 artifact marker.
-    assert!(
-        true,
-        "phase13_4_table_derivation_allowed exists as the Plan 13.4-05 \
-         artifact marker; real enforcement is in phase12_7_no_table_surface"
-    );
+    //
+    // Phase 13.4 cleanup: replaced `assert!(true, ...)` with a `let _ = ...`
+    // noop to silence `clippy::assertions_on_constants` under
+    // `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+    // while preserving the explanatory message as a string literal.
+    let _ = "phase13_4_table_derivation_allowed exists as the Plan 13.4-05 \
+             artifact marker; real enforcement is in phase12_7_no_table_surface";
 }
 
 /// Test 2 — Top-level table register STILL rejected (D-04 surgical permit).
