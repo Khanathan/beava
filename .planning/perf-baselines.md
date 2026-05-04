@@ -911,3 +911,34 @@ Plan 12.9 was a SIZE measurement (no microbench cells captured). The Phase 13.4 
 
 - See `.planning/throughput-baselines.md::Phase 13.4 — Engine prep / wire-spec conformance` for the 8-cell throughput rebench. Gate cell `small/tcp` measured **−0.3% vs Phase 12.8 mean** (725,507 EPS, mean of 2 runs). PASS.
 
+---
+
+## Phase 13.5 — `beava bench` CLI cold-path microbench (Apple-M4)
+
+**Date:** 2026-05-04
+**Bench:** `crates/beava-bench/benches/cli_dispatch.rs`
+
+Measures the CLI cold-path overhead (workload load + memory estimator + clap argv parse) for the new `beava bench <mode>` subcommand surface. These are cold-path costs incurred once per `beava bench` invocation; the bench is a regression tripwire so future plans don't accidentally balloon the cold path.
+
+### Phase 13.5 bench rows
+
+| Bench | Phase 13.5 median | Notes |
+|-------|------------------:|-------|
+| `workload_load_fraud` | 93.49 µs | fraud-team config (5 events × 90 features) — cold JSON parse |
+| `workload_load_adtech` | 13.19 µs | medium-with-sketches config |
+| `workload_load_small` | 9.91 µs | small.json config |
+| `estimator_fraud_medium` | 90.36 µs | fraud × medium — full per-derivation breakdown |
+| `estimator_adtech_small` | 13.10 µs | adtech × small |
+| `clap_parse_throughput_args` | 3.22 µs | bare clap parse |
+
+**Verdict:** Phase 13.5 establishes baseline (no prior comparable measurement). All cold-path operations complete in microseconds; the workload load dominates because it does JSON deserialization of the canonical config files (fraud-team is ~3 KB JSON / ~90 derivation aggs). Subsequent phases compare against these numbers; 10%/25% gates apply.
+
+### Workspace state at measurement
+
+- `cargo fmt --all --check` — green
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — green (Phase 13.5 changes contributed no new clippy warnings)
+- `cargo test --workspace --features testing` — 1 pre-existing flake (`phase2_5_smoke::criterion_6_pipelined_registers_return_in_order`) — pre-existing at base commit `bf7613cc` BEFORE Phase 13.5 work, NOT introduced by Phase 13.5 (verified via base-commit re-run during Plan 11 execution).
+
+### Phase 13.5 apply_path carry-through
+
+The Phase 13.4 `apply_path` microbench rows above remain the live regression-gate for the apply hot path. Phase 13.5 made no edits to `crates/beava-core` or `crates/beava-server` outside `tests/phase12_7_legacy_table_handlers_killed.rs` (test-only, ADR-001 alignment). The apply_path/cold_key/14_aggs gate cell at 957.91 ns remains the active baseline.

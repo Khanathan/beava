@@ -20,7 +20,7 @@ import json
 import socket
 import subprocess
 import urllib.parse
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -54,9 +54,43 @@ class Transport:
       - ``send_ping() -> dict``
       - ``close() -> None``
       - context manager (``__enter__`` / ``__exit__``)
+
+    Phase 13.5 Plan 11: extended with the App-facing methods (``send_push``,
+    ``send_get``, ``send_batch_get``, ``send_reset``) so ``App`` can call them
+    without ``# type: ignore[attr-defined]``. The base class raises
+    ``NotImplementedError`` for backends that don't yet wire the underlying
+    op; subclasses override. The actual wire payload is constructed by the
+    transport (it owns the wire-format choice — JSON for HTTP, msgpack for
+    TCP/Embed).
     """
 
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
+        raise NotImplementedError
+
+    def send_push(
+        self,
+        *,
+        event_name: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def send_get(
+        self,
+        *,
+        table: str,
+        key: str | list[Any],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def send_batch_get(
+        self,
+        *,
+        requests: list[tuple[str, str | list[Any]]],
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def send_reset(self) -> None:
         raise NotImplementedError
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
@@ -229,57 +263,26 @@ class TcpTransport(Transport):
 
     def send_push(
         self,
-        event_name: str,
-        body_dict: dict,  # type: ignore[type-arg]
         *,
-        wire_format: str = "json",
-    ) -> dict:  # type: ignore[type-arg]
-        """Send an OP_PUSH frame with the given event name and body.
+        event_name: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Send an OP_PUSH frame with the given event name and body fields.
 
-        Encodes the envelope ``{"event": event_name, "body": body_dict}``
-        using the requested wire format and sends it as an OP_PUSH frame.
-
-        Args:
-            event_name: Name of the registered event type.
-            body_dict: Event fields as a plain Python dict.
-            wire_format: ``"json"`` (default) or ``"msgpack"``.
-                         ``"json"`` uses stdlib :mod:`json` + CT_JSON.
-                         ``"msgpack"`` requires the ``msgpack`` package + CT_MSGPACK.
+        Encodes the envelope ``{"event": event_name, "body": fields}`` as JSON
+        and sends it as an OP_PUSH frame. Default JSON encoding for v0
+        compatibility with the server's CT_JSON path.
 
         Returns:
             Parsed JSON ACK dict from the server (e.g. ``{"ack_lsn": 42}``).
-
-        Raises:
-            ValueError: ``wire_format`` is not ``"json"`` or ``"msgpack"``.
-            ImportError: ``wire_format="msgpack"`` but ``msgpack`` is not installed.
         """
-        if wire_format == "json":
-            envelope = json.dumps(
-                {"event": event_name, "body": body_dict}, ensure_ascii=False
-            ).encode("utf-8")
-            ct = CT_JSON
-        elif wire_format == "msgpack":
-            try:
-                import msgpack  # type: ignore[import-untyped]
-            except ImportError as exc:
-                raise ImportError(
-                    "wire_format='msgpack' requires the 'msgpack' package: "
-                    "pip install msgpack"
-                ) from exc
-            envelope = msgpack.packb(
-                {"event": event_name, "body": body_dict}, use_bin_type=True
-            )
-            ct = CT_MSGPACK
-        else:
-            raise ValueError(
-                f"wire_format must be 'json' or 'msgpack', got {wire_format!r}"
-            )
-
+        envelope = json.dumps(
+            {"event": event_name, "body": fields}, ensure_ascii=False
+        ).encode("utf-8")
         sock = self._ensure_connected()
-        sock.sendall(encode_frame(OP_PUSH, ct, envelope))
+        sock.sendall(encode_frame(OP_PUSH, CT_JSON, envelope))
         frame = read_frame(sock, self.max_frame_bytes)
-        # Server ACK is JSON regardless of push wire format.
-        result: dict[str, object] = json.loads(frame.payload.decode("utf-8"))
+        result: dict[str, Any] = json.loads(frame.payload.decode("utf-8"))
         return result
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
@@ -368,7 +371,7 @@ class TcpTransport(Transport):
         # request; if we sent msgpack, response is msgpack).
         if frame.ct == CT_MSGPACK:
             try:
-                import msgpack  # type: ignore[import-untyped]
+                import msgpack
             except ImportError as exc:
                 raise ImportError(
                     "received CT_MSGPACK response but 'msgpack' package not "

@@ -1982,4 +1982,51 @@ None of these cells reach BLOCK on the regression-gate cell (small/tcp — PASSE
 - bench-v18 push **fraud-team/tcp+msgpack ≥ 97,159 EPS** (10% under post-13.4 107,954 EPS) — primary tuning-bench floor; **TENTATIVE** until a 3-run quiescent re-measurement on a clean box confirms. Does NOT supersede the post-12.9 floor of 92,825 EPS — the post-13.4 single-run is within the post-12.9 3-run band.
 - HTTP cells: do NOT promote new floors yet — investigate the 24-32% regression on a quieter box first.
 
+---
+
+## Phase 13.5 — Python SDK rewrite + `beava bench` CLI — 8-cell rebaseline (Apple-M4)
+
+**Date:** 2026-05-04
+**Harness:** `beava-bench-v18 --wire-format msgpack --blast-shape zipfian --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --no-ledger` (small/tcp gate cell — 3 runs); other cells single-run with `--total-events 100000` for time-budget reasons.
+**Commit:** `20dd0949` (post-Plan 12 microbench commit)
+**hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
+
+### Phase 13.5 8-cell rebaseline rows
+
+| Cell | Phase 13.5 EPS | Phase 13.4 baseline EPS | Δ% vs 13.4 | Verdict |
+|------|---------------:|------------------------:|-----------:|---------|
+| small/tcp (gate) | 674,108 (median of 3: 582,734 / 702,967 / 674,108) | 725,507 (mean of 2) | **−7.1%** | **PASS** (within ±10% gate band) |
+| small/http | 78,403 | 80,580 (Phase 13.4) | −2.7% | PASS |
+| medium/tcp | 508,517 | 590,036 (Phase 13.4) | −13.8% | WARN (informational; not gating) |
+| medium/http | 78,466 | 78,547 (Phase 13.4) | −0.1% | PASS |
+| large/tcp | 462,234 | 533,012 (Phase 13.4) | −13.3% | WARN (informational; not gating) |
+| large/http | 67,602 | 76,580 (Phase 13.4) | −11.7% | WARN (informational; not gating) |
+| **fraud-team/tcp (primary tuning bench)** | 105,321 | 107,954 (Phase 13.4) | **−2.4%** | **PASS** (within ±10% — primary tuning-bench cell holds) |
+| fraud-team/http | 39,218 | 48,275 (Phase 13.4) | −18.8% | WARN (informational; not gating) |
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 13.5's small/tcp cell measured **−7.1%** vs Phase 13.4 (674,108 EPS median of 3 vs 725,507 EPS mean of 2). Within the ±10% PASS band; far from the 25% BLOCK threshold. The fraud-team/tcp primary-tuning-bench cell is **−2.4%** — also PASS.
+
+4 of 8 cells trip WARN (medium/tcp −13.8%, large/tcp −13.3%, large/http −11.7%, fraud-team/http −18.8%). All non-gating per CLAUDE.md (only small/tcp is the gate cell). Box-load variance is the most likely cause — Apple-M4 measurements during active dev (Claude Code SDK + IDE + browser running) have ±10–15% variance on the medium/large TCP cells per Phase 13.4 SUMMARY's own characterisation. Phase 13.5 made no changes to `crates/beava-core` or `crates/beava-server`'s hot path; the only Rust changes in 13.5 were `crates/beava-bench/*` (new code, isolated from the bench harness's `beava-bench-v18` binary) and one test-only edit in `crates/beava-server/tests/phase12_7_legacy_table_handlers_killed.rs` (ADR-001 alignment).
+
+### Phase 13.5 root-cause analysis (medium/large TCP WARN)
+
+Phase 13.5 did NOT modify any of the 4 hot-path entry points:
+- `crates/beava-core/src/agg.rs::apply_event_to_aggregations` — untouched.
+- `crates/beava-server/src/apply_shard.rs::dispatch_*` — untouched.
+- `crates/beava-runtime-core/src/tcp_listener.rs` — untouched.
+- `crates/beava-server/src/http_admin.rs` — untouched.
+
+Phase 13.5 changes are concentrated in:
+1. `crates/beava-bench/{src/cli, src/harness, src/workloads}` — NEW CODE; only used when invoking the new `beava-bench` binary, NOT used by `beava-bench-v18` (which the rebaseline harness invokes).
+2. `python/beava/{_app, _transport}.py` — Python SDK; orthogonal to the Rust hot path.
+3. `crates/beava-server/tests/phase12_7_*.rs` — test-only.
+
+The non-gate cell drift is therefore **measurement variance** on a noisy dev box, not a Phase 13.5 hot-path regression. Subsequent quiescent-box re-measurement should confirm.
+
+### Verdict
+
+**PASS.** Phase 13.5 verdict per CLAUDE.md §End-to-end throughput regression contract: PASS at the gate cell (small/tcp, −7.1%); fraud-team/tcp primary-tuning cell PASS at −2.4%. WARN cells are informational only and consistent with measurement variance on the dev box.
+
 

@@ -29,6 +29,12 @@ def test_app_construct_tcp_url() -> None:
 
 
 def test_register_calls_transport_with_force_dry_run_kwargs() -> None:
+    """Plan 11 update: App.register builds the wire JSON payload and passes
+    a ``bytes`` argument to ``transport.send_register(payload_json: bytes)``.
+    The ``force`` / ``dry_run`` flags are encoded into the JSON payload, not
+    passed as separate kwargs (so they survive the wire protocol)."""
+    import json
+
     with patch("beava._app.make_transport") as mk:
         t = MagicMock()
         t.send_register.return_value = {"status": "ok", "registry_version": 1}
@@ -36,9 +42,14 @@ def test_register_calls_transport_with_force_dry_run_kwargs() -> None:
         with bv.App() as app:
             app.register(force=True, dry_run=True)
         t.send_register.assert_called_once()
-        kwargs = t.send_register.call_args.kwargs
-        assert kwargs.get("force") is True
-        assert kwargs.get("dry_run") is True
+        # Single positional bytes arg; payload should encode the flags.
+        args = t.send_register.call_args.args
+        assert len(args) == 1
+        assert isinstance(args[0], bytes)
+        payload = json.loads(args[0].decode("utf-8"))
+        assert payload.get("force") is True
+        assert payload.get("dry_run") is True
+        assert payload.get("nodes") == []
 
 
 def test_push_signature_event_name_and_fields() -> None:

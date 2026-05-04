@@ -26,6 +26,9 @@ futures = { workspace = true }
 bytes = { workspace = true }
 rmp-serde = { workspace = true }
 thiserror = { workspace = true }
+# Phase 13.5 Plan 08: humantime for --duration parsing; inquire for interactive walkthrough.
+humantime = { workspace = true }
+inquire = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -33,6 +36,9 @@ tempfile = { workspace = true }
 proptest = { workspace = true }
 # criterion powers the Phase 19-04 blast_shape microbench.
 criterion = { workspace = true }
+# Phase 13.5 Plan 08: CLI smoke tests spawn the built bench binary.
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
 
 [lib]
 name = "beava_bench"
@@ -40,7 +46,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "beava-bench"
-path = "src/main.rs"
+path = "src/bin/beava-bench.rs"
+
+[[bin]]
+name = "beava-bench-legacy"
+path = "src/bin/beava-bench-legacy.rs"
 
 [[bin]]
 name = "beava-bench-v18"
@@ -52,4 +62,8 @@ path = "src/bin/beava-bench-v2.rs"
 
 [[bench]]
 name = "blast_shape_bench"
+harness = false
+
+[[bench]]
+name = "cli_dispatch"
 harness = false

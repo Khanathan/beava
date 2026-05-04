@@ -64,6 +64,11 @@ compact_str = { version = "0.8", features = ["serde"] }
 smallvec = { version = "1", features = ["serde"] }
 fxhash = "0.2"
 hashbrown = { version = "0.15", features = ["serde", "raw-entry"] }
+# Phase 13.5 Plan 08: bench CLI dev-deps + humantime parsing.
+humantime = "2"
+inquire = "0.7"
+assert_cmd = "2"
+predicates = "3"
 
 [profile.release]
 opt-level = 3
