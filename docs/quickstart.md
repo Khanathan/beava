@@ -6,6 +6,8 @@ Beava is a real-time feature server. You declare aggregations in plain Python,
 push events over HTTP, and query computed features by entity key --
 sub-millisecond -- with `curl` alone or any HTTP client.
 
+![Beava quickstart: pip install beava, push events, query fresh per-campaign features](./_assets/quickstart-demo.svg)
+
 ## Install
 
 ```bash

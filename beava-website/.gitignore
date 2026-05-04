@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+*.log
+
+# Working artifacts (do not commit)
+link-audit-report.txt
+render-docs-warnings.txt
+
+# Pagefind output IS committed — Cloudflare Pages serves it as static.
+# (do NOT add /project/_pagefind/ here)

@@ -1,25 +1,83 @@
-# CODING AGENTS: READ THIS FIRST
+# beava-website
 
-This is a **handoff bundle** from Claude Design (claude.ai/design).
+The beava.dev docs site. Phase 13.7 integrated Phase 13.0's spec docs (`docs/*.md` in the repo root) into this hand-rolled static site, with Pagefind search and Cloudflare Pages auto-deploy.
 
-A user mocked up designs in HTML/CSS/JS using an AI design tool, then exported this bundle so a coding agent can implement the designs for real.
+## Local development
 
-## What you should do — IMPORTANT
+```bash
+cd beava-website
+npm install
+npm run build       # renders docs/*.md → project/docs/<...>/index.html + builds Pagefind index
+npm run check:links # post-build link audit (must exit 0 before pushing)
+```
 
-**Read the chat transcripts first.** There are 1 chat transcript(s) in `beava-website/chats/`. The transcripts show the full back-and-forth between the user and the design assistant — they tell you **what the user actually wants** and **where they landed** after iterating. Don't skip them. The final HTML files are the output, but the chat is where the intent lives.
+To preview locally:
 
-**Read `beava-website/project/index.html` in full.** The user had this file open when they triggered the handoff, so it's almost certainly the primary design they want built. Read it top to bottom — don't skim. Then **follow its imports**: open every file it pulls in (shared components, CSS, scripts) so you understand how the pieces fit together before you start implementing.
+```bash
+python3 -m http.server 8000 --directory project
+# open http://localhost:8000/
+```
 
-**If anything is ambiguous, ask the user to confirm before you start implementing.** It's much cheaper to clarify scope up front than to build the wrong thing.
+## Build pipeline
 
-## About the design files
+```
+docs/*.md                                              (canonical source — also used by SDK + CI)
+   |
+   v  scripts/render-docs.mjs (markdown-it + markdown-it-anchor)
+   |
+project/docs/<route>/index.html                        (server-rendered, static HTML)
+   |
+   v  scripts/build-search.mjs (pagefind 1.5)
+   |
+project/_pagefind/                                     (search index, served as static)
+   |
+   v  Cloudflare Pages auto-deploy on push
+   |
+beava.dev
+```
 
-The design medium is **HTML/CSS/JS** — these are prototypes, not production code. Your job is to **recreate them pixel-perfectly** in whatever technology makes sense for the target codebase (React, Vue, native, whatever fits). Match the visual output; don't copy the prototype's internal structure unless it happens to fit.
+- **`scripts/render-docs.mjs`** — Markdown→HTML converter. Reads `scripts/render-docs-config.json` for sidebar IA + skip list; emits server-rendered HTML matching the existing `colors_and_type.css` + `site.css` design tokens. Idempotent (re-running produces zero git diffs). (Phase 13.7 Plan 01.)
+- **`scripts/build-search.mjs`** — Pagefind 1.5 index builder. Crawls `project/docs/**/*.html` via `addDirectory` + adds curated entries for the legacy React+Babel pages (home, guide, field-guide, design-system) via `addCustomRecord`. (Phase 13.7 Plan 02.)
+- **`scripts/check-links.mjs`** — Internal-link audit. Walks `project/docs/`, classifies every `<a href>` as OK / BROKEN / WARN / EXTERNAL_SKIP / ANCHOR_SKIP. Exits non-zero on BROKEN. Cross-repo links to `.planning/...` / `examples/...` / `crates/...` / `python/...` are emitted as `https://github.com/beava-dev/beava/blob/main/...` and reported as WARN. (Phase 13.7 Plan 02.)
 
-**Don't render these files in a browser or take screenshots unless the user asks you to.** Everything you need — dimensions, colors, layout rules — is spelled out in the source. Read the HTML and CSS directly; a screenshot won't tell you anything they don't.
+## Deploy (Cloudflare Pages)
 
-## Bundle contents
+Auto-deploy is configured via `wrangler.toml` + Cloudflare's dashboard. One-time setup (run by the user, not Claude):
 
-- `beava-website/README.md` — this file
-- `beava-website/chats/` — conversation transcripts (read these!)
-- `beava-website/project/` — the `beava website` project files (HTML prototypes, assets, components)
+1. Log in to https://dash.cloudflare.com → Pages → "Create a project" → "Connect to Git"
+2. Authorize the GitHub org owning `tally` (likely `beava-dev`)
+3. Select the `tally` repository
+4. Build settings (Cloudflare auto-detects from `wrangler.toml`):
+   - Production branch: `v2/greenfield` (then `main` post-merge)
+   - Build command: `npm install && npm run build`
+   - Build output directory: `project`
+   - Root directory: `beava-website`
+5. Click "Save and Deploy" — first build takes ~2-3 min.
+6. Once green: visit the auto-generated `<pages-project>.pages.dev` URL and smoke-test:
+   - `/` — home loads
+   - `/docs/` — docs landing with the new sidebar
+   - `/docs/quickstart/` — quickstart with the SVG demo (Plan 03)
+   - `/docs/operators/core/count/` — a representative op page
+   - Search box — type "histogram" → expect a hit at `/docs/operators/buffer-geo/histogram/`
+7. Add custom domain: Pages project → Custom domains → set up `beava.dev` + `www.beava.dev`.
+8. DNS (Cloudflare DNS for beava.dev — same account if already there; else manual):
+   - CNAME `beava.dev` → `<pages-project>.pages.dev` (proxied)
+   - CNAME `www.beava.dev` → `<pages-project>.pages.dev` (proxied)
+9. Wait ~5 min for SSL provisioning, then visit beava.dev.
+
+After setup: every push to `v2/greenfield` auto-deploys. PR branches get preview URLs at `<branch>.<pages-project>.pages.dev`.
+
+## Phase 13.7 scope (locked)
+
+Per `.planning/phases/13.7-docs-site-beava-dev/13.7-CONTEXT.md`:
+
+- Integrate Phase 13.0 spec docs into existing site (NOT new MkDocs spin-up) — D-01
+- Reuse `beava-design-system/` tokens — D-02
+- /guide/ vertical pages stay as "coming soon" stubs — D-03
+- Cloudflare Pages auto-deploy — D-04
+
+Vertical guides (adtech / fraud / ecommerce) deferred to v0.1+ user-authored interactive follow-up.
+
+## Original handoff bundle
+
+This README replaces a Claude Design (claude.ai/design) handoff README. The original chat transcripts that informed the home page + guide design live under `chats/`. The hand-rolled `project/index.html`, `project/field-guide-ch{1,2}.html`, and `project/guide/` pages are the design implementation; `project/docs/` is Phase 13.7's docs integration.

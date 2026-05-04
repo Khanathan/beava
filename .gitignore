@@ -64,3 +64,8 @@ Thumbs.db
 # MCP server config (personal, points to local gbrain instance)
 .mcp.json
 .gstack/
+
+# Beava website build artifacts
+beava-website/node_modules/
+render-docs-warnings.txt
+beava-website/link-audit-report.txt
