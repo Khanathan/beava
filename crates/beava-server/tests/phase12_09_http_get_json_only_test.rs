@@ -173,10 +173,12 @@ async fn test_http_post_get_returns_json_response() {
         raw.first()
     );
     let v: serde_json::Value = serde_json::from_slice(&raw).expect("body decodes as JSON");
-    assert_eq!(
-        v["result"]["alice"]["cnt"], 1,
-        "expected alice.cnt=1, got {v:#}"
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
     );
+    assert_eq!(v["alice"]["cnt"], 1, "expected alice.cnt=1, got {v:#}");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;

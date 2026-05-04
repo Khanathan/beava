@@ -279,8 +279,13 @@ async fn test_release_binary_responds_to_post_get_without_dev_endpoints_env() {
         body_text
     );
     let body: serde_json::Value = serde_json::from_str(&body_text).expect("body parses as JSON");
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        body.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {body:#}"
+    );
     assert_eq!(
-        body["result"]["alice"]["cnt"], 1,
-        "expected result.alice.cnt=1, got {body:#}"
+        body["alice"]["cnt"], 1,
+        "expected alice.cnt=1, got {body:#}"
     );
 }

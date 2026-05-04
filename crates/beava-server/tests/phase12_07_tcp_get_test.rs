@@ -185,12 +185,14 @@ fn test_apply_shard_dispatches_tcp_mget() {
     match &resps[0] {
         GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(body).unwrap();
-            assert_eq!(
-                v["result"]["alice"]["cnt"], 1,
-                "expected alice.cnt=1, got {v:#}"
-            );
+            // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
             assert!(
-                v["result"].get("bob").is_none(),
+                v.get("result").is_none(),
+                "result envelope must be absent (Plan 13.4-02), got {v:#}"
+            );
+            assert_eq!(v["alice"]["cnt"], 1, "expected alice.cnt=1, got {v:#}");
+            assert!(
+                v.get("bob").is_none(),
                 "bob should be omitted (no events), got {v:#}"
             );
         }
@@ -215,8 +217,13 @@ fn test_apply_shard_dispatches_tcp_get_multi() {
     match &resps[0] {
         GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(body).unwrap();
+            // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+            assert!(
+                v.get("result").is_none(),
+                "result envelope must be absent (Plan 13.4-02), got {v:#}"
+            );
             assert_eq!(
-                v["result"]["alice"]["cnt"], 1,
+                v["alice"]["cnt"], 1,
                 "expected alice.cnt=1 for TcpGetMulti, got {v:#}"
             );
         }

@@ -438,7 +438,19 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes, body_format: u8) -> Glu
     let t_loop = t0.map(|t| t.elapsed());
     drop(tables);
 
-    let body_json = serde_json::json!({"result": result});
+    // Phase 13.4 Plan 02 / Phase 13.0-15 wire-spec: drop the `{"result": ...}`
+    // envelope. The multi-feature batched read now emits the flat per-entity
+    // dict directly — `{entity_id: {feature: value}}` instead of
+    // `{"result": {entity_id: {feature: value}}}`. Cold-start (no entities
+    // matched) is `{}`. Both transports (HTTP /get + TCP OP_GET_MULTI / OP_MGET)
+    // share this body shape; the single-feature `GET /get/:feature/:key` path
+    // is unchanged at `{"value": <val>}`.
+    let body_json = serde_json::Value::Object(
+        result
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::Object(v.into_iter().collect())))
+            .collect(),
+    );
     // Plan 12-09 D-B: response format mirrors request format (msgpack-in → msgpack-out,
     // json-in → json-out).
     //

@@ -146,10 +146,12 @@ fn test_dispatch_get_batch_msgpack_body_returns_msgpack_format() {
             );
             let v: serde_json::Value =
                 rmp_serde::from_slice(&body).expect("response body decodes as msgpack");
-            assert_eq!(
-                v["result"]["alice"]["cnt"], 10,
-                "expected alice.cnt=10, got {v:#}"
+            // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+            assert!(
+                v.get("result").is_none(),
+                "result envelope must be absent (Plan 13.4-02), got {v:#}"
             );
+            assert_eq!(v["alice"]["cnt"], 10, "expected alice.cnt=10, got {v:#}");
         }
         other => panic!("expected QueryResult{{..,format:CT_MSGPACK}}, got {other:?}"),
     }
@@ -170,10 +172,12 @@ fn test_dispatch_get_batch_json_body_unchanged() {
             );
             let v: serde_json::Value =
                 serde_json::from_slice(&body).expect("response body decodes as JSON");
-            assert_eq!(
-                v["result"]["alice"]["cnt"], 10,
-                "expected alice.cnt=10, got {v:#}"
+            // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+            assert!(
+                v.get("result").is_none(),
+                "result envelope must be absent (Plan 13.4-02), got {v:#}"
             );
+            assert_eq!(v["alice"]["cnt"], 10, "expected alice.cnt=10, got {v:#}");
         }
         other => panic!("expected QueryResult{{..,format:CT_JSON}}, got {other:?}"),
     }

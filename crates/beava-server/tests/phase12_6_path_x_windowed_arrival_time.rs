@@ -137,7 +137,12 @@ async fn path_x_bucketing_is_on_arrival_not_event_time() {
     // Path X assertion: all three events should be in the same arrival-time
     // 60s bucket. Pre-Path-X returns 1 (most-recent body-event_time wins
     // bucket-by-bucket; only one bucket is active at the GET query_time).
-    let cnt = body["result"]["u1"]["cnt"].as_i64();
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        body.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {body:#}"
+    );
+    let cnt = body["u1"]["cnt"].as_i64();
     assert_eq!(
         cnt,
         Some(3),

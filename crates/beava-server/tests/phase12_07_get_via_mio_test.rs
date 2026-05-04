@@ -182,9 +182,14 @@ async fn test_http_get_batch_via_mio_returns_result_map() {
         .expect("post /get");
     assert_eq!(resp.status().as_u16(), 200);
     let body: serde_json::Value = resp.json().await.expect("json");
+    // Plan 13.4-02: dropped the `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        body.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {body:#}"
+    );
     assert_eq!(
-        body["result"]["alice"]["cnt"], 1,
-        "expected result.alice.cnt=1, got {body:#}"
+        body["alice"]["cnt"], 1,
+        "expected alice.cnt=1, got {body:#}"
     );
 
     let _ = shutdown_tx.send(());
@@ -274,11 +279,13 @@ async fn test_tcp_op_mget_returns_op_get_response() {
     .await;
     assert_eq!(frame.op, OP_GET_RESPONSE);
     let v: serde_json::Value = serde_json::from_slice(&frame.payload).expect("json");
-    assert_eq!(
-        v["result"]["alice"]["cnt"], 1,
-        "expected result.alice.cnt=1, got {v:#}"
+    // Plan 13.4-02: dropped the `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
     );
-    assert!(v["result"].get("bob").is_none(), "bob should be omitted");
+    assert_eq!(v["alice"]["cnt"], 1, "expected alice.cnt=1, got {v:#}");
+    assert!(v.get("bob").is_none(), "bob should be omitted");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
@@ -304,10 +311,12 @@ async fn test_tcp_op_get_multi_returns_op_get_response() {
     .await;
     assert_eq!(frame.op, OP_GET_RESPONSE);
     let v: serde_json::Value = serde_json::from_slice(&frame.payload).expect("json");
-    assert_eq!(
-        v["result"]["alice"]["cnt"], 1,
-        "expected result.alice.cnt=1, got {v:#}"
+    // Plan 13.4-02: dropped the `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
     );
+    assert_eq!(v["alice"]["cnt"], 1, "expected alice.cnt=1, got {v:#}");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;

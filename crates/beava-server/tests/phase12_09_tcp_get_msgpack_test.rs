@@ -215,17 +215,20 @@ async fn test_tcp_get_multi_msgpack_round_trip() {
     );
     let v: serde_json::Value =
         rmp_serde::from_slice(&frame.payload).expect("payload decodes as msgpack");
-    assert_eq!(
-        v["result"]["alice"]["cnt"], 10,
-        "expected result.alice.cnt=10, got {v:#}"
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
     );
+    assert_eq!(v["alice"]["cnt"], 10, "expected alice.cnt=10, got {v:#}");
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
 }
 
 /// OP_MGET + CT_MSGPACK with `{feature, keys}` body → response is
-/// (OP_GET_RESPONSE, CT_MSGPACK, msgpack `{result: {alice: {cnt: 10}}}`).
+/// (OP_GET_RESPONSE, CT_MSGPACK, msgpack `{alice: {cnt: 10}}` per Phase 13.0-15
+/// — Plan 13.4-02 dropped the historic `{"result": ...}` envelope).
 /// RED today because apply_shard.rs:262 has `body_format: _`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_mget_msgpack_round_trip() {
@@ -246,9 +249,14 @@ async fn test_tcp_mget_msgpack_round_trip() {
     assert_eq!(frame.content_type, CT_MSGPACK);
     let v: serde_json::Value =
         rmp_serde::from_slice(&frame.payload).expect("payload decodes as msgpack");
-    assert_eq!(v["result"]["alice"]["cnt"], 10);
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
     assert!(
-        v["result"].get("bob").is_none(),
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
+    );
+    assert_eq!(v["alice"]["cnt"], 10);
+    assert!(
+        v.get("bob").is_none(),
         "bob should be omitted (no state), got {v:#}"
     );
 

@@ -131,6 +131,11 @@ async fn phase7_register_push_get_unaffected() {
         .expect("post /get");
     assert_eq!(r.status().as_u16(), 200);
     let v: serde_json::Value = r.json().await.expect("json");
-    assert_eq!(v["result"]["alice"]["cnt"], 50);
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
+    );
+    assert_eq!(v["alice"]["cnt"], 50);
     ts.shutdown().await.expect("shutdown");
 }

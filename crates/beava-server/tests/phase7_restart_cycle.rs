@@ -164,7 +164,7 @@ async fn sc1_snapshot_then_restart_reproduces_state() {
         }
         let v = get_feature(&ts, &["alice"], &["cnt"]).await;
         assert_eq!(
-            v["result"]["alice"]["cnt"], 1250,
+            v["alice"]["cnt"], 1250,
             "pre-restart cnt expected 1250, got {v}"
         );
         ts.shutdown().await.expect("shutdown 1st");
@@ -194,7 +194,7 @@ async fn sc1_snapshot_then_restart_reproduces_state() {
 
         let v = get_feature(&ts, &["alice"], &["cnt"]).await;
         assert_eq!(
-            v["result"]["alice"]["cnt"], 1250,
+            v["alice"]["cnt"], 1250,
             "post-restart cnt expected 1250 (snapshot + WAL-past-LSN), got {v}"
         );
         ts.shutdown().await.expect("shutdown 2nd");
@@ -244,8 +244,8 @@ async fn sc4_schema_evolution_survives_restart() {
         }
 
         let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
-        assert_eq!(v["result"]["alice"]["cnt"], 7);
-        assert_eq!(v["result"]["alice"]["click_cnt"], 3);
+        assert_eq!(v["alice"]["cnt"], 7);
+        assert_eq!(v["alice"]["click_cnt"], 3);
 
         ts.shutdown().await.expect("shutdown 1st");
     }
@@ -263,11 +263,11 @@ async fn sc4_schema_evolution_survives_restart() {
         // Both aggregations must come back, both keys must resolve.
         let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
         assert_eq!(
-            v["result"]["alice"]["cnt"], 7,
+            v["alice"]["cnt"], 7,
             "post-restart cnt expected 7 (recovered v1 schema + replayed events), got {v}"
         );
         assert_eq!(
-            v["result"]["alice"]["click_cnt"], 3,
+            v["alice"]["click_cnt"], 3,
             "post-restart click_cnt expected 3 (recovered v2 schema + replayed events), got {v}"
         );
 
@@ -328,8 +328,8 @@ async fn snapshot_then_schema_evolution_then_restart() {
         }
 
         let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
-        assert_eq!(v["result"]["alice"]["cnt"], 8);
-        assert_eq!(v["result"]["alice"]["click_cnt"], 2);
+        assert_eq!(v["alice"]["cnt"], 8);
+        assert_eq!(v["alice"]["click_cnt"], 2);
 
         ts.shutdown().await.expect("shutdown 1st");
     }
@@ -346,11 +346,11 @@ async fn snapshot_then_schema_evolution_then_restart() {
 
         let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
         assert_eq!(
-            v["result"]["alice"]["cnt"], 8,
+            v["alice"]["cnt"], 8,
             "post-restart cnt expected 8 (5 from snapshot + 3 from WAL tail), got {v}"
         );
         assert_eq!(
-            v["result"]["alice"]["click_cnt"], 2,
+            v["alice"]["click_cnt"], 2,
             "post-restart click_cnt expected 2 (RegistryBump + 2 events all from WAL tail), got {v}"
         );
 

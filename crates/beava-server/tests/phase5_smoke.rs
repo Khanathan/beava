@@ -196,7 +196,7 @@ async fn sc2_push_then_get_returns_count() {
     assert_eq!(resp.status().as_u16(), 200, "GET must succeed");
     let body: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(
-        body["result"]["alice"]["cnt"], 10,
+        body["alice"]["cnt"], 10,
         "SC2: 10 pushes must yield count=10: {body:#}"
     );
 
@@ -268,7 +268,7 @@ async fn sc2_push_with_where_filters() {
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
     assert_eq!(
-        result["result"]["alice"]["cnt_ok"], 7,
+        result["alice"]["cnt_ok"], 7,
         "SC2 where-filter: only 7 ok events should be counted: {result:#}"
     );
 
@@ -368,7 +368,7 @@ async fn sc3_all_8_operators_e2e() {
         .expect("post /get");
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
-    let alice = &result["result"]["alice"];
+    let alice = &result["alice"];
 
     const TOL: f64 = 1e-9;
 
@@ -617,7 +617,7 @@ async fn sc5_lifetime_count_works() {
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
     assert_eq!(
-        result["result"]["alice"]["cnt_lifetime"], 100,
+        result["alice"]["cnt_lifetime"], 100,
         "SC5 lifetime count: expected 100, got: {result:#}"
     );
 
@@ -690,7 +690,7 @@ async fn sc5_lifetime_ratio_works() {
         .expect("post /get");
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
-    let ratio = result["result"]["alice"]["ratio_ok"]
+    let ratio = result["alice"]["ratio_ok"]
         .as_f64()
         .expect("ratio must be f64");
     assert!(

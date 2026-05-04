@@ -202,7 +202,8 @@ async fn test_tcp_get_single_json_unchanged() {
 }
 
 /// OP_MGET + CT_JSON: response is (OP_GET_RESPONSE, CT_JSON, JSON
-/// `{"result":{"alice":{"cnt":1}}}`).
+/// `{"alice":{"cnt":1}}` per Phase 13.0-15 wire-spec — Plan 13.4-02 dropped
+/// the historic `{"result": ...}` envelope).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_mget_json_unchanged() {
     use beava_core::wire::{OP_GET_RESPONSE, OP_MGET};
@@ -224,15 +225,21 @@ async fn test_tcp_mget_json_unchanged() {
     assert_eq!(frame.op, OP_GET_RESPONSE);
     assert_eq!(frame.content_type, CT_JSON);
     let v: serde_json::Value = serde_json::from_slice(&frame.payload).expect("json");
-    assert_eq!(v["result"]["alice"]["cnt"], 1);
-    assert!(v["result"].get("bob").is_none());
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
+    );
+    assert_eq!(v["alice"]["cnt"], 1);
+    assert!(v.get("bob").is_none());
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
 }
 
 /// OP_GET_MULTI + CT_JSON: response is (OP_GET_RESPONSE, CT_JSON, JSON
-/// `{"result":{...}}`).
+/// `{...}` per Phase 13.0-15 wire-spec — Plan 13.4-02 dropped the historic
+/// `{"result": ...}` envelope).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_tcp_get_multi_json_unchanged() {
     use beava_core::wire::{OP_GET_MULTI, OP_GET_RESPONSE};
@@ -254,7 +261,12 @@ async fn test_tcp_get_multi_json_unchanged() {
     assert_eq!(frame.op, OP_GET_RESPONSE);
     assert_eq!(frame.content_type, CT_JSON);
     let v: serde_json::Value = serde_json::from_slice(&frame.payload).expect("json");
-    assert_eq!(v["result"]["alice"]["cnt"], 1);
+    // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    assert!(
+        v.get("result").is_none(),
+        "result envelope must be absent (Plan 13.4-02), got {v:#}"
+    );
+    assert_eq!(v["alice"]["cnt"], 1);
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;

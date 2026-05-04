@@ -64,14 +64,23 @@ def _get(http_url: str, feature: str, key: str) -> Any:
 
 
 def _post_get(http_url: str, keys: list[str], features: list[str]) -> dict[str, Any]:
-    """POST /get batch and return result dict."""
+    """POST /get batch and return the flat per-entity dict.
+
+    Phase 13.4 Plan 02 / Phase 13.0-15 wire-spec: the multi-feature
+    batched read now returns the flat dict `{entity_id: {feature: value}}`
+    directly, with no `{"result": ...}` envelope.
+    """
     resp = httpx.post(
         f"{http_url}/get",
         json={"keys": keys, "features": features},
         timeout=10.0,
     )
     assert resp.status_code == 200, f"POST /get failed: {resp.text}"
-    return resp.json().get("result", {})  # type: ignore[no-any-return]
+    body = resp.json()
+    assert "result" not in body, (
+        f"Plan 13.4-02: result envelope must be absent, got {body!r}"
+    )
+    return body  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------

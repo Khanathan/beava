@@ -128,7 +128,8 @@ fn setup_app_state_with_count_pipeline() -> AppFixture {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// dispatch_get_batch returns real per-key/per-feature values for known keys.
-/// RED today — stub returns `{"result": {}}`.
+/// Plan 13.4-02: response is now flat-dict per Phase 13.0-15 wire-spec
+/// (no historic `{"result": ...}` envelope).
 #[test]
 fn test_dispatch_get_batch_returns_real_results() {
     let fx = setup_app_state_with_count_pipeline();
@@ -137,10 +138,11 @@ fn test_dispatch_get_batch_returns_real_results() {
     match resp {
         GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(
-                v["result"]["alice"]["cnt"], 1,
-                "expected alice.cnt=1, got {v:#}"
+            assert!(
+                v.get("result").is_none(),
+                "result envelope must be absent (Plan 13.4-02), got {v:#}"
             );
+            assert_eq!(v["alice"]["cnt"], 1, "expected alice.cnt=1, got {v:#}");
         }
         other => panic!("expected QueryResult, got {other:?}"),
     }
@@ -156,12 +158,14 @@ fn test_dispatch_get_batch_omits_missing_keys() {
     match resp {
         GlueResponse::QueryResult { body, format: _ } => {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
             assert!(
-                v["result"]["alice"].is_object(),
-                "alice should be present, got {v:#}"
+                v.get("result").is_none(),
+                "result envelope must be absent (Plan 13.4-02), got {v:#}"
             );
+            assert!(v["alice"].is_object(), "alice should be present, got {v:#}");
             assert!(
-                v["result"].get("ghost").is_none(),
+                v.get("ghost").is_none(),
                 "ghost should be omitted (not null), got {v:#}"
             );
         }

@@ -11,9 +11,12 @@
 //! # POST /get
 //!
 //! Batch lookup. Body: `{"keys": [...], "features": [...]}`.
-//! Returns `{"result": {key: {feature: value}}}` per SRV-API-08.
+//! Returns the flat per-entity dict `{key: {feature: value}}` per Phase 13.0-15
+//! wire-spec (Plan 13.4-02 dropped the historic `{"result": ...}` envelope
+//! while leaving the single-feature `{"value": ...}` path untouched).
 //!
-//! - 200 `{"result": {...}}` — success (missing keys are omitted, not null)
+//! - 200 `{key: {feature: value}, ...}` — success (missing keys are omitted, not null)
+//! - 200 `{}` — cold-start (no entities matched)
 //! - 400 `{"error": {"code": "feature_not_found", "missing": [...]}}` — unknown feature
 //! - 400 `{"error": {"code": "batch_too_large"}}` — keys × features > 10_000
 //!
