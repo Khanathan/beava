@@ -76,7 +76,9 @@ def discover_binary() -> Path:
 
 def spawn_embedded_server(
     startup_timeout: float = 5.0,
-) -> tuple[subprocess.Popen[bytes], str, str]:
+    *,
+    test_mode: bool = False,
+) -> tuple[subprocess.Popen[bytes], str, str, dict[str, str]]:
     """Spawn a local beava server on ephemeral ports and wait until it is ready.
 
     Reads stderr line-by-line (in a background thread) until both
@@ -111,6 +113,11 @@ def spawn_embedded_server(
         "BEAVA_TCP_PORT": "0",
         "BEAVA_DEV_ENDPOINTS": "1",
     }
+    # Phase 13.5 D-05 (cross-amendment from 13.4 D-03): test_mode kwarg
+    # propagates BEAVA_TEST_MODE=1 to the spawned binary, gating OP_RESET
+    # and other test-only opcodes server-side.
+    if test_mode:
+        env["BEAVA_TEST_MODE"] = "1"
 
     # Pass --config /dev/null so the binary starts with all-defaults regardless of
     # the caller's CWD (the default config path is ./beava.yaml may not exist).
@@ -177,7 +184,7 @@ def spawn_embedded_server(
             f"Check that the beava binary starts correctly."
         )
 
-    return proc, f"http://{http_addr[0]}", f"tcp://{tcp_addr[0]}"
+    return proc, f"http://{http_addr[0]}", f"tcp://{tcp_addr[0]}", env
 
 
 def teardown_process(proc: subprocess.Popen[bytes], timeout: float = 5.0) -> None:

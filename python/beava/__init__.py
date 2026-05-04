@@ -18,6 +18,7 @@ ADR-001 partial overturn 2026-05-03 revives @bv.table for aggregation-output).
 from __future__ import annotations
 
 # Re-exports from kept modules only:
+from beava._app import App  # noqa: F401
 from beava._errors import (  # noqa: F401
     BinaryNotFoundError,
     RegistrationError,
@@ -25,6 +26,7 @@ from beava._errors import (  # noqa: F401
 )
 
 __all__ = [
+    "App",
     "RegistrationError",
     "BinaryNotFoundError",
     "ValidationError",

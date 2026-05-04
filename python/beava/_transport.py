@@ -423,9 +423,14 @@ class EmbedTransport(Transport):
         self,
         tcp: TcpTransport,
         proc: "subprocess.Popen[bytes]",
+        *,
+        spawn_env: dict[str, str] | None = None,
     ) -> None:
         self._tcp = tcp
         self._proc = proc
+        # Phase 13.5 Plan 02 D-05: expose the env dict that was passed to the
+        # spawned binary so tests can assert BEAVA_TEST_MODE=1 propagation.
+        self._spawn_env: dict[str, str] = spawn_env or {}
 
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
         return self._tcp.send_register(payload_json)
@@ -486,12 +491,12 @@ def parse_url_to_transport(url: str | None) -> Transport:
         # Embed mode: spawn local binary, connect via TCP.
         from beava._embed import spawn_embedded_server
 
-        proc, _http_url, tcp_url = spawn_embedded_server()
+        proc, _http_url, tcp_url, env = spawn_embedded_server()
         parsed = urllib.parse.urlparse(tcp_url)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 7380
         tcp = TcpTransport(host=host, port=port)
-        return EmbedTransport(tcp=tcp, proc=proc)
+        return EmbedTransport(tcp=tcp, proc=proc, spawn_env=env)
 
     if url.startswith("http://") or url.startswith("https://"):
         return HttpTransport(url)
@@ -501,6 +506,56 @@ def parse_url_to_transport(url: str | None) -> Transport:
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 7380
         return TcpTransport(host=host, port=port)
+
+    raise ValueError(
+        f"unsupported URL scheme in {url!r}; "
+        f"supported schemes: http://, https://, tcp://, or None for embed mode"
+    )
+
+
+# ─── Phase 13.5 Plan 02: make_transport factory ─────────────────────────────
+
+
+def make_transport(
+    url: str | None = None,
+    *,
+    timeout: float = 30.0,
+    test_mode: bool = False,
+) -> Transport:
+    """Phase 13.5 Plan 02 factory — URL-scheme dispatch + test_mode propagation.
+
+    Routes ``url=None`` → embed-mode subprocess spawn (with optional
+    BEAVA_TEST_MODE=1 env var per D-05), ``http(s)://`` → HttpTransport,
+    ``tcp://`` → TcpTransport.
+
+    Args:
+        url: Server URL or None for embed mode.
+        timeout: HTTP / socket timeout in seconds.
+        test_mode: When True + url=None, spawns the binary with
+            BEAVA_TEST_MODE=1. Has no effect in network mode (caller is
+            expected to emit a UserWarning before calling).
+
+    Returns:
+        A concrete :class:`Transport` instance.
+    """
+    if url is None:
+        from beava._embed import spawn_embedded_server
+
+        proc, _http_url, tcp_url, env = spawn_embedded_server(test_mode=test_mode)
+        parsed = urllib.parse.urlparse(tcp_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 7380
+        tcp = TcpTransport(host=host, port=port, timeout=timeout)
+        return EmbedTransport(tcp=tcp, proc=proc, spawn_env=env)
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return HttpTransport(base_url=url, timeout=timeout)
+
+    if url.startswith("tcp://"):
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 7380
+        return TcpTransport(host=host, port=port, timeout=timeout)
 
     raise ValueError(
         f"unsupported URL scheme in {url!r}; "
