@@ -8,10 +8,15 @@ Frame envelope (v0, locked 2026-04-23 — matches crates/beava-core/src/wire.rs)
 itself).  Minimum valid length is 3 (empty payload).  All multi-byte integers are
 big-endian (network byte order).
 
-Opcode constants (Phase 3 uses only OP_PING + OP_REGISTER + OP_ERROR_RESPONSE):
+Opcode constants (v0 client-initiated set per docs/wire-spec.md § Opcode Table):
 
     OP_PING           = 0x0000
     OP_REGISTER       = 0x0001
+    OP_PUSH           = 0x0010  (data-plane push — fixed Phase 13.5 Plan 01)
+    OP_GET            = 0x0020
+    OP_GET_RESPONSE   = 0x0023
+    OP_BATCH_GET      = 0x0024
+    OP_RESET          = 0x0040  (test_mode-gated; Phase 13.4 D-03)
     OP_ERROR_RESPONSE = 0xFFFF
 
 Content types (Phase 3 JSON-only; CT_MSGPACK reserved Phase 6+):
@@ -32,13 +37,15 @@ from typing import Any, cast
 
 OP_PING: int = 0x0000
 OP_REGISTER: int = 0x0001
-OP_PUSH: int = 0x0002  # data-plane push (Phase 2.5+)
+OP_PUSH: int = 0x0010  # data-plane push (Phase 13.5 Plan 01 — fixed from 0x0002)
 
-# Plan 12-07 / 12-09: TCP /get opcodes.
+# Plan 12-07 / 12-09 + Phase 13.4: get / batch-get / reset opcodes.
 OP_GET: int = 0x0020  # single feature, single key
 OP_MGET: int = 0x0021  # single feature, many keys
 OP_GET_MULTI: int = 0x0022  # many features, many keys
 OP_GET_RESPONSE: int = 0x0023  # response opcode (Plan 12-07)
+OP_BATCH_GET: int = 0x0024  # batch-get (Phase 13.4 wire spec)
+OP_RESET: int = 0x0040  # test-mode reset (Phase 13.4 D-03)
 
 OP_ERROR_RESPONSE: int = 0xFFFF
 
