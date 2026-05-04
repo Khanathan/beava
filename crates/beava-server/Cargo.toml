@@ -218,6 +218,29 @@ name = "phase13_4_reset_default_rejected"
 path = "tests/phase13_4_reset_default_rejected.rs"
 required-features = ["testing"]
 
+# ─── Plan 13.4.1 — Server-side wire-spec verb-style migration ────────────────
+# Wave 1 RED tests (Plans 01 + 02 + 03). Plan 01 is the EXCLUSIVE Wave 1 owner
+# of this Cargo.toml — registers ALL THREE [[test]] entries up front so Plans
+# 02 + 03 (Wave 2) only need to author their own .rs test files without
+# touching Cargo.toml. The .rs files for Plans 02 + 03 do not yet exist when
+# Plan 01 lands; cargo only validates the test target when it is invoked, so
+# this is safe — Plan 01's own test target (phase13_4_1_verb_style_get) ships
+# with the corresponding .rs file in the same commit.
+[[test]]
+name = "phase13_4_1_verb_style_get"
+path = "tests/phase13_4_1_verb_style_get.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase13_4_1_verb_style_batch_get"
+path = "tests/phase13_4_1_verb_style_batch_get.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase13_4_1_entity_id_alias_warn"
+path = "tests/phase13_4_1_entity_id_alias_warn.rs"
+required-features = ["testing"]
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
