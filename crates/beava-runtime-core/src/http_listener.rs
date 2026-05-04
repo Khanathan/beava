@@ -244,6 +244,24 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
             method: method.to_owned(),
             path: path.to_owned(),
         },
+        // Plan 13.4-04 Task 4.b stubs — Task 4.d wires these through to the
+        // real dispatch (HttpPing, HttpPush via parse_verb_push body extract,
+        // HttpPushSync). Returning ParseError here keeps the compiler happy
+        // while the e2e RED test in Task 4.c documents the expected wire
+        // shape.
+        Route::Ping => WireRequest::ParseError {
+            reason: "not_yet_implemented: verb-style /ping dispatch lands Plan 13.4-04 Task 4.d"
+                .to_owned(),
+        },
+        Route::PushVerb => WireRequest::ParseError {
+            reason: "not_yet_implemented: verb-style /push dispatch lands Plan 13.4-04 Task 4.d"
+                .to_owned(),
+        },
+        Route::PushSyncVerb => WireRequest::ParseError {
+            reason:
+                "not_yet_implemented: verb-style /push-sync dispatch lands Plan 13.4-04 Task 4.d"
+                    .to_owned(),
+        },
     };
 
     Ok(Some((wire_req, keep_alive)))

@@ -34,6 +34,23 @@ pub enum Route {
     /// back-compat with phase4/5/11.5 tests that GET `/registry` to assert
     /// schema propagation.
     Registry,
+    /// POST /ping — verb-style liveness probe (Plan 13.4-04). HTTP mirror of
+    /// the TCP `OP_PING (0x0000)` semantics. Distinct from `/health` (which is
+    /// the existing readiness/liveness probe consumed by `read_bench.py`).
+    /// Always returns 200 `{"status":"ok"}` once the listener is up.
+    Ping,
+    /// POST /push — verb-style fire-and-forget push (Plan 13.4-04). Event
+    /// name lives in the JSON body (`{"event":"Tx","data":{...}}`) instead
+    /// of the URL path. Legacy `POST /push/:event_name` (`Route::Push`)
+    /// stays alive per A-07 in the Phase 13.4 SCRATCH-PLANNER-NOTES so the
+    /// ~20 in-tree tests that hit the path-segment URL keep passing.
+    /// Phase 13.5/13.6/13.7 SDKs use the new verb-style route.
+    PushVerb,
+    /// POST /push-sync — verb-style synchronous push (Plan 13.4-04). Event
+    /// name in body; awaits fsync. Mirrors `Route::PushVerb` on the sync
+    /// path. Legacy `POST /push-sync/:event_name` (`Route::PushSync`) stays
+    /// alive per A-07.
+    PushSyncVerb,
     /// Path not in the table.
     NotFound,
     /// Path matched but wrong method.
@@ -86,6 +103,36 @@ impl Router {
                 Route::PushBatch {
                     event_name: rest.to_owned(),
                 }
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // Plan 13.4-04 — verb-style exact-match routes. MUST come AFTER the
+        // `/push/`, `/push-sync/`, and `/push-batch/` strip_prefix arms above
+        // so that `/push/Tx` keeps resolving to `Route::Push { event_name }`
+        // (legacy backward-compat per A-07). The strip_prefix branches require
+        // a trailing `/` followed by a non-empty segment; bare `/push` falls
+        // through to here and matches `path == "/push"`.
+        // /push (verb-style — event name in JSON body)
+        if path == "/push" {
+            return if method == "POST" {
+                Route::PushVerb
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /push-sync (verb-style)
+        if path == "/push-sync" {
+            return if method == "POST" {
+                Route::PushSyncVerb
+            } else {
+                Route::MethodNotAllowed
+            };
+        }
+        // /ping (verb-style — HTTP mirror of TCP OP_PING)
+        if path == "/ping" {
+            return if method == "POST" {
+                Route::Ping
             } else {
                 Route::MethodNotAllowed
             };
