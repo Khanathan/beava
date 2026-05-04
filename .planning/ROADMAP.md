@@ -902,9 +902,50 @@ Wave structure:
 
 ---
 
+### Phase 13.7.5: Pre-OSS repo polish — comment audit + test coverage audit — 📋 PLANNED 2026-05-03
+
+**Status:** Inserted 2026-05-03 mid-Phase-13.0 per user directive ("we need a plan to review our repo to prepare for OSS, ... right now code are overloaded with comments. Also we need to check if our test coverage for every features and ops are good enough"). Slot: between Phase 13.7 (docs site) and Phase 13.8 (packaging+GA) — code in final form before public eyeballs.
+
+**Goal:** Two workstreams: (A) component-by-component comment audit removing AI-slop / restating-the-obvious comments per CLAUDE.md heuristic ("default to no comments; only add when WHY is non-obvious"); (B) test coverage audit producing a feature × test-status matrix, classifying each gap MUST-FIX vs DEFER, and filling MUST-FIX gaps. Outcome: code that reads as engineered (not generated) and a comprehensive test inventory before the v0 GA tag.
+
+**Depends on:** Phase 13.4 + 13.5 + 13.6 + 13.7 ALL CLOSED. Polishing earlier would clean code that's about to be rewritten.
+
+**Detail capture:** `.planning/ideas/phase-13.7.5-pre-oss-polish.md` (179 lines) contains the full per-component plan structure, KEEP/DELETE heuristic codification, coverage-matrix template, and gap-detection process.
+
+**Plans (estimated, ~13 plans across 3 waves):**
+
+- Wave 1 — comment-audit conventions + 8 per-component scrubs (parallelizable via worktrees):
+  - 13.7.5-01 conventions doc + heuristic checklist
+  - 13.7.5-02 `crates/beava-core/`
+  - 13.7.5-03 `crates/beava-server/`
+  - 13.7.5-04 `crates/beava-runtime-core/`
+  - 13.7.5-05 `crates/beava-persistence/`
+  - 13.7.5-06 `crates/beava-bench/` + `beava-bench-v2/`
+  - 13.7.5-07 `python/beava/` (post-13.5-rewrite scrub)
+  - 13.7.5-08 `examples/{python,typescript,go}/`
+- Wave 2 — coverage matrix + gap fill:
+  - 13.7.5-09 coverage matrix CSV (feature × test-file × test-status); gap classification MUST-FIX vs DEFER
+  - 13.7.5-10 fill Rust gaps (per-crate)
+  - 13.7.5-11 fill Python gaps (extend `python/tests/v0/`)
+  - 13.7.5-12 cross-SDK conformance harness (same scenario across Python + TS + Go; assert agreement)
+- Wave 3 — closure:
+  - 13.7.5-13 SUMMARY + VERIFICATION + STATE/ROADMAP advance to Phase 13.8
+
+**Success criteria:**
+1. ~3000-8000 LOC of redundant comments removed across the codebase (net-negative LOC)
+2. `COVERAGE-MATRIX.md` exists at `.planning/phases/13.7.5-pre-oss-polish/` with one row per operator (53), wire endpoint (6), schema-evolution flag, CRUD verb, architectural invariant
+3. Every MUST-FIX gap has a corresponding test commit
+4. Cross-SDK conformance harness asserts Python/TS/Go produce identical per-entity outputs for ≥1 representative scenario
+5. `cargo test --workspace` + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo fmt --all --check` all pass
+6. `cd python && python -m pytest tests/v0` passes ≥80% of tests once engine is up (Phase 13.4) + SDK is up (Phase 13.5)
+
+**Estimated wall-clock:** 1-2 weeks with parallelism.
+
+---
+
 ### Phase 13.8: Packaging + GA tag — 📋 PLANNED 2026-05-03
 
-**Status:** Inserted 2026-05-03. Final phase — sequential after 13.4/13.5/13.6/13.7 all land.
+**Status:** Inserted 2026-05-03. Final phase — sequential after 13.4/13.5/13.6/13.7/13.7.5 all land.
 
 **Goal:** Cut v0.0.0 across all 4 repos and ship.
 
