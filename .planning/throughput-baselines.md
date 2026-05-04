@@ -1879,3 +1879,107 @@ Three-run spread (88,457 to 111,444 EPS) is ±21% — matches the historical fra
 
 - bench-v18 push fraud-team/tcp+msgpack ≥ 92,825 EPS (10% under post-12.9 103,139 EPS rounded mean) — Phase 13 ship-gate floor for the primary tuning bench. **Supersedes** the post-12.8 tentative floor of 66,237 EPS (which was based on noisy box-load measurements).
 - small/tcp regression-gate cell unchanged from post-12.8 (small pipeline doesn't exercise boxed variants).
+
+---
+
+## Phase 13.4 — Engine prep / wire-spec conformance — 8-cell throughput rebench (Apple-M4 / Darwin-24.3.0 / 10 cores)
+
+**Date:** 2026-05-04
+**Phase:** 13.4 (Plans 01-09 landed; closure plan 13.4-10 in progress)
+**HEAD at measurement:** `5e0be61` (post-Plan-13.4-09 — global-table sentinel routing per ADR-003)
+**hw-class:** Apple-M4 / Darwin-24.3.0 / 10 cores
+**Bench harness:** `target/release/beava-bench-v18` (rebuilt at HEAD; pre-13.4 binary timestamp was stale)
+**System load:** moderate (Cursor IDE + Claude Code SDK + bench process active in foreground; consistent with the Phase 12.6/12.7/12.8/12.9 measurement profile).
+
+**Configs (post-Plan-13.4-01 op renames):**
+
+`crates/beava-bench/configs/{small,medium,large,fraud-team}.json` — UPDATED in lockstep by Plan 13.4-01 to use Polars-style op names per ADR-002 (`avg→mean`, `variance→var`, `stddev→std`, `count_distinct→n_unique`, `percentile→quantile`). Bench shape unchanged; only op-string keys flipped at the JSON wire boundary. Auxiliary configs (`large-with-sketches.json`, `medium-with-sketches.json`, `large_phase9.json`) also renamed in lockstep per Rule 3 (workspace consistency).
+
+**Phase 13.4 net code change vs Phase 12.9:** ~800 LOC of mechanical wire-spec conformance. None touch `apply_event_to_aggregations` / per-event AggOp arithmetic / WAL apply ring. Plan 06's force/dry_run register flags add ~2-line classify-diff cost on register-time only (cold path for these throughput runs which register once + push 1M events).
+
+**Methodology (matches Phase 12.6/12.7/12.8/12.9 convention exactly):**
+`--total-events=1000000 --parallel=16 --pipeline-depth=1024 --continuous-pipeline=true
+--transport={tcp|http} --wire-format={msgpack|json} --blast-shape=zipfian --zipf-alpha=1.0
+--cardinality=10000 --isolation-mode --no-ledger`. HTTP cells use `--wire-format=json`
+(HTTP only supports JSON post-Phase-12.6 per project_redis_shaped_no_event_time_ever).
+TCP cells use `--wire-format=msgpack` (post-Plan-12-09 default).
+
+**Build:**
+```bash
+cargo build --release -p beava-bench --bin beava-bench-v18
+```
+Binary: `target/release/beava-bench-v18` (in-process ServerV18 — bench spawns server,
+registers pipeline, pre-warms, runs workload).
+
+### Push throughput matrix (8 cells)
+
+| Pipeline shape | Transport | EPS (Phase 13.4) | EPS (Phase 12.8/12.9 baseline) | Δ% | Verdict |
+|----------------|-----------|------------------:|-------------------------------:|----:|---------|
+| **small**      | **tcp**   | **730,116** (run 1; 2 runs: 730,116 / 720,898; mean 725,507) | 727,617 (12.8 mean of 2) | **−0.3% mean / −0.4% run-1** | **PASS (PRIMARY GATE — well within ±10% gate)** |
+| small          | http      | 76,265 (run 1; 2 runs: 76,265 / 73,158; mean 74,712) | 110,157 (12.8) | **−32.2%** | **WARN-INFORMATIONAL** (over 25% threshold but informational, NOT the gate cell per CLAUDE.md contract; flagged for v0.0.x investigation — see HTTP-transport regression note below) |
+| medium         | tcp       | 697,384 | 674,009 (12.8) | **+3.5%** | **PASS** (slight lift) |
+| medium         | http      | 80,358 | 112,043 (12.8) | **−28.3%** | **WARN-INFORMATIONAL** (same HTTP-transport regression pattern as small/http) |
+| large          | tcp       | 657,124 | 641,490 (12.8) | **+2.4%** | **PASS** (slight lift) |
+| large          | http      | 76,580 | 101,586 (12.8) | **−24.6%** | **WARN** (just under 25% threshold; same HTTP-transport regression pattern) |
+| fraud-team     | tcp       | 107,954 | 109,895 (12.9 median of 3 runs) | **−1.8%** | **PASS** (within ±10%; primary tuning-bench cell tracks 12.9 quiescent baseline) |
+| fraud-team     | http      | 48,275 | 35,634 (12.8) | **+35.5%** | **PASS** (substantial lift — likely 12.9 boxing cache-locality compounding on the rich-pipeline HTTP path) |
+
+### Regression check vs Phase 12.8/12.9 baselines
+
+| Cell | Pre-13.4 (12.8 or 12.9) | Post-13.4 | Δ% | Verdict |
+|---|---:|---:|---:|---|
+| **small/tcp EPS (PRIMARY GATE)** | 727,617 (12.8 mean) | **725,507** (mean of 2) / **730,116** (run 1) | **−0.3% mean / −0.4% run-1** | **PASS** (well within ±10% gate) |
+| small/http EPS | 110,157 (12.8) | 74,712 (mean of 2) | **−32.2%** | **WARN-INFORMATIONAL** (HTTP transport regression — see investigation note) |
+| medium/tcp EPS | 674,009 (12.8) | 697,384 | **+3.5%** | **PASS** (slight lift; recovers from Phase 12.8's −9.1% borderline) |
+| medium/http EPS | 112,043 (12.8) | 80,358 | **−28.3%** | **WARN-INFORMATIONAL** (HTTP transport regression — same pattern) |
+| large/tcp EPS | 641,490 (12.8) | 657,124 | **+2.4%** | **PASS** (slight lift; recovers from Phase 12.8's −8.7% borderline) |
+| large/http EPS | 101,586 (12.8) | 76,580 | **−24.6%** | **WARN** (HTTP transport regression — just under 25% block threshold) |
+| **fraud-team/tcp EPS (primary tuning bench)** | 109,895 (12.9 median of 3 runs) | 107,954 (single run) | **−1.8%** | **PASS** (within ±10% — primary tuning-bench cell holds the post-12.9 boxing lift) |
+| fraud-team/http EPS | 35,634 (12.8) | 48,275 | **+35.5%** | **PASS** (substantial lift; clears 12.8's WARN-INFORMATIONAL flag) |
+
+### Verdict thresholds (CLAUDE.md §Performance Discipline §End-to-end throughput regression contract)
+
+- **simple-fraud TCP** (small/tcp) <90% of prior baseline → WARN (must investigate before Phase 13)
+- **simple-fraud TCP** (small/tcp) <75% of prior baseline → BLOCK (phase verification fails)
+- All other cells: informational; no block threshold (per the contract, only the simple-fraud (small) shape's TCP cell is the gate).
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 13.4's small/tcp cell measured **−0.3% mean / −0.4% run-1** vs the Phase 12.8 mean baseline (725,507/730,116 vs 727,617). Comfortably within the ±10% gate, far from the 25% BLOCK threshold. **5 of 8 cells PASS** within ±10% of their respective baselines. **3 HTTP cells (small, medium, large) trip WARN/WARN-INFORMATIONAL** — they are explicitly **non-gating per CLAUDE.md** (only `small/tcp` is the gate). The fraud-team cells both PASS (tcp at -1.8% vs 12.9 quiescent baseline; http with a +35.5% LIFT vs 12.8's WARN-INFORMATIONAL baseline — a meaningful improvement).
+
+### HTTP-transport regression note (small/http, medium/http, large/http)
+
+Three of the four HTTP cells regress 24–32% vs Phase 12.8. Hypothesis space:
+
+1. **Phase 13.4 changed the verb-style HTTP route surface (Plan 04)** — adds `Route::Ping`, `Route::PushVerb`, `Route::PushSyncVerb`, `Route::BatchGet`, `Route::Reset` variants alongside the legacy `/push/:event_name` exact-match arms. The router is exact-match per-path; adding 5 extra arms shouldn't cost meaningfully. But the bench harness uses the legacy `/push/:event_name` route (verified in `crates/beava-bench/src/bin/beava-bench-v18.rs`); the path is unchanged at the wire layer.
+2. **Phase 13.4 dropped the `{"result": ...}` envelope from the GET response (Plan 02)** — read-only path; doesn't affect push-side throughput.
+3. **Phase 13.4 added the JSON-prelude shim for force/dry_run flags (Plan 06)** — register-time only; one register call per bench run, not per-event.
+4. **Box-load variance** — HTTP cells were already noisy in Phase 12.8 measurements; the small/http measurement variance was ±5% in Phase 12.8.
+5. **Most likely cause: parser overhead on the legacy `/push/:event_name` exact-match path** — the router added 5 new path-segment variants that the existing legacy match arms now have to NOT match. While this is exact-match strcmp, the JSON-prelude shim sequence in `apply_shard.rs::dispatch_one` for `WireRequest::HttpPush` may have grown by a few µs/event due to the additional 4 JSON-prelude validators.
+6. **Hot-path reset/dispatch arm growth** — `dispatch_one` match arm count grew by ~6 variants (TcpBatchGet, HttpBatchGet, TcpReset, HttpReset, HttpPing, HttpPushVerb, HttpPushSyncVerb). This is enum-discriminant branch prediction territory; each new variant in the match expression can affect mispredict rates by ~1-2%.
+
+This is **out-of-scope for Plan 13.4-10's gate verdict** (closure plan; non-gate cells are informational). It is a candidate Phase v0.0.x performance follow-up: re-run the 3 HTTP cells on a quieter box to firm up the magnitude (Apple-M4 + IDE + Claude Code SDK is a noisy measurement profile for HTTP because HTTP cells take 12-13 seconds wall-clock vs TCP's 1.4-1.5s — they're more exposed to load-variance).
+
+### Cells flagged for v0.0.x / Phase 13.5+ investigation
+
+| Cell | Δ% | Disposition |
+|---|---:|---|
+| small/http | −32.2% | **Primary investigation target** — HTTP-transport regression on the simplest pipeline shape suggests a JSON-prelude or apply_shard match-arm-overhead culprit. Phase 13.5/13.6 SDK plans should re-measure on a quieter box. |
+| medium/http | −28.3% | Same root cause as small/http (HTTP transport regression). |
+| large/http | −24.6% | Same root cause; just under 25% block threshold. |
+
+None of these cells reach BLOCK on the regression-gate cell (small/tcp — PASSED at -0.3% mean). Plan 13.4-10 verdict stands as **PASS** per CLAUDE.md §Performance Discipline contract.
+
+### What was NOT measured
+
+- **Hetzner Linux EPYC-Genoa baseline** — single-pass executor environment runs on Apple-M4 only. Future Phase 13.5+ ship-gate sweep should re-build on Hetzner and parallel the 8-cell matrix per the Phase 12.8 carry-forward note.
+- **3-run characterisation for fraud-team/tcp** — only 1 run captured (vs Phase 12.8/12.9's 3-run median). The single-run variance band on this cell is well-characterised at ±21–24% per the Phase 12.8 SUMMARY; the −1.8% delta is well inside that band, so a single run is sufficient for the PASS verdict.
+- **2-run runs on the 6 non-gate cells** — only the gate cell (small/tcp) and small/http (anomaly investigation) captured 2 runs. Other cells single-run; box-load-variance band assumption is the same ±5% as Phase 12.8/12.9.
+
+### Regression gates updated post-13.4 (Apple-M4)
+
+- bench-v18 push **small/tcp+msgpack ≥ 652,956 EPS** (10% under post-13.4 725,507 EPS mean) — Phase 13.5+ ship-gate floor for the regression-gate cell (or use run-1: 657,104 EPS at 10% under 730,116). **Supersedes** the post-12.8 floor of 654,855 EPS.
+- bench-v18 push **fraud-team/tcp+msgpack ≥ 97,159 EPS** (10% under post-13.4 107,954 EPS) — primary tuning-bench floor; **TENTATIVE** until a 3-run quiescent re-measurement on a clean box confirms. Does NOT supersede the post-12.9 floor of 92,825 EPS — the post-13.4 single-run is within the post-12.9 3-run band.
+- HTTP cells: do NOT promote new floors yet — investigate the 24-32% regression on a quieter box first.
+
+
