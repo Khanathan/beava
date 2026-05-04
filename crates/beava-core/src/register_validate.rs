@@ -415,9 +415,8 @@ pub enum OpLifetimeBound {
 pub fn lifetime_bound_for_op_str(op_str: &str) -> OpLifetimeBound {
     match op_str {
         // ── Phase 5 core: O(1) ─────────────────────────────────────────
-        "count" | "sum" | "avg" | "min" | "max" | "variance" | "stddev" | "ratio" => {
-            OpLifetimeBound::O1
-        }
+        // Phase 13.4-01 per ADR-002: avg→mean, variance→var, stddev→std.
+        "count" | "sum" | "mean" | "min" | "max" | "var" | "std" | "ratio" => OpLifetimeBound::O1,
         // ── Phase 8 single-element: O(1) ───────────────────────────────
         "first" | "last" => OpLifetimeBound::O1,
         // ── Phase 8 point/ordinal: BoundedByRequiredKwarg("n") ─────────
@@ -448,7 +447,8 @@ pub fn lifetime_bound_for_op_str(op_str: &str) -> OpLifetimeBound {
         // ── Phase 9 entity z-score: O(1) ───────────────────────────────
         "z_score" => OpLifetimeBound::O1,
         // ── Phase 10 sketches: BoundedSketch (fixed structural cap) ────
-        "count_distinct" | "percentile" | "bloom_member" => OpLifetimeBound::BoundedSketch,
+        // Phase 13.4-01 per ADR-002: count_distinct→n_unique, percentile→quantile.
+        "n_unique" | "quantile" | "bloom_member" => OpLifetimeBound::BoundedSketch,
         // ── Phase 10 entropy: BoundedByConfig("max_categories", 256) ───
         "entropy" => OpLifetimeBound::BoundedByConfig("max_categories", 256),
         // ── Phase 10 top_k: BoundedByConfig("k", 10) ───────────────────

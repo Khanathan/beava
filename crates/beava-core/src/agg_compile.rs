@@ -250,16 +250,16 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
 
 // ─── Kind parsing ──────────────────────────────────────────────────────────────
 
-fn parse_agg_kind(op: &str) -> Option<AggKind> {
+pub fn parse_agg_kind(op: &str) -> Option<AggKind> {
     match op {
-        // Phase 5 core
+        // Phase 5 core (Phase 13.4-01: avg→mean, variance→var, stddev→std per ADR-002)
         "count" => Some(AggKind::Count),
         "sum" => Some(AggKind::Sum),
-        "avg" => Some(AggKind::Avg),
+        "mean" => Some(AggKind::Avg),
         "min" => Some(AggKind::Min),
         "max" => Some(AggKind::Max),
-        "variance" => Some(AggKind::Variance),
-        "stddev" => Some(AggKind::StdDev),
+        "var" => Some(AggKind::Variance),
+        "std" => Some(AggKind::StdDev),
         "ratio" => Some(AggKind::Ratio),
         // Phase 8 — point/ordinal
         "first" => Some(AggKind::First),
@@ -298,9 +298,10 @@ fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "value_change_count" => Some(AggKind::ValueChangeCount),
         // Phase 9 z-score
         "z_score" => Some(AggKind::ZScore),
-        // Plan 10-05: 5 sketch ops.
-        "count_distinct" => Some(AggKind::CountDistinct),
-        "percentile" => Some(AggKind::Percentile),
+        // Plan 10-05: 5 sketch ops. (Phase 13.4-01: count_distinct→n_unique,
+        // percentile→quantile per ADR-002.)
+        "n_unique" => Some(AggKind::CountDistinct),
+        "quantile" => Some(AggKind::Percentile),
         "top_k" => Some(AggKind::TopK),
         "bloom_member" => Some(AggKind::BloomMember),
         "entropy" => Some(AggKind::Entropy),
@@ -503,7 +504,7 @@ pub fn compile_aggregations_from_nodes(
                             path: format!("nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.op"),
                             reason: format!(
                                 "unknown aggregation op '{}'; valid ops are: \
-                                 count, sum, avg, min, max, variance, stddev, ratio, \
+                                 count, sum, mean, min, max, var, std, ratio, \
                                  first, last, first_n, last_n, lag, \
                                  first_seen, last_seen, age, has_seen, time_since, \
                                  time_since_last_n, streak, max_streak, negative_streak, \
@@ -1429,13 +1430,15 @@ mod tests {
 
     #[test]
     fn rule11_count_distinct_op_name_recognized() {
+        // Phase 13.4-01 per ADR-002: count_distinct → n_unique. Test name kept
+        // for git-blame continuity; fixture uses the new wire name.
         let nodes = vec![
             sketch_event_node(),
             group_by_derivation(
                 "Agg",
                 "Txn",
                 vec!["user_id"],
-                serde_json::json!({"d": {"op": "count_distinct", "params": {"field": "merchant_id", "window": "1h"}}}),
+                serde_json::json!({"d": {"op": "n_unique", "params": {"field": "merchant_id", "window": "1h"}}}),
             ),
         ];
         let (compiled, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
@@ -1445,13 +1448,15 @@ mod tests {
 
     #[test]
     fn rule11_percentile_op_name_recognized_with_q() {
+        // Phase 13.4-01 per ADR-002: percentile → quantile. Test name kept
+        // for git-blame continuity; fixture uses the new wire name.
         let nodes = vec![
             sketch_event_node(),
             group_by_derivation(
                 "Agg",
                 "Txn",
                 vec!["user_id"],
-                serde_json::json!({"p": {"op": "percentile", "params": {"field": "amount", "q": 0.99}}}),
+                serde_json::json!({"p": {"op": "quantile", "params": {"field": "amount", "q": 0.99}}}),
             ),
         ];
         let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
@@ -1460,13 +1465,15 @@ mod tests {
 
     #[test]
     fn rule11_percentile_q_out_of_range_rejected() {
+        // Phase 13.4-01 per ADR-002: percentile → quantile. Test name kept
+        // for git-blame continuity; fixture uses the new wire name.
         let nodes = vec![
             sketch_event_node(),
             group_by_derivation(
                 "Agg",
                 "Txn",
                 vec!["user_id"],
-                serde_json::json!({"p": {"op": "percentile", "params": {"field": "amount", "q": 1.5}}}),
+                serde_json::json!({"p": {"op": "quantile", "params": {"field": "amount", "q": 1.5}}}),
             ),
         ];
         let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());

@@ -29,17 +29,17 @@
             "agg": {
               "cnt":         { "op": "count",    "params": {} },
               "sum_amt":     { "op": "sum",      "params": { "field": "amount" } },
-              "avg_amt":     { "op": "avg",      "params": { "field": "amount" } },
+              "avg_amt":     { "op": "mean",      "params": { "field": "amount" } },
               "min_amt":     { "op": "min",      "params": { "field": "amount" } },
               "max_amt":     { "op": "max",      "params": { "field": "amount" } },
-              "var_amt":     { "op": "variance", "params": { "field": "amount" } },
-              "std_amt":     { "op": "stddev",   "params": { "field": "amount" } },
+              "var_amt":     { "op": "var", "params": { "field": "amount" } },
+              "std_amt":     { "op": "std",   "params": { "field": "amount" } },
               "sum_fee":     { "op": "sum",      "params": { "field": "fee" } },
-              "avg_fee":     { "op": "avg",      "params": { "field": "fee" } },
+              "avg_fee":     { "op": "mean",      "params": { "field": "fee" } },
               "min_fee":     { "op": "min",      "params": { "field": "fee" } },
               "max_fee":     { "op": "max",      "params": { "field": "fee" } },
               "sum_score":   { "op": "sum",      "params": { "field": "score" } },
-              "avg_score":   { "op": "avg",      "params": { "field": "score" } },
+              "avg_score":   { "op": "mean",      "params": { "field": "score" } },
               "min_score":   { "op": "min",      "params": { "field": "score" } },
               "max_score":   { "op": "max",      "params": { "field": "score" } }
             }

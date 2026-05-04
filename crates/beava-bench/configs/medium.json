@@ -27,7 +27,7 @@
             "agg": {
               "cnt":     { "op": "count",   "params": {} },
               "sum_amt": { "op": "sum",     "params": { "field": "amount" } },
-              "avg_amt": { "op": "avg",     "params": { "field": "amount" } },
+              "avg_amt": { "op": "mean",     "params": { "field": "amount" } },
               "min_amt": { "op": "min",     "params": { "field": "amount" } },
               "max_amt": { "op": "max",     "params": { "field": "amount" } }
             }

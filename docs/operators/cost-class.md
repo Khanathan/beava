@@ -46,11 +46,11 @@ this catalogue (per plan resolution). 45 - 2 Tier 2 - 5 Tier 3 = **38 Tier 1 ops
 |---|---|---|---|---|
 | `bv.count` | Phase 5 / core | 5 ns | 25 ns | Pure `n += 1`. Trace overhead today is wrapping (~270 ns), not the algorithm. |
 | `bv.sum` | Phase 5 / core | 8 ns | 25 ns | `total += v; n += 1`. |
-| `bv.avg` | Phase 5 / core | 8 ns | 25 ns | Running sum + count; query divides. |
+| `bv.mean` | Phase 5 / core | 8 ns | 25 ns | Running sum + count; query divides. Previously called `avg` (renamed in ADR-002, Phase 13.4-01). |
 | `bv.min` | Phase 5 / core | 10 ns | 30 ns | Compare + Value clone on string keys. |
 | `bv.max` | Phase 5 / core | 10 ns | 30 ns | Mirror of min. |
-| `bv.variance` | Phase 5 / core | 12 ns | 32 ns | Welford online second-moment (5 FP ops). |
-| `bv.stddev` | Phase 5 / core | 12 ns | 32 ns | Same state as variance; sqrt deferred to query. |
+| `bv.var` | Phase 5 / core | 12 ns | 32 ns | Welford online second-moment (5 FP ops). Previously called `variance` (renamed in ADR-002, Phase 13.4-01). |
+| `bv.std` | Phase 5 / core | 12 ns | 32 ns | Same state as `var`; sqrt deferred to query. Previously called `stddev` (renamed in ADR-002, Phase 13.4-01). |
 | `bv.ratio` | Phase 5 / core | 5 ns | 25 ns | `total += 1; if cond: matching += 1`. |
 | `bv.first` | Phase 8 / point | 5 ns | 25 ns | Early-exit once `current.is_some()`. |
 | `bv.last` | Phase 8 / point | 8 ns | 30 ns | Single Value clone per accepted event. |
@@ -95,11 +95,11 @@ hashing, sqrt, haversine geometry, or small bounded data-structure access.
 | Op | Family | Algo floor | Post-19.2 expected | Notes |
 |---|---|---|---|---|
 | `bv.outlier_count` | Phase 9 / velocity | 22 ns | 42 ns | Welford + 1 sqrt per event. The sqrt is the irreducible Tier 2 cost (no path eliminates it). |
-| `bv.count_distinct` | Phase 10 / sketch | 18-80 ns | 50-130 ns | Mode-dependent: HLL (~18 ns algo, ~80 ns post-wrapping-fix), HashSet (~80 ns), ExactArray (~12 ns). Runtime mode selection; API is uniform. HLL mode applies after 1024 distinct values. |
+| `bv.n_unique` | Phase 10 / sketch | 18-80 ns | 50-130 ns | Mode-dependent: HLL (~18 ns algo, ~80 ns post-wrapping-fix), HashSet (~80 ns), ExactArray (~12 ns). Runtime mode selection; API is uniform. HLL mode applies after 1024 distinct values. Previously called `count_distinct` (renamed in ADR-002, Phase 13.4-01). |
 | `bv.bloom_member` | Phase 10 / sketch | 35 ns | 70 ns | 7 hashes x 7 bit-sets (k=7 for fpr=0.01). Fixed k regardless of entity history. |
 | `bv.geo_velocity` | Phase 11 / geo | 20 ns | 45 ns | Two scalar reads + haversine (sin/cos/sqrt of two trig identities). |
 | `bv.geo_distance` | Phase 11 / geo | 18 ns | 42 ns | Same haversine floor as geo_velocity; simpler accumulation step. |
-| `bv.percentile` (Exact mode) | Phase 10 / sketch | 8 ns | 35 ns | **Dual-mode:** Exact mode (up to 256 events) is Tier 2. After UDDSketch promotion the op moves to Tier 3 (see below). Fraud pipelines with low-cardinality entity keys often stay in Exact mode and see Tier 2 costs throughout production lifetime. |
+| `bv.quantile` (Exact mode) | Phase 10 / sketch | 8 ns | 35 ns | **Dual-mode:** Exact mode (up to 256 events) is Tier 2. After UDDSketch promotion the op moves to Tier 3 (see below). Fraud pipelines with low-cardinality entity keys often stay in Exact mode and see Tier 2 costs throughout production lifetime. Previously called `percentile` (renamed in ADR-002, Phase 13.4-01). |
 
 ---
 
@@ -111,7 +111,7 @@ algorithmic floor IS what delivers correctness guarantees — no template change
 
 | Op | Family | Algo floor | Post-19.2 expected | Notes |
 |---|---|---|---|---|
-| `bv.percentile` (UDDSketch mode) | Phase 10 / sketch | 130 ns | 180 ns | BTreeMap log2(2048) ~11-level walk + entry update + occasional collapse. Plan 19.2-04 replaces BTreeMap with flat sorted Vec; new projected floor ~75 ns. Kicks in after Exact-mode promotion (>256 distinct values). |
+| `bv.quantile` (UDDSketch mode) | Phase 10 / sketch | 130 ns | 180 ns | BTreeMap log2(2048) ~11-level walk + entry update + occasional collapse. Plan 19.2-04 replaces BTreeMap with flat sorted Vec; new projected floor ~75 ns. Kicks in after Exact-mode promotion (>256 distinct values). Previously called `percentile` (renamed in ADR-002, Phase 13.4-01). |
 | `bv.top_k` | Phase 10 / sketch | 250 ns | 300 ns | Hybrid mode: CMS 4-row hash updates + heap log-k sift via HashMap side-index. Exact mode (<=1024 distinct) is ~95 ns. Default mode is Hybrid for large-k or high-cardinality fraud pipelines. |
 | `bv.entropy` | Phase 10 / sketch | 60 ns | 160 ns | BTreeMap key insert + cap-and-drop when full (max_categories=1024 default, Plan 19.2-06 D-05a). String-key allocation is irreducible. BTreeMap walk is log(min(distinct, 1024)). |
 | `bv.event_type_mix` | Phase 11 / buffer | 70 ns | 150 ns | BTreeMap on String key + AHashSet allowlist check (O(1) post-Plan-19.2-05 fix from Vec linear scan). Pre-fix trace: 1,127 ns/call. Post-fix floor: ~100-150 ns (BTreeMap key insert irreducible). |
@@ -143,7 +143,7 @@ lines 13-15 + 177: Tier 1 = 38, Tier 2 = 8, Tier 3 = 9, Total = 55. `bv.unique_c
 
 | Removed op | Replacement recipe | Tier | Notes |
 |---|---|---|---|
-| `bv.unique_cells` | `bv.count_distinct(quadkey(lat, lon, zoom))` | 2 (HLL post-promotion) | Bounded memory; +-1.6% error at HLL threshold. Use `count_distinct` for cardinality; the quadkey expression computes a deterministic integer cell id at apply time. |
+| `bv.unique_cells` | `bv.n_unique(quadkey(lat, lon, zoom))` | 2 (HLL post-promotion) | Bounded memory; +-1.6% error at HLL threshold. Use `n_unique` for cardinality; the quadkey expression computes a deterministic integer cell id at apply time. (Op was renamed from `count_distinct` to `n_unique` in ADR-002, Phase 13.4-01.) |
 | `bv.geo_entropy` | `bv.entropy(quadkey(lat, lon, zoom))` | 3 (BTreeMap + key insert) | Default `max_categories=1024` (Plan 19.2-06 D-05a). For high-mobility entities consider a lower cap to bound per-entity memory. |
 
 Both replacements are direct drop-ins: the `quadkey(lat, lon, zoom)` expression (Phase 4

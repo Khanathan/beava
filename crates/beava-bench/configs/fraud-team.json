@@ -150,7 +150,7 @@
                 }
               },
               "avg_amount_24h": {
-                "op": "avg",
+                "op": "mean",
                 "params": {
                   "field": "amount",
                   "window": "24h"
@@ -170,21 +170,21 @@
                 }
               },
               "var_amount_24h": {
-                "op": "variance",
+                "op": "var",
                 "params": {
                   "field": "amount",
                   "window": "24h"
                 }
               },
               "std_amount_24h": {
-                "op": "stddev",
+                "op": "std",
                 "params": {
                   "field": "amount",
                   "window": "24h"
                 }
               },
               "p99_amount_24h": {
-                "op": "percentile",
+                "op": "quantile",
                 "params": {
                   "field": "amount",
                   "q": 0.99,
@@ -192,7 +192,7 @@
                 }
               },
               "p50_amount_24h": {
-                "op": "percentile",
+                "op": "quantile",
                 "params": {
                   "field": "amount",
                   "q": 0.5,
@@ -200,21 +200,21 @@
                 }
               },
               "merchants_distinct_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "merchant_id",
                   "window": "24h"
                 }
               },
               "countries_distinct_7d": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "card_country",
                   "window": "7d"
                 }
               },
               "ips_distinct_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "ip_address",
                   "window": "24h"
@@ -423,7 +423,7 @@
                 }
               },
               "amount_p95_24h": {
-                "op": "percentile",
+                "op": "quantile",
                 "params": {
                   "field": "amount",
                   "q": 0.95,
@@ -486,7 +486,7 @@
                 }
               },
               "unique_cells_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "expr": "quadkey(lat, lon, 7)"
                 }
@@ -633,7 +633,7 @@
                 "params": {}
               },
               "merchants_per_card_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "merchant_id",
                   "window": "24h"
@@ -675,14 +675,14 @@
             ],
             "agg": {
               "users_per_device_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "user_id",
                   "window": "24h"
                 }
               },
               "cards_per_device_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "card_fp",
                   "window": "24h"
@@ -752,14 +752,14 @@
                 }
               },
               "cards_per_ip_1h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "card_fp",
                   "window": "1h"
                 }
               },
               "users_per_ip_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "user_id",
                   "window": "24h"
@@ -830,14 +830,14 @@
                 }
               },
               "users_per_merchant_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "user_id",
                   "window": "24h"
                 }
               },
               "merchant_amount_p99_24h": {
-                "op": "percentile",
+                "op": "quantile",
                 "params": {
                   "field": "amount",
                   "q": 0.99,
@@ -892,14 +892,14 @@
                 }
               },
               "ips_distinct_login_1h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "ip_address",
                   "window": "1h"
                 }
               },
               "uas_distinct_login_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "user_agent",
                   "window": "24h"
@@ -975,14 +975,14 @@
                 }
               },
               "ssn_reuse_per_ip_30d": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "ssn_hash",
                   "window": "30d"
                 }
               },
               "emails_per_ip_24h": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "email",
                   "window": "24h"
@@ -1026,7 +1026,7 @@
                 }
               },
               "cards_per_device_lifetime": {
-                "op": "count_distinct",
+                "op": "n_unique",
                 "params": {
                   "field": "card_fp"
                 }

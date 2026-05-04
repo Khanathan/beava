@@ -72,14 +72,14 @@ fn payload_with_op(
 fn every_aggkind_has_classified_bound() {
     // Sourced from `parse_agg_kind` in agg_compile.rs — every match-arm op-string.
     let all_op_strings: &[&str] = &[
-        // Phase 5 core (8)
+        // Phase 5 core (8) — Phase 13.4-01 per ADR-002: avg→mean, variance→var, stddev→std.
         "count",
         "sum",
-        "avg",
+        "mean",
         "min",
         "max",
-        "variance",
-        "stddev",
+        "var",
+        "std",
         "ratio",
         // Phase 8 point/ordinal (5)
         "first",
@@ -119,9 +119,9 @@ fn every_aggkind_has_classified_bound() {
         "value_change_count",
         // Phase 9 z-score (1)
         "z_score",
-        // Phase 10 sketches (5)
-        "count_distinct",
-        "percentile",
+        // Phase 10 sketches (5) — Phase 13.4-01 per ADR-002: count_distinct→n_unique, percentile→quantile.
+        "n_unique",
+        "quantile",
         "top_k",
         "bloom_member",
         "entropy",
@@ -185,9 +185,10 @@ fn count_classifies_as_o1() {
 }
 
 #[test]
-fn count_distinct_classifies_as_bounded_sketch() {
+fn n_unique_classifies_as_bounded_sketch() {
+    // Phase 13.4-01 per ADR-002: count_distinct → n_unique.
     assert_eq!(
-        lifetime_bound_for_op_str("count_distinct"),
+        lifetime_bound_for_op_str("n_unique"),
         OpLifetimeBound::BoundedSketch
     );
 }

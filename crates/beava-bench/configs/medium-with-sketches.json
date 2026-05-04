@@ -28,11 +28,11 @@
             "agg": {
               "cnt":     { "op": "count",   "params": {} },
               "sum_amt": { "op": "sum",     "params": { "field": "amount" } },
-              "avg_amt": { "op": "avg",     "params": { "field": "amount" } },
+              "avg_amt": { "op": "mean",     "params": { "field": "amount" } },
               "min_amt": { "op": "min",     "params": { "field": "amount" } },
               "max_amt": { "op": "max",     "params": { "field": "amount" } },
-              "merchants_distinct_1h": { "op": "count_distinct", "params": { "field": "merchant_id", "window": "1h" } },
-              "amount_p99_1h":          { "op": "percentile",     "params": { "field": "amount", "q": 0.99, "window": "1h" } }
+              "merchants_distinct_1h": { "op": "n_unique", "params": { "field": "merchant_id", "window": "1h" } },
+              "amount_p99_1h":          { "op": "quantile",     "params": { "field": "amount", "q": 0.99, "window": "1h" } }
             }
           }
         ],
