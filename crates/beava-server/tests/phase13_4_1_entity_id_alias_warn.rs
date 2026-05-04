@@ -209,6 +209,7 @@ fn active_sink() -> Option<Arc<Mutex<Vec<u8>>>> {
     ACTIVE_SINK.get().and_then(|m| m.lock().unwrap().clone())
 }
 
+#[allow(clippy::type_complexity)]
 static ACTIVE_SINK: OnceLock<Mutex<Option<Arc<Mutex<Vec<u8>>>>>> = OnceLock::new();
 static SUBSCRIBER_INSTALLED: OnceLock<()> = OnceLock::new();
 
@@ -258,8 +259,16 @@ fn captured_logs(capture: &Arc<Mutex<Vec<u8>>>) -> String {
 }
 
 // ─── Test 1 — D-04 alias path: legacy `entity_id` deserialises + flat row ───
+//
+// All four tests share the `serial(warn_capture)` lock because the global
+// tracing subscriber routes every WARN to the currently-active capture sink.
+// If Test 1 (which sends `entity_id`) ran in parallel with Test 4 (which
+// asserts no alias-WARN was captured), Test 1's WARN would bleed into Test
+// 4's sink. Serialising all four tests under the same lock prevents this —
+// at any point in time only one test "owns" the capture sink.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial(warn_capture)]
 async fn phase13_4_1_alias_entity_id_deserializes() {
     let ts = TestServer::spawn().await.expect("spawn");
     register(&ts).await;
@@ -330,6 +339,7 @@ async fn phase13_4_1_alias_entity_id_deserializes() {
 // ─── Test 2 — D-04 canonical path: `key` deserialises + flat row ───────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial(warn_capture)]
 async fn phase13_4_1_canonical_key_deserializes() {
     let ts = TestServer::spawn().await.expect("spawn");
     register(&ts).await;
@@ -397,10 +407,8 @@ async fn phase13_4_1_canonical_key_deserializes() {
 
 // ─── Test 3 — D-04 WARN log emitted on alias use ───────────────────────────
 //
-// `#[serial_test::serial(warn_capture)]` because Tests 3 and 4 share a
-// process-global tracing subscriber + active sink (see capture-mechanism note
-// above). Without serialisation, both tests would race on `ACTIVE_SINK` and
-// see each other's WARN events.
+// `#[serial_test::serial(warn_capture)]` — all four tests in this file share
+// this lock. See the comment on Test 1 for the parallel-pollution rationale.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial(warn_capture)]

@@ -181,10 +181,7 @@ async fn http_batch_get_returns_per_tuple_results() {
         results[0].get("features").is_none(),
         "flat row must NOT carry `features` envelope field, got: {body:#}"
     );
-    assert_eq!(
-        results[0]["cnt"], 2,
-        "alice cnt=2, got: {body:#}"
-    );
+    assert_eq!(results[0]["cnt"], 2, "alice cnt=2, got: {body:#}");
     let alice_total = results[0]["total"]
         .as_f64()
         .unwrap_or_else(|| panic!("alice total must be number, got: {body:#}"));

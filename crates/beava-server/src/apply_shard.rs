@@ -478,19 +478,12 @@ impl ApplyShard {
                     Err(parse_err) => {
                         // Plan 13.4.1 D-05 — attempt legacy-shape detection.
                         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
-                            let is_legacy_2d = value
-                                .get("keys")
-                                .map(|v| v.is_array())
-                                .unwrap_or(false)
-                                && value
-                                    .get("features")
-                                    .map(|v| v.is_array())
-                                    .unwrap_or(false);
-                            let is_legacy_single = value
-                                .get("feature")
-                                .map(|v| v.is_string())
-                                .unwrap_or(false)
-                                && value.get("key").map(|v| v.is_string()).unwrap_or(false);
+                            let is_legacy_2d =
+                                value.get("keys").map(|v| v.is_array()).unwrap_or(false)
+                                    && value.get("features").map(|v| v.is_array()).unwrap_or(false);
+                            let is_legacy_single =
+                                value.get("feature").map(|v| v.is_string()).unwrap_or(false)
+                                    && value.get("key").map(|v| v.is_string()).unwrap_or(false);
                             if is_legacy_2d || is_legacy_single {
                                 let hint = "POST /get expects {table, key, features?}; received legacy {keys, features} shape — see docs/http-api.md#post-get".to_string();
                                 return GlueResponse::UnsupportedRequestShape { hint };
@@ -544,15 +537,10 @@ impl ApplyShard {
                                     .get("keys")
                                     .map(|v| v.is_array())
                                     .unwrap_or(false)
-                                    && value
-                                        .get("features")
-                                        .map(|v| v.is_array())
-                                        .unwrap_or(false);
-                                let is_legacy_single = value
-                                    .get("feature")
-                                    .map(|v| v.is_string())
-                                    .unwrap_or(false)
-                                    && value.get("key").map(|v| v.is_string()).unwrap_or(false);
+                                    && value.get("features").map(|v| v.is_array()).unwrap_or(false);
+                                let is_legacy_single =
+                                    value.get("feature").map(|v| v.is_string()).unwrap_or(false)
+                                        && value.get("key").map(|v| v.is_string()).unwrap_or(false);
                                 if is_legacy_2d || is_legacy_single {
                                     let hint = "OP_GET expects {table, key, features?}; received legacy {keys, features} or {feature, key} shape — see docs/wire-spec.md#op_get-0x0020".to_string();
                                     return GlueResponse::UnsupportedRequestShape { hint };
