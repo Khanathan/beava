@@ -350,7 +350,7 @@ class HttpTransport(Transport):
             "use tcp:// transport for ping"
         )
 
-    def http_get_single(self, feature: str, key: str) -> object:
+    def _http_get_single(self, feature: str, key: str) -> object:
         """Plan 12-09: GET /get/{feature}/{key} → returns the unwrapped value.
 
         HTTP /get is JSON-only per locked decision D-D — regardless of whether
@@ -636,7 +636,7 @@ class TcpTransport(Transport):
         result: dict[str, object] = json.loads(frame.payload.decode("utf-8"))
         return result
 
-    def tcp_get_single(
+    def _tcp_get_single(
         self,
         feature: str,
         key: str,
@@ -806,15 +806,15 @@ class EmbedTransport(Transport):
     def send_ping(self) -> dict:  # type: ignore[type-arg]
         return self._tcp.send_ping()
 
-    def tcp_get_single(
+    def _tcp_get_single(
         self,
         feature: str,
         key: str,
         *,
         wire_format: str = "msgpack",
     ) -> object:
-        """Delegate to the embedded TcpTransport (Plan 12-09)."""
-        return self._tcp.tcp_get_single(feature, key, wire_format=wire_format)
+        """Delegate to the embedded TcpTransport (Plan 12-09; private per D-04)."""
+        return self._tcp._tcp_get_single(feature, key, wire_format=wire_format)
 
     def close(self) -> None:
         """Close the TCP socket then terminate the embedded server process."""
