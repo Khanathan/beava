@@ -1,0 +1,64 @@
+[
+  {
+    "kind": "event",
+    "name": "Impression",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "campaign_id",
+        "type": "str"
+      },
+      {
+        "name": "page",
+        "type": "str"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "kind": "event",
+    "name": "Click",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "campaign_id",
+        "type": "str"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "kind": "event",
+    "name": "Conversion",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "campaign_id",
+        "type": "str"
+      },
+      {
+        "name": "value",
+        "type": "float"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "kind": "event",
+    "name": "Txn",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "amount",
+        "type": "float"
+      },
+      {
+        "name": "merchant",
+        "type": "str"
+      },
+      {
+        "name": "ip",
+        "type": "str"
+      },
+      {
+        "name": "lat",
+        "type": "float"
+      },
+      {
+        "name": "lon",
+        "type": "float"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "kind": "event",
+    "name": "Login",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "ip",
+        "type": "str"
+      },
+      {
+        "name": "device_id",
+        "type": "str"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  }
+]
