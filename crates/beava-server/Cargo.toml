@@ -202,6 +202,22 @@ path = "tests/phase12_6_legacy_axum_killed.rs"
 name = "phase12_6_mio_only_dataplane"
 path = "tests/phase12_6_mio_only_dataplane.rs"
 
+# ─── Plan 13.4-08 — OP_RESET test_mode gate (D-03) ───────────────────────────
+[[test]]
+name = "phase13_4_reset_gated_env_var"
+path = "tests/phase13_4_reset_gated_env_var.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase13_4_reset_gated_programmatic"
+path = "tests/phase13_4_reset_gated_programmatic.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "phase13_4_reset_default_rejected"
+path = "tests/phase13_4_reset_default_rejected.rs"
+required-features = ["testing"]
+
 [lib]
 name = "beava_server"
 path = "src/lib.rs"
@@ -254,6 +270,9 @@ http-body-util = { workspace = true }
 serde_json = { workspace = true }
 libc = { workspace = true }
 criterion = { workspace = true }
+# Plan 13.4-08 (D-03): serialise env-var-mutating tests in
+# `phase13_4_reset_gated_*` since `std::env::set_var` is process-global.
+serial_test = "3"
 
 [[bench]]
 name = "phase25_wire"
