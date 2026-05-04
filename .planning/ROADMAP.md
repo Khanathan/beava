@@ -58,8 +58,8 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 13.6 | **TypeScript + Go SDKs** (communicate-only, post-rescope) | `@beava/sdk` ESM-only npm package (TS, ~600 LOC) + `github.com/beava-dev/beava/sdk/go` Go module (~600 LOC). Both communicate-only: push events + register schema (JSON pass-through, no DSL) + get/batch_get features. Pipeline DSL stays Python-only. Cross-SDK conformance via single Python orchestrator. | ~8 | ✅ **COMPLETED 2026-05-04 (PASS)** — 8 plans / 35 commits / TS 19/19 + 1 skip + Go all + 1 skip. Conformance harness scaffolded but currently SKIPS (payload sends top-level `kind:"table"` instead of derivation `output_kind=table` — test-design bug, non-blocking, v0.0.x). SUMMARY at `.planning/phases/13.6-typescript-go-sdks/`. |
 | 13.7 | **Docs site (beava.dev)** | Integrate Phase 13.0 spec docs into existing `beava-website/` (NOT new MkDocs spin-up) via Markdown→HTML converter. Reuse existing `beava-design-system/` tokens. Pagefind search. Cloudflare Pages deploy. Quickstart polish + operator catalog + wire spec reference. Vertical guides DEFERRED to user-authored interactive follow-up (v0.1+). | ~4 | ✅ **COMPLETED 2026-05-04 (PASS)** — 4 plans / 4 commits / 86 docs pages / 93 Pagefind fragments / 0 broken links (4570 OK). Plan-vs-reality mismatch: PLANs referenced React infra that didn't exist; agent built static-HTML + Pagefind from scratch. **MANUAL**: Cloudflare Pages dashboard auth + DNS for beava.dev (one-time; documented in beava-website/README.md § Deploy). SUMMARY at `.planning/phases/13.7-docs-site-beava-dev/`. |
 | 13.5.1 | **Phase 13.5 fix-up: finish Transport impl + decorator hardening** (NEW — inserted 2026-05-04) | Surfaced by Phase 13.5 Plan 11. `HttpTransport`/`TcpTransport`/`EmbedTransport` `send_push`/`send_get`/`send_batch_get`/`send_reset` are stubbed to `NotImplementedError` at the `Transport` base class — Plans 02-07 shipped types + decorators but transport impl was TODO. mypy passed via MagicMock so 0/68 v0 acceptance tests didn't surface during 13.5 execution. Phase 13.5.1 wires up real transport impls against the Phase 13.4 wire surface (verb-style POST routes, OP_PUSH/OP_GET/OP_BATCH_GET/OP_RESET, force/dry_run register flags, flat-dict GET response, sentinel routing for global tables). Also hardens `@bv.table` empty-parameter-annotation (currently raises AttributeError). Greens up the 68 v0 acceptance tests. **BLOCKS 13.8 GA.** | ~3 | 📋 **PROPOSED 2026-05-04** — ~2-3 days estimate; needs `/gsd-discuss-phase 13.5.1` to lock scope |
-| 13.7.5 | **Pre-OSS polish — comment audit + test coverage** | Two workstreams: (A) component-by-component comment audit removing AI-slop / restating-the-obvious comments per CLAUDE.md heuristic ("default to no comments; only add when WHY is non-obvious"); (B) test coverage audit producing a feature × test-status matrix, classifying each gap MUST-FIX vs DEFER, and filling MUST-FIX gaps. Outcome: code that reads as engineered (not generated) and a comprehensive test inventory before the v0 GA tag. | ~13 | 📋 **PLANNED 2026-05-03** — captured at `.planning/ideas/phase-13.7.5-pre-oss-polish.md`; 13 plans across 2 workstreams; ~1-2 weeks |
-| 13.7.6 | **Pre-OSS security + commit-path sanitization + public-facing files** (NEW — inserted 2026-05-04) | Four workstreams: (C) security audit + lint sweep — `cargo clippy -D warnings`, `cargo audit`, `cargo deny`, `mypy --strict`, `tsc --noEmit`, `go vet`, OWASP Top-10 review via `/cso` skill, threat-model ASVS-L1 narrative, secrets sweep (`git secrets`, `trufflehog`); (D) commit-path sanitization — strip `Co-Authored-By: Claude` trailers from ~30+ historical commits, strip `🤖 Generated with Claude Code` markers, decide history shape (squash vs filter-repo `.planning/`), strip stale worktree branches, branch rename `v2/greenfield → main`, optional repo rename `tally → beava`; (E) public-facing files — LICENSE (Apache-2.0), README, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, CHANGELOG, .gitignore audit, GitHub issue/PR templates, optional public CI workflow; (F) closure. **BLOCKS 13.8 GA.** | ~24 | 📋 **PROPOSED 2026-05-04** — captured at `.planning/ideas/phase-13.7.6-pre-oss-security-and-commit-path.md`; ~3-5 days; needs `/gsd-discuss-phase 13.7.6` to lock D-01 (history shape) + D-04 detail (subject rewrite scope) + repo rename + author email |
+| 13.7.5 | **Pre-OSS polish — comment audit + test coverage** | Two workstreams: (A) component-by-component comment audit removing AI-slop / restating-the-obvious comments per CLAUDE.md heuristic ("default to no comments; only add when WHY is non-obvious"); (B) test coverage audit producing a feature × test-status matrix, classifying each gap MUST-FIX vs DEFER, and filling MUST-FIX gaps. Outcome: code that reads as engineered (not generated) and a comprehensive test inventory before the v0 GA tag. | 12 | 📋 **PLANS DRAFTED 2026-05-04** — 12 plans across 4 waves (1 conventions doc + 7 component audits parallel + 1 matrix + 2 gap-fills + 1 closure); cross-SDK conformance plan dropped to v0.1+ per D-03; `/gsd-execute-phase 13.7.5` to ship; **Plan 07 (python/beava/) sequencing-gated on 13.5.1 closure** |
+| 13.7.6 | **Pre-OSS security + commit-path sanitization + public-facing files** (NEW — inserted 2026-05-04) | Four workstreams: (C) security audit + lint sweep — `cargo clippy -D warnings`, `cargo audit`, `cargo deny`, `mypy --strict`, `tsc --noEmit`, `go vet`, OWASP Top-10 review via `/cso` skill, threat-model ASVS-L1 narrative, secrets sweep (`gitleaks`, `trufflehog`, `git secrets`); (D) commit-path sanitization — strip `Co-Authored-By: Claude` trailers via `git filter-repo` trailer-only callback, strip `🤖 Generated with Claude Code` markers, strip `.planning/` + `CLAUDE.md` + `.claude/` from history, strip stale worktree branches, branch rename `v2/greenfield → main`, repo rename `tally → beava` under `beava-dev` org; (E) public-facing files — LICENSE (Apache-2.0), README, CONTRIBUTING, SECURITY, CODE_OF_CONDUCT, CHANGELOG, .gitignore audit, GitHub issue/PR templates, .github/workflows audit; (F) closure. **BLOCKS 13.8 GA.** | 23 plans | 📋 **PLANNED 2026-05-04** — 23 plans across 6 waves; ~3-5 days; ready to execute via `/gsd-execute-phase 13.7.6` |
 | 13.8 | **Packaging + GA tag** (SHIP) | PyPI multi-arch wheels (Linux x86_64, Linux ARM64, macOS ARM64) with bundled binary + npm `@beava/sdk` + Go module + Docker Hub multi-arch manifest + GitHub Releases × 3 platforms. CI green on all 4 repos. v0.0.0 tag everywhere. Marketing assets (README hero, HN/Twitter posts). | ~6 | 📋 **PLANNED 2026-05-03** — 5-7 days; sequential after 13.5.1 + 13.7.5 + 13.7.6 |
 | 13.1 | Perf regression fix — fsync off the runtime thread | `spawn_blocking` for WAL fsync; restored 17k EPS at parallel=64 on macOS | 1 | ✅ **COMPLETE** |
 | ~~13.2~~ | ~~Batch coalescing~~ | ~~ApplyConfig 6-knob + ApplyBuffer skeleton~~ | — | ❌ **ABANDONED** — superseded by Phase 13.3 (RefCell + LocalSet, simpler/faster Redis-shaped approach). Branch `phase-13.2-coalesce` is not to be merged; ApplyBuffer primitive is not reused. |
@@ -1002,29 +1002,30 @@ Plans:
 
 **Detail capture:** `.planning/ideas/phase-13.7.5-pre-oss-polish.md` (179 lines) — original capture; `.planning/phases/13.7.5-pre-oss-code-polish/13.7.5-CONTEXT.md` — locked decisions from 2026-05-04 batch-discuss (3 decisions: D-01 idea-doc heuristic verbatim; D-02 8 component plans with Wave-2 parallelism; D-03 MUST-FIX = v0 ship-pitch surface only).
 
-**Plans (locked at 12 plans across 3 waves; cross-SDK conformance plan dropped to v0.1+ deferrals per D-03):**
+**Plans (locked at 12 plans across 4 waves; cross-SDK conformance plan dropped to v0.1+ deferrals per D-03):**
 
-- Wave 1 — comment-audit conventions + 8 per-component scrubs (parallelizable via worktrees):
-  - 13.7.5-01 conventions doc + heuristic checklist
-  - 13.7.5-02 `crates/beava-core/`
-  - 13.7.5-03 `crates/beava-server/`
-  - 13.7.5-04 `crates/beava-runtime-core/`
-  - 13.7.5-05 `crates/beava-persistence/`
-  - 13.7.5-06 `crates/beava-bench/` + `beava-bench-v2/`
-  - 13.7.5-07 `python/beava/` (post-13.5-rewrite scrub)
-  - 13.7.5-08 `examples/{python,typescript,go}/`
-- Wave 2 — coverage matrix + gap fill:
-  - 13.7.5-09 coverage matrix CSV (feature × test-file × test-status); gap classification MUST-FIX vs DEFER
-  - 13.7.5-10 fill Rust gaps (per-crate)
-  - 13.7.5-11 fill Python gaps (extend `python/tests/v0/`)
-- Wave 3 — closure:
-  - 13.7.5-13 SUMMARY + VERIFICATION + STATE/ROADMAP advance to Phase 13.7.6
+- **Wave 1 — conventions doc (serial gate):**
+  - [ ] 13.7.5-01-PLAN.md — conventions doc `docs/_internal/comment-conventions.md` codifying D-01 KEEP/DELETE checklist verbatim
+- **Wave 2 — 7 per-component comment scrubs (parallel, file-disjoint; one PR-sized commit per component):**
+  - [ ] 13.7.5-02-PLAN.md — `crates/beava-core/` audit
+  - [ ] 13.7.5-03-PLAN.md — `crates/beava-server/` audit
+  - [ ] 13.7.5-04-PLAN.md — `crates/beava-runtime-core/` audit (SAFETY contracts KEEP-bias)
+  - [ ] 13.7.5-05-PLAN.md — `crates/beava-persistence/` audit
+  - [ ] 13.7.5-06-PLAN.md — `crates/beava-bench/` audit (covers `beava-bench` + `beava-bench-v2` binaries — same crate per Cargo.toml)
+  - [ ] 13.7.5-07-PLAN.md — `python/beava/` audit (**phase_depends_on: [13.5.1]** — file conflict with 13.5.1 Plans 04+05; pre-flight checkpoint enforces 13.5.1 closed)
+  - [ ] 13.7.5-08-PLAN.md — `examples/{python,typescript,go}/` audit
+- **Wave 3 — coverage matrix + gap fill (serial after Wave 2):**
+  - [ ] 13.7.5-09-PLAN.md — coverage matrix CSV (53 ops + 6 endpoints + ship-pitch flows + architectural invariants × 8 dimension columns) + gap classification → `COVERAGE-MATRIX.csv` + `COVERAGE-GAPS.md`; DEFER rows routed to `.planning/ideas/v0.1-deferrals.md`
+  - [ ] 13.7.5-10-PLAN.md — fill Rust gaps in `crates/beava-core/tests/` (TDD: tests assert documented contract; if RED against current impl, surface bug not silent fix)
+  - [ ] 13.7.5-11-PLAN.md — fill Python gaps: `test_register_flags.py` (force/dry_run) + `test_app_reset.py` + `test_schema_evolution.py` + `test_url_dispatch.py` + `test_reconnect.py` + per-op gaps (TDD; reuses 13.5.1 D-05 real-engine fixture; no MagicMock)
+- **Wave 4 — closure (serial after Wave 3):**
+  - [ ] 13.7.5-13-PLAN.md — SUMMARY + VERIFICATION + throughput-baselines.md regression-gate row append + STATE/ROADMAP advance to 13.7.6 (Plan 12 cross-SDK conformance OMITTED per D-03)
 
 **Success criteria:**
 1. ~3000-8000 LOC of redundant comments removed across the codebase (net-negative LOC)
 2. `COVERAGE-MATRIX.md` exists at `.planning/phases/13.7.5-pre-oss-polish/` with one row per operator (53), wire endpoint (6), schema-evolution flag, CRUD verb, architectural invariant
 3. Every MUST-FIX gap has a corresponding test commit
-4. Cross-SDK conformance harness asserts Python/TS/Go produce identical per-entity outputs for ≥1 representative scenario
+4. ~~Cross-SDK conformance harness~~ — DEFERRED to v0.1+ per D-03 (cross-SDK per-op equivalence + cross-SDK conformance for force/dry_run/reset/schema-evolution moved to `.planning/ideas/v0.1-deferrals.md`; Python is the canonical reference for v0)
 5. `cargo test --workspace` + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo fmt --all --check` all pass
 6. `cd python && python -m pytest tests/v0` passes ≥80% of tests once engine is up (Phase 13.4) + SDK is up (Phase 13.5)
 
@@ -1042,12 +1043,46 @@ Plans:
 
 **Detail capture:** `.planning/ideas/phase-13.7.6-pre-oss-security-and-commit-path.md` — original capture; `.planning/phases/13.7.6-pre-oss-repo-polish/13.7.6-CONTEXT.md` — locked decisions from 2026-05-04 batch-discuss (6 decisions: D-01 keep history + strip `.planning/` + `CLAUDE.md` + `.claude/` via `git filter-repo`; D-02 trailer-only surgical AI-attribution scrub; D-03 repo rename `tally → beava` under `beava-dev` GitHub org; D-04 author email `hoang@beava.dev`; D-05 `CLAUDE.md` stripped from public repo entirely [USER OVERRIDE]; D-06 SKIP public docs of architectural invariants — CONTRIBUTING.md = test/lint/workflow basics only; tripwires educate breakers organically [USER OVERRIDE]).
 
-**Plans (locked at 24 plans across 4 workstreams):**
+**Plans:** 23 plans across 6 waves (planned 2026-05-04 via /gsd-plan-phase 13.7.6 — D-08's 24-plan estimate combined Workstream-D's 10/11 (trailer-strip apply + path strips) into a single filter-repo invocation per CONTEXT estimate, dropping the count to 23).
 
-- **Workstream C — security + lint sweep (8 plans):** clippy `-D warnings` sweep + `cargo audit` + `cargo deny` + Python ruff + mypy --strict re-verify + tsc --noEmit + go vet + `/cso` OWASP review + ASVS-L1 threat model + secrets sweep on full history.
-- **Workstream D — commit-path sanitization (6 plans):** bare-clone filter-repo rehearsal + trailer-strip callback + path strips (`.planning/` + `CLAUDE.md` + `.claude/`) + worktree cleanup + branch rename `v2/greenfield → main` + repo rename `tally → beava`.
-- **Workstream E — public-facing files (9 plans):** LICENSE audit + README rewrite + CONTRIBUTING (per D-06 minimal) + SECURITY + CODE_OF_CONDUCT + CHANGELOG synthesis + `.gitignore` audit + `.github/ISSUE_TEMPLATE` + `.github/workflows` audit.
-- **Workstream F — closure (1 plan):** SUMMARY + VERIFICATION + STATE/ROADMAP advance to Phase 13.8.
+**Plan list:**
+
+Wave 1 — parallel (file-disjoint audits, scans, refreshes):
+- [ ] 13.7.6-01-PLAN.md — Workstream-C: cargo clippy -D warnings sweep + #[allow(...)] audit
+- [ ] 13.7.6-02-PLAN.md — Workstream-C: cargo audit + cargo deny + workspace deny.toml policy
+- [ ] 13.7.6-03-PLAN.md — Workstream-C: Python ruff + mypy --strict re-verify
+- [ ] 13.7.6-04-PLAN.md — Workstream-C: TypeScript tsc --noEmit + optional eslint
+- [ ] 13.7.6-05-PLAN.md — Workstream-C: Go vet + optional staticcheck
+- [ ] 13.7.6-06-PLAN.md — Workstream-C: OWASP Top-10 + LLM Top-10 review (cso skill)
+- [ ] 13.7.6-07-PLAN.md — Workstream-C: ASVS L1 threat-model narrative (internal artifact)
+- [ ] 13.7.6-08-PLAN.md — Workstream-C: secrets sweep (gitleaks + trufflehog + git secrets) on full history
+- [ ] 13.7.6-10-PLAN.md — Workstream-D: stale worktree branch cleanup + git worktree prune
+- [ ] 13.7.6-14-PLAN.md — Workstream-E: LICENSE audit (canonical Apache 2.0 diff)
+- [ ] 13.7.6-15-PLAN.md — Workstream-E: README.md rewrite (v0 surface; new repo URL; no event-time refs)
+- [ ] 13.7.6-16-PLAN.md — Workstream-E: CONTRIBUTING.md rewrite (D-06 minimal scope)
+- [ ] 13.7.6-17-PLAN.md — Workstream-E: SECURITY.md refresh (v0.0.x; new URL; canonical email)
+- [ ] 13.7.6-18-PLAN.md — Workstream-E: CODE_OF_CONDUCT.md refresh (Contributor Covenant 2.1; canonical email)
+- [ ] 13.7.6-19-PLAN.md — Workstream-E: CHANGELOG.md create (Keep-a-Changelog v0.0.0 entry synthesis)
+- [ ] 13.7.6-20-PLAN.md — Workstream-E: .gitignore audit + extend
+- [ ] 13.7.6-21-PLAN.md — Workstream-E: .github/ISSUE_TEMPLATE + PR template refresh
+- [ ] 13.7.6-22-PLAN.md — Workstream-E: .github/workflows/*.yml audit (URLs/secrets/SHA-pins)
+
+Wave 2 — Workstream-D rehearsal (depends on 13.7.6-08 secrets sweep):
+- [ ] 13.7.6-09-PLAN.md — Workstream-D: filter-repo rehearsal on sacrificial bare clone + emit mailmap.txt + trailer-strip.py
+
+Wave 3 — Workstream-D destructive history rewrite (checkpoint:decision; depends on 13.7.6-09 + 08 + 10):
+- [ ] 13.7.6-11-PLAN.md — Workstream-D: backup bundle + user go-ahead + filter-repo on FRESH public bare clone (combines D-08's 10/11)
+
+Wave 4 — Workstream-D bare-clone post-rewrite branch hygiene (depends on 13.7.6-11):
+- [ ] 13.7.6-12-PLAN.md — Workstream-D: branch rename v2/greenfield → main + prune all other branches + invariant-test presence check
+
+Wave 5 — Workstream-D public force-push (checkpoint:human-action + checkpoint:decision; depends on 13.7.6-12):
+- [ ] 13.7.6-13-PLAN.md — Workstream-D: force-push to git@github.com:beava-dev/beava.git + verify default branch on remote
+
+Wave 6 — Workstream-F closure (depends on all above):
+- [ ] 13.7.6-23-PLAN.md — Workstream-F: throughput-baselines row + smoke-clone gate + SUMMARY + VERIFICATION + STATE/ROADMAP advance to 13.8
+
+**Workstream summary:** Workstream-C (8 plans, all parallel Wave 1) — security + lint. Workstream-D (5 plans, Waves 1-5 mostly sequential) — commit-path sanitization. Workstream-E (9 plans, all parallel Wave 1) — public-facing files. Workstream-F (1 plan, Wave 6) — closure.
 
 **Success criteria:**
 1. `git log --all --pretty=format:"%H %ae %s" | grep -iE 'claude|🤖'` returns 0 lines (trailer-strip complete).
