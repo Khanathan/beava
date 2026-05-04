@@ -814,13 +814,16 @@ Wave structure:
 
 **Blocks:** Phase 13.5.1 Plan 05 (SDK transport impl) — 13.5.1 cannot land its 68/68 acceptance gate until 13.4.1 ships.
 
-**Detail capture:** `.planning/phases/13.4.1-server-wire-spec-verb-style-migration/13.4.1-CONTEXT-DRAFT.md` (draft scope; refine via `/gsd-discuss-phase 13.4.1`).
+**Detail capture:** `.planning/phases/13.4.1-server-wire-spec-verb-style-migration/13.4.1-CONTEXT.md` (6 user-confirmed decisions: D-01 verb-style POST /get + OP_GET; D-02 verb-style per-entry POST /batch_get + OP_BATCH_GET; D-03 flat row response shape; D-04 `entity_id` → `key` rename with one-release `serde(alias)` + WARN log; D-05 structured 400 with doc-hint on legacy shapes; D-06 missing-feature filter omits-on-absent + registry-typo whole-batch reject).
 
-**Plans (estimated, ~3-4 plans across 2 waves):**
+**Plans:** 5 plans across 4 waves (planned 2026-05-04 via `/gsd-plan-phase 13.4.1`).
 
-- Wave 1 (red, parallel): integration tests asserting `POST /get` accepts `{table, key, features?}` and rejects legacy shapes; `OP_GET` parses `{table, key, features?}`; `POST /batch_get` per-entry accepts `features?` and returns flat rows; `OP_BATCH_GET` mirrors.
-- Wave 2 (green, parallel): migrate `apply_shard.rs::WireRequest::HttpGet` + `WireRequest::TcpGet` body parsers; migrate `BatchGetReqEntry` (add `features: Option<Vec<String>>`, alias `entity_id` → `key`); migrate `runtime_core_glue.rs::dispatch_get_batch` to flat-row response; apply features filter at server.
-- Closure: SUMMARY + VERIFICATION + perf-baselines/throughput-baselines append (regression-gate against Phase 13.5 small/tcp baseline).
+Plans:
+- [ ] 13.4.1-01-PLAN.md — Wave 1 (exclusive Cargo.toml owner; registers all 3 Phase 13.4.1 [[test]] entries up front) — RED: integration tests for D-01 + D-05 verb-style POST /get + OP_GET (6 tests)
+- [ ] 13.4.1-02-PLAN.md — Wave 2 (depends on 01; file-disjoint w/ 03) — RED: integration tests for D-02 + D-03 + D-06 verb-style POST /batch_get + OP_BATCH_GET (6 tests)
+- [ ] 13.4.1-03-PLAN.md — Wave 2 (depends on 01; file-disjoint w/ 02) — RED: D-04 entity_id → key alias precedent test with WARN-log assertion (4 tests)
+- [ ] 13.4.1-04-PLAN.md — Wave 3 (depends on 01+02+03) — GREEN cluster: GlueResponse::UnsupportedRequestShape variant; migrate WireRequest::HttpGet+TcpGet + BatchGetReqEntry; flatten dispatch_batch_get_sync; D-04 strict alias detection + WARN; D-05 legacy-shape ladder; flatten phase13_4_op_batch_get.rs Tests 1+2+5; v0.0.x deferral entry. Plans 01/02/03 RED → GREEN. (5 atomic commits)
+- [ ] 13.4.1-05-PLAN.md — Wave 4 (depends on 04) — Closure: examples/wire round-trip; throughput-baselines small/tcp regression-gate row vs Phase 13.5 baseline (10% warn / 25% block); perf-baselines entry; VERIFICATION.md + SUMMARY.md; ROADMAP status flip to ✅ CLOSED.
 
 **Success criteria:**
 1. `POST /get` and `OP_GET` accept `{table, key, features?}` JSON body; reject the legacy `{keys, features}` and `{feature, key}` shapes with structured error.

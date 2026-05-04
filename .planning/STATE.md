@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
-status: "Phase 13.5.1 PLANNED 2026-05-04 (6 plans across 4 waves; iter-3 plan-checker PASS — 0 blockers / 0 warnings). Iter-2 surfaced server-side wire-spec gap from Phase 13.4 (`WireRequest::HttpGet`/`TcpGet`/`BatchGetReqEntry` parse legacy Phase 12.x shapes) → user picked phase split → Phase 13.4.1 (server-side wire-spec verb-style migration) inserted between 13.4 and 13.5. v0 OSS critical path: /gsd-discuss-phase 13.4.1 → /gsd-plan-phase 13.4.1 → /gsd-execute-phase 13.4.1 (~1-2 days) → /gsd-execute-phase 13.5.1 (~2-3 days) → /gsd-discuss-phase 13.7.5/13.7.6/13.8 → ship."
-last_updated: "2026-05-04T18:00:00.000Z"
+status: "Phase 13.5.1 + Phase 13.4.1 PLANNED 2026-05-04. 13.5.1: 6 plans / 4 waves (iter-3 plan-checker PASS). 13.4.1: 5 plans / 4 waves (iter-2 plan-checker PASS — 0 blockers, 2 defensible carry-forward warnings). 13.4.1 owns the server-side wire-spec verb-style migration (POST /get + OP_GET + POST /batch_get + OP_BATCH_GET to `{table, key, features?}` + flat-row response + features filter at server + serde(alias entity_id→key)). 13.4.1 must land before 13.5.1 Plan 05. v0 OSS critical path: /gsd-execute-phase 13.4.1 (~1-2 days) → /gsd-execute-phase 13.5.1 (~2-3 days; greens up 68/68 v0 acceptance tests) → /gsd-discuss-phase 13.7.5/13.7.6/13.8 → ship."
+last_updated: "2026-05-04T19:30:00.000Z"
 progress:
   total_phases: 46
   completed_phases: 22
-  total_plans: 256
+  total_plans: 261
   completed_plans: 170
-  percent: 66
+  percent: 65
 ---
 
 <!-- Phase 13.4 OFFICIALLY CLOSED 2026-05-04 (PASS-WITH-WARN). Engine wire-spec conformance per Phase 13.0 design contract. 10 plans across 5 waves (executed via parallel gsd-executor agents in waves 1+2; wave 1.5 cleanup folded in 7 op-rename lockstep tests + 1 clippy gap). 41 commits on v2/greenfield from f229755 → 0af054a. Delivered: ADR-002 op renames (avg→mean / variance→var / stddev→std / count_distinct→n_unique / quantile); flat-dict GET response (no `result` envelope); OP_BATCH_GET (0x0024) opcode + dispatch; verb-style HTTP routes (POST /ping/push/push-sync ADDED — legacy paths retained per A-07 for back-compat); D-01 force=True + dry_run=True with categorized-diff payload; D-02 Persistence::Memory in-RAM backend (snapshot no-op); D-03 OP_RESET (0x0040) gated on test_mode (3-ways-settable: env BEAVA_TEST_MODE=1 / Server::new Config / bv.App SDK kwarg); D-04 surgical-permit on phase12_7_no_table_surface FORBIDDEN_PATTERNS (top-level OpNode::Table removed; per-variant TableUpsert/TableDelete stay killed); ADR-003 global-aggregation sentinel routing (5-LOC parse_entity_key short-circuit; absence-of-special-case-rejection design). +60 new tests across 13.4-* test files; +14 lockstep test updates for envelope removal. Microbench: apply_path/cold_key/14_aggs -32.7% (substantially faster vs Phase 19.2). Throughput regression-gate (small/tcp): -0.4% PASS. **HTTP-transport regression**: small/medium/large/http -24% to -32% — flagged for v0.0.x investigation; non-gating per CLAUDE.md. fraud-team/http +35.5% PASS. Workspace: clippy/fmt clean; 1 pre-existing flake (phase2_5_smoke::criterion_6_pipelined_registers — Phase 12.6-06 origin, not 13.4). 5 deferred items surfaced for v0.0.x or 13.5+: OP_BATCH_GET wire-spec doc cohesion ({table, entity_id} vs {table, key}); OP_BATCH_GET DoS cap; sc6_aggregation_on_table_rejected (D-04 surfaced); parallel-flake infrastructure; HTTP-transport regression. SUMMARY: .planning/phases/13.4-engine-prep-wire-spec/13.4-SUMMARY.md. VERIFICATION: .planning/phases/13.4-engine-prep-wire-spec/13.4-VERIFICATION.md (verdict PASS-WITH-WARN). 13.5 Plan 11 acceptance tests + 13.6 Plan 07 conformance harness UNBLOCKED. -->
