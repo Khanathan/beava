@@ -143,7 +143,10 @@ async fn http_batch_get_returns_per_tuple_results() {
             {"table": "MerchantSpend", "entity_id": "acme"}
         ]
     });
-    let resp = ts.post_json("/batch_get", &req).await.expect("POST /batch_get");
+    let resp = ts
+        .post_json("/batch_get", &req)
+        .await
+        .expect("POST /batch_get");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -200,7 +203,10 @@ async fn http_batch_get_unknown_table_returns_partial_error() {
             {"table": "DoesNotExist", "entity_id": "alice"}
         ]
     });
-    let resp = ts.post_json("/batch_get", &req).await.expect("POST /batch_get");
+    let resp = ts
+        .post_json("/batch_get", &req)
+        .await
+        .expect("POST /batch_get");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -240,7 +246,10 @@ async fn http_batch_get_empty_returns_empty_results() {
     // Don't push any events.
 
     let req = json!({ "requests": [] });
-    let resp = ts.post_json("/batch_get", &req).await.expect("POST /batch_get");
+    let resp = ts
+        .post_json("/batch_get", &req)
+        .await
+        .expect("POST /batch_get");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -260,11 +269,7 @@ async fn http_batch_get_empty_returns_empty_results() {
 
 /// Encode and write a single frame to a tokio TcpStream, then read exactly
 /// one response frame via `decode_frame`.
-async fn tcp_send_recv_frame(
-    addr: std::net::SocketAddr,
-    op: u16,
-    payload: Bytes,
-) -> Frame {
+async fn tcp_send_recv_frame(addr: std::net::SocketAddr, op: u16, payload: Bytes) -> Frame {
     let mut stream = tokio::net::TcpStream::connect(addr)
         .await
         .expect("tcp connect");
@@ -283,7 +288,10 @@ async fn tcp_send_recv_frame(
         }
         let n = stream.read_buf(&mut buf).await.expect("read");
         if n == 0 {
-            panic!("tcp connection closed before full response frame; partial buf len = {}", buf.len());
+            panic!(
+                "tcp connection closed before full response frame; partial buf len = {}",
+                buf.len()
+            );
         }
     }
 }
@@ -311,8 +319,7 @@ async fn tcp_batch_get_returns_same_response_shape() {
     // Now hit the TCP listener with the same payload and OP_BATCH_GET (0x0024).
     let tcp_addr = ts.tcp_addr().expect("tcp listener bound");
     let payload_bytes = serde_json::to_vec(&req_body).expect("serialise");
-    let resp_frame =
-        tcp_send_recv_frame(tcp_addr, OP_BATCH_GET, Bytes::from(payload_bytes)).await;
+    let resp_frame = tcp_send_recv_frame(tcp_addr, OP_BATCH_GET, Bytes::from(payload_bytes)).await;
 
     assert_eq!(
         resp_frame.op, OP_GET_RESPONSE,

@@ -476,17 +476,21 @@ impl ApplyShard {
             }
 
             // ─── OP_BATCH_GET / POST /batch_get — Plan 13.4-03 ─────────────────
-            // Stub arm landed by Task 3.b: the parser surface (constant + variants
-            // + parser arm + router arm + HTTP listener mapping) is wired, but
-            // the real dispatch lands in Task 3.d. Until then return a structured
-            // `not_yet_implemented` error so the match stays exhaustive and the
-            // workspace builds. Task 3.d replaces this arm with
-            // `dispatch_batch_get_sync(...)`.
-            WireRequest::TcpBatchGet { .. } | WireRequest::HttpBatchGet { .. } => {
-                GlueResponse::InternalError {
-                    reason: "not_yet_implemented: batch_get dispatch lands Plan 13.4-03 Task 3.d"
-                        .to_owned(),
-                }
+            // Heterogeneous batched read. Walks the request list, calls per-entity
+            // feature lookup for each (table, entity_id) tuple, aggregates results
+            // with partial-failure semantics (unknown_table becomes a per-tuple
+            // error inside `results` rather than a whole-batch 4xx).
+            //
+            // Per ADR-003, the empty-string entity_id is the global-table sentinel
+            // and forwards as-is to `parse_entity_key`. Plan 13.4-09 wires the
+            // register-time `key_cols: []` acceptance; until then, global-table
+            // pipelines fail at registration (the test gating that case is
+            // `#[ignore]`d in `tests/phase13_4_op_batch_get.rs`).
+            WireRequest::TcpBatchGet { body, body_format } => {
+                dispatch_batch_get_sync(&self.state, &body, body_format)
+            }
+            WireRequest::HttpBatchGet { body } => {
+                dispatch_batch_get_sync(&self.state, &body, beava_core::wire::CT_JSON)
             }
 
             // Plan 12.6-14: 415 Unsupported Media Type — POST request with
@@ -1008,4 +1012,193 @@ fn extract_dedupe_str_from_row(row: &beava_core::row::Row, key: &str) -> Option<
         Value::List(l) => format!("{:?}", l),
         Value::Map(m) => format!("{:?}", m),
     })
+}
+
+// ─── Plan 13.4-03 — OP_BATCH_GET (0x0024) dispatch ────────────────────────────
+
+/// One entry in the OP_BATCH_GET request payload.
+#[derive(serde::Deserialize)]
+struct BatchGetReqEntry {
+    table: String,
+    entity_id: String,
+}
+
+/// OP_BATCH_GET dispatch — walks `{requests:[{table, entity_id}, ...]}`,
+/// calls per-entity feature lookup for each tuple, aggregates results into
+/// the canonical `{results: [...]}` shape with partial-failure semantics.
+///
+/// Per the plan must_haves:
+/// - Per-tuple `{table, entity_id, features: <flat_dict>}` on success.
+/// - Per-tuple `{table, entity_id, error: {code: "unknown_table", reason}}`
+///   on unknown table — the rest of the batch still completes (no whole-frame
+///   4xx).
+/// - Empty `requests: []` returns `{"results": []}` HTTP 200.
+///
+/// Per ADR-003 the empty-string `entity_id` is the global-table sentinel and
+/// is forwarded as-is to `parse_entity_key`; Plan 13.4-09 wires the
+/// `key_cols: []` register-time acceptance and ensures the existing hashmap
+/// machinery handles `""` as a regular key segment.
+///
+/// `body_format` is the wire content_type byte (`CT_JSON` or `CT_MSGPACK`).
+/// HTTP path always passes `CT_JSON`; TCP path forwards the frame's
+/// content_type. Response body is always JSON encoded — the response opcode
+/// is `OP_GET_RESPONSE`, whose body shape contract is JSON in v0.
+pub fn dispatch_batch_get_sync(
+    app: &std::sync::Arc<crate::AppState>,
+    body: &Bytes,
+    body_format: u8,
+) -> GlueResponse {
+    use beava_core::wire::{CT_JSON, CT_MSGPACK};
+
+    #[derive(serde::Deserialize)]
+    struct BatchGetBody {
+        requests: Vec<BatchGetReqEntry>,
+    }
+
+    // 1. Parse the batch body.
+    let req: BatchGetBody = match body_format {
+        CT_JSON => match serde_json::from_slice(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return GlueResponse::InternalError {
+                    reason: e.to_string(),
+                };
+            }
+        },
+        CT_MSGPACK => match rmp_serde::from_slice(body) {
+            Ok(r) => r,
+            Err(e) => {
+                return GlueResponse::InternalError {
+                    reason: e.to_string(),
+                };
+            }
+        },
+        other => {
+            return GlueResponse::InternalError {
+                reason: format!("unsupported content_type: {other:#04x}"),
+            };
+        }
+    };
+
+    // 2. Empty batch → `{"results": []}` HTTP 200 (plan must_have).
+    if req.requests.is_empty() {
+        let body_bytes = serde_json::to_vec(&serde_json::json!({"results": []}))
+            .unwrap_or_else(|_| b"{\"results\":[]}".to_vec());
+        return GlueResponse::QueryResult {
+            body: Bytes::from(body_bytes),
+            format: CT_JSON,
+        };
+    }
+
+    // 3. Compute query_time_ms once (D-06 — never wall clock; mirrors
+    //    `dispatch_get_batch`'s policy).
+    let query_time_ms = {
+        let raw = app
+            .dev_agg
+            .query_time_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        if raw == 0 {
+            0i64
+        } else {
+            raw as i64
+        }
+    };
+
+    let registry = &app.dev_agg.registry;
+
+    // 4. Acquire the state_tables lock once for the whole batch (matches
+    //    `dispatch_get_batch`'s single-critical-section discipline).
+    let tables = app.dev_agg.state_tables.lock();
+
+    let mut results: Vec<serde_json::Value> = Vec::with_capacity(req.requests.len());
+
+    for entry in &req.requests {
+        // Look up the table by name in the registry as an aggregation node.
+        let descriptor = match registry.compiled_aggregation(&entry.table) {
+            Some(d) => d,
+            None => {
+                // Per-tuple unknown_table error (partial-failure semantics).
+                results.push(serde_json::json!({
+                    "table": entry.table,
+                    "entity_id": entry.entity_id,
+                    "error": {
+                        "code": "unknown_table",
+                        "reason": format!(
+                            "table '{}' is not a registered aggregation",
+                            entry.table
+                        ),
+                    },
+                }));
+                continue;
+            }
+        };
+
+        // Per ADR-003: forward entity_id verbatim to parse_entity_key. For
+        // `key_cols: []` (global table) the empty string parses to a 0-arity
+        // key; Plan 13.4-09 wires the register-time path that makes empty
+        // group_keys legal.
+        let entity_key = match crate::feature_query::parse_entity_key(
+            &entry.entity_id,
+            &descriptor.group_keys,
+        ) {
+            Some(k) => k,
+            None => {
+                // Treat key arity mismatch as a per-tuple error — same
+                // partial-failure posture as unknown_table. Keeps the rest
+                // of the batch unaffected.
+                results.push(serde_json::json!({
+                    "table": entry.table,
+                    "entity_id": entry.entity_id,
+                    "error": {
+                        "code": "key_parse_failure",
+                        "reason": format!(
+                            "entity_id '{}' does not match table '{}' group_keys arity ({})",
+                            entry.entity_id,
+                            entry.table,
+                            descriptor.group_keys.len()
+                        ),
+                    },
+                }));
+                continue;
+            }
+        };
+
+        // Walk the descriptor's features and query each. Mirrors Case 2 of
+        // `dispatch_get_single` (aggregation-node-name lookup) but feeds
+        // results into the per-tuple `features` map.
+        let mut feature_map = serde_json::Map::new();
+        if let Some(table) = tables.get(descriptor.agg_id as usize) {
+            for (idx, named_op) in descriptor.features.iter().enumerate() {
+                if let Some(v) = table.query_feature(&entity_key, idx, query_time_ms) {
+                    feature_map.insert(
+                        named_op.feature_name.clone(),
+                        crate::feature_query::value_to_json(v),
+                    );
+                }
+            }
+        }
+
+        // Cold-start (no events for this entity) → empty `features` map per
+        // wire-spec semantics ("Per-entry cold-start is `{}`, not an error").
+        results.push(serde_json::json!({
+            "table": entry.table,
+            "entity_id": entry.entity_id,
+            "features": serde_json::Value::Object(feature_map),
+        }));
+    }
+    drop(tables);
+
+    let body_json = serde_json::json!({"results": results});
+    let body_bytes = match serde_json::to_vec(&body_json) {
+        Ok(b) => b,
+        Err(e) => {
+            return GlueResponse::InternalError {
+                reason: e.to_string(),
+            };
+        }
+    };
+    GlueResponse::QueryResult {
+        body: Bytes::from(body_bytes),
+        format: CT_JSON,
+    }
 }

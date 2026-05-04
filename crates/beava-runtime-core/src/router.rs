@@ -205,10 +205,7 @@ mod tests {
     /// Plan 13.4-03: GET /batch_get is a method-not-allowed (POST-only).
     #[test]
     fn route_batch_get_wrong_method() {
-        assert_eq!(
-            Router::route("GET", "/batch_get"),
-            Route::MethodNotAllowed
-        );
+        assert_eq!(Router::route("GET", "/batch_get"), Route::MethodNotAllowed);
     }
 
     /// Plan 12-07 — GET /health on the data-plane HTTP port routes to Route::Health.
