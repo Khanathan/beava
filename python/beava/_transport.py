@@ -80,13 +80,17 @@ class Transport:
         *,
         table: str,
         key: str | list[Any],
+        features: list[str] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
     def send_batch_get(
         self,
         *,
-        requests: list[tuple[str, str | list[Any]]],
+        requests: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ],
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -150,6 +154,174 @@ class HttpTransport(Transport):
         if r.status_code == 200:
             return body  # type: ignore[no-any-return]
         error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_push(
+        self,
+        *,
+        event_name: str,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """POST /push with verb-style body ``{event_name, fields}``.
+
+        Targets the post-Phase-13.4 verb-style route — NOT the legacy
+        path-encoded ``/push/{event_name}`` form.
+
+        Returns:
+            Parsed success body dict (``{"ack_lsn": int, ...}``).
+
+        Raises:
+            RegistrationError: Server returned non-2xx with a JSON error body.
+        """
+        body_bytes = json.dumps(
+            {"event_name": event_name, "fields": fields}, ensure_ascii=False
+        ).encode("utf-8")
+        r = self._client.post(
+            "/push",
+            content=body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        body = r.json()
+        if r.status_code == 200:
+            return body  # type: ignore[no-any-return]
+        error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_get(
+        self,
+        *,
+        table: str,
+        key: str | list[Any],
+        features: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """POST /get with verb-style body ``{table, key, features?}``.
+
+        Per Phase 13.4.1 wire-spec lockdown, the response is a row-shape
+        flat dict (cold-start = ``{}``). Features filter (D-03 USER-LOCKED)
+        is included when non-None and omitted when None (full row).
+
+        Returns:
+            Parsed row-shape flat dict (``{}`` on cold-start).
+
+        Raises:
+            RegistrationError: Server returned non-2xx with a JSON error body.
+        """
+        payload: dict[str, Any] = {"table": table, "key": key}
+        if features is not None:
+            payload["features"] = features
+        body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        r = self._client.post(
+            "/get",
+            content=body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        body = r.json()
+        if r.status_code == 200:
+            return body  # type: ignore[no-any-return]
+        error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_batch_get(
+        self,
+        *,
+        requests: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ],
+    ) -> list[dict[str, Any]]:
+        """POST /batch_get with verb-style body ``{requests:[{table,key,features?}, ...]}``.
+
+        Phase 13.4.1 returns ``body["results"]`` as a list of FLAT row dicts
+        (no wrapping envelope), so this method returns ``body["results"]``
+        verbatim. Per-entry ``features`` filter is supported via the
+        3-tuple form (D-03 USER-LOCKED).
+
+        Args:
+            requests: list of per-entry tuples — either ``(table, key)`` or
+                ``(table, key, features)``. ``features`` may be None to
+                request the full row.
+
+        Returns:
+            list of flat row dicts in request order.
+
+        Raises:
+            RegistrationError: Server returned non-2xx with a JSON error body.
+            TypeError: A request entry is neither a 2-tuple nor a 3-tuple.
+        """
+        wire_requests: list[dict[str, Any]] = []
+        for entry in requests:
+            if len(entry) == 2:
+                tbl, k = entry
+                wire_requests.append({"table": tbl, "key": k})
+            elif len(entry) == 3:
+                tbl, k, feats = entry
+                wire_entry: dict[str, Any] = {"table": tbl, "key": k}
+                if feats is not None:
+                    wire_entry["features"] = feats
+                wire_requests.append(wire_entry)
+            else:
+                raise TypeError(
+                    f"batch_get request entry must be a 2- or 3-tuple "
+                    f"(table, key) or (table, key, features); "
+                    f"got {len(entry)}-tuple"
+                )
+        body_bytes = json.dumps(
+            {"requests": wire_requests}, ensure_ascii=False
+        ).encode("utf-8")
+        r = self._client.post(
+            "/batch_get",
+            content=body_bytes,
+            headers={"Content-Type": "application/json"},
+        )
+        body = r.json()
+        if r.status_code == 200:
+            results: list[dict[str, Any]] = body.get("results", [])
+            return results
+        error = body.get("error", {})
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
+        )
+
+    def send_reset(self) -> None:
+        """POST /reset (test_mode-gated per Phase 13.4 D-03).
+
+        On non-test-mode servers the engine returns 403 ``reset_disabled``;
+        this method surfaces that as ``RegistrationError(code="reset_disabled")``.
+
+        Raises:
+            RegistrationError: Server returned non-200; in particular,
+                ``code="reset_disabled"`` if the server is not in test_mode.
+        """
+        r = self._client.post(
+            "/reset",
+            content=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        if r.status_code == 200:
+            return
+        try:
+            body = r.json()
+            error = body.get("error", {})
+        except Exception:
+            error = {"code": "unparseable_error", "message": r.text[:200]}
         raise RegistrationError(
             code=error.get("code", "unknown"),
             path=error.get("path", ""),

@@ -314,7 +314,10 @@ class App:
                 one dict in the response list at the matching index.
         """
         t = self._require_transport()
-        coerced: list[tuple[str, str | list[Any]]] = [(tbl, k) for tbl, k in requests]
+        coerced: list[
+            tuple[str, str | list[Any]]
+            | tuple[str, str | list[Any], list[str] | None]
+        ] = [(tbl, k) for tbl, k in requests]
         result: list[dict[str, Any]] = t.send_batch_get(requests=coerced)
         return result
 
