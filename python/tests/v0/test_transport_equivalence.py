@@ -305,6 +305,7 @@ def test_global_aggregation_equivalent(transport_app: Any) -> None:
 
 def test_reset_equivalent(transport_app: Any) -> None:
     """app.reset() wipes state on all three transports (test_mode=True only)."""
+    from beava._errors import RegistrationError  # noqa: PLC0415
 
     @bv.event
     class Txn:
@@ -324,8 +325,17 @@ def test_reset_equivalent(transport_app: Any) -> None:
 
     # After reset: state is wiped. The exact registry-state semantics differ
     # by transport (some wipe the registry too); we only assert the row is
-    # cold-start-equivalent ({} or None per cold_start_equivalent).
-    post = transport_app.get("UserTxn", "alice")
-    assert cold_start_equivalent(post), (
-        f"after reset(), get must return cold-start ({{}} or None); got {post!r}"
-    )
+    # cold-start-equivalent ({} or None per cold_start_equivalent), OR the
+    # server returns ``unknown_table`` (registry was wiped — per Phase 13.4
+    # OP_RESET D-03 USER-LOCKED, reset clears state + registry on the v0
+    # default path; v0.1+ may add a state-only reset variant).
+    try:
+        post = transport_app.get("UserTxn", "alice")
+        assert cold_start_equivalent(post), (
+            f"after reset(), get must return cold-start ({{}} or None); got {post!r}"
+        )
+    except RegistrationError as exc:
+        assert exc.code == "unknown_table", (
+            f"after reset(), get must return cold-start OR raise unknown_table; "
+            f"got RegistrationError(code={exc.code!r})"
+        )
