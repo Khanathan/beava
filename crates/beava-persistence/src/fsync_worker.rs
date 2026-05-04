@@ -92,6 +92,70 @@ pub struct WalSink {
 }
 
 impl WalSink {
+    /// Phase 13.4 Plan 07 (D-02 USER-LOCKED) — spawn a **no-op** WAL sink for
+    /// `Persistence::Memory` mode. The returned worker drains append requests
+    /// without writing to disk: every `append_event` / `append_record` call
+    /// resolves with a fake monotonically-increasing LSN, and `truncate_up_to`
+    /// / `shutdown` succeed without touching the filesystem. `durable_lsn()`
+    /// reflects the latest assigned LSN so callers that watch the durable
+    /// watermark continue to make progress.
+    ///
+    /// Used by `ServerV18::bind_with_config` in memory mode to avoid the
+    /// `WalSink::spawn`-driven file IO (which writes a `.log` segment) while
+    /// preserving the `AppState { wal_sink: WalSink, .. }` shape unchanged.
+    pub fn spawn_no_op() -> (Self, JoinHandle<()>) {
+        let (append_tx, mut append_rx) = mpsc::channel::<AppendRequest>(1024);
+        let (control_tx, mut control_rx) = mpsc::channel::<ControlMsg>(16);
+        let (durable_tx, durable_rx) = watch::channel::<Lsn>(0);
+
+        let join = tokio::spawn(async move {
+            let mut next_lsn: Lsn = 1;
+            loop {
+                tokio::select! {
+                    biased;
+
+                    ctrl = control_rx.recv() => {
+                        match ctrl {
+                            Some(ControlMsg::TruncateUpTo { covered_lsn: _, ack }) => {
+                                // No-op: nothing on disk to truncate.
+                                let _ = ack.send(Ok(0));
+                            }
+                            Some(ControlMsg::Shutdown { ack }) => {
+                                let _ = ack.send(Ok(()));
+                                return;
+                            }
+                            None => return,
+                        }
+                    }
+
+                    req = append_rx.recv() => {
+                        match req {
+                            Some(req) => {
+                                let assigned = next_lsn;
+                                next_lsn = next_lsn.saturating_add(1);
+                                // Advance the durable watermark immediately —
+                                // there is no fsync to defer.
+                                let _ = durable_tx.send(assigned);
+                                let _ = req.done.send(Ok(assigned));
+                            }
+                            None => return,
+                        }
+                    }
+                }
+            }
+        });
+
+        (
+            Self {
+                append_tx,
+                control_tx,
+                durable_rx,
+                default_mode: SyncMode::Periodic,
+            },
+            join,
+        )
+    }
+
     /// Spawn the worker task. Returns the sink handle + the worker JoinHandle
     /// (callers should await the handle after `shutdown()` for clean exit).
     pub fn spawn(cfg: WalSinkConfig) -> Result<(Self, JoinHandle<()>), PersistError> {

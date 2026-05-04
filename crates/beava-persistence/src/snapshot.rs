@@ -24,9 +24,38 @@ use crate::snapshot_header::{
 use crate::Lsn;
 
 /// Atomic snapshot writer.
+///
+/// Phase 13.4 Plan 07 (D-02 USER-LOCKED): this type also exposes a no-op
+/// constructor [`SnapshotWriter::no_op`] for `Persistence::Memory` mode.
+/// The no-op variant carries no state; its [`SnapshotWriter::commit_no_op`]
+/// method returns `Ok(())` immediately without any file I/O. The snapshot
+/// scheduler in memory mode is not spawned at all (`server.rs::build_runtime_state`
+/// branches on `Persistence`), so this method exists primarily as a
+/// programmatic affordance for tests and for any embed-mode caller that
+/// wants to reach a writer handle.
 pub struct SnapshotWriter;
 
 impl SnapshotWriter {
+    /// Phase 13.4 Plan 07 (D-02) — construct a no-op snapshot writer for
+    /// `Persistence::Memory` mode. The returned value is identical to
+    /// `SnapshotWriter` itself (the type is a unit struct), but the calling
+    /// convention `SnapshotWriter::no_op().commit_no_op()` documents intent
+    /// and round-trips Ok(()) without touching disk.
+    pub fn no_op() -> Self {
+        SnapshotWriter
+    }
+
+    /// Phase 13.4 Plan 07 (D-02) — no-op commit for memory-mode callers.
+    ///
+    /// Returns `Ok(())` immediately, performs ZERO file I/O. The on-disk
+    /// `write` constructor remains the production path; memory mode skips
+    /// scheduling the snapshot task entirely (see `server.rs`), so this
+    /// method exists as the explicit "I checked the writer; it's a no-op"
+    /// affordance for tests and for direct programmatic use.
+    pub fn commit_no_op(&self) -> Result<(), PersistError> {
+        Ok(())
+    }
+
     /// Atomically write a snapshot file and return its final path. See module
     /// doc for the protocol.
     pub fn write(

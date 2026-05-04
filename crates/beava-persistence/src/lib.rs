@@ -44,6 +44,46 @@ pub struct WalRecord {
     pub payload: Vec<u8>,
 }
 
+/// Phase 13.4 Plan 07 (D-02 USER-LOCKED) — persistence mode discriminator.
+///
+/// `Memory` is **pure RAM**: no WAL writer thread, no snapshot writer, no
+/// recovery on boot. State lives in RAM only; on process restart the state
+/// is gone (clean slate). Snapshot is a no-op (no file I/O at all).
+///
+/// `Disk { .. }` is the existing production path — WAL + snapshot + recovery.
+/// Existing callers passing the disk-config flat continue to work via the
+/// back-compat wrapper in `ServerV18::bind`.
+///
+/// Why memory mode exists: embed mode (`bv.App()` no-URL) is single-process
+/// anyway; recovery has no value if the user restarts the binary. Tests +
+/// notebook usage are the use case; production stays on disk.
+#[derive(Debug, Clone)]
+pub enum Persistence {
+    /// In-RAM only — no WAL, no snapshot, no recovery.
+    Memory,
+    /// On-disk persistence — WAL + snapshot + recovery on boot.
+    Disk {
+        /// Directory for WAL segments (`.log` / `.wal` files).
+        wal_dir: std::path::PathBuf,
+        /// Directory for snapshot files (`.bvs`).
+        snapshot_dir: std::path::PathBuf,
+        /// Sync semantics for the legacy `WalSink::append_event` path.
+        sync_mode: fsync_worker::SyncMode,
+    },
+}
+
+impl Default for Persistence {
+    /// Production default: disk persistence rooted at `.beava/wal` and
+    /// `.beava/snapshots`. Memory mode is opt-in.
+    fn default() -> Self {
+        Persistence::Disk {
+            wal_dir: std::path::PathBuf::from(".beava/wal"),
+            snapshot_dir: std::path::PathBuf::from(".beava/snapshots"),
+            sync_mode: fsync_worker::SyncMode::default(),
+        }
+    }
+}
+
 pub use error::{PersistError, SnapshotError};
 pub use fsync_worker::{SyncMode, WalSink, WalSinkConfig};
 pub use reader::WalReader;
