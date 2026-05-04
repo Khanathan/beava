@@ -49,6 +49,8 @@ Technology stack not yet documented. Will populate after codebase mapping or fir
 
 6. **Executor agents** are prompted with this rule and must structure their work red-then-green per task.
 
+7. **Doc-only-plan exemption** — closure plans (those whose entire scope is closure documentation: `SUMMARY.md`, `VERIFICATION.md`, throughput-baselines append, perf-baselines append, `STATE.md` + `ROADMAP.md` advance, marketing draft files, soak-window scaffolds) ship as a single `docs:` commit (or a small `docs:` cluster) WITHOUT paired `test:` commits. Justification: the validation these plans capture is the verification of work landed by upstream plans that already shipped per-task red→green pairs (item 1) or matched the smoke/acceptance pattern (item 4); the closure plan is additive documentation, not new code or behavior. Plans invoking this exemption MUST cite "CLAUDE.md §TDD Discipline item #7" verbatim in the plan body — this is a positive enumeration so plan-checkers can grep for it deterministically.
+
 **Grandfathered exceptions:**
 - Phase 1 (Foundation), Phase 2 (Registry), Phase 2.5 (TCP wire) — written and partially executed under the prior test-coupled convention. Still ship with `cargo test` green; just lack the red-then-green commit trace.
 
