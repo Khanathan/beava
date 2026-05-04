@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-04T03:44:12.000Z",
+  "phase": "13.4-13.7",
+  "phase_name": "v0 launch — 4 parallel sub-phases (engine + Python+bench + TS+Go + docs site)",
+  "phase_dir": ".planning/phases/{13.4-engine-prep-wire-spec, 13.5-python-sdk-and-bench-cli, 13.6-typescript-go-sdks, 13.7-docs-site-beava-dev}/",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused-after-discuss",
+  "context_kind": "multi-phase-discuss-complete",
+  "completed_tasks": [
+    {"id": "13.0-PHASE-CLOSED", "name": "Phase 13.0 design contract + spec docs CLOSED 2026-05-03 PASS", "status": "done", "commit": "e4ac958"},
+    {"id": "13.7.5-CAPTURE", "name": "Capture Phase 13.7.5 pre-OSS polish (comment audit + test coverage) idea doc + ROADMAP entry", "status": "done", "commit": "ad552ca"},
+    {"id": "AUTO-CONTEXTS", "name": "Wrote 4 --auto-mode CONTEXTs (rejected by user; reverted)", "status": "done-then-reverted", "commits": ["726598e", "42d431f"]},
+    {"id": "13.4-CONTEXT", "name": "Phase 13.4 engine — interactive discuss-phase (4 user-locked decisions: strict diff matrix, pure in-RAM persistence, OP_RESET full-clear gated on test_mode 3-ways-settable, surgical allowlist permit)", "status": "done", "commits": ["c47c768", "352f049"]},
+    {"id": "13.5-CONTEXT", "name": "Phase 13.5 Python SDK + bench CLI — interactive discuss-phase (4 user-locked decisions: mypy --strict + Any escapes, in-package demos ~3MB, subcommand+long-form CLI, flat module structure) + fsync bench mode amendment + cross-amendment from 13.4 D-03 (bv.App test_mode kwarg)", "status": "done", "commits": ["5312380", "2150105"]},
+    {"id": "13.6-CONTEXT", "name": "Phase 13.6 TS+Go — interactive discuss-phase (4 user-locked decisions: ESM-only TS, github.com/beava-dev/beava monorepo with sdk/go subdir, single-Python-orchestrator cross-SDK conformance, doc patches in 13.6 closure) + MAJOR SCOPE CHANGE: pipeline DSL Python-only; TS+Go are communicate-only (~600 LOC each, down from ~1800)", "status": "done", "commit": "fe595d1"},
+    {"id": "13.7-CONTEXT", "name": "Phase 13.7 docs site — interactive discuss-phase (4 user-locked decisions: integrate into existing beava-website + Pagefind NOT MkDocs spin-up, use existing beava-design-system tokens, vertical guides DEFERRED to user-authored interactive follow-up, Cloudflare Pages deploy)", "status": "done", "commit": "bbaa3b3"}
+  ],
+  "remaining_tasks": [
+    {"id": "13.4-PLAN", "name": "/gsd-plan-phase 13.4 — break engine prep into ~8-10 plans across 3 waves", "status": "not_started", "next": true, "priority": "RUN-FIRST", "rationale": "Engine prereq; 13.5/6/7 integration tests gate on this"},
+    {"id": "13.5-PLAN", "name": "/gsd-plan-phase 13.5 — Python SDK rewrite + beava bench CLI plans (~10-12 plans)", "status": "not_started"},
+    {"id": "13.6-PLAN", "name": "/gsd-plan-phase 13.6 — TS+Go communicate-only SDK plans (~6-8 plans, smaller scope post-rescope)", "status": "not_started"},
+    {"id": "13.7-PLAN", "name": "/gsd-plan-phase 13.7 — docs site integration plans (~3-4 plans, smaller post-rescope)", "status": "not_started"},
+    {"id": "ALL-EXECUTE", "name": "Execute 4 phases — 13.4 first then 13.5/6/7 in parallel via /gsd-manager terminals", "status": "not_started", "priority": "AFTER-PLAN", "rationale": "10+ hours of agent work; run in fresh sessions per phase"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [
+    {"action": "Decide if `tally` repo should be renamed to `beava` for v0 launch (Phase 13.8 territory; not blocking 13.4-13.7 plan-phase)", "context": "Per Phase 13.6 D-02, monorepo path is github.com/beava-dev/beava — current repo codename is `tally`", "blocking": false},
+    {"action": "Verify `beava-dev` GitHub org exists or create it before Phase 13.8 GA tag", "context": "Per Phase 13.6 D-02, Go module + npm publish target this org", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Phase 13.0 design contract complete — 16 plans landed across 3 waves; all 4 D-XX + 7 Q-XX honored; 158 artifacts (54 op pages + sdk-api + pipeline-dsl + concepts + architecture + ADR-001/002/003 + 68 tests + 9 demos + wire fixtures)", "phase": "13.0", "commit": "e4ac958"},
+    {"decision": "Phase 13.6 RESCOPED to communicate-only SDKs (~600 LOC each, down from ~1800)", "rationale": "User directive: pipeline DSL is Python-only; TS+Go just push events + query features", "phase": "13.6", "commit": "fe595d1"},
+    {"decision": "Phase 13.7 RESCOPED to integrate into existing beava-website (NOT MkDocs spin-up); vertical guides DEFERRED to user-authored interactive follow-up", "rationale": "User directive: existing site has its own design + Pagefind search; vertical guides will be interactive (v0.1+ browser-WASM)", "phase": "13.7", "commit": "bbaa3b3"},
+    {"decision": "OP_RESET gated on test_mode (3 ways to set: env var, Server::new Config, bv.App SDK kwarg)", "rationale": "User directive: prod servers should not be wipeable; test code should not depend on shell env vars", "phase": "13.4", "commit": "352f049"},
+    {"decision": "Add fsync bench mode (acks=all per-push fsync latency)", "rationale": "User directive: validate durable-push p99 latency target", "phase": "13.5", "commit": "2150105"},
+    {"decision": "GitHub org = beava-dev (NOT beava-io); monorepo layout for now", "rationale": "User directive (overrides original beava-io references in ROADMAP + docs)", "phase": "13.6", "commit": "fe595d1"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "/clear then /gsd-plan-phase 13.4 (engine prereq). Then sequentially: /gsd-plan-phase 13.5, /gsd-plan-phase 13.6, /gsd-plan-phase 13.7. After all 4 plan, drive /gsd-execute-phase 13.4 first (prereq), then 13.5/6/7 in parallel via /gsd-manager.",
+  "context_notes": "User pushed for fully-autonomous chain (Option B) but corrected mid-stream when --auto CONTEXTs were too autonomous. Reverted at 42d431f. Did interactive discuss for all 4 phases. User engaged on every product-shaping decision. Major scope changes: 13.6 communicate-only (rejected pipeline DSL in TS/Go) + 13.7 integrate-into-existing (rejected MkDocs spin-up) + vertical guides deferred. Both decisions saved significant LOC. fsync bench mode + test_mode programmability also surfaced mid-discuss. All 4 CONTEXTs are committed; ready for plan-phase × 4 in next session.",
+  "session_summary": {
+    "started": "2026-05-03 (Phase 13.0 closure)",
+    "ended": "2026-05-04 03:44 UTC (Phase 13.4-13.7 CONTEXTs committed; pausing before plan-phase)",
+    "session_arc": "Phase 13.0 closure → Phase 13.7.5 capture → 4 --auto CONTEXTs → user rejected → revert → 4 interactive discuss-phases (13.4, 13.5, 13.6, 13.7) → pause",
+    "context_usage": "~67% at pause time"
+  }
+}
