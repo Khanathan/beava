@@ -804,6 +804,36 @@ Wave structure:
 
 ---
 
+### Phase 13.4.1: Server-side wire-spec verb-style migration (Phase 13.4 fix-up) — 📋 PLANNED 2026-05-04
+
+**Status:** Inserted 2026-05-04 during /gsd-plan-phase 13.5.1 verification. Goal-backward audit found that Phase 13.4 left `WireRequest::HttpGet` parsing the legacy `{keys, features}` shape and `WireRequest::TcpGet` parsing the legacy `{feature, key}` shape — neither speaks the locked verb-style `{table, key, features?}` contract from `docs/wire-spec.md` / `docs/http-api.md`. The 13.5.1 SDK transports send the verb-style shape; without this fix-up phase, all 68 v0 acceptance tests would 500 at the wire boundary. `/batch_get` response is also wrapped (`{table, entity_id, features:{...}}`) where the SDK and acceptance tests expect flat rows.
+
+**Goal:** Migrate server-side `POST /get`, `OP_GET`, `POST /batch_get`, and `OP_BATCH_GET` to the locked verb-style wire contract. Single-row request body `{table, key, features?: [...]}` on `POST /get` + `OP_GET`; per-entry `{table, key, features?: [...]}` on `POST /batch_get` + `OP_BATCH_GET`. Response shape FLAT ROWS — one flat dict per request entry, no `{table, entity_id, features}` envelope. Apply `features` filter at the server (narrow each row dict to the requested feature names when `features` is present). `serde(alias = "entity_id")` on the new `key` field for one-release back-compat.
+
+**Depends on:** Phase 13.0 (wire-spec.md + ADRs locked) + Phase 13.4 closed.
+
+**Blocks:** Phase 13.5.1 Plan 05 (SDK transport impl) — 13.5.1 cannot land its 68/68 acceptance gate until 13.4.1 ships.
+
+**Detail capture:** `.planning/phases/13.4.1-server-wire-spec-verb-style-migration/13.4.1-CONTEXT-DRAFT.md` (draft scope; refine via `/gsd-discuss-phase 13.4.1`).
+
+**Plans (estimated, ~3-4 plans across 2 waves):**
+
+- Wave 1 (red, parallel): integration tests asserting `POST /get` accepts `{table, key, features?}` and rejects legacy shapes; `OP_GET` parses `{table, key, features?}`; `POST /batch_get` per-entry accepts `features?` and returns flat rows; `OP_BATCH_GET` mirrors.
+- Wave 2 (green, parallel): migrate `apply_shard.rs::WireRequest::HttpGet` + `WireRequest::TcpGet` body parsers; migrate `BatchGetReqEntry` (add `features: Option<Vec<String>>`, alias `entity_id` → `key`); migrate `runtime_core_glue.rs::dispatch_get_batch` to flat-row response; apply features filter at server.
+- Closure: SUMMARY + VERIFICATION + perf-baselines/throughput-baselines append (regression-gate against Phase 13.5 small/tcp baseline).
+
+**Success criteria:**
+1. `POST /get` and `OP_GET` accept `{table, key, features?}` JSON body; reject the legacy `{keys, features}` and `{feature, key}` shapes with structured error.
+2. `POST /batch_get` and `OP_BATCH_GET` accept per-entry `{table, key, features?}` and return flat rows (one dict per entry, no envelope).
+3. When `features` is present, response is narrowed to those keys only.
+4. `examples/wire/*.json` fixtures (Phase 13.0) round-trip clean.
+5. `cargo test --workspace --features testing` + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo fmt --all --check` GREEN.
+6. Throughput regression-gate `small/tcp` within ±10% of Phase 13.5 baseline (10% warn / 25% block per CLAUDE.md §End-to-end throughput regression contract).
+
+**Estimated wall-clock:** 1-2 days.
+
+---
+
 ### Phase 13.5: Python SDK rewrite + `beava bench` CLI — 📋 PLANNED 2026-05-03
 
 **Status:** Inserted 2026-05-03. Implements the Python SDK + `beava bench` CLI against the wire-spec + sdk-api specs from Phase 13.0. Parallel with 13.4/13.6/13.7.
@@ -849,15 +879,27 @@ Wave structure:
 
 **Goal:** Wire `HttpTransport` / `TcpTransport` / `EmbedTransport` `send_push` / `send_get` / `send_batch_get` / `send_reset` against the locked Phase 13.4 wire surface (verb-style POST routes; `OP_PUSH=0x10` / `OP_GET=0x20` / `OP_BATCH_GET=0x24` / `OP_RESET=0x40`). Harden `@bv.table` decorator empty-parameter-annotation. Greens up the 68 v0 acceptance tests.
 
-**Depends on:** Phase 13.4 CLOSED + Phase 13.5 CLOSED.
+**Depends on:** Phase 13.4 CLOSED + **Phase 13.4.1 CLOSED** (server-side wire-spec verb-style migration; inserted 2026-05-04 during 13.5.1 plan verification — without it, the SDK's verb-style requests 500 at the server) + Phase 13.5 CLOSED.
 
 **Detail capture:** `.planning/phases/13.5.1-transport-impl-decorator-hardening/13.5.1-CONTEXT.md` (5 user-locked decisions: D-01 strict TypeError on `@bv.table` empty annotation; D-02 JSON default for TCP read-path wire format; D-03 `features` filter on `send_get`; D-04 rename `*_get_single` private + remove v0.0.x; D-05 embed-only 68-test harness + ~6-test cross-transport equivalence smoke).
 
-**Plans (estimated, ~3-5 plans across 2 waves):**
+**Plans:** 6 plans across 4 waves (planned 2026-05-04 via /gsd-plan-phase 13.5.1; iter-3 plan-checker PASS)
 
-- Wave 1 (red, parallel): decorator-hardening test (D-01); transport-impl scaffolding + 68-test pytest fixture (`bv.App(test_mode=True)`); transport-equivalence smoke (~6 tests).
-- Wave 2 (green, parallel): `_table.py::_resolve_upstream_proxies` strict-TypeError fix; `Http/Tcp/EmbedTransport.send_push/get/batch_get/reset` impls; rename `tcp_get_single`/`http_get_single` → private; amend 68 acceptance test decorators with type annotations.
-- Closure: SUMMARY + VERIFICATION + perf-baselines/throughput-baselines append.
+- Wave 1 (red, parallel):
+  - [ ] 13.5.1-01-PLAN.md — RED: decorator-hardening unit tests for D-01 strict TypeError contract
+  - [ ] 13.5.1-02-PLAN.md — RED: flip v0 `app` fixture to `bv.App(test_mode=True)`; capture 0/68 baseline
+  - [ ] 13.5.1-03-PLAN.md — RED: cross-transport equivalence smoke (7 tests × 3 transports = 21 cases incl. D-03 batch_get features filter)
+- Wave 2 (green):
+  - [ ] 13.5.1-04-PLAN.md — GREEN: `_table.py::_resolve_upstream_proxies` strict-TypeError fix (D-01)
+- Wave 3 (green cluster — *blocked on Phase 13.4.1 server-side wire-spec migration*):
+  - [ ] 13.5.1-05-PLAN.md — GREEN cluster (4 commits): HttpTransport impls (5a) + TcpTransport+EmbedTransport impls + base-class `features` plumbing (5b) + `*_get_single` rename + v0.0.x scheduling (5c) + 70 decorator annotations + 6 MagicMock replacements (5d) (D-01/D-02/D-03/D-04/D-05)
+- Wave 4 (closure):
+  - [ ] 13.5.1-06-PLAN.md — docs: SUMMARY + VERIFICATION + throughput small/tcp row + STATE/ROADMAP advance
+
+**Cross-cutting constraints (truths from plan-checker iter-3):**
+- Plan 05 cannot land until Phase 13.4.1 ships (server-side `WireRequest::HttpGet`/`TcpGet`/`BatchGetReqEntry` migrated to verb-style + flat-row response). `phase_depends_on: [13.4.1]` documented in 13.5.1-05-PLAN.md frontmatter.
+- No `MagicMock` against the Transport surface anywhere under `python/tests/v0/` (D-05 anti-pattern; Plan 06 closure asserts `grep -c "MagicMock" python/tests/v0/ == 0`).
+- Every code-touching task ships RED commit first, then GREEN commit (CLAUDE.md §TDD Discipline; verbatim text quoted in Plan 06).
 
 **Success criteria:**
 1. 68 / 68 v0 acceptance tests GREEN against `bv.App(test_mode=True)` embed engine.
