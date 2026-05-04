@@ -9,7 +9,7 @@ use crate::recovery::{replay_handrolled_wal_dir, replay_wal_from_lsn};
 use crate::snapshot_task::{spawn_snapshot_task, SnapshotTaskConfig, SnapshotTriggerTx};
 use crate::AppState;
 use beava_core::registry::Registry;
-use beava_persistence::{SyncMode, WalSink, WalSinkConfig};
+use beava_persistence::{Persistence, SyncMode, WalSink, WalSinkConfig};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,6 +17,31 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+/// Phase 13.4 Plan 07 (D-02 USER-LOCKED) — server boot configuration.
+///
+/// Carried via [`ServerV18::bind_with_config`]. Plan 13.4-08 (OP_RESET) extends
+/// this struct with `test_mode`; Plan 07 introduces it as a vehicle for the
+/// `Persistence` selector.
+///
+/// `Persistence::Memory` boots the server WITHOUT a WAL writer thread,
+/// WITHOUT a snapshot writer, and WITHOUT calling recovery — pure in-RAM
+/// state per D-02. `Persistence::Disk { .. }` preserves the existing WAL +
+/// snapshot + recovery path verbatim.
+///
+/// Named `ServerV18Config` (rather than `Config`) to avoid collision with
+/// the existing `beava_core::config::Config` re-export at the crate root.
+#[derive(Debug, Clone, Default)]
+pub struct ServerV18Config {
+    /// Persistence mode. `Persistence::Disk { .. }` is the production
+    /// default (via `Default::default()`); `Persistence::Memory` is opt-in
+    /// for embed mode + tests.
+    pub persistence: Persistence,
+    /// Plan 13.4-08 hook: gate for `OP_RESET` in production. `false` (the
+    /// default) blocks reset; `true` permits it. Plan 07 lands the field
+    /// shape; Plan 08 wires the actual reset dispatch.
+    pub test_mode: bool,
+}
 
 #[derive(Debug, Error)]
 pub enum ServerError {
@@ -101,8 +126,13 @@ struct ServerV18State {
     /// Plan 12.6-15: shutdown flag for the WalWriter loop. Set on server
     /// shutdown to trigger the writer's final seal+drain+fsync block.
     wal_writer_shutdown: Arc<std::sync::atomic::AtomicBool>,
-    snapshot_cancel: CancellationToken,
-    snapshot_worker: JoinHandle<()>,
+    /// Plan 13.4-07 (D-02): None when `Persistence::Memory` (snapshot task
+    /// not spawned); `Some((cancel, worker))` for `Persistence::Disk`.
+    snapshot_task: Option<(CancellationToken, JoinHandle<()>)>,
+    /// Plan 13.4-07 (D-02): always `Some` — for memory mode we still own the
+    /// trigger sender side of a never-served channel so callers that
+    /// `force_snapshot_now` get a clean ack channel rather than panicking.
+    /// In Disk mode this is the real scheduler trigger.
     snapshot_trigger: SnapshotTriggerTx,
     wal_dir: std::path::PathBuf,
     snapshot_dir: std::path::PathBuf,
@@ -189,6 +219,48 @@ impl ServerV18 {
             tcp_listener,
             prebuilt_state: None,
         })
+    }
+
+    /// Plan 13.4-07 (D-02 USER-LOCKED) — extended constructor accepting a
+    /// `ServerV18Config` struct (persistence + test_mode). Memory mode boots
+    /// the server WITHOUT a WAL writer thread, WITHOUT a snapshot writer,
+    /// and WITHOUT calling recovery — pure in-RAM state. Disk mode preserves
+    /// the existing WAL + snapshot + recovery path verbatim.
+    ///
+    /// Like `bind_with_state`, this constructor builds the full runtime
+    /// state at bind-time so `TestServer` can grab Arc clones via
+    /// `app_state()` / `registry()` / `snapshot_trigger_handle()` BEFORE
+    /// `serve_with_dirs` consumes the server.
+    ///
+    /// `tcp_addr` is `Option<SocketAddr>` to mirror the planned wire-spec
+    /// shape (TCP listener can be skipped in HTTP-only embed mode); when
+    /// `None`, the TCP listener still binds on `127.0.0.1:0` so the mio
+    /// event loop has a uniform listener set, but the bound TCP addr is
+    /// not surfaced through any user-visible interface. Plan 13.4-07
+    /// keeps the TCP listener mandatory in the implementation; the
+    /// `Option` is for API forward-compatibility.
+    pub async fn bind_with_config(
+        http_addr: std::net::SocketAddr,
+        tcp_addr: Option<std::net::SocketAddr>,
+        admin_addr: std::net::SocketAddr,
+        cfg: ServerV18Config,
+    ) -> Result<Self, ServerError> {
+        // The mio event loop expects two listeners (HTTP + TCP); when the
+        // caller passes `None` for tcp_addr we bind it to a throwaway
+        // ephemeral 127.0.0.1:0. Plan 13.4-04 may revisit this once the
+        // verb-style HTTP migration is in place.
+        let resolved_tcp_addr = tcp_addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
+        let mut sv18 = Self::bind(http_addr, resolved_tcp_addr, admin_addr).await?;
+        // Plan 13.4-08 hook: `cfg.test_mode` is recorded on AppState (or
+        // surfaced via a dedicated channel) by Plan 08; Plan 07 plumbs the
+        // field shape only. Suppress unused-binding diagnostics until
+        // Plan 08 wires the read side.
+        let _test_mode = cfg.test_mode;
+        // 60s default snapshot interval mirrors the production tuning;
+        // memory mode ignores it (snapshot task not spawned).
+        let state = build_runtime_state_with_persistence(cfg.persistence, 60_000, 2).await?;
+        sv18.prebuilt_state = Some(state);
+        Ok(sv18)
     }
 
     /// Plan 12.6-01: variant of `bind` that ALSO eagerly builds AppState,
@@ -383,6 +455,43 @@ async fn build_runtime_state(
     snapshot_interval_ms: u64,
     wal_fsync_interval_ms: u64,
 ) -> Result<ServerV18State, ServerError> {
+    // Disk-mode default — preserves the pre-Plan-13.4-07 behavior. The
+    // memory-mode path is reachable only via `bind_with_config`.
+    build_runtime_state_with_persistence(
+        Persistence::Disk {
+            wal_dir,
+            snapshot_dir,
+            sync_mode: SyncMode::Periodic,
+        },
+        snapshot_interval_ms,
+        wal_fsync_interval_ms,
+    )
+    .await
+}
+
+/// Plan 13.4-07 (D-02 USER-LOCKED): build runtime state branched on the
+/// `Persistence` variant.
+///
+/// `Persistence::Disk { .. }` runs the original boot path verbatim — recovery
+/// from snapshots + WAL tails, real `WalSink::spawn`, real
+/// `WalWriter::new(..).spawn()`, real `spawn_snapshot_task`.
+///
+/// `Persistence::Memory` skips ALL filesystem interaction:
+///   - No `recovery::*` calls (state starts fresh).
+///   - `WalSink::spawn_no_op()` instead of `WalSink::spawn(WalSinkConfig {..})`.
+///   - A no-op WAL writer thread that drains sealed `WalBufferRing` buffers
+///     into the free pool without writing or fsync'ing.
+///   - The snapshot task is not spawned at all; only its trigger channel is
+///     created so `TestServer::force_snapshot_now` has a sender to talk to.
+///
+/// `wal_fsync_interval_ms` is honored in Disk mode and ignored in Memory mode
+/// (Memory mode uses the env-resolved `wal_cfg.tick_ms` for the no-op
+/// writer's drain cadence).
+async fn build_runtime_state_with_persistence(
+    persistence: Persistence,
+    snapshot_interval_ms: u64,
+    wal_fsync_interval_ms: u64,
+) -> Result<ServerV18State, ServerError> {
     use beava_runtime_core::wal_buffer::WalBufferRing;
     use beava_runtime_core::wal_lsn::WalLsn;
     use beava_runtime_core::wal_writer::WalWriter;
@@ -392,7 +501,29 @@ async fn build_runtime_state(
     let registry = Arc::new(beava_core::registry::Registry::new());
     let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
 
+    // Resolve persistence-mode-specific paths. Memory mode uses placeholder
+    // paths that are never read or written.
+    let (wal_dir, snapshot_dir, sync_mode, is_memory) = match &persistence {
+        Persistence::Memory => (
+            // Placeholder paths — never touched in memory mode (no WAL
+            // recovery, no WalSink spawn against disk, no snapshot task).
+            std::path::PathBuf::from("<memory-mode-no-wal>"),
+            std::path::PathBuf::from("<memory-mode-no-snapshots>"),
+            SyncMode::Periodic,
+            true,
+        ),
+        Persistence::Disk {
+            wal_dir,
+            snapshot_dir,
+            sync_mode,
+        } => (wal_dir.clone(), snapshot_dir.clone(), *sync_mode, false),
+    };
+
     // ── Recovery: snapshot install → *.log replay (post-snapshot) → *.wal replay ──
+    //
+    // Plan 13.4-07 (D-02): in `Persistence::Memory` mode this whole block is
+    // skipped. State starts FRESH — no replay, no recovery — per D-02
+    // USER-LOCKED ("On process restart: state is gone; clean slate").
     //
     // Plan 12.6-15: install latest *.bvs snapshot BEFORE replaying WAL tails.
     // The legacy Server::bind path already does this; Plan 12.6-01's
@@ -402,62 +533,86 @@ async fn build_runtime_state(
     // expected 1250, observed 1189; 61 missing = events past the snapshot
     // that snapshot-replay would otherwise re-feed via the snapshot's
     // pre-aggregated state tables).
-    //
-    // Step 1: install snapshot if any (registry descriptors + state tables +
-    //   next_event_id + max_event_time_ms). Returns snapshot_lsn for WAL gating.
-    //
-    // Step 2: replay *.log records with `lsn > snapshot_lsn`
-    //   (RegistryBump records that landed after the snapshot, plus any
-    //    persistence-WAL events from the legacy WalSink path).
-    //
-    // Step 3: replay *.wal data-plane events (v=2 binary format from apply_shard).
-    let snapshot_lsn = crate::recovery::load_snapshot_if_any(&snapshot_dir, &dev_agg)
-        .ok()
-        .unwrap_or(0);
-
-    let persistence_lsn = if wal_dir.exists() {
-        match replay_wal_from_lsn(&wal_dir, snapshot_lsn, &dev_agg) {
-            Ok(outcome) => outcome.last_lsn,
-            Err(_) => snapshot_lsn,
-        }
+    let initial_start_lsn = if is_memory {
+        // Memory mode — no recovery, start at LSN 1.
+        tracing::info!(
+            target: "beava.recovery",
+            kind = "recovery.skipped_memory_mode",
+            "Persistence::Memory: recovery skipped (D-02 USER-LOCKED)"
+        );
+        1
     } else {
-        snapshot_lsn
+        // Step 1: install snapshot if any (registry descriptors + state tables +
+        //   next_event_id + max_event_time_ms). Returns snapshot_lsn for WAL gating.
+        //
+        // Step 2: replay *.log records with `lsn > snapshot_lsn`
+        //   (RegistryBump records that landed after the snapshot, plus any
+        //    persistence-WAL events from the legacy WalSink path).
+        //
+        // Step 3: replay *.wal data-plane events (v=2 binary format from apply_shard).
+        let snapshot_lsn = crate::recovery::load_snapshot_if_any(&snapshot_dir, &dev_agg)
+            .ok()
+            .unwrap_or(0);
+
+        let persistence_lsn = if wal_dir.exists() {
+            match replay_wal_from_lsn(&wal_dir, snapshot_lsn, &dev_agg) {
+                Ok(outcome) => outcome.last_lsn,
+                Err(_) => snapshot_lsn,
+            }
+        } else {
+            snapshot_lsn
+        };
+
+        // Step 3: replay hand-rolled *.wal data-plane events.
+        // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across all paths.
+        let handrolled_lsn_start = persistence_lsn + 1;
+        let handrolled_outcome =
+            replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
+        let initial = handrolled_outcome
+            .last_lsn
+            .max(persistence_lsn)
+            .max(snapshot_lsn)
+            + 1;
+
+        tracing::info!(
+            target: "beava.recovery",
+            kind = "recovery.serve_with_dirs",
+            persistence_lsn,
+            handrolled_events = handrolled_outcome.replay_event_count,
+            initial_start_lsn = initial,
+            "serve_with_dirs recovery complete"
+        );
+
+        initial
     };
-
-    // Step 3: replay hand-rolled *.wal data-plane events.
-    // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across all paths.
-    let handrolled_lsn_start = persistence_lsn + 1;
-    let handrolled_outcome =
-        replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
-    let initial_start_lsn = handrolled_outcome
-        .last_lsn
-        .max(persistence_lsn)
-        .max(snapshot_lsn)
-        + 1;
-
-    tracing::info!(
-        target: "beava.recovery",
-        kind = "recovery.serve_with_dirs",
-        persistence_lsn,
-        handrolled_events = handrolled_outcome.replay_event_count,
-        initial_start_lsn,
-        "serve_with_dirs recovery complete"
-    );
 
     // Legacy WalSink: still used for /register cold path (admin endpoint).
     // Data-plane push uses WalBufferRing directly (D-2).
     // initial_start_lsn ensures the new *.log segment doesn't collide with
     // the existing one from the previous server instance.
-    let (wal_sink, legacy_wal_worker) = WalSink::spawn(WalSinkConfig {
-        dir: wal_dir.clone(),
-        initial_start_lsn,
-        initial_registry_version: dev_agg.registry.version() as u32,
-        fsync_interval_ms: wal_fsync_interval_ms,
-        fsync_bytes: 0,
-        segment_bytes: 64 * 1024 * 1024,
-        sync_mode: SyncMode::Periodic,
-    })
-    .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+    //
+    // Plan 13.4-07 (D-02): in Memory mode we use `WalSink::spawn_no_op()`
+    // which drains append requests with fake LSNs and never touches disk.
+    let (wal_sink, legacy_wal_worker) = if is_memory {
+        let (sink, worker) = WalSink::spawn_no_op();
+        tracing::info!(
+            target: "beava.wal",
+            kind = "wal.no_op_sink_spawned",
+            "Persistence::Memory: WalSink::spawn_no_op (D-02 USER-LOCKED)"
+        );
+        (sink, worker)
+    } else {
+        WalSink::spawn(WalSinkConfig {
+            dir: wal_dir.clone(),
+            initial_start_lsn,
+            initial_registry_version: dev_agg.registry.version() as u32,
+            fsync_interval_ms: wal_fsync_interval_ms,
+            fsync_bytes: 0,
+            segment_bytes: 64 * 1024 * 1024,
+            sync_mode,
+        })
+        .map_err(|e| ServerError::WalSpawn(e.to_string()))?
+    };
 
     let app_state = Arc::new(AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone()));
     // Plan 12.6-07: production data-plane `/registry` is permanently 404. The
@@ -490,37 +645,66 @@ async fn build_runtime_state(
         Arc::clone(&wal_lsn),
     ));
 
-    // WAL writer thread: drains sealed buffers, calls write() + fsync().
-    let wal_writer = WalWriter::new(
-        &wal_dir,
-        Arc::clone(&wal_ring),
-        Arc::clone(&wal_lsn),
-        wal_cfg.tick_ms,
-    )
-    .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
-    // Plan 12.6-15: capture WalWriter's shutdown flag BEFORE spawn() consumes
-    // self. Without this we couldn't actually trigger the writer's
-    // final-drain-and-fsync block at server shutdown — the writer loop
-    // would just keep ticking (sleep → seal → drain → check shutdown
-    // (always false) → loop) and the JoinHandle drop would detach the
-    // thread mid-tick, losing any active-buffer contents that hadn't
-    // been sealed yet. Surfaced by phase7_restart_cycle::sc1 (1216 of
-    // 1250 expected post-restart events; 34 lost in the active buffer).
-    let wal_writer_shutdown = wal_writer.shutdown_flag();
-    let wal_writer_handle = wal_writer.spawn();
+    // WAL writer thread: in Disk mode drains sealed buffers, calls
+    // write() + fsync(); in Memory mode (D-02) drains sealed buffers
+    // back to the free pool with NO file I/O so the apply hot path
+    // doesn't backpressure-block once buffers fill.
+    let (wal_writer_shutdown, wal_writer_handle) = if is_memory {
+        spawn_no_op_wal_writer(Arc::clone(&wal_ring), Arc::clone(&wal_lsn), wal_cfg.tick_ms)
+    } else {
+        let wal_writer = WalWriter::new(
+            &wal_dir,
+            Arc::clone(&wal_ring),
+            Arc::clone(&wal_lsn),
+            wal_cfg.tick_ms,
+        )
+        .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+        // Plan 12.6-15: capture WalWriter's shutdown flag BEFORE spawn() consumes
+        // self. Without this we couldn't actually trigger the writer's
+        // final-drain-and-fsync block at server shutdown — the writer loop
+        // would just keep ticking (sleep → seal → drain → check shutdown
+        // (always false) → loop) and the JoinHandle drop would detach the
+        // thread mid-tick, losing any active-buffer contents that hadn't
+        // been sealed yet. Surfaced by phase7_restart_cycle::sc1 (1216 of
+        // 1250 expected post-restart events; 34 lost in the active buffer).
+        let shutdown = wal_writer.shutdown_flag();
+        let handle = wal_writer.spawn();
+        (shutdown, handle)
+    };
 
     // ── Spawn snapshot task (admin plane) ────────────────────────────────
-    let snapshot_cancel = CancellationToken::new();
-    let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
-        SnapshotTaskConfig {
-            interval: Duration::from_millis(snapshot_interval_ms.max(1)),
-            snapshot_dir: snapshot_dir.clone(),
-            retain: 2,
-        },
-        Arc::clone(&app_state),
-        wal_sink.clone(),
-        snapshot_cancel.clone(),
-    );
+    //
+    // Plan 13.4-07 (D-02 USER-LOCKED): in Memory mode the snapshot task is
+    // not spawned at all — saves a tokio task and ensures zero file I/O. We
+    // still create a (sender, receiver) channel pair so callers that hold a
+    // `snapshot_trigger` clone (e.g. `TestServer::force_snapshot_now`) get
+    // an ack-channel-closed error rather than panicking on a missing handle.
+    let (snapshot_task, snapshot_trigger) = if is_memory {
+        let (trigger_tx, _trigger_rx) =
+            tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<Result<(), String>>>(8);
+        // _trigger_rx is dropped immediately; manual-trigger sends will fail
+        // closed-channel — caller surface returns a structured error
+        // ("snapshot task channel closed") rather than performing I/O.
+        tracing::info!(
+            target: "beava.snapshot",
+            kind = "snapshot.task_skipped_memory_mode",
+            "Persistence::Memory: snapshot task not spawned (D-02 USER-LOCKED)"
+        );
+        (None, trigger_tx)
+    } else {
+        let snapshot_cancel = CancellationToken::new();
+        let (snapshot_worker, snapshot_trigger) = spawn_snapshot_task(
+            SnapshotTaskConfig {
+                interval: Duration::from_millis(snapshot_interval_ms.max(1)),
+                snapshot_dir: snapshot_dir.clone(),
+                retain: 2,
+            },
+            Arc::clone(&app_state),
+            wal_sink.clone(),
+            snapshot_cancel.clone(),
+        );
+        (Some((snapshot_cancel, snapshot_worker)), snapshot_trigger)
+    };
 
     Ok(ServerV18State {
         app_state,
@@ -532,12 +716,73 @@ async fn build_runtime_state(
         wal_lsn,
         wal_writer_handle,
         wal_writer_shutdown,
-        snapshot_cancel,
-        snapshot_worker,
+        snapshot_task,
         snapshot_trigger,
         wal_dir,
         snapshot_dir,
     })
+}
+
+/// Plan 13.4-07 (D-02 USER-LOCKED) — no-op WAL writer thread for memory mode.
+///
+/// Mirrors the structure of `beava_runtime_core::wal_writer::run_writer_loop`
+/// (sleep → seal_active → drain sealed buffers → check shutdown) but with
+/// the file `write()` and `fsync()` calls REPLACED by direct `return_to_free`
+/// — buffers are recycled without any disk I/O, and the four-watermark LSN
+/// state is advanced (`mark_written` + `mark_synced`) so any waiters that
+/// depend on the durable watermark unblock immediately.
+///
+/// Returns `(shutdown_flag, join_handle)` matching the shape of
+/// `WalWriter::shutdown_flag()` + `WalWriter::spawn()`.
+fn spawn_no_op_wal_writer(
+    ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
+    lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
+    tick_ms: u64,
+) -> (
+    Arc<std::sync::atomic::AtomicBool>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering as AOrdering};
+
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_thread = Arc::clone(&shutdown);
+    let tick = Duration::from_millis(tick_ms.max(1));
+
+    let handle = std::thread::Builder::new()
+        .name("beava-wal-writer-noop".to_owned())
+        .spawn(move || loop {
+            std::thread::sleep(tick);
+
+            // Force-seal the active buffer so the apply thread doesn't
+            // accumulate beyond `tick_ms` worth of data.
+            ring.seal_active();
+
+            // Drain sealed buffers without writing to disk. Advance the
+            // written + synced watermarks so PerEvent-style waiters
+            // (none in memory mode, but the contract still holds) don't
+            // stall on a never-incrementing durable LSN.
+            while let Some(buf) = ring.pop_sealed() {
+                let hi = buf.lsn_hi();
+                lsn.mark_written(hi);
+                lsn.mark_synced(hi);
+                ring.return_to_free(buf);
+            }
+
+            if shutdown_thread.load(AOrdering::Acquire) {
+                // Final drain on shutdown.
+                ring.seal_active();
+                while let Some(buf) = ring.pop_sealed() {
+                    let hi = buf.lsn_hi();
+                    lsn.mark_written(hi);
+                    lsn.mark_synced(hi);
+                    ring.return_to_free(buf);
+                }
+                break;
+            }
+        })
+        .expect("failed to spawn no-op WAL writer thread");
+
+    (shutdown, handle)
 }
 
 /// Run the apply thread + admin server until `shutdown` resolves, then
@@ -567,8 +812,7 @@ where
         wal_lsn,
         wal_writer_handle,
         wal_writer_shutdown,
-        snapshot_cancel,
-        snapshot_worker,
+        snapshot_task,
         snapshot_trigger,
         wal_dir: _wal_dir,
         snapshot_dir: _snapshot_dir,
@@ -622,9 +866,11 @@ where
     wal_writer_shutdown.store(true, AOrdering::Release);
     let _ = wal_writer_handle.join();
 
-    // Stop snapshot task.
-    snapshot_cancel.cancel();
-    let _ = snapshot_worker.await;
+    // Stop snapshot task (Disk mode only — memory mode never spawned one).
+    if let Some((snapshot_cancel, snapshot_worker)) = snapshot_task {
+        snapshot_cancel.cancel();
+        let _ = snapshot_worker.await;
+    }
 
     // Drain legacy WalSink (used only for /register cold path).
     let _ = app_state.wal_sink.clone().shutdown().await;
