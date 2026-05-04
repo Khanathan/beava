@@ -22,11 +22,135 @@ network mode (url is set), test_mode is ignored with a UserWarning.
 """
 from __future__ import annotations
 
+import json
 import warnings
 from typing import Any
 from urllib.parse import urlparse
 
 from beava._transport import Transport, make_transport
+
+
+def _to_register_json(
+    descriptors: tuple[Any, ...],
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+) -> bytes:
+    """Convert ``@bv.event`` / ``@bv.table`` descriptors into a UTF-8 JSON
+    payload matching the wire-spec ``{"nodes": [...]}`` shape.
+
+    Plan 11 contract — exposed at module level so ``python/tests/v0/test_lit.py``
+    + ``test_global.py`` can introspect the wire payload independently of an
+    actual transport.
+    """
+    nodes: list[dict[str, Any]] = []
+    for d in descriptors:
+        node = _descriptor_to_node(d)
+        if node is None:
+            continue
+        nodes.append(node)
+    payload: dict[str, Any] = {"nodes": nodes}
+    if force:
+        payload["force"] = True
+    if dry_run:
+        payload["dry_run"] = True
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
+    """Best-effort serialization of a single descriptor to wire-shape JSON.
+
+    Recognised inputs:
+      - ``EventSource`` (class with ``_kind == "event_source"``)
+      - ``EventDerivation``
+      - ``TableDescriptor``
+      - Plain dict (passthrough — for tests that hand-build payloads)
+    """
+    # Plain dict — assume already wire-shaped.
+    if isinstance(d, dict):
+        return d
+    kind = getattr(d, "_kind", None)
+    if kind in ("event_source", None) and hasattr(d, "_schema"):
+        # @bv.event class form.
+        name = getattr(d, "_name", getattr(d, "__name__", None))
+        if not name:
+            return None
+        schema_dict = getattr(d, "_schema", {}) or {}
+        fields_obj: dict[str, str] = {}
+        for fname, ftype in schema_dict.items():
+            fields_obj[fname] = _python_type_to_wire(ftype)
+        return {
+            "kind": "event",
+            "name": name,
+            "schema": {"fields": fields_obj, "optional_fields": []},
+        }
+    if kind == "table":
+        # @bv.table descriptor.
+        chain = getattr(d, "_chain", []) or []
+        key_cols = getattr(d, "_key_cols", []) or []
+        parent = getattr(d, "_parent", None)
+        upstreams = [getattr(parent, "_name", "")] if parent is not None else []
+        ops = _chain_to_ops(chain)
+        return {
+            "kind": "derivation",
+            "name": getattr(d, "_name", ""),
+            "output_kind": "table",
+            "upstreams": upstreams,
+            "ops": ops,
+            "table_primary_key": list(key_cols),
+        }
+    if kind in ("event_derivation", "aggregation"):
+        chain = getattr(d, "_chain", []) or []
+        parent = getattr(d, "_parent", None)
+        upstreams = [getattr(parent, "_name", "")] if parent is not None else []
+        ops = _chain_to_ops(chain)
+        return {
+            "kind": "derivation",
+            "name": getattr(d, "_name", ""),
+            "output_kind": "table",
+            "upstreams": upstreams,
+            "ops": ops,
+        }
+    return None
+
+
+def _python_type_to_wire(t: Any) -> str:
+    """Map Python type / annotation to wire-format type string."""
+    if t in (str,) or getattr(t, "__name__", "") == "str":
+        return "str"
+    if t in (int,) or getattr(t, "__name__", "") == "int":
+        return "i64"
+    if t in (float,) or getattr(t, "__name__", "") == "float":
+        return "f64"
+    if t in (bool,) or getattr(t, "__name__", "") == "bool":
+        return "bool"
+    return "str"
+
+
+def _chain_to_ops(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert chain steps (list of ``{"op": ..., ...}`` dicts) to wire-shape
+    ops. The aggregation step shape uses ``{"op": "group_by", "keys": [...],
+    "agg": {name: {"op": <op>, "params": {...}}}}``.
+    """
+    out: list[dict[str, Any]] = []
+    for step in chain:
+        op = step.get("op")
+        if op == "agg":
+            keys = step.get("keys", [])
+            aggs = step.get("aggs", {})
+            agg_obj: dict[str, Any] = {}
+            for name, spec in aggs.items():
+                if isinstance(spec, dict):
+                    op_name = spec.get("op", "count")
+                    params = {k: v for k, v in spec.items() if k != "op"}
+                    agg_obj[name] = {"op": op_name, "params": params}
+                else:
+                    agg_obj[name] = {"op": "count", "params": {}}
+            out.append({"op": "group_by", "keys": list(keys), "agg": agg_obj})
+        else:
+            # Pass-through for filter/select/etc.
+            out.append(dict(step))
+    return out
 
 
 class App:
@@ -148,9 +272,9 @@ class App:
                 response shape per docs/error-codes.md.
         """
         t = self._require_transport()
-        return t.send_register(  # type: ignore[no-any-return]
-            descriptors=descriptors, force=force, dry_run=dry_run
-        )
+        payload = _to_register_json(descriptors, force=force, dry_run=dry_run)
+        result: dict[str, Any] = t.send_register(payload)
+        return result
 
     def push(self, event_name: str, fields: dict[str, Any]) -> dict[str, Any]:
         """Push a single event to the server.
@@ -160,9 +284,8 @@ class App:
             fields: Event fields as a plain Python dict.
         """
         t = self._require_transport()
-        return t.send_push(  # type: ignore[no-any-return]
-            event_name=event_name, fields=fields
-        )
+        result: dict[str, Any] = t.send_push(event_name=event_name, fields=fields)
+        return result
 
     def get(
         self,
@@ -176,9 +299,9 @@ class App:
         sentinel (empty-string entity_id).
         """
         t = self._require_transport()
-        if key is None:
-            return t.send_get(table=table, key="")  # type: ignore[no-any-return]
-        return t.send_get(table=table, key=key)  # type: ignore[no-any-return]
+        effective_key: str | list[Any] = "" if key is None else key
+        result: dict[str, Any] = t.send_get(table=table, key=effective_key)
+        return result
 
     def batch_get(
         self,
@@ -191,7 +314,9 @@ class App:
                 one dict in the response list at the matching index.
         """
         t = self._require_transport()
-        return t.send_batch_get(requests=list(requests))  # type: ignore[no-any-return]
+        coerced: list[tuple[str, str | list[Any]]] = [(tbl, k) for tbl, k in requests]
+        result: list[dict[str, Any]] = t.send_batch_get(requests=coerced)
+        return result
 
     def reset(self) -> None:
         """Reset all server state (test-mode-gated per Phase 13.4 D-03).
@@ -201,9 +326,10 @@ class App:
                 ``reset_disabled_in_production``).
         """
         t = self._require_transport()
-        return t.send_reset()  # type: ignore[no-any-return]
+        t.send_reset()
 
     def ping(self) -> dict[str, Any]:
         """Server liveness check; returns server_version + registry_version."""
         t = self._require_transport()
-        return t.send_ping()  # type: ignore[no-any-return]
+        result: dict[str, Any] = t.send_ping()
+        return result
