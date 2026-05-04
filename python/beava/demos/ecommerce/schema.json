@@ -1,0 +1,64 @@
+[
+  {
+    "kind": "event",
+    "name": "PageView",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "page",
+        "type": "str"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "kind": "event",
+    "name": "AddToCart",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "sku",
+        "type": "str"
+      },
+      {
+        "name": "price",
+        "type": "float"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  },
+  {
+    "kind": "event",
+    "name": "Purchase",
+    "fields": [
+      {
+        "name": "user_id",
+        "type": "str"
+      },
+      {
+        "name": "total",
+        "type": "float"
+      },
+      {
+        "name": "n_items",
+        "type": "int"
+      },
+      {
+        "name": "ts",
+        "type": "int"
+      }
+    ]
+  }
+]

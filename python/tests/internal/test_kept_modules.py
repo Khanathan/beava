@@ -29,11 +29,12 @@ def test_kept_modules_import() -> None:
 @pytest.mark.parametrize(
     "deleted",
     [
-        "beava._events",
-        "beava._agg",
+        # ``_col`` and ``_events`` are reintroduced by Plan 03 (rewritten DSL);
+        # ``_agg`` is reintroduced by Plan 04 (53 op helpers). These must stay
+        # deleted: legacy schema/validate/eval_reference modules whose surface
+        # is replaced by the new pipeline DSL.
         "beava._schema",
         "beava._validate",
-        "beava._col",
         "beava._eval_reference",
     ],
 )
