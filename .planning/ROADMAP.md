@@ -843,6 +843,35 @@ Wave structure:
 
 ---
 
+### Phase 13.5.1: Transport impl + decorator hardening (Phase 13.5 fix-up) — 📋 PLANNED 2026-05-04
+
+**Status:** Inserted 2026-05-04 mid-batch-discuss session covering 13.5.1 + 13.7.5 + 13.7.6 + 13.8. Surfaces from Phase 13.5 Plan 11 deficit (0/68 v0 acceptance tests passing — `Http/Tcp/EmbedTransport.send_*` stubbed to `NotImplementedError`; mypy passed via MagicMock).
+
+**Goal:** Wire `HttpTransport` / `TcpTransport` / `EmbedTransport` `send_push` / `send_get` / `send_batch_get` / `send_reset` against the locked Phase 13.4 wire surface (verb-style POST routes; `OP_PUSH=0x10` / `OP_GET=0x20` / `OP_BATCH_GET=0x24` / `OP_RESET=0x40`). Harden `@bv.table` decorator empty-parameter-annotation. Greens up the 68 v0 acceptance tests.
+
+**Depends on:** Phase 13.4 CLOSED + Phase 13.5 CLOSED.
+
+**Detail capture:** `.planning/phases/13.5.1-transport-impl-decorator-hardening/13.5.1-CONTEXT.md` (5 user-locked decisions: D-01 strict TypeError on `@bv.table` empty annotation; D-02 JSON default for TCP read-path wire format; D-03 `features` filter on `send_get`; D-04 rename `*_get_single` private + remove v0.0.x; D-05 embed-only 68-test harness + ~6-test cross-transport equivalence smoke).
+
+**Plans (estimated, ~3-5 plans across 2 waves):**
+
+- Wave 1 (red, parallel): decorator-hardening test (D-01); transport-impl scaffolding + 68-test pytest fixture (`bv.App(test_mode=True)`); transport-equivalence smoke (~6 tests).
+- Wave 2 (green, parallel): `_table.py::_resolve_upstream_proxies` strict-TypeError fix; `Http/Tcp/EmbedTransport.send_push/get/batch_get/reset` impls; rename `tcp_get_single`/`http_get_single` → private; amend 68 acceptance test decorators with type annotations.
+- Closure: SUMMARY + VERIFICATION + perf-baselines/throughput-baselines append.
+
+**Success criteria:**
+1. 68 / 68 v0 acceptance tests GREEN against `bv.App(test_mode=True)` embed engine.
+2. ~6 cross-transport equivalence tests assert HTTP / TCP / Embed produce identical results on a canonical fraud-team flow.
+3. NO `MagicMock` in any integration test under `python/tests/v0/` or transport-equivalence smoke (anti-pattern enforced by plan-checker contract).
+4. `cargo test --workspace --features testing` + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo fmt --all --check` + `mypy --strict python/beava` GREEN.
+5. `@bv.table(key="...")\ndef Fn(events):` raises `TypeError` with helpful message; `@bv.table(key="...")\ndef Fn(events: Click):` works.
+
+**Estimated wall-clock:** 2-3 days.
+
+**Blocks:** Phase 13.8 GA.
+
+---
+
 ### Phase 13.6: TypeScript + Go SDKs (communicate-only) — 📋 PLANNED 2026-05-03
 
 **Status:** Inserted 2026-05-03. **RESCOPED 2026-05-03** to communicate-only per user directive: pipeline authoring is Python-only; TS+Go ship wire-thin clients (~600 LOC each, down from ~1800). Parallel with 13.4/13.5/13.7.
@@ -924,9 +953,9 @@ Wave structure:
 
 **Depends on:** Phase 13.4 + 13.5 + 13.6 + 13.7 ALL CLOSED. Polishing earlier would clean code that's about to be rewritten.
 
-**Detail capture:** `.planning/ideas/phase-13.7.5-pre-oss-polish.md` (179 lines) contains the full per-component plan structure, KEEP/DELETE heuristic codification, coverage-matrix template, and gap-detection process.
+**Detail capture:** `.planning/ideas/phase-13.7.5-pre-oss-polish.md` (179 lines) — original capture; `.planning/phases/13.7.5-pre-oss-code-polish/13.7.5-CONTEXT.md` — locked decisions from 2026-05-04 batch-discuss (3 decisions: D-01 idea-doc heuristic verbatim; D-02 8 component plans with Wave-2 parallelism; D-03 MUST-FIX = v0 ship-pitch surface only).
 
-**Plans (estimated, ~13 plans across 3 waves):**
+**Plans (locked at 12 plans across 3 waves; cross-SDK conformance plan dropped to v0.1+ deferrals per D-03):**
 
 - Wave 1 — comment-audit conventions + 8 per-component scrubs (parallelizable via worktrees):
   - 13.7.5-01 conventions doc + heuristic checklist
@@ -941,9 +970,8 @@ Wave structure:
   - 13.7.5-09 coverage matrix CSV (feature × test-file × test-status); gap classification MUST-FIX vs DEFER
   - 13.7.5-10 fill Rust gaps (per-crate)
   - 13.7.5-11 fill Python gaps (extend `python/tests/v0/`)
-  - 13.7.5-12 cross-SDK conformance harness (same scenario across Python + TS + Go; assert agreement)
 - Wave 3 — closure:
-  - 13.7.5-13 SUMMARY + VERIFICATION + STATE/ROADMAP advance to Phase 13.8
+  - 13.7.5-13 SUMMARY + VERIFICATION + STATE/ROADMAP advance to Phase 13.7.6
 
 **Success criteria:**
 1. ~3000-8000 LOC of redundant comments removed across the codebase (net-negative LOC)
@@ -954,6 +982,43 @@ Wave structure:
 6. `cd python && python -m pytest tests/v0` passes ≥80% of tests once engine is up (Phase 13.4) + SDK is up (Phase 13.5)
 
 **Estimated wall-clock:** 1-2 weeks with parallelism.
+
+---
+
+### Phase 13.7.6: Pre-OSS repo polish — security + commit-path + public-facing files — 📋 PLANNED 2026-05-04
+
+**Status:** Inserted 2026-05-04 mid-batch-discuss session covering 13.5.1 + 13.7.5 + 13.7.6 + 13.8. Captured per user directive ("we need to also run clippy on our repo. ... For commit please remove claude code from all commit and only place me as commit. Dont show AI in all commits"). Companion to 13.7.5: 13.7.5 cleans the **code surface**; 13.7.6 cleans the **repo surface** (history, public files, dependencies).
+
+**Goal:** Ship a public-facing GitHub repo that's professional, free of AI-tooling artifacts, free of secrets / private business reasoning, free of CVE'd dependencies. Three workstreams: (C) security audit + lint sweep; (D) commit-path sanitization (history rewrite + branch rename + repo rename); (E) public-facing files audit/refresh.
+
+**Depends on:** Phase 13.7.5 CLOSED (clippy / lint / mypy run cleaner after comment audit; running them on code about to be edited is wasted work).
+
+**Detail capture:** `.planning/ideas/phase-13.7.6-pre-oss-security-and-commit-path.md` — original capture; `.planning/phases/13.7.6-pre-oss-repo-polish/13.7.6-CONTEXT.md` — locked decisions from 2026-05-04 batch-discuss (6 decisions: D-01 keep history + strip `.planning/` + `CLAUDE.md` + `.claude/` via `git filter-repo`; D-02 trailer-only surgical AI-attribution scrub; D-03 repo rename `tally → beava` under `beava-dev` GitHub org; D-04 author email `hoang@beava.dev`; D-05 `CLAUDE.md` stripped from public repo entirely [USER OVERRIDE]; D-06 SKIP public docs of architectural invariants — CONTRIBUTING.md = test/lint/workflow basics only; tripwires educate breakers organically [USER OVERRIDE]).
+
+**Plans (locked at 24 plans across 4 workstreams):**
+
+- **Workstream C — security + lint sweep (8 plans):** clippy `-D warnings` sweep + `cargo audit` + `cargo deny` + Python ruff + mypy --strict re-verify + tsc --noEmit + go vet + `/cso` OWASP review + ASVS-L1 threat model + secrets sweep on full history.
+- **Workstream D — commit-path sanitization (6 plans):** bare-clone filter-repo rehearsal + trailer-strip callback + path strips (`.planning/` + `CLAUDE.md` + `.claude/`) + worktree cleanup + branch rename `v2/greenfield → main` + repo rename `tally → beava`.
+- **Workstream E — public-facing files (9 plans):** LICENSE audit + README rewrite + CONTRIBUTING (per D-06 minimal) + SECURITY + CODE_OF_CONDUCT + CHANGELOG synthesis + `.gitignore` audit + `.github/ISSUE_TEMPLATE` + `.github/workflows` audit.
+- **Workstream F — closure (1 plan):** SUMMARY + VERIFICATION + STATE/ROADMAP advance to Phase 13.8.
+
+**Success criteria:**
+1. `git log --all --pretty=format:"%H %ae %s" | grep -iE 'claude|🤖'` returns 0 lines (trailer-strip complete).
+2. `git log --all --pretty=format:"%H" -- .planning/ CLAUDE.md .claude/` returns 0 lines (path strips complete).
+3. Every commit's author = `Hoang Phan <hoang@beava.dev>` (mailmap rewrite complete).
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings` GREEN with zero `#[allow(...)]` debt unjustified.
+5. `cargo audit` + `cargo deny` GREEN.
+6. Repo lives at `github.com/beava-dev/beava` with default branch `main`.
+7. Clean clone of public repo → `cargo test --workspace` GREEN; `pytest python/tests` GREEN.
+8. LICENSE / README / CONTRIBUTING / SECURITY / CODE_OF_CONDUCT / CHANGELOG / `.gitignore` / `.github/` all audited and refreshed.
+
+**Pre-launch user actions (parallelizable with execution):**
+1. Verify or create the `beava-dev` GitHub org.
+2. Add + verify `hoang@beava.dev` on the GitHub account that owns `beava-dev/beava`.
+
+**Estimated wall-clock:** 3-5 days.
+
+**Blocks:** Phase 13.8 GA.
 
 ---
 
