@@ -4,6 +4,8 @@
 
 Each operator page follows the same 9-section template (Signature / Description / Parameters / Returns / Complexity / Examples / Wire / Edge cases / See also). Renamed ops (per [ADR-002](../../.planning/decisions/ADR-002-polars-op-rename.md)) use the new Polars-convention name as filename + H1; each carries a "Previously called `bv.<old>`" note for searchability.
 
+> **Per-entity vs global aggregation:** All 53 operators work with both per-entity (`@bv.table(key="user_id")`) and global (`@bv.table` with no `key=`, per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md)) aggregation. Op semantics are identical — only the state-keying dimension differs. See [`docs/concepts/global-aggregation.md`](../concepts/global-aggregation.md) for when to use which.
+
 ## Core (8)
 
 | Op | Description |

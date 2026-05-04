@@ -447,6 +447,87 @@ three SDKs use string-only field args for `bv.sum` / `beava.Sum`.
 > **See:** [`docs/pipeline-dsl/compilation-rules.md`](../pipeline-dsl/compilation-rules.md)
 > § Boolean-sum recipe (Plan 13.0-12 — forward reference).
 
+## Public expression literals (`beava.Lit`) — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), `beava.Lit(value)` is exposed as a public factory:
+
+```go
+func Lit(value any) Expr  // value: int64 | float64 | string | bool | nil
+```
+
+Use cases (mirror Python):
+
+```go
+// Constant column
+events.WithColumns(map[string]beava.Expr{
+    "source": beava.Lit("web"),
+})
+
+// Force float64 division
+events.WithColumns(map[string]beava.Expr{
+    "rate": beava.Col("count").Div(beava.Lit(60.0)),
+})
+
+// Explicit literal in filter
+events.Filter(beava.Col("amount").Gt(beava.Lit(100)))
+```
+
+Implementation lands in Phase 13.6. Wire-level: literals are serialized via the existing expression-string path; no wire change.
+
+## Global aggregation — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), the Go SDK ships first-class **global aggregation** mirroring the Python surface. Unlike Python (which uses `App.get` arity overloading) and TypeScript (which uses overloaded signatures), the Go SDK uses a **separate method** `App.GetGlobal(ctx, tableName)` per Go's typing convention favoring explicit method names over arity overloading.
+
+Declare a global table by passing nil/empty key cols to the table builder:
+
+```go
+type Click struct {
+    UserID string `beava:"user_id"`
+    Page   string `beava:"page"`
+}
+
+ClickEvent := beava.Event(beava.EventConfig{Name: "Click", Sample: Click{}})
+
+TotalClicks := beava.Table(beava.TableConfig{
+    Name:    "TotalClicks",
+    KeyCols: nil, // or []string{} → global table
+    Source:  ClickEvent,
+    Agg: map[string]beava.AggOp{
+        "total": beava.Count(beava.Window("forever")),
+    },
+})
+
+ctx := context.Background()
+app, _ := beava.NewApp(ctx, "embed://", nil)
+defer app.Close(ctx)
+
+_ = app.Register(ctx, []beava.Descriptor{ClickEvent, TotalClicks})
+_ = app.Push(ctx, "Click", map[string]any{"user_id": "alice", "page": "/home"})
+_ = app.Push(ctx, "Click", map[string]any{"user_id": "bob", "page": "/home"})
+
+result, _ := app.GetGlobal(ctx, "TotalClicks")
+// result == map[string]any{"total": int64(2)}, no key arg
+```
+
+**Method dispatch contract:**
+
+| Table type | Method | Wire request |
+|---|---|---|
+| Per-entity | `app.Get(ctx, tableName, key)` | `{"table": ..., "key": "alice"}` |
+| Global | `app.GetGlobal(ctx, tableName)` | `{"table": ..., "key": ""}` |
+
+Calling `app.Get(ctx, globalTable, "anyKey")` against a registered global table returns `map[string]any{}` (empty — matches the per-entity cold-start convention; the empty entity simply has no state). Calling `app.GetGlobal(ctx, perEntityTable)` is also accepted at the engine level (returns the empty entity's state) but is conceptually nonsensical — the Go SDK does NOT lock at register-time which method matches which table.
+
+**Three equivalent forms** (all compile to wire-level `key: []`):
+
+```go
+ClickEvent.Agg(map[string]beava.AggOp{"total": beava.Count(...)})        // shortest
+ClickEvent.GroupBy().Agg(map[string]beava.AggOp{"total": beava.Count(...)}) // empty GroupBy
+beava.Table(beava.TableConfig{KeyCols: nil, ...})                          // explicit nil
+```
+
+Implementation deferred to Phase 13.6 (~75 LOC: `beava.Lit` factory + `events.GroupBy()` empty allowance + `events.Agg(...)` direct + table-builder no-`KeyCols` + `app.GetGlobal` method).
+
 ## Operator catalog
 
 The 53 op functions match the Python catalogue in PascalCase per Go

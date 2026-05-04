@@ -167,6 +167,52 @@ Worked example: [`examples/wire/register-fraud-team.response.json`](../examples/
 
 Worked example: [`examples/wire/register-conflict.error.json`](../examples/wire/register-conflict.error.json)
 
+#### Global tables (`key = []`) — per ADR-003
+
+A register payload with `key: []` (empty array) declares a **global table** — a single output row, no per-entity dimension. The sentinel `key = ""` (empty string) routes global state on the GET wire. Per [ADR-003](../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), every operator works in both per-entity and global modes — semantics are identical, only the state-keying dimension differs.
+
+Use cases: monitoring dashboards (total throughput, current entity count, global p95), anomaly detection on global rates ("is the GLOBAL signup rate spiking?"), top-K-globally features ("top 10 hottest pages on the platform"), cross-entity aggregations ("total spend across all users").
+
+**Wire-level register payload (table descriptor):**
+
+```json
+{
+  "kind": "table",
+  "name": "GlobalCounter",
+  "key": [],
+  "upstreams": ["Click"],
+  "agg": {
+    "click_count": {"op": "count", "params": {"window": "forever"}}
+  }
+}
+```
+
+**Wire-level GET request for a global table:**
+
+```json
+{ "table": "GlobalCounter", "key": "" }
+```
+
+**Cold-start GET response (no events landed yet):**
+
+```json
+{}
+```
+
+**GET response after events land (flat row-shape per `get.response.schema.json`):**
+
+```json
+{ "click_count": 12345 }
+```
+
+See [`examples/wire/register-global-counter.request.json`](../examples/wire/register-global-counter.request.json), [`examples/wire/get-global.request.json`](../examples/wire/get-global.request.json), and [`examples/wire/get-global.response.json`](../examples/wire/get-global.response.json) for the full fixture set. The `examples/wire/schemas/register.request.schema.json` JSON Schema accepts `key: []` (the `minItems: 1` constraint is relaxed to `minItems: 0` per ADR-003); `examples/wire/schemas/get.request.schema.json` accepts the empty-string `key: ""` sentinel for global GET.
+
+**Validation contract:** `key` MUST be either non-empty (per-entity table) or empty array (global table) — never null. The server rejects null `key` at the JSON-prelude validator with `schema_invalid`. The corresponding GET MUST send `key: ""` for a global table; sending a non-empty key against a global table raises `KeyError`-style rejection (or returns `{}` cold-start, depending on the SDK convention; per Phase 13.5 the Python SDK raises). Symmetric: sending `key: ""` against a per-entity table is a misuse and the server returns `{}` cold-start (no error — the empty entity simply has no state).
+
+`OP_BATCH_GET` accepts mixed per-entity + global lookups in the same batch (heterogeneous batches can include both shapes — global lookups simply set `key` to `""`). See `examples/wire/batch_get-heterogeneous.request.json` for the per-entity variant; the global variant inside the same batch is `{"table": "GlobalCounter", "key": ""}`.
+
+**Implementation deferred** to Phase 13.4 (engine sentinel routing — ~30 LOC; the existing `&str` key path handles `""` natively, so this is mostly the absence of a special-case rejection) + Phase 13.5 (Python SDK no-key form: `@bv.table` no `key=`, `events.group_by()` empty, `events.agg(**aggs)` shorthand, `App.get(table_name)` 1-arg overload) + Phase 13.6 (TS + Go SDK overloads). Acceptance gate: `python/tests/v0/test_global.py` (Plan 13.0-16, 8 tests gated by `_engine_available()` SKIP until 13.4 + 13.5 land together).
+
 ### OP_PUSH (0x0010)
 
 Push a single event into a registered event source. Default ack semantics is `acks=1` — the server returns success after the event is durably written to the local WAL (per the active sync mode; default is periodic fsync per Phase 6.1 `SyncMode::Periodic`).

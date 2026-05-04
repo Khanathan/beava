@@ -101,6 +101,38 @@ the wire. v0 specifically:
 - Go: `[]any` containing `string` / `int64` / `float64` / `bool` items.
   Other types in the slice raise an error before the wire call.
 
+### Global-table sentinel (`key = ""`) — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), a register payload with `key: []` (empty array) declares a **global table** — single output dict, no per-entity dimension. The wire-level GET sentinel is `key: ""` (empty string).
+
+| Language | Per-entity GET | Global GET |
+|---|---|---|
+| Python | `app.get("Table", "alice")` | `app.get("Table")` (1-arg overload) |
+| TypeScript | `await app.get("Table", "alice")` | `await app.get("Table")` (overloaded signature) |
+| Go | `app.Get(ctx, "Table", "alice")` | `app.GetGlobal(ctx, "Table")` (separate method) |
+
+All three SDKs produce the same wire request when querying a global table (`{"table": "...", "key": ""}`). Per-language ergonomics differ to match each ecosystem's conventions:
+
+- **Python** uses arity overloading — natural in dynamic typing.
+- **TypeScript** uses overloaded signatures with type-level enforcement (compile-time arity check).
+- **Go** uses a separate method — Go's static typing makes arity overloading awkward; explicit method names are idiomatic.
+
+The wire shape is identical — only the per-language client surface differs. Global-table state is bounded by the per-table state size (single slot), independent of entity count. See [`docs/concepts/global-aggregation.md`](../concepts/global-aggregation.md) for the full conceptual treatment.
+
+## Public expression literal (`bv.lit`) — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), all three SDKs expose a public literal factory:
+
+| Language | Signature |
+|---|---|
+| Python | `bv.lit(value: int | float | str | bool | None) -> Expr` |
+| TypeScript | `bv.lit(value: number | string | boolean | null): Expr` |
+| Go | `beava.Lit(value any) Expr` |
+
+The literal AST node already exists internally in all three SDKs (used by the implicit operator-overloading coercion path); ADR-003 promotes it to the public namespace. Wire-level: literals are serialized via the existing expression-string path; **no wire change**.
+
+Implementation deferred: Phase 13.5 (Python ~5 LOC) + Phase 13.6 (TS + Go ~30 LOC each).
+
 ## Field types
 
 The 6-element field-type vocabulary is shared across all languages. Wire

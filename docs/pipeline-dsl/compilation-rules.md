@@ -570,6 +570,64 @@ Phase 13.4 to permit `OpNode::Table*` ONLY when it appears as the
 
 ---
 
+### @bv.table global form (no `key=`, per ADR-003)
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), `@bv.table` may be declared **without** a `key=` kwarg → declares a **global table** (single output dict, no per-entity dimension). The function body uses `.agg(...)` directly (no `.group_by()`) or an explicit empty `group_by()`.
+
+#### Python source
+
+```python
+@bv.event
+class Click:
+    user_id: str
+    page: str
+
+# Global form — no key=, no group_by:
+@bv.table
+def TotalClicks(clicks) -> bv.Table:
+    return clicks.agg(total=bv.count(window="forever"))
+```
+
+#### JSON wire
+
+The decorator emits the same derivation node as the per-entity form, with `key: []` (empty array) signalling the global shape:
+
+```json
+{
+  "kind": "derivation",
+  "name": "TotalClicks",
+  "upstreams": ["Click"],
+  "output_kind": "table",
+  "key": [],
+  "agg": {
+    "total": {"op": "count", "params": {"window": "forever"}}
+  }
+}
+```
+
+#### Three equivalent forms compile to the same wire payload:
+
+```python
+clicks.agg(total=bv.count(window="forever"))                  # shortest
+clicks.group_by().agg(total=bv.count(window="forever"))       # explicit empty group_by
+@bv.table                                                     # decorator no key=
+def Foo(c): return c.agg(total=bv.count(window="forever"))
+```
+
+All three produce `key: []` on the wire. Server-side state allocation: a single state slot at sentinel `entity_id = ""`, queryable via `app.get("TotalClicks")` (1-arg overload — returns the global feature dict).
+
+#### Server semantics
+
+Per ADR-003, the engine routes `entity_id = ""` (empty string) through the same per-entity hashmap machinery — no new code path. Register-time validation accepts `key: []` as a valid global-table declaration; `key` MUST be either non-empty (per-entity) or empty (global) — never null.
+
+All 53 operators work in both per-entity and global modes — semantics identical, only the state-keying dimension differs. Standard memory governance applies: `cold_after=` doesn't affect global state (always-live); lifetime ops still subject to V0-MEM-GOV-02 lifetime-bound enforcement.
+
+Implementation deferred to Phase 13.4 (engine, ~30 LOC) + Phase 13.5 (Python SDK, ~110 LOC) + Phase 13.6 (TS + Go SDK overloads, ~150 LOC). Acceptance gate: `python/tests/v0/test_global.py` (Plan 13.0-16, 8 tests).
+
+See [`docs/concepts/global-aggregation.md`](../concepts/global-aggregation.md) for the full conceptual treatment.
+
+---
+
 ## Boolean-sum trick (recommended pattern for conditional counts)
 
 Per [Q1 Path B locked answer](../../.planning/phases/13.0-design-contract-spec-docs/13.0-CONTEXT.md),
@@ -654,6 +712,10 @@ fixture (ALLOWED) or a structured error code (FORBIDDEN).
 | `bv.col("x").cast("int")` in `with_columns(int_col=...)` | ALLOWED | `with_columns` accepts `_ExprAST`; `.cast()` returns one. | (no fixture; standard expression) |
 | `bv.col("x").cast("int")` AS `field` arg to `bv.sum(...)` | FORBIDDEN | Field arg is `str`, not expression — same Q1 Path B locked rule. | `RegistrationError(code="schema_mismatch")` |
 | `@bv.table(key="user_id")` function form | ALLOWED per ADR-001 | Wraps `events.group_by(...).agg(...)` into a derivation node with `output_kind=table`. | [`examples/wire/register-fraud-team.request.json`](../../examples/wire/register-fraud-team.request.json) |
+| `@bv.table` (no `key=` kwarg) → global table | ALLOWED + RECOMMENDED for global use cases per ADR-003 | Declares a global table — single output dict, wire-level signal `key: []`. Use for monitoring / dashboards / anomaly detection / top-K-globally features. | [`examples/wire/register-global-counter.request.json`](../../examples/wire/register-global-counter.request.json) |
+| `events.agg(**aggs)` direct (no `group_by`) | ALLOWED per ADR-003 — equivalent to `events.group_by().agg(...)` | Polars-aligned shorthand for global aggregation. Compiles to the same wire payload as the explicit empty `group_by`. | (no fixture; same wire payload as global `@bv.table` row above) |
+| `app.get("GlobalTable")` (1-arg) | ALLOWED per ADR-003 — Python+TS arity overload | Returns the global feature dict. Equivalent to the wire request `{"table": "...", "key": ""}`. Go SDK uses `app.GetGlobal(ctx, "...")` (separate method per Go convention). | [`examples/wire/get-global.request.json`](../../examples/wire/get-global.request.json) + [`examples/wire/get-global.response.json`](../../examples/wire/get-global.response.json) |
+| `bv.lit(value)` in expression chains | ALLOWED per ADR-003 — public literal factory | Promotes the existing internal `_Literal` AST node to public namespace. Use cases: constant columns, type-coercion patterns, cross-language parity. | (no fixture; existing literal grammar) |
 | `@bv.table` aggregating ANOTHER table | FORBIDDEN — table-to-table aggregation deferred | Only events feed aggregations in v0; aggregation on a `Table` upstream is rejected. | `RegistrationError(code="aggregation_on_table_not_supported")` |
 | `@bv.table` class form | FORBIDDEN — class form deferred to v0.1+ | v0 ships function form only per ADR-001. The class-form decorator is captured in `.planning/ideas/v0.1-deferrals.md`. | `RegistrationError(code="bv_table_class_form_not_supported")` |
 | `app.upsert(table, key, ...)` | FORBIDDEN — table mutation gone per ADR-001 | Aggregation output is the only `@bv.table` use case in v0. | `AttributeError` on `App` class (no method exists) |
@@ -679,3 +741,7 @@ fixture (ALLOWED) or a structured error code (FORBIDDEN).
   `@bv.table` aggregation-output revival narrative.
 - [ADR-002](../../.planning/decisions/ADR-002-polars-op-rename.md) — Polars
   op-rename narrative.
+- [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md) —
+  first-class global aggregation (`@bv.table` no `key=` / `events.agg(...)` no
+  `group_by`) + public `bv.lit` export. See also
+  [`docs/concepts/global-aggregation.md`](../concepts/global-aggregation.md).

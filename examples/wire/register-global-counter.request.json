@@ -1,0 +1,23 @@
+{
+  "descriptors": [
+    {
+      "kind": "event",
+      "name": "Click",
+      "schema": {
+        "user_id": "str",
+        "page": "str"
+      }
+    },
+    {
+      "kind": "table",
+      "name": "GlobalCounter",
+      "key": [],
+      "upstreams": ["Click"],
+      "agg": {
+        "click_count": {"op": "count", "params": {"window": "forever"}}
+      }
+    }
+  ],
+  "force": false,
+  "dry_run": false
+}

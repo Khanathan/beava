@@ -54,6 +54,38 @@ Beava's [embed mode](./concepts/embed-mode.md) spawns a local `beava` binary
 on ephemeral ports -- the same binary you'd run in production for HTTP/TCP
 feature serving.
 
+## Global counter (per ADR-003)
+
+Need a feature that aggregates across **all** entities -- e.g., total platform
+throughput, current entity count, top-K-globally? Declare a global table by
+omitting the `key=` kwarg on `@bv.table`:
+
+```python
+# Same Impression event from above.
+
+@bv.table   # no key= -> global table (per ADR-003)
+def TotalImpressions(imp: Impression):
+    return imp.agg(total=bv.count(window="forever"))   # no group_by
+
+with bv.App() as app:
+    app.register(Impression, CampaignStats, TotalImpressions)
+
+    for camp_id, bid in [("c1", 0.50), ("c1", 0.75), ("c2", 0.40)]:
+        app.push("Impression", {"campaign_id": camp_id, "bid": bid})
+
+    # Per-entity query (existing) -- 2 args:
+    print(app.get("CampaignStats", "c1"))   # -> {"impressions_1h": 2, ...}
+
+    # Global query (new) -- 1 arg, no entity:
+    print(app.get("TotalImpressions"))      # -> {"total": 3}
+```
+
+Per [ADR-003](../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md),
+all 53 operators work with both per-entity and global aggregation. See
+[docs/concepts/global-aggregation.md](./concepts/global-aggregation.md) for the
+full conceptual treatment (when to use global vs per-entity, performance
+characteristics, composition with `cold_after=`).
+
 ## bv.demo()
 
 For a self-contained tour with realistic-shape data:

@@ -458,6 +458,73 @@ This narrowing applies symmetrically across the
 > **See:** [`docs/pipeline-dsl/compilation-rules.md`](../pipeline-dsl/compilation-rules.md)
 > § Boolean-sum recipe (Plan 13.0-12 — forward reference).
 
+## Public expression literals (`bv.lit`) — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), `bv.lit(value)` is exposed as a public factory function in the `bv` namespace:
+
+```typescript
+function lit(value: number | string | boolean | null): Expr;
+```
+
+Use cases (mirror Python):
+
+```typescript
+// Constant column
+events.withColumns({ source: bv.lit("web") });
+
+// Force float division
+events.withColumns({ rate: bv.col("count").div(bv.lit(60.0)) });
+
+// Explicit literal in filter
+events.filter(bv.col("amount").gt(bv.lit(100)));
+```
+
+Implementation lands in Phase 13.6. Wire-level: literals are serialized via the existing expression-string path; no wire change.
+
+## Global aggregation — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), TypeScript ships first-class **global aggregation** mirroring the Python surface. Declare a global table by calling `bv.table` without a `key` field, or use the `events.agg(...)` shorthand directly:
+
+```typescript
+const Click = bv.event({
+  name: "Click",
+  schema: { user_id: "string", page: "string" }
+});
+
+const TotalClicks = bv.table({
+  name: "TotalClicks",
+  // no `key` field → global table
+  source: Click,
+  agg: { total: bv.count({ window: "forever" }) }
+});
+
+const app = new BeavaApp();
+await app.register(Click, TotalClicks);
+await app.push("Click", { user_id: "alice", page: "/home" });
+await app.push("Click", { user_id: "bob",   page: "/home" });
+
+await app.get("TotalClicks");  // → { total: 2 }, no entity arg
+```
+
+**Three equivalent forms** (all compile to wire-level `key: []`):
+
+```typescript
+clicks.agg({ total: bv.count(...) })                      // shortest
+clicks.groupBy().agg({ total: bv.count(...) })            // explicit empty groupBy
+bv.table({ name: "Foo", source: c, agg: { ... } })        // no `key` field
+```
+
+**`app.get` arity contract:**
+
+| Table type | Call shape |
+|---|---|
+| Per-entity | `await app.get(tableName, key)` (2 args required) |
+| Global | `await app.get(tableName)` (1 arg required) |
+
+TypeScript enforces the arity at the type level via overloaded signatures — the wrong-arity call is a compile-time error, not a runtime exception. (See `app.get` signature overload in [BeavaApp class](#app-get-table-key) — Phase 13.6 lands the overload.)
+
+Implementation deferred to Phase 13.6 (~75 LOC: `bv.lit` factory + `events.groupBy()` empty allowance + `events.agg(...)` direct + table-builder no-`key` form + `app.get` overload).
+
 ## Operator catalog
 
 The 53 op functions match the Python catalogue (per

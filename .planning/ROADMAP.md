@@ -52,7 +52,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | 12.8 | Memory governance — cold-entity TTL + bucket-level reclaim + lifetime aggregation contract | Two-tier memory hygiene before final ship. **Tier 1 (entity-level):** opt-in cold-entity TTL eviction via per-source `@bv.event(cold_after='<dur>')` decorator (default OFF; range [1s, 365d]); FRESH state on resurrect (Redis TTL pattern, locked permanent). **Tier 2 (bucket-level — always on):** existing `update_at(now_ms)` per-event reclaim; `BucketReclaimCounter::inc` on bucket trim. **Lifetime aggregation contract:** implicit via `windowed=` omission (D-02 — no new SDK kwarg); each of 53 AggKind variants classifies as O1 / BoundedSketchN / BoundedByRequiredKwarg / BoundedByConfig at register-time; 4th JSON-prelude shim `pre_check_unbounded_op_in_lifetime_mode` rejects Unbounded ops with structured error code (forward-looking framing — NOT `feature_removed_*`). `BEAVA_MEMORY_GOV_ENFORCE=0` is the explicit escape hatch (default ON post-Plan-06). 5 Prometheus metric families on `/metrics` (`cold_entity_evictions_total`, `lifetime_op_cap_hit_total`, `entity_count_resident`, `bytes_per_entity_p99` static placeholder = 7000, `bucket_reclaim_total`). 4 architectural-test CI tripwires. CLAUDE.md `§ Memory Governance Invariant (locked Phase 12.8)` block. | 9 | ✅ **COMPLETED 2026-05-01 (PASS-WITH-WARN)** — 9 plans across 5 waves; workspace 1095/0/4; cargo clippy + fmt clean; all 4 CONTEXT decisions D-01..D-04 honored verbatim; microbench cold-TTL on/off -2.6% (within ±5% gate); throughput regression-gate `small/tcp` -2.5% PASS; **fraud-team WARN flagged for Phase 13** (-21.3% TCP / -29.8% HTTP — root cause: O(N_tables) entity_count_resident snapshot, fraud-team has 9 tables vs 1-4 simpler shapes; NOT gating). REQUIREMENTS V0-MEM-GOV-01/02/03 anchors. SUMMARY + VERIFICATION at `.planning/phases/12.8-memory-governance/`. |
 | 12.9 | **AggOp memory boxing — fraud-team 22 KB → 6 KB budget fix** | Inserted 2026-05-03 from post-Phase-12.8 r8g maxcard bench. `size_of::<AggOp>() = 600 bytes` because of unboxed `SeasonalDeviationState`; every `Vec<AggOp>` slot consumes 600 B regardless of variant. Box the 7 fat-payload variants (SeasonalDeviation, HourOfDayHistogram, EventTypeMix, GeoVelocity, GeoSpread, GeoDistance, DistanceFromHome — same pattern Phase 10 sketches and `WindowedOp` already use) → `size_of::<AggOp>()` drops 600 → 80 bytes (7.5× shrink); fraud-team `user_id` entity inline cost drops 46.8 KB → 6.2 KB; weighted-avg per-entity drops ~22 KB → ~6 KB (clears CLAUDE.md 7 KB budget with headroom). Free side effect: `WindowedOp` bucket inner ops also shrink (same enum). Mechanical change (~10 LOC, no match-arm derefs needed — `Box::DerefMut` auto-deref); NO `FORMAT_VERSION` bump (D-03: serde Box<T> is transparent, bincode wire format unchanged). Investigation doc: `.planning/ideas/per-entity-memory-budget.md`. | 3 | ✅ **COMPLETED 2026-05-03 (PASS)** — 3 plans (boxing red+green / perf gate / closure); workspace 1097/0/4; clippy + fmt clean; size_of cap test promoted to permanent CI tripwire (≤ 80 B); fraud-team/tcp +6.9% median (no regression — possibly cache-locality lift); Phase 11 D-08 explicit-no-boxing comment empirically overridden. SUMMARY + VERIFICATION at `.planning/phases/12.9-aggop-memory-boxing/`. |
 | 13 | **v0 Launch — UMBRELLA** (RESTRUCTURED 2026-05-03) | Umbrella for 6 sub-phases (13.0 + 13.4–13.8) implementing the v0 launch from a 2026-05-03 design session. Sub-phase 13.0 (design contract + spec docs) is the bottleneck; after it lands, 4 implementation phases (13.4 engine / 13.5 Python+bench / 13.6 TS+Go SDKs / 13.7 docs site) run in parallel; 13.8 (packaging + GA tag) is the sequential ship phase. 20 design decisions locked in the session (see Phase 13 detail block). 3 SDK ports: Python + TypeScript (npm) + Go. | ~30 across 6 sub-phases | 📋 **RESTRUCTURED 2026-05-03** — kicks off with `/gsd-discuss-phase 13.0` for design contract |
-| 13.0 | **Design contract + spec documentation** (THE BOTTLENECK) | Produce ship-quality specs for every contract (wire / SDK API per language / pipeline DSL / schema evolution / error codes / 53-op catalog). These docs ARE the v0 documentation rendered into beava.dev. ADR-001 (`@bv.table` partial overturn) + ADR-002 (Polars op rename). Memory updates: `project_v0_events_only_scope` partial overturn pointer. | ~10 | 📋 **PLANNED 2026-05-03** — 5-7 days; everyone waits |
+| 13.0 | **Design contract + spec documentation** | Produce ship-quality specs for every contract (wire / SDK API per language / pipeline DSL / schema evolution / error codes / 54-op catalog). These docs ARE the v0 documentation rendered into beava.dev. ADR-001 (`@bv.table` partial overturn) + ADR-002 (Polars op rename) + ADR-003 (mid-execution: global-agg + bv.lit). Memory updates: `project_v0_events_only_scope` partial overturn pointer. | 16 | ✅ **COMPLETED 2026-05-03 (PASS)** — 16 plans / ~158 artifacts; 4-way parallel 13.4/13.5/13.6/13.7 unblocked |
 | 13.4 | **Engine prep** (Rust server changes against the wire spec) | Op renames (`avg→mean` etc.); GET response → row-shape; new `OP_BATCH_GET` opcode; verb-style HTTP routes; `force=True` + `dry_run=True` register flags; in-memory persistence backend; `OP_RESET` + `POST /reset`; `phase12_7_no_table_surface.rs` test update. | ~8 | 📋 **PLANNED 2026-05-03** — 4-5 days; parallel after 13.0 |
 | 13.5 | **Python SDK rewrite + `beava bench` CLI** | Delete ~2000 LOC of over-engineered SDK; new ~600 LOC core+pipeline-DSL+demo-loader+test-fixtures. Polish bench-v18/v2 into `beava bench` subcommand (3 modes: throughput/mixed/memory). Bundled `bv.demo("adtech"|"fraud"|"ecommerce")` datasets. PEP 563 fix. Module structure: core flat + `beava.test` + `beava.cli` submodules. | ~12 | 📋 **PLANNED 2026-05-03** — 7-10 days; parallel after 13.0 |
 | 13.6 | **TypeScript + Go SDKs** (parallel within phase) | `@beava/sdk` npm package (TS, ~1800 LOC) + `github.com/beava-io/beava-go` Go module (~1800 LOC). Both implement same surface as Python against the wire spec. TS uses decorators or builder; Go uses struct tags + builder. Context-aware Go methods. | ~10 | 📋 **PLANNED 2026-05-03** — 5-7 days each; parallel after 13.0 |
@@ -70,7 +70,7 @@ Feature authoring as composable Python code that ships to production unchanged. 
 | ~~25~~ | ~~Session window operator family (v0.1+)~~ | ~~`bv.session(gap_ms=..., inner=bv.<op>(...))` activity-based grouping~~ | — | ❌ **ARCHIVED-INDEFINITELY 2026-04-30** — out of v0 scope per `project_v0_events_only_scope`. Users can compose count/sum with processing-time windowed ops for v0 demos. Returns in a future minor release if demand arises. |
 | 26 | **Valkey-style I/O architecture rework** (v0.1+) | Inserted 2026-05-03 from post-Phase-12.8 bench session. Beava's IO worker design diverges from the "Valkey 8 model" comments claim: each worker owns a `mio::Poll` and independently polls its assigned client subset (N+1 epoll instances), sending parsed RingItems to apply via crossbeam channel. Valkey IO threads are pure SPSC/SPMC consumers (verified `valkey-io/valkey/src/io_threads.c::IOThreadMain`). 4-phase migration (A measure → B consolidate → C maxclients/backpressure → D validate); Phase A is the **GATE** — abandon if cross-thread channel overhead < 5% of total push CPU. Apply-CPU is 88% of total push time per session's per-stage trace, so the upside is bounded. Plan doc: `.planning/ideas/valkey-io-architecture-rework.md`. **NOT v0 ship-blocker** — pure architecture-debt cleanup if Phase A confirms the cost is real. | ~5 | 💡 **PROPOSED 2026-05-03 (v0.1+)** — gated on Phase A measurement |
 
-**Total active phases:** 27 (Phase 13 RESTRUCTURED 2026-05-03 from a single ship phase into 6 sub-phases — 13.0 + 13.4–13.8 — for the v0-launch design-session deliverables). v0 ship critical path = **Phase 13.0 (design contract + spec docs) — NEXT**, then 13.4–13.7 in parallel, then 13.8 (packaging + GA tag). Phase 12.7 (table strip) ✅ CLOSED 2026-05-01. Phase 12.8 (memory governance) ✅ CLOSED 2026-05-01 (PASS-WITH-WARN). Phase 12.9 (AggOp boxing) ✅ CLOSED 2026-05-03 (PASS). Phase 25 (session windows) and Phase 26 (Valkey IO rework) are v0.1+, not ship-blockers.
+**Total active phases:** 27 (Phase 13 RESTRUCTURED 2026-05-03 from a single ship phase into 6 sub-phases — 13.0 + 13.4–13.8 — for the v0-launch design-session deliverables). v0 ship critical path = **Phase 13.0 (design contract + spec docs) ✅ CLOSED 2026-05-03 (PASS)** → **4-way parallel 13.4 (engine) + 13.5 (Python+bench) + 13.6 (TS+Go) + 13.7 (docs site) NEXT** → sequential 13.8 (packaging + GA tag). Phase 12.7 (table strip) ✅ CLOSED 2026-05-01. Phase 12.8 (memory governance) ✅ CLOSED 2026-05-01 (PASS-WITH-WARN). Phase 12.9 (AggOp boxing) ✅ CLOSED 2026-05-03 (PASS). Phase 25 (session windows) and Phase 26 (Valkey IO rework) are v0.1+, not ship-blockers.
 
 **Insertion / archive history:**
 - Phase 2.5 inserted 2026-04-23 (dual HTTP+TCP wire); Phase 5.5 inserted 2026-04-23 (perf harness + retroactive baselines + regression gates); Phase 7.5 inserted 2026-04-23 (end-to-end throughput harness + per-phase ledger convention)
@@ -621,14 +621,15 @@ The user's 4 launch dimensions (benchmark / SDK shape / UI/UX / first-1-min magi
 **Sub-phases:**
 
 ```
-Phase 13.0 (design contract + spec docs)  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5-7 days
+Phase 13.0 (design contract + spec docs)  ✅ CLOSED 2026-05-03 (PASS)
                               ┃
-                              ┃ ALL specs locked + docs drafted
+                              ┃ ALL specs locked + docs drafted (16 plans, ~158 artifacts, 3 ADRs)
                               ▼
               ┏━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━┓
               ┃               ┃               ┃
    13.4 engine     13.5 Python+bench   13.6 TS+Go SDKs   13.7 docs site
    ━━━━ 4-5d      ━━━━━━━━━━ 7-10d   ━━━━━ 5-7d         ━━━━ 4-6d
+   📋 NEXT         📋 NEXT             📋 NEXT             📋 NEXT
               ┗━━━━━━━━━━━━━━━╋━━━━━━━━━━━━━━━┛
                               ┃ all converge
                               ▼
@@ -637,8 +638,9 @@ Phase 13.0 (design contract + spec docs)  ━━━━━━━━━━━━�
 
 **Total wall-clock (1 person): ~6-7 weeks. Total wall-clock (3+ people parallelized): ~3-4 weeks.**
 
-**Locked decisions from the design session (20 total):**
+**Locked decisions from the design session (20 total + ADR-003 mid-execution 2026-05-03):**
 - `@bv.event` + `@bv.table` decorators (table revival as aggregation-output only, no upsert/delete/retract)
+- **First-class global aggregation per ADR-003 (mid-execution 2026-05-03):** `@bv.table` no `key=` form / `events.agg(...)` no `group_by` / `App.get(table_name)` 1-arg / wire-level `key: []` + sentinel `key: ""`. Public `bv.lit(value)` factory exposed (per ADR-003). Implementation deferred: 13.4 (~30 LOC engine sentinel routing) + 13.5 (~110 LOC Python SDK) + 13.6 (~150 LOC TS+Go).
 - Dict-style push, single push/get, Redis-shaped client
 - Row-shape get + heterogeneous batch_get
 - Cross-language: JSON wire is contract, SDKs are thin compilers
@@ -683,9 +685,9 @@ Phase 13.0 (design contract + spec docs)  ━━━━━━━━━━━━�
 
 ---
 
-### Phase 13.0: Design contract + spec documentation — 📋 PLANNED 2026-05-03
+### Phase 13.0: Design contract + spec documentation — ✅ COMPLETED 2026-05-03 (PASS)
 
-**Status:** Inserted 2026-05-03. **THE BOTTLENECK** — every implementation phase reads from this. Until 13.0 lands, no implementation can start.
+**Status:** ✅ **CLOSED 2026-05-03 (PASS)**. **16 plans across 3 waves; ~158 doc + script + fixture + test artifacts shipped; ADR-001 + ADR-002 + ADR-003 lock the design contract; v0 critical path advances to 4-way parallel 13.4 + 13.5 + 13.6 + 13.7.** SUMMARY: `.planning/phases/13.0-design-contract-spec-docs/13.0-SUMMARY.md`. VERIFICATION: `.planning/phases/13.0-design-contract-spec-docs/13.0-VERIFICATION.md`.
 
 **Goal:** Produce ship-quality specs for every contract (wire, SDK API per language, pipeline DSL, schema evolution, error codes, operator catalog) — these documents BOTH lock the design AND become the rendered content of beava.dev. No "what's the API shape?" Slack messages during implementation.
 
@@ -720,8 +722,9 @@ examples/
 └── go/                           ← same 3 demos in Go
 
 .planning/decisions/
-├── ADR-001-bv-table-partial-overturn.md   ← Q1 architectural overturn
-└── ADR-002-polars-op-rename.md            ← Q4 wire op renames
+├── ADR-001-bv-table-partial-overturn.md          ← Q1 architectural overturn
+├── ADR-002-polars-op-rename.md                   ← Q4 wire op renames
+└── ADR-003-global-aggregation-and-bv-lit.md      ← mid-execution 2026-05-03 scope amendment
 ```
 
 **Plans:** 15 plans across 3 waves
@@ -787,13 +790,14 @@ Wave structure:
 - Wave 3 (~1 plan):
   - `OP_RESET` + `POST /reset` route (~30 LOC)
   - Update `phase12_7_no_table_surface.rs` test to permit `output_kind=table` for derivations
+  - **Global-table sentinel routing per ADR-003 (~30 LOC)** — accept `key: []` at register-time in `register_validate.rs`; sentinel `entity_id = ""` routes through the existing `&str` key path in `apply_shard.rs::dispatch_*_sync` (mostly the absence of a special-case rejection — the existing hashmap machinery handles `""` natively). Acceptance gate: `python/tests/v0/test_global.py` (Plan 13.0-16, 8 tests).
   - SUMMARY + VERIFICATION + STATE/ROADMAP advance
 
 **Success criteria:**
 1. All wire-spec endpoints return the documented response shape (matched against `examples/wire/*.json` from Phase 13.0)
 2. `cargo test --workspace` passes; clippy + fmt clean
 3. Throughput regression-gate `small/tcp` within ±10% of Phase 12.9 baseline (renamed-op rename should be free)
-4. New tests for: row-shape GET, batch_get heterogeneous, force=True diff (additive vs destructive), dry_run=True, in-memory mode boot, reset
+4. New tests for: row-shape GET, batch_get heterogeneous, force=True diff (additive vs destructive), dry_run=True, in-memory mode boot, reset, **global-table register + GET round-trip per ADR-003**
 
 ---
 
@@ -816,6 +820,8 @@ Wave structure:
 - NEW test fixtures (~150 LOC in `beava.test`): `fixture`, `replay`, `assert_features_eq`
 - PEP 563 fix (`get_type_hints()` instead of raw `param.annotation`)
 - Module structure: core flat (`bv.App`, `bv.event`, etc.) + submodules (`beava.test`, `beava.cli`)
+- **Public `bv.lit` export per ADR-003 (~5 LOC in `python/beava/__init__.py`)** — promote internal `_Literal` AST node to public namespace as `bv.lit(value)` factory.
+- **Global aggregation surface per ADR-003 (~110 LOC across `_events.py` + `_app.py` + decorator factory)** — flip `events.group_by()` empty rejection at `python/beava/_events.py:170-172` to acceptance (~10 LOC); add `events.agg(**aggs)` direct shorthand on EventSource/EventDerivation (~30 LOC); accept `@bv.table` decorator without `key=` kwarg → declares global table (~15 LOC); add `App.get(table_name)` 1-arg overload (~30 LOC). Acceptance gate: `python/tests/v0/test_global.py` (Plan 13.0-16, 8 tests) + `python/tests/v0/test_lit.py` (Plan 13.0-16, 5 tests).
 
 **`beava bench` CLI (~2000 LOC Rust, ~5-7 days):**
 - Promote `crates/beava-bench/src/bin/beava-bench-v18.rs` and `beava-bench-v2.rs` to a polished `beava bench` subcommand
@@ -850,6 +856,7 @@ Wave structure:
 - `.d.ts` declarations + bundled `.js` output for runtime
 - Tests: jest fixtures matching Python test pattern
 - Build: tsc → `dist/`; publish to npm as `@beava/sdk`
+- **`bv.lit(value)` factory + global aggregation surface per ADR-003 (~75 LOC)** — `bv.lit` factory mirrors Python; `events.groupBy()` empty allowance + `events.agg({...})` direct + table-builder no-`key` form + `app.get(tableName)` overloaded signature (TS uses overloaded signatures with type-level enforcement, not separate methods).
 
 **Go SDK (~1800 LOC Go, ~5-7 days):**
 - Core client: `beava.NewApp(ctx, url, opts...)` / `.Register()` / `.Push()` / `.Get()` / `.BatchGet()` / `.Reset()` / `.Ping()` / `.Close()`
@@ -858,6 +865,7 @@ Wave structure:
 - 53 operator catalog
 - Tests: standard `testing` + `testify`
 - Module: `github.com/beava-io/beava-go`
+- **`beava.Lit(value any)` factory + global aggregation surface per ADR-003 (~75 LOC)** — `beava.Lit` factory mirrors Python; `events.GroupBy()` empty allowance + `events.Agg(...)` direct + table-builder no-`KeyCols` form + **separate `app.GetGlobal(ctx, tableName)` method** (Go's typing convention favors separate methods over arity overloading; the wire shape is identical to Python/TS).
 
 **Success criteria:**
 1. TS SDK: `npm install @beava/sdk` then `examples/typescript/adtech.ts` runs end-to-end

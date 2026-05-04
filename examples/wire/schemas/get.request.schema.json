@@ -2,13 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://beava.dev/schemas/get.request.schema.json",
   "title": "OP_GET request body",
-  "description": "Single-row feature read. table is a registered table name; key is a string for single-key tables or a homogeneous [string|number|boolean] array for composite-key tables. features (optional) limits the response to a subset.",
+  "description": "Single-row feature read. table is a registered table name; key is a string for single-key tables or a homogeneous [string|number|boolean] array for composite-key tables. Per ADR-003, key MAY be the empty string `\"\"` to retrieve the global state for a global table (declared with key=[] in the register payload). features (optional) limits the response to a subset.",
   "type": "object",
   "properties": {
     "table": { "type": "string" },
     "key": {
       "oneOf": [
-        { "type": "string" },
+        {
+          "type": "string",
+          "description": "Single-key table entity_id, OR `\"\"` (empty string) for global-table state per ADR-003."
+        },
         {
           "type": "array",
           "items": { "type": ["string", "number", "boolean"] }

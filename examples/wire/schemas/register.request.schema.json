@@ -67,14 +67,15 @@
     },
     "TableDescriptor": {
       "type": "object",
-      "description": "@bv.table aggregation-output descriptor per ADR-001 (no upsert/delete/retract; no MVCC).",
+      "description": "@bv.table aggregation-output descriptor per ADR-001 (no upsert/delete/retract; no MVCC). Per ADR-003, key MAY be an empty array `[]` to declare a global table — single output dict, no per-entity dimension. The corresponding GET request uses entity-key `\"\"` (empty string sentinel).",
       "properties": {
         "kind": { "const": "table" },
         "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
         "key": {
           "type": "array",
           "items": { "type": "string" },
-          "minItems": 1
+          "minItems": 0,
+          "description": "Partition-key column names. Non-empty (per-entity) or empty `[]` (global table per ADR-003). MUST NOT be null."
         },
         "upstreams": {
           "type": "array",

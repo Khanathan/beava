@@ -498,6 +498,82 @@ Cross-link: [`docs/pipeline-dsl/expressions.md`](../pipeline-dsl/expressions.md)
 explicit literal coercion or for the rare case where Python operator
 precedence requires it.
 
+## Public expression literals (`bv.lit`) — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), `bv.lit(value)` is exposed as a public factory function in the `bv` namespace. The signature accepts `int | float | str | bool | None`:
+
+```python
+def lit(value: int | float | str | bool | None) -> Expr: ...
+```
+
+Use cases:
+
+```python
+# Constant column — add a fixed-value column to an event derivation
+events.with_columns(source=bv.lit("web"))
+
+# Force float division — both operands could be ints, but bv.lit makes float explicit
+events.with_columns(rate=bv.col("count") / bv.lit(60.0))
+
+# Explicit literal in filter (equivalent to implicit operator-overloading coercion)
+events.filter(bv.col("amount") > bv.lit(100))
+```
+
+The implicit operator-overloading coercion (`bv.col("x") > 100`) still works — `bv.lit` is for cases where explicit construction matters (constant columns, type-coercion patterns, cross-language parity with TS/Go SDKs that lack Python's flexible operator overloading).
+
+`bv.lit` lands in Phase 13.5 (`python/beava/__init__.py`, ~5 LOC). Acceptance gate: `python/tests/v0/test_lit.py` (Plan 13.0-16, 5 tests).
+
+## Global aggregation — per ADR-003
+
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), beava ships first-class **global aggregation** alongside the per-entity surface. Declare a global table by omitting the `key=` kwarg on `@bv.table`:
+
+```python
+@bv.event
+class Click:
+    user_id: str
+    page: str
+
+@bv.table   # no key= → global table
+def TotalClicks(clicks) -> bv.Table:
+    return clicks.agg(total=bv.count(window="forever"))
+
+app = bv.App()
+app.register(Click, TotalClicks)
+app.push("Click", {"user_id": "alice", "page": "/home"})
+app.push("Click", {"user_id": "bob",   "page": "/home"})
+
+app.get("TotalClicks")  # → {"total": 2}, no entity arg
+```
+
+**Three equivalent forms** compile to the same wire payload (all use `key: []`):
+
+```python
+clicks.agg(total=bv.count(...))                 # shortest — direct .agg() shorthand
+clicks.group_by().agg(total=bv.count(...))      # explicit empty group_by
+@bv.table                                       # decorator with no key=
+def Foo(c): return c.agg(total=bv.count(...))
+```
+
+All 53 operators work with both per-entity and global aggregation — same op semantics, different state-keying dimension. See [`docs/concepts/global-aggregation.md`](../concepts/global-aggregation.md) for the full conceptual treatment (when to use global vs per-entity, performance characteristics, composition with `cold_after=`).
+
+**`App.get` arity contract:**
+
+| Table type | Call shape | Cold-start return |
+|---|---|---|
+| Per-entity table | `app.get(table_name, entity_id)` (2 args required) | `{}` for unknown entity |
+| Global table | `app.get(table_name)` (1 arg required) | `{}` until first event |
+
+Mismatched arity raises `KeyError` with a clear message indicating the table's expected arity. The Python SDK enforces this at call-site (no silent wrong-shape behavior).
+
+**Use cases for global aggregation:**
+
+- Operator dashboards (total throughput, current entity count, global p95)
+- Anomaly detection on global rates ("is the GLOBAL signup rate spiking?")
+- Top-K-globally features ("top 10 hottest pages on the platform")
+- Cross-entity aggregations ("total spend across all users in last hour")
+
+**Implementation deferred** to Phase 13.5 (~110 LOC: `bv.lit` export + `events.group_by()` empty allowance + `events.agg(**aggs)` shorthand + `@bv.table` no-`key=` form + `App.get(table_name)` 1-arg overload). The wire-level signal is `key: []` (empty array) on the register payload + sentinel `key: ""` (empty string) on the GET request — see [`docs/wire-spec.md`](../wire-spec.md) § Global tables. Acceptance gate: `python/tests/v0/test_global.py` (Plan 13.0-16, 8 tests).
+
 ## Operator catalog
 
 The `bv.*` namespace exposes 53 op helper functions, organised into 8
