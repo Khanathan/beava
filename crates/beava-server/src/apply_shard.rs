@@ -250,6 +250,109 @@ impl ApplyShard {
                         };
                     }
                 };
+
+                // ─── Phase 13.4 Plan 06 — D-01 force=true + dry_run=true ──
+                //
+                // After the JSON-prelude shims (12.6-04 / 12.6-06 / 12.7-01 /
+                // 12.8-01) and AFTER strict serde, but BEFORE the legacy
+                // `compute_diff` conflict path: classify the diff under the
+                // D-01 categorized-lists schema. The dry_run branch fires
+                // FIRST (per CONTEXT scope item #6: "returns JSON without
+                // applying"). The force gate is checked second; if
+                // destructive entries exist without `force=true`, return
+                // 409 + force_required. If `force=true` is set on a
+                // destructive payload, eagerly remove the conflicting
+                // descriptors so the subsequent `execute_register_with_wal`
+                // treats the payload as additive (registry_version bumps,
+                // WAL records the change).
+                let (force, dry_run) = match serde_json::from_slice::<serde_json::Value>(&payload) {
+                    Ok(v) => (
+                        v.get("force").and_then(|x| x.as_bool()).unwrap_or(false),
+                        v.get("dry_run").and_then(|x| x.as_bool()).unwrap_or(false),
+                    ),
+                    Err(_) => (false, false),
+                };
+                let prev_snapshot = self.state.dev_agg.registry.snapshot();
+                let diff = beava_core::register_validate::classify_register_diff(
+                    &prev_snapshot,
+                    &reg_payload.nodes,
+                );
+
+                if dry_run {
+                    // Phase 13.4 Plan 06 Task 6.d: dry_run branch — return 200
+                    // + diff JSON without applying. The branch fires BEFORE
+                    // the force gate so `dry_run=true, force=true` is treated
+                    // as dry_run (matches Phase 13.5 SDK contract).
+                    let body = serde_json::json!({
+                        "diff": diff,
+                        "would_apply": false,
+                    });
+                    return GlueResponse::Register {
+                        http_status: 200,
+                        body: bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                        tcp_op: beava_core::wire::OP_REGISTER,
+                    };
+                }
+
+                if let Err(force_err) =
+                    beava_core::register_validate::register_check_force_required(&diff, force)
+                {
+                    let body = serde_json::json!({
+                        "error": force_err,
+                        "registry_version": self.state.dev_agg.registry.version(),
+                    });
+                    return GlueResponse::Register {
+                        http_status: 409,
+                        body: bytes::Bytes::from(serde_json::to_vec(&body).unwrap_or_default()),
+                        tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
+                    };
+                }
+
+                // force=true on a destructive payload: pre-remove the
+                // conflicting descriptors so the apply path treats them as
+                // new. Per Plan 06's must_haves: "force=true bumps
+                // registry_version + WAL records the change". The
+                // execute_register_with_wal path emits a RegistryBump
+                // record that captures the new payload's nodes.
+                if force && !diff.destructive.is_empty() {
+                    let mut to_remove: Vec<String> = Vec::new();
+                    for entry in &diff.destructive {
+                        match entry {
+                            beava_core::registry_diff::DiffEntry::Rename { from, .. } => {
+                                to_remove.push(from.clone());
+                            }
+                            beava_core::registry_diff::DiffEntry::TypeChange { field, .. } => {
+                                // field is "<descriptor>.<field>"; remove the
+                                // owning descriptor so it can be re-installed.
+                                if let Some((descriptor, _)) = field.split_once('.') {
+                                    to_remove.push(descriptor.to_string());
+                                }
+                            }
+                            beava_core::registry_diff::DiffEntry::OpRemoval { table, .. }
+                            | beava_core::registry_diff::DiffEntry::AggRemoval { table, .. }
+                            | beava_core::registry_diff::DiffEntry::KeyColsChange {
+                                table, ..
+                            } => {
+                                to_remove.push(table.clone());
+                            }
+                            beava_core::registry_diff::DiffEntry::WindowChange { agg, .. } => {
+                                if let Some((descriptor, _)) = agg.split_once('.') {
+                                    to_remove.push(descriptor.to_string());
+                                }
+                            }
+                            // Additive variants (sentinel-only when destructive list mixed)
+                            // shouldn't appear here; the destructive list is destructive-only.
+                            _ => {}
+                        }
+                    }
+                    to_remove.sort();
+                    to_remove.dedup();
+                    self.state
+                        .dev_agg
+                        .registry
+                        .force_remove_descriptors(&to_remove);
+                }
+
                 // Register is a cold path on the mio event loop.
                 // Delegate to the async WAL-backed register function using a
                 // temporary single-threaded tokio runtime (register is never
@@ -509,6 +612,13 @@ impl ApplyShard {
             // "yes the process is up and accepting connections".
             WireRequest::HttpHealth => GlueResponse::HealthOk,
 
+            // ─── POST /ping (Plan 13.4-04 — verb-style liveness) ──────────────
+            // HTTP mirror of TCP `OP_PING (0x0000)`. Returns `200 {"status":"ok"}`
+            // (same wire shape as `/health`) so verb-style fixtures can poll
+            // either endpoint. No AppState consult; no apply-thread roundtrip
+            // for the same reason `/health` is inline-shimmed.
+            WireRequest::HttpPing => GlueResponse::HealthOk,
+
             // Plan 12.6-01: data-plane /ready and /registry shims for
             // back-compat with TestServer-using tests. /ready is a
             // constant-body shim (mirrors admin sidecar's /ready). /registry
@@ -565,12 +675,28 @@ impl ApplyShard {
             // matching the unsupported-content-type prefix is surfaced as a
             // dedicated TcpError so the criterion-bonus_msgpack test passes
             // (`error.code == "unsupported_content_type"`).
+            //
+            // Plan 13.4-04: verb-style `POST /push` body-parse failures
+            // (`missing_event_name_in_body`, `invalid_json_body`) emitted by
+            // `http_listener::parse_verb_push` surface as `PushError` with the
+            // reason copied verbatim into the static error code so the HTTP
+            // encoder returns 400 + `{"error":{"code":"missing_event_name_in_body"}}`.
             WireRequest::ParseError { reason } => {
                 if reason.starts_with("unsupported content_type") {
                     GlueResponse::TcpError {
                         code: "unsupported_content_type",
                         message: reason,
                         extras: serde_json::json!({}),
+                    }
+                } else if reason == "missing_event_name_in_body" {
+                    GlueResponse::PushError {
+                        code: "missing_event_name_in_body",
+                        registry_version: self.state.dev_agg.registry.version() as u32,
+                    }
+                } else if reason == "invalid_json_body" {
+                    GlueResponse::PushError {
+                        code: "invalid_json_body",
+                        registry_version: self.state.dev_agg.registry.version() as u32,
                     }
                 } else {
                     GlueResponse::Unsupported

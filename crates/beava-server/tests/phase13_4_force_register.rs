@@ -83,7 +83,10 @@ fn baseline_payload() -> Value {
 
 /// Helper: register a payload, returning (status, body).
 async fn post_register(ts: &TestServer, body: &Value) -> (u16, Value) {
-    let resp = ts.post_json("/register", body).await.expect("post /register");
+    let resp = ts
+        .post_json("/register", body)
+        .await
+        .expect("post /register");
     let status = resp.status().as_u16();
     let body: Value = resp.json().await.expect("json body");
     (status, body)
@@ -245,9 +248,9 @@ async fn register_destructive_with_force_true_succeeds_and_bumps_registry_versio
     let ts = TestServer::spawn().await.expect("spawn");
     let (status_a, body_a) = post_register(&ts, &baseline_payload()).await;
     assert!((200..300).contains(&status_a));
-    let v_a = body_a["registry_version"].as_u64().unwrap_or_else(|| {
-        panic!("baseline response must include registry_version: {body_a:#}")
-    });
+    let v_a = body_a["registry_version"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("baseline response must include registry_version: {body_a:#}"));
 
     // Now retry the destructive window-change WITH force=true.
     let mut payload_b = baseline_payload();
@@ -260,9 +263,9 @@ async fn register_destructive_with_force_true_succeeds_and_bumps_registry_versio
         (200..300).contains(&status_b),
         "force=true on destructive change must succeed, got status={status_b}, body={body_b:#}"
     );
-    let v_b = body_b["registry_version"].as_u64().unwrap_or_else(|| {
-        panic!("force=true response must include registry_version: {body_b:#}")
-    });
+    let v_b = body_b["registry_version"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("force=true response must include registry_version: {body_b:#}"));
     assert!(
         v_b > v_a,
         "registry_version must bump after force=true apply: was {v_a}, now {v_b}"
@@ -307,10 +310,7 @@ async fn register_additive_only_succeeds_without_force() {
             "optional_fields": []
         }
     });
-    payload_b["nodes"]
-        .as_array_mut()
-        .unwrap()
-        .push(new_event);
+    payload_b["nodes"].as_array_mut().unwrap().push(new_event);
     payload_b["nodes"]
         .as_array_mut()
         .unwrap()

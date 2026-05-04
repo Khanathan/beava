@@ -784,6 +784,402 @@ pub fn validate_payload(
     }
 }
 
+// ─── Phase 13.4 Plan 06 — D-01 force=true diff matrix ────────────────────────
+//
+// `classify_register_diff` walks `(prev_registry, new_payload)` and emits a
+// `RegisterDiff` (categorized lists) per D-01:
+//
+//   - Destructive: rename, type_change, op_removal, agg_removal,
+//     window_change, key_cols_change (require force=true to apply)
+//   - Additive: new_descriptor, new_agg, new_field (allowed without force)
+//
+// `register_check_force_required` consumes the diff + the wire `force` flag
+// and returns `Err(ForceRequiredError)` when destructive entries exist
+// without force=true. The `dry_run` flag short-circuits separately at the
+// dispatch site (apply_shard.rs); this fn does NOT branch on dry_run.
+//
+// The diff classifier is PURE: same inputs always produce the same output
+// (post-sort), no internal state, no allocations beyond the output Vec.
+
+use crate::registry::{DerivationDescriptor, OutputKind};
+use crate::registry_diff::{DiffEntry, RegisterDiff};
+
+/// Error returned by `register_check_force_required` when destructive diff
+/// entries exist and `force=true` was not set in the request body. Wire shape
+/// is `{"error": {"code": "force_required", "reason": ..., "diff": {...}}}`.
+///
+/// The dispatch site (apply_shard.rs) emits HTTP 409 + this body. Per A-04 in
+/// SCRATCH-PLANNER-NOTES.md the error code is `force_required`
+/// (forward-looking) — consistent with `unsupported_node_kind`,
+/// `feature_removed_no_*_v0`, etc.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ForceRequiredError {
+    pub code: &'static str,
+    pub reason: String,
+    pub diff: RegisterDiff,
+}
+
+/// Pure function: walk `(prev_registry, new_payload)` and produce the D-01
+/// categorized diff. Both `additive` and `destructive` lists are sorted by
+/// `DiffEntry::sort_key` so two calls with the same inputs produce identical
+/// output (Phase 13.4 Plan 06 Task 6.d Test 4 idempotency).
+pub fn classify_register_diff(prev: &RegistryInner, new_payload: &[PayloadNode]) -> RegisterDiff {
+    let mut additive: Vec<DiffEntry> = Vec::new();
+    let mut destructive: Vec<DiffEntry> = Vec::new();
+
+    // ─── Phase 1: index the payload + current registry by name ────────────
+    let mut payload_names: HashSet<String> = HashSet::new();
+    for n in new_payload {
+        payload_names.insert(n.name().to_string());
+    }
+    let mut current_names: HashSet<String> = HashSet::new();
+    for k in prev.events.keys() {
+        current_names.insert(k.clone());
+    }
+    for k in prev.tables.keys() {
+        current_names.insert(k.clone());
+    }
+    for k in prev.derivations.keys() {
+        current_names.insert(k.clone());
+    }
+
+    // ─── Phase 2: classify removed-from-current and rename detection ──────
+    //
+    // A descriptor present in `current_names` but missing from `payload_names`
+    // is "removed from prev". Rename heuristic: if exactly-one removal +
+    // exactly-one addition with matching kind, emit a Rename pair instead of
+    // a NewDescriptor + (no-op for the removal). Per A-04 + D-01 the rename
+    // is the destructive class; the matching pair is collapsed to a single
+    // Rename entry.
+    let removed_names: Vec<String> = current_names
+        .iter()
+        .filter(|n| !payload_names.contains(*n))
+        .cloned()
+        .collect();
+    let added_payload_nodes: Vec<&PayloadNode> = new_payload
+        .iter()
+        .filter(|n| !current_names.contains(n.name()))
+        .collect();
+
+    // Rename heuristic: pair each removed descriptor with an added descriptor
+    // of the same kind (event/table/derivation). When a unique match exists,
+    // emit Rename; otherwise treat the removal as an implicit destructive
+    // class (collapsed below) and the addition as a NewDescriptor.
+    let mut paired_removals: HashSet<String> = HashSet::new();
+    let mut paired_additions: HashSet<String> = HashSet::new();
+
+    for removed_name in &removed_names {
+        let removed_kind = current_descriptor_kind(prev, removed_name);
+        // Pair with first added node of the same kind (deterministic — input order).
+        for added in &added_payload_nodes {
+            if paired_additions.contains(added.name()) {
+                continue;
+            }
+            if added.kind_str() == removed_kind {
+                destructive.push(DiffEntry::Rename {
+                    from: removed_name.clone(),
+                    to: added.name().to_string(),
+                });
+                paired_removals.insert(removed_name.clone());
+                paired_additions.insert(added.name().to_string());
+                break;
+            }
+        }
+    }
+
+    // Unpaired removals: still a destructive change (a descriptor disappeared
+    // entirely). Per D-01 the canonical class for a "lost descriptor with no
+    // matching new descriptor" is OpRemoval / AggRemoval depending on what
+    // was lost. For events/tables we map to AggRemoval{table=name, agg=""}
+    // as a stand-in destructive entry — the diff payload still flags
+    // `force=true` is required.
+    for removed_name in &removed_names {
+        if paired_removals.contains(removed_name) {
+            continue;
+        }
+        // Stand-in: signal "the prior descriptor was removed" via AggRemoval
+        // with agg="" (sentinel for descriptor-level removal). The wire
+        // contract is "force=true is required"; the SDK can decide how to
+        // present descriptor-removal vs feature-removal to the user.
+        destructive.push(DiffEntry::AggRemoval {
+            table: removed_name.clone(),
+            agg: String::new(),
+        });
+    }
+
+    // ─── Phase 3: per-payload-node classification ────────────────────────
+    for node in new_payload {
+        let name = node.name().to_string();
+
+        if !current_names.contains(&name) {
+            // New descriptor (unless paired in rename above).
+            if paired_additions.contains(&name) {
+                continue;
+            }
+            additive.push(DiffEntry::NewDescriptor {
+                descriptor_kind: node.kind_str().to_string(),
+                name,
+            });
+            continue;
+        }
+
+        // Same name in both — descriptor potentially modified. Walk the
+        // shape diff and emit per-class entries.
+        match node {
+            PayloadNode::Event(new_evt) => {
+                if let Some(prev_evt) = prev.events.get(&name) {
+                    classify_event_changes(prev_evt, new_evt, &mut additive, &mut destructive);
+                }
+            }
+            PayloadNode::Table(new_tbl) => {
+                if let Some(prev_tbl) = prev.tables.get(&name) {
+                    classify_table_changes(prev_tbl, new_tbl, &mut destructive);
+                }
+            }
+            PayloadNode::Derivation(new_der) => {
+                if let Some(prev_der) = prev.derivations.get(&name) {
+                    classify_derivation_changes(prev_der, new_der, &mut additive, &mut destructive);
+                }
+            }
+        }
+    }
+
+    // ─── Sort for idempotency (Phase 13.4 Plan 06 Task 6.d Test 4) ────────
+    additive.sort_by_key(|e| e.sort_key());
+    destructive.sort_by_key(|e| e.sort_key());
+
+    RegisterDiff {
+        additive,
+        destructive,
+    }
+}
+
+fn current_descriptor_kind(prev: &RegistryInner, name: &str) -> &'static str {
+    if prev.events.contains_key(name) {
+        "event"
+    } else if prev.tables.contains_key(name) {
+        "table"
+    } else if prev.derivations.contains_key(name) {
+        "derivation"
+    } else {
+        "unknown"
+    }
+}
+
+fn classify_event_changes(
+    prev: &EventDescriptor,
+    new: &EventDescriptor,
+    additive: &mut Vec<DiffEntry>,
+    destructive: &mut Vec<DiffEntry>,
+) {
+    // Field type changes + new fields.
+    for (field_name, prev_type) in &prev.schema.fields {
+        match new.schema.fields.get(field_name) {
+            None => {
+                // Field removed → treat as TypeChange{from=<type>, to="<absent>"}.
+                destructive.push(DiffEntry::TypeChange {
+                    field: format!("{}.{}", prev.name, field_name),
+                    from: format!("{prev_type:?}").to_lowercase(),
+                    to: "<absent>".to_string(),
+                });
+            }
+            Some(new_type) if new_type != prev_type => {
+                destructive.push(DiffEntry::TypeChange {
+                    field: format!("{}.{}", prev.name, field_name),
+                    from: format!("{prev_type:?}").to_lowercase(),
+                    to: format!("{new_type:?}").to_lowercase(),
+                });
+            }
+            _ => {}
+        }
+    }
+    for (field_name, new_type) in &new.schema.fields {
+        if !prev.schema.fields.contains_key(field_name) {
+            additive.push(DiffEntry::NewField {
+                event: prev.name.clone(),
+                field: field_name.clone(),
+                type_: format!("{new_type:?}").to_lowercase(),
+            });
+        }
+    }
+}
+
+fn classify_table_changes(
+    prev: &TableDescriptor,
+    new: &TableDescriptor,
+    destructive: &mut Vec<DiffEntry>,
+) {
+    if prev.primary_key != new.primary_key {
+        destructive.push(DiffEntry::KeyColsChange {
+            table: prev.name.clone(),
+            from: prev.primary_key.clone(),
+            to: new.primary_key.clone(),
+        });
+    }
+    // Field type changes / removals are destructive in TableDescriptor too.
+    for (field_name, prev_type) in &prev.schema.fields {
+        match new.schema.fields.get(field_name) {
+            None => destructive.push(DiffEntry::TypeChange {
+                field: format!("{}.{}", prev.name, field_name),
+                from: format!("{prev_type:?}").to_lowercase(),
+                to: "<absent>".to_string(),
+            }),
+            Some(new_type) if new_type != prev_type => {
+                destructive.push(DiffEntry::TypeChange {
+                    field: format!("{}.{}", prev.name, field_name),
+                    from: format!("{prev_type:?}").to_lowercase(),
+                    to: format!("{new_type:?}").to_lowercase(),
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+fn classify_derivation_changes(
+    prev: &DerivationDescriptor,
+    new: &DerivationDescriptor,
+    additive: &mut Vec<DiffEntry>,
+    destructive: &mut Vec<DiffEntry>,
+) {
+    use crate::op_node::OpNode;
+
+    // Schema-level changes propagate from the upstream event source; do not
+    // re-emit here (handled by the event-side classify_event_changes).
+
+    // ─── ops length / structure change ──────────────────────────────────
+    // Op removal: any op present in prev but absent in new.
+    if prev.ops.len() > new.ops.len() {
+        // Find which ops are missing by index. Pair index-by-index for a
+        // best-effort label.
+        for (idx, prev_op) in prev.ops.iter().enumerate() {
+            if new.ops.get(idx).is_none() {
+                destructive.push(DiffEntry::OpRemoval {
+                    table: prev.name.clone(),
+                    agg: op_label(prev_op, idx),
+                });
+            }
+        }
+    }
+
+    // ─── group_by-level: agg map deltas + key changes + window changes ──
+    //
+    // Walk both ops chains in parallel; for matching GroupBy positions
+    // compare keys + agg map.
+    let pair_len = prev.ops.len().min(new.ops.len());
+    for idx in 0..pair_len {
+        if let (OpNode::GroupBy { keys: pk, agg: pa }, OpNode::GroupBy { keys: nk, agg: na }) =
+            (&prev.ops[idx], &new.ops[idx])
+        {
+            // Key cols change → destructive.
+            if pk != nk {
+                destructive.push(DiffEntry::KeyColsChange {
+                    table: prev.name.clone(),
+                    from: pk.clone(),
+                    to: nk.clone(),
+                });
+            }
+            // Aggregation map deltas.
+            for (agg_name, prev_spec) in pa {
+                match na.get(agg_name) {
+                    None => {
+                        destructive.push(DiffEntry::AggRemoval {
+                            table: prev.name.clone(),
+                            agg: agg_name.clone(),
+                        });
+                    }
+                    Some(new_spec) => {
+                        // Window change?
+                        let prev_window = prev_spec
+                            .params
+                            .get("window")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let new_window = new_spec
+                            .params
+                            .get("window")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if prev_window != new_window {
+                            destructive.push(DiffEntry::WindowChange {
+                                agg: format!("{}.{}", prev.name, agg_name),
+                                from: prev_window.to_string(),
+                                to: new_window.to_string(),
+                            });
+                        }
+                        // Op rename within an agg (e.g. count → sum) is a
+                        // destructive op_removal + new_agg in spirit; keep
+                        // it simple and emit AggRemoval+NewAgg.
+                        if prev_spec.op != new_spec.op {
+                            destructive.push(DiffEntry::AggRemoval {
+                                table: prev.name.clone(),
+                                agg: agg_name.clone(),
+                            });
+                            additive.push(DiffEntry::NewAgg {
+                                table: prev.name.clone(),
+                                agg: agg_name.clone(),
+                                source: new_spec.op.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            for (agg_name, new_spec) in na {
+                if !pa.contains_key(agg_name) {
+                    additive.push(DiffEntry::NewAgg {
+                        table: prev.name.clone(),
+                        agg: agg_name.clone(),
+                        source: new_spec.op.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // table_primary_key changes for output_kind=table derivations.
+    if (prev.output_kind == OutputKind::Table || new.output_kind == OutputKind::Table)
+        && prev.table_primary_key != new.table_primary_key
+    {
+        destructive.push(DiffEntry::KeyColsChange {
+            table: prev.name.clone(),
+            from: prev.table_primary_key.clone().unwrap_or_default(),
+            to: new.table_primary_key.clone().unwrap_or_default(),
+        });
+    }
+}
+
+fn op_label(op: &crate::op_node::OpNode, idx: usize) -> String {
+    use crate::op_node::OpNode;
+    match op {
+        OpNode::Filter { .. } => format!("filter[{idx}]"),
+        OpNode::Select { .. } => format!("select[{idx}]"),
+        OpNode::Drop { .. } => format!("drop[{idx}]"),
+        OpNode::Rename { .. } => format!("rename[{idx}]"),
+        OpNode::WithColumns { .. } => format!("with_columns[{idx}]"),
+        OpNode::Map { .. } => format!("map[{idx}]"),
+        OpNode::Cast { .. } => format!("cast[{idx}]"),
+        OpNode::Fillna { .. } => format!("fillna[{idx}]"),
+        OpNode::GroupBy { .. } => format!("group_by[{idx}]"),
+    }
+}
+
+/// D-01 force-required gate. Returns `Err(ForceRequiredError)` if `diff.destructive`
+/// is non-empty and `force` is `false`. Otherwise `Ok(())`.
+pub fn register_check_force_required(
+    diff: &RegisterDiff,
+    force: bool,
+) -> Result<(), ForceRequiredError> {
+    if !diff.destructive.is_empty() && !force {
+        return Err(ForceRequiredError {
+            code: "force_required",
+            reason: "Destructive registry change requires force=true. See diff for details."
+                .to_string(),
+            diff: diff.clone(),
+        });
+    }
+    Ok(())
+}
+
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 
 fn path_node(i: usize) -> String {

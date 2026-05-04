@@ -670,6 +670,50 @@ impl Registry {
         new_version
     }
 
+    /// Phase 13.4 Plan 06 (D-01 force=true): remove the named descriptors from
+    /// the registry so a subsequent `apply_registration` treats them as
+    /// brand-new (additive) instead of conflicting. Used by the `force=true`
+    /// register path to "destructively replace" existing descriptors.
+    ///
+    /// Removes the descriptor + its compiled artifacts (chains, aggregations,
+    /// feature_index entries, aggregations_by_source entries). Does NOT bump
+    /// `version` — the caller's `apply_registration` does that as part of the
+    /// re-install.
+    ///
+    /// Per-entity state held in `state_tables` (DevAggState) is NOT cleared
+    /// here — Plan 06's wire contract requires only `registry_version` bump
+    /// plus WAL append on force=true; per-entity state-zeroing is a future
+    /// refinement (the docs/schema-evolution.md text covers the eventual
+    /// semantic — v0 wire contract is satisfied by registry-level mutation).
+    ///
+    /// Returns the number of descriptors that were actually removed.
+    pub fn force_remove_descriptors(&self, names: &[String]) -> usize {
+        let mut w = self.inner.write();
+        let mut removed = 0usize;
+        for name in names {
+            if w.events.remove(name).is_some() {
+                removed += 1;
+            }
+            if w.tables.remove(name).is_some() {
+                removed += 1;
+            }
+            if w.derivations.remove(name).is_some() {
+                removed += 1;
+            }
+            // Compiled-side bookkeeping: also drop chains + aggregations + reverse indices.
+            w.compiled_chains.remove(name);
+            if let Some(agg) = w.compiled_aggregations.remove(name) {
+                // Drop reverse-index entries pointing at this agg.
+                if let Some(per_source) = w.aggregations_by_source.get_mut(&agg.source_node_name) {
+                    per_source.retain(|a| a.node_name != agg.node_name);
+                }
+                // Drop feature_index entries that map to this agg's node_name.
+                w.feature_index.retain(|_, v| v.0 != agg.node_name);
+            }
+        }
+        removed
+    }
+
     /// Plan 19.2-01 (D-01): validate field references in `agg` against `schema`
     /// and return an error if any field is missing. Does NOT mutate the descriptor.
     /// Use `resolve_field_indices_for_agg_mut` for the in-place mutation path.

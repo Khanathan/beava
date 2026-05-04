@@ -256,6 +256,68 @@ joins per the same architectural lock.
 **Recovery:** Multiplex client-side for v0; first-class union returns alongside
 joins in a future minor release.
 
+### code = "force_required"
+
+**HTTP status:** 409 Conflict
+**Wire opcode (TCP):** `OP_ERROR_RESPONSE = 0xFFFF` (JSON body shape below)
+**When:** A `POST /register` payload contains a destructive change (rename,
+type-change, op removal, agg removal, window-change, or key-cols change) and
+`force=true` is not set in the body. Per D-01 (Phase 13.4 Plan 06,
+USER-LOCKED), destructive registry changes require an explicit `force=true`
+opt-in to apply; otherwise the server rejects with this code.
+**Path:** *(no path; the offending changes are enumerated in `error.diff.destructive`)*
+**Recovery:** Either (1) send `force=true` in the register body to apply
+destructively + bump `registry_version` (existing per-entity state for the
+affected aggregations becomes inconsistent — the wire contract is satisfied
+but per-entity state-zeroing is a future refinement), OR (2) send
+`dry_run=true` to preview the diff without mutating state, OR (3) amend the
+payload to be additive-only (new descriptor, new agg in existing block, new
+field on event source — these always succeed without `force`).
+
+Response body shape:
+
+```json
+{
+  "error": {
+    "code": "force_required",
+    "reason": "Destructive registry change requires force=true. See diff for details.",
+    "diff": {
+      "additive": [
+        {"kind": "new_descriptor", "descriptor_kind": "event", "name": "NewEvent"},
+        {"kind": "new_agg", "table": "UserSpend", "agg": "tx_count_24h", "source": "count"},
+        {"kind": "new_field", "event": "Tx", "field": "merchant_id", "type": "str"}
+      ],
+      "destructive": [
+        {"kind": "rename", "from": "tx_count_1h", "to": "tx_count_one_hour"},
+        {"kind": "type_change", "field": "Tx.amount", "from": "f64", "to": "i64"},
+        {"kind": "op_removal", "table": "UserSpend", "agg": "group_by[0]"},
+        {"kind": "agg_removal", "table": "UserSpend", "agg": "tx_count_5m"},
+        {"kind": "window_change", "agg": "UserSpend.tx_count_1h", "from": "1h", "to": "30m"},
+        {"kind": "key_cols_change", "table": "UserSpend", "from": ["user_id"], "to": ["user_id", "merchant_id"]}
+      ]
+    }
+  },
+  "registry_version": 7
+}
+```
+
+The `additive` and `destructive` lists are sorted deterministically by
+`(kind, primary_field)` so two preview / classify calls with identical inputs
+produce byte-identical JSON output (idempotent diffs — required for CI
+diff-checks against staging registries).
+
+The diff envelope is **categorized lists** (NOT JSON-Patch). Each entry's
+`kind` discriminator names the destructive class per D-01.
+
+`force_required` is distinct from the legacy `registration_conflict` (HTTP
+409) emitted by the Phase 2 diff machinery — `registration_conflict`
+predates D-01 and uses a different envelope shape. Both codes coexist in
+the v0 surface; the dispatch order is force_required FIRST (Phase 13.4
+Plan 06), legacy `registration_conflict` SECOND (additive-only path with a
+diff that still detects schema drift from the prior registry).
+
+**Source:** Phase 13.4 Plan 06 / D-01 (USER-LOCKED).
+
 ### code = "frame_too_large"
 
 **HTTP status:** *(TCP only — no HTTP equivalent; HTTP frames are rejected by
@@ -607,7 +669,7 @@ double the memory cost without sufficient benefit in v0.
 | `400` | Client error: validation, malformed input, business-rule rejection | All `aggregation_invalid_*`, `aggregation_on_table_not_supported`, `bad_return_type`, `batch_too_large`, `bv_table_class_form_not_supported`, `cycle`, `duplicate_name`, `event_time_not_supported_in_v0`, `feature_not_in_table`, `feature_removed_no_joins_v0`, `feature_removed_no_unions_v0`, `invalid_*` (cast / expression / percentile / topk / bloom), `joins_not_supported`, `key_shape_mismatch`, `missing_field`, `missing_upstream`, `registration_cycle`, `schema_invalid`, `schema_mismatch`, `schema_propagation_failure`, `session_windows_not_supported_in_v0`, `table_key_invalid`, `topological_order_violation`, `unbounded_op_in_lifetime_mode`, `unions_not_supported_in_v0`, `unknown_field_event_time_v0`, `unknown_field_reference`, `unknown_field_tolerate_delay_v0`, `unknown_field_type`, `unknown_op`, `validation_failed`, `window_not_supported`. |
 | `403` | Forbidden — server policy rejects the operation | `reset_disabled`. |
 | `404` | Not found | `unknown_event`, `unknown_table`. |
-| `409` | Conflict — destructive change without `force=true` | `registration_conflict`. |
+| `409` | Conflict — destructive change without `force=true` | `registration_conflict`, `force_required`. |
 | `415` | Unsupported Media Type | `unsupported_content_type`. |
 | `500` | Server error | `wal_truncate_failed`. |
 | `501` | Not implemented (or `OP_ERROR_RESPONSE` on TCP) | `op_not_implemented`. |
