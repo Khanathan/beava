@@ -840,38 +840,49 @@ Wave structure:
 
 ---
 
-### Phase 13.6: TypeScript + Go SDKs (parallel within phase) — 📋 PLANNED 2026-05-03
+### Phase 13.6: TypeScript + Go SDKs (communicate-only) — 📋 PLANNED 2026-05-03
 
-**Status:** Inserted 2026-05-03. Both SDKs implement the same surface as Python against the spec from Phase 13.0. Parallel with 13.4/13.5/13.7.
+**Status:** Inserted 2026-05-03. **RESCOPED 2026-05-03** to communicate-only per user directive: pipeline authoring is Python-only; TS+Go ship wire-thin clients (~600 LOC each, down from ~1800). Parallel with 13.4/13.5/13.7.
 
-**Goal:** Ship `@beava/sdk` (npm) and `github.com/beava-io/beava-go`. Each follows the Python SDK shape but adapts to native idioms.
+**Goal:** Ship `@beava/sdk` (npm, ESM-only) and `github.com/beava-dev/beava/sdk/go`. Both implement the cross-language **communicate** surface from `docs/sdk-api/shared.md` — `App` constructor + URL-scheme dispatch + register (pre-compiled JSON pass-through) + push/pushSync + get/batchGet (per-entity + global) + reset + ping + close. NO pipeline DSL.
 
-**Depends on:** Phase 13.0 (wire-spec.md + sdk-api/typescript.md + sdk-api/go.md locked). CAN start before Phase 13.4 lands by mocking the wire.
+**Depends on:** Phase 13.0 (wire-spec.md + sdk-api/{typescript,go,shared}.md locked). Conformance test in Plan 13.6-07 needs Phase 13.4 engine accepting the wire register payload (`kind: "table"` revival per ADR-001 partial-overturn).
 
-**TypeScript SDK (~1800 LOC TS, ~5-7 days):**
-- Core client: `new BeavaApp(url?)` / `.register()` / `.push()` / `.get()` / `.batchGet()` / `.reset()` / `.ping()` / `.close()`
-- Pipeline DSL: TypeScript decorators (stage-3 with TS 5.0+) OR builder pattern (final shape locked in 13.0 sdk-api/typescript.md)
-- 53 operator catalog
-- Polars-style chains: `bv.col("price").filter(...).sum().over("1h")`
-- `.d.ts` declarations + bundled `.js` output for runtime
-- Tests: jest fixtures matching Python test pattern
-- Build: tsc → `dist/`; publish to npm as `@beava/sdk`
-- **`bv.lit(value)` factory + global aggregation surface per ADR-003 (~75 LOC)** — `bv.lit` factory mirrors Python; `events.groupBy()` empty allowance + `events.agg({...})` direct + table-builder no-`key` form + `app.get(tableName)` overloaded signature (TS uses overloaded signatures with type-level enforcement, not separate methods).
+**Repo layout (USER-LOCKED D-02):**
+- Monorepo at `github.com/beava-dev/beava/` (renamed from codename `tally` at v0 ship; see Phase 13.8)
+- TS SDK source: `sdk/typescript/` — published to npm as `@beava/sdk`
+- Go SDK source: `sdk/go/` — module path `github.com/beava-dev/beava/sdk/go`
 
-**Go SDK (~1800 LOC Go, ~5-7 days):**
-- Core client: `beava.NewApp(ctx, url, opts...)` / `.Register()` / `.Push()` / `.Get()` / `.BatchGet()` / `.Reset()` / `.Ping()` / `.Close()`
-- Pipeline DSL: struct tags + builder pattern (Go has no decorators)
-- Context-aware methods (idiomatic Go): `ctx context.Context` first param, explicit errors returned
-- 53 operator catalog
-- Tests: standard `testing` + `testify`
-- Module: `github.com/beava-io/beava-go`
-- **`beava.Lit(value any)` factory + global aggregation surface per ADR-003 (~75 LOC)** — `beava.Lit` factory mirrors Python; `events.GroupBy()` empty allowance + `events.Agg(...)` direct + table-builder no-`KeyCols` form + **separate `app.GetGlobal(ctx, tableName)` method** (Go's typing convention favors separate methods over arity overloading; the wire shape is identical to Python/TS).
+**TypeScript SDK (~600 LOC TS, USER-LOCKED D-01 ESM-only):**
+- `BeavaApp` class with all 8 wire methods (constructor / register / push / pushSync / get / batchGet / reset / ping / close)
+- HTTP transport via `fetch` (Node 18+ baseline)
+- TCP transport via `node:net` (Redis-style strict-FIFO correlation)
+- Embed mode via `node:child_process` spawn (mirrors `python/beava/_embed.py` 4-step discovery; per-instance temp CWD for WAL/snapshot isolation)
+- ESM-only output (`tsc --module esnext --target es2022 --strict`)
+- vitest suite
+
+**Go SDK (~600 LOC Go):**
+- `App` struct with all wire methods
+- HTTP transport via `net/http`
+- TCP transport via `net.Conn` (Redis-style FIFO; one writer + one reader goroutine)
+- Embed mode via `os/exec` (4-step binary discovery matching python; per-instance temp CWD)
+- Functional options (`WithForce`, `WithDryRun`, `WithTimeout`, `WithBinaryPath`, `WithTestMode`)
+- `App.GetGlobal(ctx, table)` separate method per ADR-003 Go convention
+- standard `testing` + `httptest`
+
+**Cross-SDK conformance (~250 LOC Python + ~50 LOC each adapter, USER-LOCKED D-03):**
+- Single Python orchestrator at `python/tests/conformance/test_cross_sdk.py`
+- Drives all 3 SDKs against the same `scenario.json`
+- Asserts identical outputs across Python+TS+Go
+- Runs in CI on every PR (skipped if `beava` binary or `node`/`go` toolchain missing; engine-alignment-error skip when Phase 13.4 lags docs/wire-spec.md)
+
+**Doc patches (USER-LOCKED D-04):** `docs/sdk-api/typescript.md` + `docs/sdk-api/go.md` rewritten for communicate-only scope; `docs/sdk-api/shared.md` clarifies authoring=Python-only / communicate=universal; ROADMAP §13.6 (this entry) + `docs/quickstart.md` audited.
 
 **Success criteria:**
-1. TS SDK: `npm install @beava/sdk` then `examples/typescript/adtech.ts` runs end-to-end
-2. Go SDK: `go get github.com/beava-io/beava-go` then `examples/go/adtech_test.go` runs end-to-end
-3. Both pass the Python SDK's wire-level conformance tests against a real engine
-4. `tsc --strict` clean for TS; `go vet ./... && go test ./...` clean for Go
+1. `npm install --prefix sdk/typescript && npm test && npm run build` clean
+2. `go vet ./sdk/go/... && go test ./sdk/go/...` clean
+3. Cross-SDK conformance test PASSES (or skips cleanly with documented engine-alignment caveat)
+4. Doc patches landed; ROADMAP/quickstart consistent
 
 ---
 

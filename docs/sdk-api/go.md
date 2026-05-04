@@ -1,166 +1,97 @@
 # Beava Go SDK
 
-> **Status:** Authoritative for v0. Documents the **post-13.6 target** Go SDK
-> shape — Phase 13.6 implements the port. Cross-language semantics live in
-> [shared.md](shared.md); wire-level body shapes live in
-> [docs/wire-spec.md](../wire-spec.md). Python is the canonical reference —
-> see [python.md](python.md).
-> **Last reviewed:** 2026-05-03 (Phase 13.0).
+> **Communicate-only SDK.** This SDK pushes events, registers pre-compiled JSON descriptors, and reads features. Pipeline authoring (event sources, expression DSL, op helpers) lives in the **Python SDK only** — see [python.md](python.md). Use Python's `bv.App.register_json(...)` to produce descriptors, then ship that JSON to your Go service. Or hand-write the JSON per [docs/wire-spec.md OP_REGISTER](../wire-spec.md#op_register-0x0001).
+
+> **Status:** Authoritative for v0. Documents the post-13.6 Go SDK shape (rescoped 2026-05-03 to communicate-only). Cross-language semantics live in [shared.md](shared.md); wire-level body shapes live in [docs/wire-spec.md](../wire-spec.md). Python is the canonical authoring reference.
+>
+> **Last reviewed:** 2026-05-03 (Phase 13.6).
 
 ## Overview
 
-The Beava Go SDK ships as the module `github.com/beava-io/beava-go`. It
-mirrors the [Python SDK](python.md) wire contract 1:1 (per
-[shared.md](shared.md)) but uses idiomatic Go conventions where the
-language demands them:
+The Beava Go SDK ships as `github.com/beava-dev/beava/sdk/go`. It is a wire-thin client targeting Go 1.22+, idiomatic Go patterns:
 
-- **Context-aware methods** — every wire-bound method takes
-  `ctx context.Context` as its first argument. Cancellation propagates
-  to the transport.
-- **Explicit `error` returns** — the second return value of every wire
-  method. No exceptions, no panics.
-- **Functional options** — register/option flags (`force=true`,
-  `dry_run=true`, `WithTimeout`, etc.) are passed via variadic
-  `...Option`-style arguments rather than option-struct fields. Standard
-  Go pattern; matches `grpc-go`, `cobra`, `chi`, and similar widely-used
-  Go libraries.
-- **Struct-tag field mapping** — event-source schemas declared as Go
-  structs with `beava:"<wire_field_name>"` tags.
-- **53 op functions** in PascalCase per Go convention (`beava.Count`,
-  `beava.Sum`, `beava.Mean`, `beava.NUnique`, `beava.Quantile`) per
-  [ADR-002](../../.planning/decisions/ADR-002-polars-op-rename.md).
+- **`context.Context`-aware** — every wire-bound method takes `ctx context.Context` as its first argument and respects `ctx.Done()` for cancellation.
+- **Functional options** — `App` and `Register` use options structs (`WithTimeout`, `WithTestMode`, `WithBinaryPath`, `WithForce`, `WithDryRun`).
+- **PascalCase exported identifiers + json snake_case tags** — Go convention; the wire layer maps PascalCase Go field names to wire `snake_case` via `json:"..."` struct tags.
+- **No DSL** — `Descriptor` is `map[string]any`; the SDK does not parse or compile authoring expressions.
 
-> **Module:** `github.com/beava-io/beava-go`. Install via
-> `go get github.com/beava-io/beava-go`. Import as
-> `import beava "github.com/beava-io/beava-go"`. The SDK targets Go
-> 1.22+ (modern context handling, slog).
+> **Module:** `github.com/beava-dev/beava/sdk/go`. Install via
+> `go get github.com/beava-dev/beava/sdk/go`. Import as
+> `import beava "github.com/beava-dev/beava/sdk/go"`. The SDK targets Go 1.22+.
+>
+> Source layout: monorepo at `github.com/beava-dev/beava/`, Go SDK lives at `sdk/go/` subdirectory (per Phase 13.6 D-02).
 
 ## Module structure
 
 ```
-github.com/beava-io/beava-go/
-├── beava.go             # public types: App, EventDescriptor, TableDescriptor, FeatureResult
-├── app.go               # App struct + methods
-├── events.go            # event builder + EventDescriptor + struct-tag parser
-├── table.go             # table builder + TableDescriptor (per ADR-001)
-├── agg.go               # 53 op functions
-├── col.go               # Col expression builder
-├── errors.go            # RegistrationError, BinaryNotFoundError
-├── wire.go              # frame codec, opcodes (CT_JSON only in v0)
-├── transport.go         # HTTP / TCP / Embed transports + URL-scheme dispatch
-├── beavatest/           # test helpers
-│   ├── fixture.go       # spawn embed-mode app
-│   └── assert.go        # AssertFeaturesEq
-└── go.mod
+sdk/go/
+├── go.mod
+├── beava.go               # App struct, NewApp, URL-scheme dispatch, transport interface, Close
+├── app.go                 # method receivers: Register/Push/PushSync/Get/GetGlobal/BatchGet/Reset/Ping
+├── wire.go                # frame codec + opcode constants (CT_JSON only in v0)
+├── transport_http.go      # httpTransport (net/http; structured error envelope decoding)
+├── transport_tcp.go       # tcpTransport (net.Conn, Redis-style FIFO queue)
+├── embed.go               # SpawnEmbeddedServer + Teardown + discoverBinary
+├── types.go               # Descriptor, FeatureResult, RegisterResult, PushResult, PingResult, GetRequest
+├── errors.go              # RegistrationError, ValidationError, BinaryNotFoundError
+└── *_test.go              # standard testing + httptest
 ```
+
+There are deliberately **no** `events.go` / `col.go` / `agg.go` / `table.go` files — the Go SDK has no authoring layer. See [shared.md § Authoring vs communicate](shared.md#authoring-vs-communicate).
 
 ## App struct
 
 ```go
 package beava
 
-import "context"
-
-type App struct {
-    // unexported fields
-}
+type App struct { /* ... */ }
 
 func NewApp(ctx context.Context, url string, opts ...AppOption) (*App, error)
 
-// Wire-mapped methods
+// Wire methods
 func (a *App) Register(ctx context.Context, descriptors []Descriptor, opts ...RegisterOption) (*RegisterResult, error)
 func (a *App) Push(ctx context.Context, eventName string, fields map[string]any) (*PushResult, error)
-func (a *App) Get(ctx context.Context, table string, key any) (FeatureResult, error)
+func (a *App) PushSync(ctx context.Context, eventName string, fields map[string]any) (*PushResult, error)
+func (a *App) Get(ctx context.Context, table string, key any) (FeatureResult, error)        // per-entity
+func (a *App) GetGlobal(ctx context.Context, table string) (FeatureResult, error)           // global table per ADR-003
 func (a *App) BatchGet(ctx context.Context, requests []GetRequest) ([]FeatureResult, error)
 func (a *App) Reset(ctx context.Context) error
 func (a *App) Ping(ctx context.Context) (*PingResult, error)
-func (a *App) Close(ctx context.Context) error
+func (a *App) Close(ctx context.Context) error                                              // idempotent
 ```
 
-Each public method maps 1:1 to a wire opcode:
+### `NewApp(ctx, url, opts...)` + URL-scheme dispatch
 
-| Method | Wire opcode | Wire spec section |
-|--------|-------------|-------------------|
-| `App.Register(...)` | `OP_REGISTER` (`0x0001`) | [wire-spec § OP_REGISTER](../wire-spec.md#op_register-0x0001) |
-| `App.Push(...)` | `OP_PUSH` (`0x0010`) | [wire-spec § OP_PUSH](../wire-spec.md#op_push-0x0010) |
-| `App.Get(...)` | `OP_GET` (`0x0020`) | [wire-spec § OP_GET](../wire-spec.md#op_get-0x0020) |
-| `App.BatchGet(...)` | `OP_BATCH_GET` (`0x0024`) | [wire-spec § OP_BATCH_GET](../wire-spec.md#op_batch_get-0x0024) |
-| `App.Reset(...)` | `OP_RESET` (`0x0040`) | [wire-spec § OP_RESET](../wire-spec.md#op_reset-0x0040) |
-| `App.Ping(...)` | `OP_PING` (`0x0000`) | [wire-spec § OP_PING](../wire-spec.md#op_ping-0x0000) |
-| `App.Close(...)` | (lifecycle) | n/a — closes transport + terminates embed subprocess. |
+The `url` argument selects the transport:
 
-### `NewApp(ctx, url, opts...)`
+| URL form | Transport | Notes |
+|----------|-----------|-------|
+| `http://host:port` / `https://host:port` | HTTP/JSON via `net/http` | Default. |
+| `tcp://host:port` | Custom-framed TCP (`[u32 length][u16 op][u8 ct][payload]`) | Lowest-latency; Redis-style FIFO. |
+| `""` | Embed mode | Spawns local `beava` binary on first call; auto-reaped on `Close()`. |
 
-Constructor. URL controls transport selection per
-[shared.md § Wire transports](shared.md#wire-transports):
+App options:
 
-- `"http://..."` / `"https://..."` → HTTP/JSON transport.
-- `"tcp://..."` → custom-framed TCP transport.
-- `""` (empty string) → embed mode; spawns local `beava` binary on
-  ephemeral ports.
+- `WithTimeout(d time.Duration)` — per-request I/O timeout (default `30s`).
+- `WithTestMode()` — passes `BEAVA_TEST_MODE=1` to the embed-mode subprocess (mirrors Python `bv.App(test_mode=True)`).
+- `WithBinaryPath(p string)` — overrides the embed-mode binary discovery path.
 
-The `ctx` here governs **construction** (binary discovery, embed-mode
-startup, initial connection); subsequent wire calls take their own
-context.
+### `Register(ctx, descriptors, opts...)`
 
-**Functional options:**
+Submit a list of pre-compiled register node JSON blobs to `POST /register`. Wire body:
 
-```go
-type AppOption func(*appConfig)
-
-func WithTimeout(d time.Duration) AppOption
-func WithBinaryPath(p string) AppOption     // override embed-mode binary discovery
+```json
+{ "nodes": [<descriptor>, ...], "force": false, "dry_run": false }
 ```
 
-**Returns:** `(*App, error)`. Errors during embed-mode startup
-(`BinaryNotFoundError`, transport connect failure) are surfaced here.
+`Descriptor = map[string]any` — opaque; the SDK does not validate or compile.
 
-**Lifecycle pattern:**
+Register options:
 
-```go
-ctx := context.Background()
-app, err := beava.NewApp(ctx, "")
-if err != nil {
-    log.Fatal(err)
-}
-defer app.Close(ctx)
+- `WithForce()` — set wire `force=true` (allows destructive schema changes).
+- `WithDryRun()` — set wire `dry_run=true` (validate without applying).
 
-// ...
-```
-
-`Close(ctx)` is idempotent. For embed-mode apps, `Close` also terminates
-the subprocess (SIGTERM, then SIGKILL after 5 seconds).
-
-### `App.Register(ctx, descriptors, opts...)`
-
-**Wire opcode:** `OP_REGISTER` (`0x0001`).
-
-Validates the descriptor list locally, topo-sorts, and dispatches.
-
-**Args:**
-
-- `ctx`: standard `context.Context` for cancellation / timeouts.
-- `descriptors`: slice of `Descriptor` interface values (returned by
-  `beava.NewEvent[T](...)`, `beava.NewTable(...)`, or chain expressions).
-- `opts ...RegisterOption`: functional options for `force` and `dry_run`.
-
-**Functional options:**
-
-```go
-func WithForce() RegisterOption
-func WithDryRun() RegisterOption
-```
-
-Usage:
-
-```go
-result, err := app.Register(ctx, descriptors, beava.WithForce(), beava.WithDryRun())
-```
-
-**Returns:** `(*RegisterResult, error)` carrying
-`{Status, RegistryVersion, Added, Removed, Changed, Diff}` (all
-PascalCase Go field names; the transport translates wire JSON
-`snake_case` to PascalCase via field tags).
+Returns `*RegisterResult`:
 
 ```go
 type RegisterResult struct {
@@ -172,77 +103,38 @@ type RegisterResult struct {
 }
 ```
 
-**Errors:** `*RegistrationError` carrying `Code`, `Path`, `Message`,
-`Errors []ValidationError`.
+### `Push(ctx, eventName, fields)` and `PushSync(ctx, ...)`
 
-### `App.Push(ctx, eventName, fields)`
+`Push` posts to `POST /push/<eventName>` with `{fields: {...}}`. Default `acks=1`.
 
-**Wire opcode:** `OP_PUSH` (`0x0010`).
+`PushSync` is reserved for `acks=all` (multi-replica) durable push in v0.1+ per [docs/wire-spec.md OP_PUSH_SYNC](../wire-spec.md). v0 delegates to `Push`.
 
-**Args:**
+### `Get(ctx, table, key)` and `GetGlobal(ctx, table)`
 
-- `ctx`: context.
-- `eventName`: string matching a registered event source.
-- `fields`: `map[string]any`. Field types must match the registered
-  schema; the SDK serialises into the wire-level JSON form.
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), Go uses **separate methods** rather than arity overloading (which Go doesn't support):
 
-**Returns:** `(*PushResult, error)` carrying `AckLsn` and
-`RegistryVersion`.
+- `Get(ctx, table, key)` — per-entity. `key` is `any` — accepts `string` (single-column) or `[]any` (composite).
+- `GetGlobal(ctx, table)` — global aggregation. Wire body uses `key: ""` (the empty-string sentinel).
 
-### `App.Get(ctx, table, key)`
+Wire body (both methods):
 
-**Wire opcode:** `OP_GET` (`0x0020`).
-
-**Args:**
-
-- `ctx`: context.
-- `table`: name of a registered table.
-- `key`: `any` — string for single-key tables; `[]any` containing
-  `[string | int64 | float64 | bool]` items for composite-key tables.
-
-**Returns:** `(FeatureResult, error)` where
-`FeatureResult` is `map[string]any`. **Cold-start** returns an empty map
-(`map[string]any{}`) — not an error.
-
-```go
-row, err := app.Get(ctx, "UserTxnFeatures", "alice")
-// row is map[string]any{"tx_count_1h": float64(7), "tx_sum_1h": 312.45, ...}
+```json
+{ "table": "<name>", "key": "<entity_id>" | ["a", 42, true] | "" }
 ```
 
-For typed access, the user dereferences the map keys with type
-assertions. v0.1+ may add a generic codegen path that produces
-strongly-typed result structs.
+Returns `FeatureResult = map[string]any`. Cold-start (entity unknown) returns an empty (non-nil) map, never an error.
 
-### `App.BatchGet(ctx, requests)`
+### `BatchGet(ctx, requests)`
 
-**Wire opcode:** `OP_BATCH_GET` (`0x0024`).
+Posts to `POST /batch-get` with `{requests: [...]}`. Returns `[]FeatureResult` in request order. v0 has no partial success: any per-entry error rejects the whole batch and surfaces as `*RegistrationError`.
 
-```go
-type GetRequest struct {
-    Table    string   `json:"table"`
-    Key      any      `json:"key"`
-    Features []string `json:"features,omitempty"`
-}
+### `Reset(ctx)`
 
-func (a *App) BatchGet(ctx context.Context, requests []GetRequest) ([]FeatureResult, error)
-```
+Posts to `POST /reset`. The server returns `403` with `{error: {code: "reset_forbidden", ...}}` unless `test_mode` is enabled per Phase 13.4 D-03. Surfaces as `*RegistrationError`.
 
-**Returns:** `([]FeatureResult, error)`. Per-entry cold-start is
-`map[string]any{}`. v0 has **no partial success** — any single bad
-entry returns the whole frame as an error.
+### `Ping(ctx)`
 
-### `App.Reset(ctx)`
-
-**Wire opcode:** `OP_RESET` (`0x0040`).
-
-Wipe state + WAL. **Destructive — only call on a beava instance bound to
-test data.**
-
-**Returns:** `error`.
-
-### `App.Ping(ctx)`
-
-**Wire opcode:** `OP_PING` (`0x0000`).
+Calls `GET /health`. Returns:
 
 ```go
 type PingResult struct {
@@ -251,440 +143,96 @@ type PingResult struct {
 }
 ```
 
-### `App.Close(ctx)`
+### `Close(ctx)`
 
-Close transport (idempotent). For embed-mode apps, terminates the
-subprocess.
-
-## Builder API (event + table)
-
-### Event source
-
-```go
-type Txn struct {
-    UserID   string  `beava:"user_id"`
-    Amount   float64 `beava:"amount"`
-    Merchant string  `beava:"merchant"`
-    IP       *string `beava:"ip"`              // nullable per shared.md § Field types
-}
-
-txnDesc := beava.NewEvent[Txn]("Txn",
-    beava.KeepEventsFor("30d"),
-    beava.ColdAfter("1d"),
-    beava.DedupeKey("trace_id", "5m"),
-)
-```
-
-`beava.NewEvent[T]` is a generic constructor that reflects on `T` to
-extract the wire schema. The `beava:"<wire_field_name>"` struct tag
-overrides the default `snake_case`-of-`PascalCase` mapping; without the
-tag, `UserID` would default to `user_i_d` (Go's stdlib snake_case is
-imperfect for all-caps acronyms), so the explicit tag is recommended for
-fields with multi-letter abbreviations.
-
-Pointer types (`*string`, `*int64`) declare nullable fields per
-[shared.md § Field types](shared.md#field-types) — `Optional[T]`
-semantics.
-
-**Functional options:**
-
-| Option | Description |
-|--------|-------------|
-| `beava.KeepEventsFor(window)` | Event-retention TTL (duration string). |
-| `beava.ColdAfter(window)` | Per-source cold-entity TTL per V0-MEM-GOV-01. |
-| `beava.DedupeKey(field, window)` | Idempotent-replay configuration. |
-
-Reflection happens at descriptor-construction time, so any unsupported
-field type produces an error from `NewEvent` (returned via the chain;
-fluent-style `descriptor.Err()` accessor or `panic` — the choice is left
-to the 13.6 implementation).
-
-### Event derivation (function form)
-
-```go
-bigTxn := txnDesc.Filter(beava.Col("amount").Gt(100))
-                 .Select("user_id", "amount", "merchant")
-```
-
-Method-receiver chains compose against the upstream descriptor.
-
-### Table (aggregation-output, per ADR-001)
-
-```go
-userFeatures := beava.NewTable("UserTxnFeatures",
-    beava.WithKey("user_id"),
-    beava.WithUpstream(txnDesc),
-    beava.WithAgg(map[string]beava.AggOp{
-        "tx_count_1h":              beava.Count(beava.Window("1h")),
-        "tx_sum_1h":                beava.Sum("amount", beava.Window("1h")),
-        "tx_p99_1h":                beava.Quantile("amount", 0.99, beava.Window("1h")),
-        "tx_unique_merchants_1h":   beava.NUnique("merchant", beava.Window("1h")),
-    }),
-)
-
-_, err := app.Register(ctx, []beava.Descriptor{txnDesc, userFeatures})
-```
-
-`beava.NewTable(name, opts...)` returns a `TableDescriptor` populated
-only by upstream aggregation derivations per
-[ADR-001](../../.planning/decisions/ADR-001-bv-table-partial-overturn.md).
-Mutation paths (`Upsert` / `Delete` / `Retract`) are NOT exposed in v0.
-
-**Functional options:**
-
-| Option | Description |
-|--------|-------------|
-| `beava.WithKey(string \| []string)` | Single-key or composite-key. |
-| `beava.WithUpstream(Descriptor)` | Upstream event source or derivation. |
-| `beava.WithAgg(map[string]AggOp)` | Named aggregation features. |
-
-The composite-key form passes a slice:
-`beava.WithKey([]string{"user_id", "device_id"})`.
-
-## Pipeline DSL
-
-Method-chained API on `EventDescriptor` and `EventDerivation`:
-
-```go
-bigTxn := txnDesc.Filter(beava.Col("amount").Gt(100))
-                 .Select("user_id", "amount", "merchant")
-
-userBig := bigTxn.GroupBy("user_id").Agg(map[string]beava.AggOp{
-    "count_big": beava.Count(beava.Window("1h")),
-})
-```
-
-PascalCase chain methods:
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `events.Filter(expr)` | `EventDerivation` | Keep rows where `expr` is True. |
-| `events.Select(cols ...string)` | `EventDerivation` | Keep only the named fields. |
-| `events.Drop(cols ...string)` | `EventDerivation` | Remove the named fields. |
-| `events.Rename(mapping map[string]string)` | `EventDerivation` | Rename fields. |
-| `events.WithColumns(mapping map[string]Expr)` | `EventDerivation` | Add or overwrite derived fields. |
-| `events.Map(mapping map[string]Expr)` | `EventDerivation` | Alias for `WithColumns`. |
-| `events.Cast(typeMap map[string]string)` | `EventDerivation` | Change field types. |
-| `events.Fillna(defaults map[string]any)` | `EventDerivation` | Replace null values. |
-| `events.GroupBy(keys ...string)` | `*GroupBy` | Start an aggregation pipeline. |
-| `groupBy.Agg(features map[string]AggOp)` | `Descriptor` | Emit named aggregation features. |
-
-## Expression DSL
-
-```go
-beava.Col("amount").Gt(100)                                 // amount > 100
-beava.Col("user_id").Eq("alice")                            // user_id == 'alice'
-beava.Col("amount").Gt(100).And(beava.Col("status").Eq("ok"))
-beava.Col("amount").Gt(100).Or(beava.Col("vip"))
-beava.Col("flag").Not()
-beava.Col("amount").IsNull()
-beava.Col("status").Cast("int")
-beava.Col("a").Add(beava.Col("b")).Mul(beava.Lit(2))
-beava.Lit(42)
-```
-
-PascalCase method names:
-
-| Method | Wire op | Equivalent Python |
-|--------|---------|-------------------|
-| `.Gt(other)` | `>` | `> other` |
-| `.Ge(other)` | `>=` | `>= other` |
-| `.Lt(other)` | `<` | `< other` |
-| `.Le(other)` | `<=` | `<= other` |
-| `.Eq(other)` | `==` | `== other` |
-| `.Ne(other)` | `!=` | `!= other` |
-| `.Add(other)` | `+` | `+ other` |
-| `.Sub(other)` | `-` | `- other` |
-| `.Mul(other)` | `*` | `* other` |
-| `.Div(other)` | `/` | `/ other` |
-| `.And(other)` | `and` | `& other` |
-| `.Or(other)` | `or` | `\| other` |
-| `.Not()` | `not` | `~` |
-| `.IsNull()` | `(x == null)` | `.isnull()` |
-| `.Cast(type)` | `cast(x, type)` | `.cast(type)` |
-| `.Alias(name)` | column-rename | `.alias(name)` |
-
-`beava.Col(name)` returns a `*Col` expression node;
-`beava.Lit(value)` returns a literal node. All chain methods compile to
-the same wire-level expression string per
-[`docs/pipeline-dsl/expressions.md`](../pipeline-dsl/expressions.md)
-(Plan 13.0-12 — forward reference).
-
-## bv.sum signature (Q1 Path B locked)
-
-```go
-func Sum(field string, opts ...SumOption) AggOp
-
-func Window(s string) SumOption       // duration-string window
-func Where(expr Expr) SumOption       // optional filter expression
-```
-
-> **Locked per Q1 Path B** ([13.0-CONTEXT.md](../../.planning/phases/13.0-design-contract-spec-docs/13.0-CONTEXT.md)).
-> The Go `beava.Sum(field string, ...)` signature accepts a string column
-> name **only**. Inline expressions are **FORBIDDEN**.
-
-```go
-// FORBIDDEN — Sum's first param is string, not Expr; this is a compile error.
-beava.Sum(beava.Col("flag").Cast("int"), beava.Window("1h"))   // ✗ does not compile
-
-// RECOMMENDED — two-stage WithColumns + Sum:
-userFraudCounts := beava.NewTable("UserFraudCounts",
-    beava.WithKey("user_id"),
-    beava.WithUpstream(txnDesc.WithColumns(map[string]beava.Expr{
-        "flag_int": beava.Col("is_fraud").Cast("int"),
-    })),
-    beava.WithAgg(map[string]beava.AggOp{
-        "c": beava.Sum("flag_int", beava.Window("1h")),
-    }),
-)
-```
-
-This narrowing applies symmetrically across the
-[Python SDK](python.md#bvsum-signature-q1-path-b-locked) and the
-[TypeScript SDK](typescript.md#bvsum-signature-q1-path-b-locked). All
-three SDKs use string-only field args for `bv.sum` / `beava.Sum`.
-
-> **See:** [`docs/pipeline-dsl/compilation-rules.md`](../pipeline-dsl/compilation-rules.md)
-> § Boolean-sum recipe (Plan 13.0-12 — forward reference).
-
-## Public expression literals (`beava.Lit`) — per ADR-003
-
-Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), `beava.Lit(value)` is exposed as a public factory:
-
-```go
-func Lit(value any) Expr  // value: int64 | float64 | string | bool | nil
-```
-
-Use cases (mirror Python):
-
-```go
-// Constant column
-events.WithColumns(map[string]beava.Expr{
-    "source": beava.Lit("web"),
-})
-
-// Force float64 division
-events.WithColumns(map[string]beava.Expr{
-    "rate": beava.Col("count").Div(beava.Lit(60.0)),
-})
-
-// Explicit literal in filter
-events.Filter(beava.Col("amount").Gt(beava.Lit(100)))
-```
-
-Implementation lands in Phase 13.6. Wire-level: literals are serialized via the existing expression-string path; no wire change.
-
-## Global aggregation — per ADR-003
-
-Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), the Go SDK ships first-class **global aggregation** mirroring the Python surface. Unlike Python (which uses `App.get` arity overloading) and TypeScript (which uses overloaded signatures), the Go SDK uses a **separate method** `App.GetGlobal(ctx, tableName)` per Go's typing convention favoring explicit method names over arity overloading.
-
-Declare a global table by passing nil/empty key cols to the table builder:
-
-```go
-type Click struct {
-    UserID string `beava:"user_id"`
-    Page   string `beava:"page"`
-}
-
-ClickEvent := beava.Event(beava.EventConfig{Name: "Click", Sample: Click{}})
-
-TotalClicks := beava.Table(beava.TableConfig{
-    Name:    "TotalClicks",
-    KeyCols: nil, // or []string{} → global table
-    Source:  ClickEvent,
-    Agg: map[string]beava.AggOp{
-        "total": beava.Count(beava.Window("forever")),
-    },
-})
-
-ctx := context.Background()
-app, _ := beava.NewApp(ctx, "embed://", nil)
-defer app.Close(ctx)
-
-_ = app.Register(ctx, []beava.Descriptor{ClickEvent, TotalClicks})
-_ = app.Push(ctx, "Click", map[string]any{"user_id": "alice", "page": "/home"})
-_ = app.Push(ctx, "Click", map[string]any{"user_id": "bob", "page": "/home"})
-
-result, _ := app.GetGlobal(ctx, "TotalClicks")
-// result == map[string]any{"total": int64(2)}, no key arg
-```
-
-**Method dispatch contract:**
-
-| Table type | Method | Wire request |
-|---|---|---|
-| Per-entity | `app.Get(ctx, tableName, key)` | `{"table": ..., "key": "alice"}` |
-| Global | `app.GetGlobal(ctx, tableName)` | `{"table": ..., "key": ""}` |
-
-Calling `app.Get(ctx, globalTable, "anyKey")` against a registered global table returns `map[string]any{}` (empty — matches the per-entity cold-start convention; the empty entity simply has no state). Calling `app.GetGlobal(ctx, perEntityTable)` is also accepted at the engine level (returns the empty entity's state) but is conceptually nonsensical — the Go SDK does NOT lock at register-time which method matches which table.
-
-**Three equivalent forms** (all compile to wire-level `key: []`):
-
-```go
-ClickEvent.Agg(map[string]beava.AggOp{"total": beava.Count(...)})        // shortest
-ClickEvent.GroupBy().Agg(map[string]beava.AggOp{"total": beava.Count(...)}) // empty GroupBy
-beava.Table(beava.TableConfig{KeyCols: nil, ...})                          // explicit nil
-```
-
-Implementation deferred to Phase 13.6 (~75 LOC: `beava.Lit` factory + `events.GroupBy()` empty allowance + `events.Agg(...)` direct + table-builder no-`KeyCols` + `app.GetGlobal` method).
-
-## Operator catalog
-
-The 53 op functions match the Python catalogue in PascalCase per Go
-convention (per [ADR-002](../../.planning/decisions/ADR-002-polars-op-rename.md)
-Polars naming):
-
-| Family | Ops (Go PascalCase) | Doc |
-|--------|------|-----|
-| Core (8) | Count, Sum, Mean, Min, Max, Var, Std, Ratio | [docs/operators/core/](../operators/core/) |
-| Sketch (5) | NUnique, Quantile, TopK, BloomMember, Entropy | [docs/operators/sketch/](../operators/sketch/) |
-| Point/ordinal (5) | First, Last, FirstN, LastN, Lag | [docs/operators/point-ordinal/](../operators/point-ordinal/) |
-| Recency (10) | FirstSeen, LastSeen, Age, HasSeen, TimeSince, TimeSinceLastN, Streak, MaxStreak, NegativeStreak, FirstSeenInWindow | [docs/operators/recency/](../operators/recency/) |
-| Decay (6) | Ewma (alias Ema), Ewvar, EwZscore, DecayedSum, DecayedCount, Twa | [docs/operators/decay/](../operators/decay/) |
-| Velocity (9) | RateOfChange, InterArrivalStats, BurstCount, DeltaFromPrev, Trend, TrendResidual, OutlierCount, ValueChangeCount, ZScore | [docs/operators/velocity/](../operators/velocity/) |
-| Bounded-buffer (7) | Histogram, HourOfDayHistogram, DowHourHistogram, SeasonalDeviation, EventTypeMix, MostRecentN, ReservoirSample | [docs/operators/buffer-geo/](../operators/buffer-geo/) |
-| Geo (4) | GeoVelocity, GeoDistance, GeoSpread, DistanceFromHome | [docs/operators/buffer-geo/](../operators/buffer-geo/) |
-
-Total: 8+5+5+10+6+9+7+4 = **54** entries (53 unique + `Ema` alias).
-
-Each op accepts variadic functional options for kwargs:
-
-- `beava.Window(string)` — duration-string window for windowed ops.
-- `beava.Where(Expr)` — optional filter expression.
-- `beava.HalfLife(string)` — for decay ops.
-- `beava.SubWindow(string)` — for `BurstCount`.
-- `beava.Sigma(float64)` — for `OutlierCount`.
-
-Required positional args (typically `field` and op-specific params like
-`q` for `Quantile`) come first; everything else is functional options.
-
-> **No deprecation aliases in Go.** v0 is unreleased and Go users start
-> with the new Polars names directly.
+Idempotent. Closes the underlying transport. In embed mode, sends `SIGTERM` and `SIGKILL`s after timeout; removes the per-instance temp CWD.
 
 ## Errors
 
 ```go
 type RegistrationError struct {
-    Code    string
-    Path    string
-    Message string
-    Errors  []ValidationError
+    Code    string            `json:"code"`     // e.g., "unsupported_node_kind"
+    Path    string            `json:"path,omitempty"`
+    Message string            `json:"message"`
+    Errors  []ValidationError `json:"errors,omitempty"`
 }
 
-func (e *RegistrationError) Error() string {
-    return fmt.Sprintf("[%s] %s: %s", e.Code, e.Path, e.Message)
+func (e *RegistrationError) Error() string
+
+type ValidationError struct {
+    Kind    string `json:"kind"`
+    Path    string `json:"path"`
+    Message string `json:"message"`
 }
 
 type BinaryNotFoundError struct {
     Searched []string
+    Reason   string
 }
 
-func (e *BinaryNotFoundError) Error() string {
-    return fmt.Sprintf("beava binary not found in: %v", e.Searched)
-}
+func (e *BinaryNotFoundError) Error() string
+```
 
-type ValidationError struct {
-    Kind    string
-    Path    string
-    Message string
+`*RegistrationError` is returned by every wire method on non-2xx HTTP responses or `OpErrorResponse` TCP frames. Use `errors.As(err, &regErr)` to inspect:
+
+```go
+var regErr *beava.RegistrationError
+if errors.As(err, &regErr) {
+    if regErr.Code == "unsupported_node_kind" {
+        // ...
+    }
 }
 ```
 
-The 9 valid `ValidationError.Kind` values are documented in
-[shared.md § ValidationError envelope](shared.md#validationerror-envelope).
-
-Standard Go error-handling idioms apply:
+## Embed mode
 
 ```go
-result, err := app.Register(ctx, descriptors)
+import beava "github.com/beava-dev/beava/sdk/go"
+
+ctx := context.Background()
+app, err := beava.NewApp(ctx, "", beava.WithTestMode()) // empty URL = embed
 if err != nil {
-    var regErr *beava.RegistrationError
-    if errors.As(err, &regErr) {
-        // structured handling
-        log.Printf("registration failed: code=%s path=%s", regErr.Code, regErr.Path)
-        for _, ve := range regErr.Errors {
-            log.Printf("  - %s", ve)
-        }
-    }
-    return err
+    log.Fatal(err)
 }
+defer app.Close(ctx)
 ```
 
-## Test helpers (`beavatest`)
+The first call to a wire method spawns the local `beava` binary on ephemeral ports in a fresh temp CWD. Discovery: `BEAVA_BINARY` env / `exec.LookPath("beava")` / walk parents for `target/debug/beava` / fail with `*BinaryNotFoundError`.
+
+## Test fixtures
+
+For tests, use `App` with embed mode and `WithTestMode()`:
 
 ```go
-package mypackage_test
-
-import (
-    "context"
-    "testing"
-
-    beava "github.com/beava-io/beava-go"
-    "github.com/beava-io/beava-go/beavatest"
-)
-
-type Txn struct {
-    UserID string `beava:"user_id"`
-}
-
-func TestCountPerUser(t *testing.T) {
+func TestThing(t *testing.T) {
     ctx := context.Background()
-    app := beavatest.Fixture(t, beavatest.WithResetEach(true))
-
-    txnDesc := beava.NewEvent[Txn]("Txn")
-    counts := beava.NewTable("Counts",
-        beava.WithKey("user_id"),
-        beava.WithUpstream(txnDesc),
-        beava.WithAgg(map[string]beava.AggOp{
-            "c": beava.Count(beava.Window("1h")),
-        }),
-    )
-
-    if _, err := app.Register(ctx, []beava.Descriptor{txnDesc, counts}); err != nil {
-        t.Fatal(err)
-    }
-
-    if _, err := app.Push(ctx, "Txn", map[string]any{"user_id": "alice"}); err != nil {
-        t.Fatal(err)
-    }
-
-    row, err := app.Get(ctx, "Counts", "alice")
-    if err != nil {
-        t.Fatal(err)
-    }
-
-    beavatest.AssertFeaturesEq(t, row, beava.FeatureResult{"c": int64(1)})
+    app, err := beava.NewApp(ctx, "", beava.WithTestMode())
+    if err != nil { t.Fatal(err) }
+    defer app.Close(ctx)
+    // ...
 }
 ```
 
-`beavatest.Fixture(t, opts...)`:
+For mock-server tests against a fake HTTP backend, use the standard `net/http/httptest` package:
 
-- Returns a `*beava.App` configured for embed mode.
-- Registers `t.Cleanup(func() { app.Close(ctx) })` so the subprocess
-  terminates when the test ends.
-- `beavatest.WithResetEach(true)` — call `app.Reset(ctx)` between tests
-  (standard Go testing pattern uses subtests + cleanup; this option
-  pairs with table-driven tests).
-
-`beavatest.AssertFeaturesEq(t, got, want)` — assertion helper using
-`testing.T.Errorf`. Tolerant of float near-equality (relative tolerance
-`1e-9`) for sketch-based ops like `Quantile` and `NUnique`.
+```go
+srv := httptest.NewServer(http.HandlerFunc(...))
+defer srv.Close()
+app, _ := beava.NewApp(ctx, srv.URL)
+defer app.Close(ctx)
+```
 
 ## Versioning + compatibility
 
-- **Go versions:** Go 1.22+ (generics + modern context handling).
-- **Wire compatibility:** v0 SDK targets v0 server.
-- **API stability:** the public surface is **frozen for v0**. Adding new
-  optional fields / functional options is non-breaking.
+- v0 surface is **frozen** as documented above.
+- Go 1.22+ baseline.
+- Apache-2.0 license.
+- Module path `github.com/beava-dev/beava/sdk/go` is permanent for v0; if the monorepo splits in v0.1+, a `go get` redirect at `github.com/beava-dev/beava-go` is the migration path (deferred until a real signal is needed).
 
-## Plan-level traceability
+## Cross-references
 
-This document is authored by Plan 13.0-04 (Wave 1). Downstream consumers:
-
-- **Phase 13.6** — Go SDK port reads this doc as the canonical surface;
-  lands the v0-target shape (`github.com/beava-io/beava-go` v0.0.0).
-- [shared.md](shared.md) + [python.md](python.md) — cross-language parity
-  references.
-
-For the full Phase 13.0 plan tree, see
-[`.planning/phases/13.0-design-contract-spec-docs/13.0-PLAN.md`](../../.planning/phases/13.0-design-contract-spec-docs/13.0-PLAN.md).
+- **Wire contract:** [docs/wire-spec.md](../wire-spec.md)
+- **Cross-language semantics:** [shared.md](shared.md)
+- **Authoring SDK (Python):** [python.md](python.md)
+- **TS SDK (sister communicate-only client):** [typescript.md](typescript.md)
+- **Phase 13.6 plan + summary:** `.planning/phases/13.6-typescript-go-sdks/`

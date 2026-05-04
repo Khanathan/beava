@@ -1,0 +1,41 @@
+{
+  "name": "cross-sdk-baseline",
+  "register_payload": {
+    "nodes": [
+      {
+        "kind": "event",
+        "name": "Click",
+        "schema": {"user_id": "str", "page": "str"}
+      },
+      {
+        "kind": "table",
+        "name": "ClicksPerUser",
+        "key": ["user_id"],
+        "source": "Click",
+        "agg": [
+          {"name": "c", "op": "count", "window": "1h"}
+        ]
+      },
+      {
+        "kind": "table",
+        "name": "TotalClicks",
+        "key": [],
+        "source": "Click",
+        "agg": [
+          {"name": "total", "op": "count", "window": "forever"}
+        ]
+      }
+    ]
+  },
+  "events": [
+    {"event_name": "Click", "fields": {"user_id": "alice", "page": "/home"}},
+    {"event_name": "Click", "fields": {"user_id": "alice", "page": "/about"}},
+    {"event_name": "Click", "fields": {"user_id": "bob",   "page": "/home"}}
+  ],
+  "gets": [
+    {"table": "ClicksPerUser", "key": "alice", "expected": {"c": 2}},
+    {"table": "ClicksPerUser", "key": "bob",   "expected": {"c": 1}},
+    {"table": "TotalClicks",   "key": "",      "expected": {"total": 3}},
+    {"table": "ClicksPerUser", "key": "carol", "expected": {}}
+  ]
+}

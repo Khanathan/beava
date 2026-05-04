@@ -105,10 +105,14 @@ features. See
 [examples/python/adtech.py](../examples/python/adtech.py),
 [examples/python/fraud.py](../examples/python/fraud.py), and
 [examples/python/ecommerce.py](../examples/python/ecommerce.py)
-for the full source. Equivalent demos exist for
-[TypeScript](../examples/typescript/) and [Go](../examples/go/) -- see
-[docs/sdk-api/typescript.md](./sdk-api/typescript.md) +
-[docs/sdk-api/go.md](./sdk-api/go.md).
+for the full source.
+
+> **Cross-language note:** Pipeline authoring is **Python-only** in v0. The
+> [TypeScript](./sdk-api/typescript.md) and [Go](./sdk-api/go.md) SDKs are
+> communicate-only — they push events, register pre-compiled JSON descriptors
+> (authored from Python), and read features. Use Python to design and compile
+> your pipeline; TS/Go services then push events + read features against the
+> same registered pipeline.
 
 ## Next steps
 
