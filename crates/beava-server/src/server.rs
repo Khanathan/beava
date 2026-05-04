@@ -2376,6 +2376,19 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
+        // Plan 13.4.1 D-05: legacy request shape rejected. TCP frame is
+        // OP_ERROR_RESPONSE (0xFFFF) with the locked body shape that mirrors
+        // the HTTP 400 response.
+        GlueResponse::UnsupportedRequestShape { hint } => {
+            let body = serde_json::json!({
+                "error": {
+                    "code": "unsupported_request_shape",
+                    "message": hint,
+                }
+            });
+            let b = serde_json::to_vec(&body).unwrap_or_default();
+            encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
+        }
         _ => {
             encode_tcp_frame_bytes(
                 OP_ERROR_RESPONSE,
@@ -2511,6 +2524,18 @@ fn encode_glue_response_http(
         GlueResponse::ResetForbidden => {
             let body = reset_forbidden_body();
             (403, serde_json::to_vec(&body).unwrap_or_default())
+        }
+        // Plan 13.4.1 D-05: legacy request shape rejected. HTTP 400 with the
+        // locked body shape `{"error":{"code":"unsupported_request_shape",
+        // "message":<hint>}}` where `hint` points at the relevant doc anchor.
+        GlueResponse::UnsupportedRequestShape { hint } => {
+            let body = serde_json::json!({
+                "error": {
+                    "code": "unsupported_request_shape",
+                    "message": hint,
+                }
+            });
+            (400, serde_json::to_vec(&body).unwrap_or_default())
         }
         _ => (501, b"{\"error\":{\"code\":\"unsupported\"}}".to_vec()),
     };

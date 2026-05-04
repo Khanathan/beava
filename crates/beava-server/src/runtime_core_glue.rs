@@ -69,6 +69,14 @@ pub enum GlueResponse {
         code: &'static str,
         registry_version: u32,
     },
+    /// Plan 13.4.1 D-05 — verb-style request body received in a legacy shape
+    /// (`{keys, features}` for /get + /batch_get, `{feature, key}` for /get).
+    /// Encoded as 400 with body
+    /// `{"error":{"code":"unsupported_request_shape","message":<hint>}}`.
+    /// TCP encoding emits an `OP_ERROR_RESPONSE` (0xFFFF) frame with the
+    /// same body. `hint` is the route-specific deprecation message that
+    /// points at `docs/http-api.md`.
+    UnsupportedRequestShape { hint: String },
     /// Feature query result (`{"value": ...}` or batch result).
     ///
     /// `format` is the wire content_type byte of the response payload — Plan 12-09:
