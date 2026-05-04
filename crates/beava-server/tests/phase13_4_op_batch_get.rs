@@ -137,10 +137,13 @@ async fn http_batch_get_returns_per_tuple_results() {
     register(&ts).await;
     push_seed_events(&ts).await;
 
+    // Phase 13.4.1 D-04 — exercise BOTH the canonical `key` path AND the
+    // legacy `entity_id` alias path so the smoke test guards against
+    // regressions on the one-release deprecation alias.
     let req = json!({
         "requests": [
-            {"table": "UserSpend",     "entity_id": "alice"},
-            {"table": "MerchantSpend", "entity_id": "acme"}
+            {"table": "UserSpend",     "key": "alice"},        // canonical D-04 path
+            {"table": "MerchantSpend", "entity_id": "acme"}    // alias D-04 path
         ]
     });
     let resp = ts
@@ -164,14 +167,25 @@ async fn http_batch_get_returns_per_tuple_results() {
         "results must mirror request length, got: {body:#}"
     );
 
-    // Order MUST mirror request order (per wire-spec contract).
-    assert_eq!(results[0]["table"], "UserSpend");
-    assert_eq!(results[0]["entity_id"], "alice");
+    // Order MUST mirror request order. Flat-row shape per Phase 13.4.1 D-03 —
+    // feature dict IS the row (no {table, entity_id, features:{...}} envelope).
+    assert!(
+        results[0].get("table").is_none(),
+        "flat row must NOT carry `table` field, got: {body:#}"
+    );
+    assert!(
+        results[0].get("entity_id").is_none(),
+        "flat row must NOT carry `entity_id` field, got: {body:#}"
+    );
+    assert!(
+        results[0].get("features").is_none(),
+        "flat row must NOT carry `features` envelope field, got: {body:#}"
+    );
     assert_eq!(
-        results[0]["features"]["cnt"], 2,
+        results[0]["cnt"], 2,
         "alice cnt=2, got: {body:#}"
     );
-    let alice_total = results[0]["features"]["total"]
+    let alice_total = results[0]["total"]
         .as_f64()
         .unwrap_or_else(|| panic!("alice total must be number, got: {body:#}"));
     assert!(
@@ -179,10 +193,11 @@ async fn http_batch_get_returns_per_tuple_results() {
         "alice total=42.5, got total={alice_total}"
     );
 
-    assert_eq!(results[1]["table"], "MerchantSpend");
-    assert_eq!(results[1]["entity_id"], "acme");
+    assert!(results[1].get("table").is_none());
+    assert!(results[1].get("entity_id").is_none());
+    assert!(results[1].get("features").is_none());
     assert_eq!(
-        results[1]["features"]["merchant_cnt"], 3,
+        results[1]["merchant_cnt"], 3,
         "acme merchant_cnt=3 (alice×2 + bob×1), got: {body:#}"
     );
 
@@ -199,8 +214,8 @@ async fn http_batch_get_unknown_table_returns_partial_error() {
 
     let req = json!({
         "requests": [
-            {"table": "UserSpend",   "entity_id": "alice"},
-            {"table": "DoesNotExist", "entity_id": "alice"}
+            {"table": "UserSpend",    "key": "alice"},
+            {"table": "DoesNotExist", "key": "alice"}
         ]
     });
     let resp = ts
@@ -217,21 +232,19 @@ async fn http_batch_get_unknown_table_returns_partial_error() {
     let results = body["results"].as_array().expect("results array");
     assert_eq!(results.len(), 2, "got: {body:#}");
 
-    // Index 0: UserSpend, alice — success
-    assert_eq!(results[0]["table"], "UserSpend");
-    assert_eq!(results[0]["entity_id"], "alice");
-    assert_eq!(results[0]["features"]["cnt"], 2);
+    // Phase 13.4.1 D-03 — flat success row.
+    assert!(results[0].get("table").is_none());
+    assert!(results[0].get("entity_id").is_none());
+    assert!(results[0].get("features").is_none());
+    assert_eq!(results[0]["cnt"], 2);
 
-    // Index 1: DoesNotExist — per-tuple error (NOT whole-frame 4xx)
-    assert_eq!(results[1]["table"], "DoesNotExist");
-    assert_eq!(results[1]["entity_id"], "alice");
+    // Phase 13.4.1 D-03 — flat per-tuple error row (no envelope wrapping).
+    assert!(results[1].get("table").is_none());
+    assert!(results[1].get("entity_id").is_none());
+    assert!(results[1].get("features").is_none());
     assert_eq!(
         results[1]["error"]["code"], "unknown_table",
         "expected error.code=unknown_table, got: {body:#}"
-    );
-    assert!(
-        results[1].get("features").is_none(),
-        "error tuple must not carry a `features` field, got: {body:#}"
     );
 
     ts.shutdown().await.ok();
@@ -302,11 +315,13 @@ async fn tcp_batch_get_returns_same_response_shape() {
     register(&ts).await;
     push_seed_events(&ts).await;
 
+    // Phase 13.4.1 D-04 — exercise the canonical `key` path so the
+    // HTTP/TCP byte-equivalence test stays on the canonical disposition.
     // Issue HTTP /batch_get to capture the canonical body.
     let req_body = json!({
         "requests": [
-            {"table": "UserSpend",     "entity_id": "alice"},
-            {"table": "MerchantSpend", "entity_id": "acme"}
+            {"table": "UserSpend",     "key": "alice"},
+            {"table": "MerchantSpend", "key": "acme"}
         ]
     });
     let http_resp = ts
@@ -338,12 +353,17 @@ async fn tcp_batch_get_returns_same_response_shape() {
     ts.shutdown().await.ok();
 }
 
-// ─── Test 5 — global table (entity_id = "" sentinel) — IGNORED until Plan 09 ──
+// ─── Test 5 — global table (key = "" sentinel) — flat-row contract ───────────
 
 /// Plan 13.4-09 (global-table sentinel routing per ADR-003) landed the
 /// engine-side `parse_entity_key` short-circuit so the empty-string
-/// sentinel returns `Some(EntityKey(empty))` instead of None. Re-ignoring
-/// would re-introduce `key_parse_failure` at GET time.
+/// sentinel returns `Some(EntityKey(empty))` instead of None.
+///
+/// Phase 13.4.1 D-04 update: this test now exercises the canonical `key`
+/// path (not the legacy `entity_id` alias). The empty-string-as-global-key
+/// sentinel from ADR-003 still applies under either field name; we pick
+/// the canonical path so the smoke test guards the future-of-record
+/// disposition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn http_batch_get_with_global_table_entity_id_empty() {
     let ts = TestServer::spawn().await.expect("spawn");
@@ -400,16 +420,18 @@ async fn http_batch_get_with_global_table_entity_id_empty() {
     // Batch-get the global table with the empty-string sentinel.
     let req = json!({
         "requests": [
-            {"table": "GlobalCounter", "entity_id": ""}
+            {"table": "GlobalCounter", "key": ""}
         ]
     });
     let r = ts.post_json("/batch_get", &req).await.expect("batch_get");
     assert_eq!(r.status().as_u16(), 200);
     let body: serde_json::Value = r.json().await.expect("json");
-    assert_eq!(body["results"][0]["table"], "GlobalCounter");
-    assert_eq!(body["results"][0]["entity_id"], "");
+    // Phase 13.4.1 D-03 — flat row, no envelope.
+    assert!(body["results"][0].get("table").is_none());
+    assert!(body["results"][0].get("entity_id").is_none());
+    assert!(body["results"][0].get("features").is_none());
     assert_eq!(
-        body["results"][0]["features"]["events_total"], 3,
+        body["results"][0]["events_total"], 3,
         "global counter must reflect 3 pushed events, got: {body:#}"
     );
 
