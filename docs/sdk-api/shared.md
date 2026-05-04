@@ -1,7 +1,7 @@
 # Shared SDK Semantics
 
-> **Status:** Authoritative for v0. The 3 v0 SDKs (Python, TypeScript, Go) MUST implement the surfaces in this doc with semantic parity.
-> **Last reviewed:** 2026-05-03 (Phase 13.0).
+> **Status:** Authoritative for v0. The 3 v0 SDKs (Python, TypeScript, Go) MUST implement the **communicate** surfaces in this doc with semantic parity. The **authoring** layer (decorators, expression DSL, op helpers) is **Python-only** in v0 — see "Authoring vs communicate" below.
+> **Last reviewed:** 2026-05-03 (Phase 13.6).
 
 ## Overview
 
@@ -17,12 +17,31 @@ idioms (naming style, sync vs async, error patterns, decorator vs builder
 syntax) are documented in the per-language docs:
 
 - [Python SDK](python.md) — canonical authoring UX (`@bv.event`, `bv.col`, `bv.count(...)`).
-- [TypeScript SDK](typescript.md) — npm package `@beava/sdk`; camelCase + builder pattern.
-- [Go SDK](go.md) — module `github.com/beava-io/beava-go`; context-aware methods + functional options.
+- [TypeScript SDK](typescript.md) — npm package `@beava/sdk`; communicate-only (no DSL).
+- [Go SDK](go.md) — module `github.com/beava-dev/beava/sdk/go`; context-aware methods + functional options; communicate-only (no DSL).
 
 When Python prose and the cross-language semantics in this doc disagree, this
 doc wins — Python is the **canonical implementation** but this is the
 **canonical contract**.
+
+## Authoring vs communicate
+
+Beava v0 splits its public SDK surface into two layers:
+
+| Layer | Available in | Description |
+|-------|--------------|-------------|
+| **Authoring** | Python only | Decorators (`@bv.event`), expression DSL (`bv.col`, `bv.lit`), op helpers (`bv.count`, `bv.sum`, ...), pipeline chains (`events.filter().group_by().agg()`), demo loaders (`bv.demo("fraud")`). Compiles to JSON descriptors. |
+| **Communicate** | All three SDKs (Python, TypeScript, Go) | `App` constructor + URL-scheme dispatch, `register(pre-compiled JSON)`, `push`, `pushSync`, `get`, `batchGet`, `reset`, `ping`, `close`. |
+
+**Cross-language workflow:**
+
+1. Author the pipeline in Python via the DSL.
+2. Compile to JSON via `bv.App.register_json(...)` or by serializing descriptors.
+3. Ship that JSON to a TypeScript / Go application — they pass it through verbatim to `app.register(...)` and never inspect it.
+
+This split was locked 2026-05-03 (Phase 13.6 scope amendment) per the user directive: "pipeline sdk in python only; only communicate sdk are in all languages." The TS+Go SDKs deliberately ship NO DSL files (no `events.ts`/`col.ts`/`agg.ts`/`table.ts`; same for Go). Their `Descriptor` type is opaque pass-through (`Record<string, unknown>` in TS, `map[string]any` in Go).
+
+This is not a permanent constraint — TS/Go authoring may land in v0.1+ if demand justifies it. The key insight is that **the wire spec is the cross-language contract**, not the authoring DSL: a TS app pushing events against a Python-authored pipeline is observably identical to a Python app doing the same.
 
 ## Wire transports
 
@@ -119,19 +138,17 @@ All three SDKs produce the same wire request when querying a global table (`{"ta
 
 The wire shape is identical — only the per-language client surface differs. Global-table state is bounded by the per-table state size (single slot), independent of entity count. See [`docs/concepts/global-aggregation.md`](../concepts/global-aggregation.md) for the full conceptual treatment.
 
-## Public expression literal (`bv.lit`) — per ADR-003
+## Public expression literal (`bv.lit`) — Python-only in v0
 
-Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), all three SDKs expose a public literal factory:
+Per [ADR-003](../../.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md), Python exposes a public literal factory:
 
-| Language | Signature |
-|---|---|
-| Python | `bv.lit(value: int | float | str | bool | None) -> Expr` |
-| TypeScript | `bv.lit(value: number | string | boolean | null): Expr` |
-| Go | `beava.Lit(value any) Expr` |
+```python
+bv.lit(value: int | float | str | bool | None) -> Expr
+```
 
-The literal AST node already exists internally in all three SDKs (used by the implicit operator-overloading coercion path); ADR-003 promotes it to the public namespace. Wire-level: literals are serialized via the existing expression-string path; **no wire change**.
+**TS / Go do NOT expose `bv.lit`** — both SDKs are communicate-only in v0 (no expression layer). Cross-language workflow: Python authors expressions including literals → compiles to JSON → TS/Go ship the pre-compiled JSON.
 
-Implementation deferred: Phase 13.5 (Python ~5 LOC) + Phase 13.6 (TS + Go ~30 LOC each).
+If TS/Go authoring lands in v0.1+, they would expose mirror factories (`bv.lit(...)` / `beava.Lit(...)`); that's deferred per the Phase 13.6 communicate-only rescope.
 
 ## Field types
 
@@ -296,21 +313,23 @@ of SDK behavior.
 
 ## Cross-language API surface map
 
-For quick reference, here is the canonical surface that every SDK MUST
-implement:
+For quick reference, here is the canonical **communicate** surface that every SDK MUST implement:
 
 | Wire opcode | Python | TypeScript | Go |
 |-------------|--------|------------|-----|
-| `OP_REGISTER` | `app.register(*descriptors, force=False, dry_run=False)` | `app.register(descriptors, { force, dryRun })` | `app.Register(ctx, descriptors, beava.WithForce(), beava.WithDryRun())` |
+| `OP_REGISTER` | `app.register(*descriptors, force=False, dry_run=False)` | `app.register(descriptors, { force, dry_run })` | `app.Register(ctx, descriptors, beava.WithForce(), beava.WithDryRun())` |
 | `OP_PUSH` | `app.push(event_name, fields)` | `app.push(eventName, fields)` | `app.Push(ctx, eventName, fields)` |
-| `OP_GET` | `app.get(table, key)` | `app.get(table, key)` | `app.Get(ctx, table, key)` |
+| `OP_PUSH_SYNC` (reserved) | `app.push_sync(event_name, fields)` | `app.pushSync(eventName, fields)` | `app.PushSync(ctx, eventName, fields)` |
+| `OP_GET` (per-entity) | `app.get(table, key)` | `app.get(table, key)` | `app.Get(ctx, table, key)` |
+| `OP_GET` (global, ADR-003) | `app.get(table)` (1-arg) | `app.get(table)` (1-arg overload) | `app.GetGlobal(ctx, table)` (separate method) |
 | `OP_BATCH_GET` | `app.batch_get(requests)` | `app.batchGet(requests)` | `app.BatchGet(ctx, requests)` |
 | `OP_RESET` | `app.reset()` | `app.reset()` | `app.Reset(ctx)` |
 | `OP_PING` | `app.ping()` | `app.ping()` | `app.Ping(ctx)` |
-| (close lifecycle) | `app.close()` / context manager | `app.close()` / `Symbol.asyncDispose` | `app.Close(ctx)` / `defer` |
+| (close lifecycle) | `app.close()` / context manager | `app.close()` | `app.Close(ctx)` / `defer` |
 
-Each language doc fills in the per-language signature details with full
-type annotations, error semantics, and lifecycle expectations.
+The **authoring** surface (`@bv.event`, `@bv.table`, expressions, op helpers, `bv.demo`) lives in Python only — see "Authoring vs communicate" above.
+
+Each language doc fills in the per-language signature details with full type annotations, error semantics, and lifecycle expectations.
 
 ## Plan-level traceability
 
