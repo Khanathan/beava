@@ -379,10 +379,15 @@ impl OutlierCountState {
 // ─── ValueChangeCountState ───────────────────────────────────────────────────
 
 /// AGG-VEL-08: count of value flips (consecutive different values).
+///
+/// Phase 13.5.2: stores `last_value` as a generic `Value` (was `f64`) so
+/// string / bool / numeric state transitions are all counted. The previous
+/// numeric-only impl silently dropped string-typed events (e.g. tracking
+/// `state` field with values "A"/"B"/"C") because the per-row `numeric_from_row`
+/// check rejected non-numeric inputs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ValueChangeCountState {
-    pub last_value: f64,
-    pub initialized: bool,
+    pub last_value: Option<Value>,
     pub changes: u64,
 }
 
@@ -392,17 +397,19 @@ impl ValueChangeCountState {
             return;
         }
         let Some(fname) = field else { return };
-        let Some(x) = numeric_from_row(row, fname) else {
-            return;
+        let v = match row.get(fname) {
+            None | Some(Value::Null) => return,
+            Some(v) => v.clone(),
         };
-        if !self.initialized {
-            self.last_value = x;
-            self.initialized = true;
-            return;
-        }
-        if x != self.last_value {
-            self.changes += 1;
-            self.last_value = x;
+        match &self.last_value {
+            None => {
+                self.last_value = Some(v);
+            }
+            Some(prev) if *prev != v => {
+                self.changes += 1;
+                self.last_value = Some(v);
+            }
+            _ => {}
         }
     }
 
