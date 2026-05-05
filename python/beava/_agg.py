@@ -310,18 +310,30 @@ def last(field: Any) -> AggDescriptor:
     return AggDescriptor(op="last", field=field)
 
 
-def first_n(field: Any, *, n: int) -> AggDescriptor:
+def first_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
+    """First N matching values (insertion order) per docs/operators/point-ordinal/first_n.md."""
     _enforce_field_str(field, "first_n")
     if n < 1:
         raise ValueError(f"first_n n must be >= 1; got {n}")
-    return AggDescriptor(op="first_n", field=field, extras={"n": n})
+    return AggDescriptor(
+        op="first_n",
+        field=field,
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
-def last_n(field: Any, *, n: int) -> AggDescriptor:
+def last_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
+    """Last N matching values (oldest-to-newest) per docs/operators/point-ordinal/last_n.md."""
     _enforce_field_str(field, "last_n")
     if n < 1:
         raise ValueError(f"last_n n must be >= 1; got {n}")
-    return AggDescriptor(op="last_n", field=field, extras={"n": n})
+    return AggDescriptor(
+        op="last_n",
+        field=field,
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
 def lag(field: Any, *, n: int = 1) -> AggDescriptor:
@@ -346,40 +358,59 @@ def age() -> AggDescriptor:
     return AggDescriptor(op="age")
 
 
-def has_seen(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "has_seen")
-    return AggDescriptor(op="has_seen", field=field)
+def has_seen(*, where: Any = None) -> AggDescriptor:
+    """Boolean ever-matched flag per docs/operators/recency/has_seen.md (no field arg)."""
+    return AggDescriptor(op="has_seen", where=_serialize_where(where))
 
 
-def time_since() -> AggDescriptor:
-    return AggDescriptor(op="time_since")
+def time_since(*, where: Any = None) -> AggDescriptor:
+    """Query-time elapsed ms since last matching event per docs/operators/recency/time_since.md."""
+    return AggDescriptor(op="time_since", where=_serialize_where(where))
 
 
-def time_since_last_n(*, n: int) -> AggDescriptor:
+def time_since_last_n(*, n: int, where: Any = None) -> AggDescriptor:
+    """Silence relative to nth-most-recent match.
+
+    See docs/operators/recency/time_since_last_n.md.
+    """
     if n < 1:
         raise ValueError(f"time_since_last_n n must be >= 1; got {n}")
-    return AggDescriptor(op="time_since_last_n", extras={"n": n})
+    return AggDescriptor(
+        op="time_since_last_n",
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
-def streak(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "streak")
-    return AggDescriptor(op="streak", field=field)
+def streak(*, where: Any = None) -> AggDescriptor:
+    """Current consecutive matching count per docs/operators/recency/streak.md (no field arg)."""
+    return AggDescriptor(op="streak", where=_serialize_where(where))
 
 
-def max_streak(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "max_streak")
-    return AggDescriptor(op="max_streak", field=field)
+def max_streak(*, where: Any = None) -> AggDescriptor:
+    """All-time peak match streak per docs/operators/recency/max_streak.md (no field arg)."""
+    return AggDescriptor(op="max_streak", where=_serialize_where(where))
 
 
-def negative_streak(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "negative_streak")
-    return AggDescriptor(op="negative_streak", field=field)
+def negative_streak(*, where: Any = None) -> AggDescriptor:
+    """Consecutive non-matching count (no field arg).
+
+    See docs/operators/recency/negative_streak.md.
+    """
+    return AggDescriptor(op="negative_streak", where=_serialize_where(where))
 
 
-def first_seen_in_window(field: Any, *, window: str) -> AggDescriptor:
-    _enforce_field_str(field, "first_seen_in_window")
+def first_seen_in_window(*, window: str, where: Any = None) -> AggDescriptor:
+    """Was the entity active within the past ``window``?
+
+    See docs/operators/recency/first_seen_in_window.md.
+    """
     _validate_window(window, "first_seen_in_window", required=True)
-    return AggDescriptor(op="first_seen_in_window", field=field, window=window)
+    return AggDescriptor(
+        op="first_seen_in_window",
+        window=window,
+        where=_serialize_where(where),
+    )
 
 
 # ── Decay (6 + ema alias) ──────────────────────────────────────────────────
@@ -539,16 +570,17 @@ def outlier_count(
     field: Any,
     *,
     window: str,
-    threshold: float = 3.0,
+    sigma: float = 3.0,
     where: Any = None,
 ) -> AggDescriptor:
+    """Count of events outside ±sigma·stddev band per docs/operators/velocity/outlier_count.md."""
     _enforce_field_str(field, "outlier_count")
     _validate_window(window, "outlier_count", required=True)
     return AggDescriptor(
         op="outlier_count",
         field=field,
         window=window,
-        extras={"threshold": threshold},
+        extras={"sigma": sigma},
         where=_serialize_where(where),
     )
 
@@ -585,126 +617,200 @@ def z_score(
 def histogram(
     field: Any,
     *,
-    buckets: int,
-    window: str,
+    buckets: list[float],
     where: Any = None,
 ) -> AggDescriptor:
+    """Lifetime-only fixed-bucket count histogram per docs/operators/buffer-geo/histogram.md.
+
+    `buckets` is a strictly-increasing list of split points (no `window=`
+    kwarg in v0; the operator is BoundedByRequiredKwarg("buckets") per
+    V0-MEM-GOV-02 — Phase 12.8).
+    """
     _enforce_field_str(field, "histogram")
-    if buckets < 1:
-        raise ValueError(f"histogram buckets must be >= 1; got {buckets}")
-    _validate_window(window, "histogram", required=True)
+    if not isinstance(buckets, list) or len(buckets) < 1:
+        raise ValueError(
+            f"histogram buckets must be a non-empty list[float]; got {buckets!r}"
+        )
+    for b in buckets:
+        if not isinstance(b, (int, float)):
+            raise ValueError(
+                f"histogram buckets entries must be numeric; got {b!r}"
+            )
+    for i in range(1, len(buckets)):
+        if buckets[i] <= buckets[i - 1]:
+            raise ValueError(
+                f"histogram buckets must be strictly increasing; got {buckets!r}"
+            )
     return AggDescriptor(
         op="histogram",
         field=field,
-        window=window,
-        extras={"buckets": buckets},
+        extras={"buckets": list(buckets)},
         where=_serialize_where(where),
     )
 
 
-def hour_of_day_histogram(*, window: str, where: Any = None) -> AggDescriptor:
-    _validate_window(window, "hour_of_day_histogram", required=True)
+def hour_of_day_histogram(*, where: Any = None) -> AggDescriptor:
+    """Lifetime-only 24-bucket per-hour count.
+
+    See docs/operators/buffer-geo/hour_of_day_histogram.md.
+    """
     return AggDescriptor(
         op="hour_of_day_histogram",
-        window=window,
         where=_serialize_where(where),
     )
 
 
-def dow_hour_histogram(*, window: str, where: Any = None) -> AggDescriptor:
-    _validate_window(window, "dow_hour_histogram", required=True)
+def dow_hour_histogram(*, where: Any = None) -> AggDescriptor:
+    """Lifetime-only 168-bucket per-(dow, hour) count.
+
+    See docs/operators/buffer-geo/dow_hour_histogram.md.
+    """
     return AggDescriptor(
         op="dow_hour_histogram",
-        window=window,
         where=_serialize_where(where),
     )
 
 
 def seasonal_deviation(
-    field: Any, *, window: str, where: Any = None
+    field: Any, *, where: Any = None
 ) -> AggDescriptor:
+    """Lifetime-only z-score vs hour-of-day baseline.
+
+    See docs/operators/buffer-geo/seasonal_deviation.md.
+    """
     _enforce_field_str(field, "seasonal_deviation")
-    _validate_window(window, "seasonal_deviation", required=True)
     return AggDescriptor(
         op="seasonal_deviation",
         field=field,
-        window=window,
         where=_serialize_where(where),
     )
 
 
 def event_type_mix(
-    field: Any, *, window: str, where: Any = None
+    field: Any,
+    *,
+    categories: list[str] | None = None,
+    max_categories: int = 256,
+    where: Any = None,
 ) -> AggDescriptor:
+    """Lifetime-only proportion-per-category sketch per docs/operators/buffer-geo/event_type_mix.md.
+
+    BoundedByConfig("max_categories", 256) per V0-MEM-GOV-02. When
+    ``categories`` is set, the allowlist takes precedence and the
+    cap-and-drop path is unreachable.
+    """
     _enforce_field_str(field, "event_type_mix")
-    _validate_window(window, "event_type_mix", required=True)
+    if max_categories < 1:
+        raise ValueError(
+            f"event_type_mix max_categories must be >= 1; got {max_categories}"
+        )
+    extras: dict[str, Any] = {"max_categories": max_categories}
+    if categories is not None:
+        if not isinstance(categories, list) or not all(
+            isinstance(c, str) for c in categories
+        ):
+            raise ValueError(
+                f"event_type_mix categories must be list[str] or None; got {categories!r}"
+            )
+        extras["categories"] = list(categories)
     return AggDescriptor(
         op="event_type_mix",
         field=field,
-        window=window,
+        extras=extras,
         where=_serialize_where(where),
     )
 
 
-def most_recent_n(field: Any, *, n: int) -> AggDescriptor:
+def most_recent_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
     _enforce_field_str(field, "most_recent_n")
     if n < 1:
         raise ValueError(f"most_recent_n n must be >= 1; got {n}")
-    return AggDescriptor(op="most_recent_n", field=field, extras={"n": n})
+    return AggDescriptor(
+        op="most_recent_n",
+        field=field,
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
-def reservoir_sample(field: Any, *, k: int) -> AggDescriptor:
+def reservoir_sample(
+    field: Any, *, samples: int, where: Any = None
+) -> AggDescriptor:
+    """Lifetime-only Vitter Algorithm R sample per docs/operators/buffer-geo/reservoir_sample.md.
+
+    ``samples`` is BoundedByRequiredKwarg("samples") per V0-MEM-GOV-02.
+    """
     _enforce_field_str(field, "reservoir_sample")
-    if k < 1:
-        raise ValueError(f"reservoir_sample k must be >= 1; got {k}")
-    return AggDescriptor(op="reservoir_sample", field=field, extras={"k": k})
+    if samples < 1:
+        raise ValueError(f"reservoir_sample samples must be >= 1; got {samples}")
+    return AggDescriptor(
+        op="reservoir_sample",
+        field=field,
+        extras={"samples": samples},
+        where=_serialize_where(where),
+    )
 
 
 # ── Geo (4) ────────────────────────────────────────────────────────────────
 
 
 def geo_velocity(
-    lat_field: str, lon_field: str, *, window: str, where: Any = None
+    *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    _validate_window(window, "geo_velocity", required=True)
+    """Lifetime-only max km/h between consecutive matching events.
+
+    See docs/operators/buffer-geo/geo_velocity.md.
+    """
     return AggDescriptor(
         op="geo_velocity",
-        window=window,
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon},
         where=_serialize_where(where),
     )
 
 
 def geo_distance(
-    lat_field: str, lon_field: str, *, where: Any = None
+    *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
+    """Lifetime-only cumulative haversine path length.
+
+    See docs/operators/buffer-geo/geo_distance.md.
+    """
     return AggDescriptor(
         op="geo_distance",
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon},
         where=_serialize_where(where),
     )
 
 
 def geo_spread(
-    lat_field: str, lon_field: str, *, window: str, where: Any = None
+    *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    _validate_window(window, "geo_spread", required=True)
+    """Lifetime-only RMS dispersion around running centroid.
+
+    See docs/operators/buffer-geo/geo_spread.md.
+    """
     return AggDescriptor(
         op="geo_spread",
-        window=window,
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon},
         where=_serialize_where(where),
     )
 
 
 def distance_from_home(
-    lat_field: str, lon_field: str, *, window: str, where: Any = None
+    *, lat: str, lon: str, samples: int = 100, where: Any = None
 ) -> AggDescriptor:
-    _validate_window(window, "distance_from_home", required=True)
+    """Distance from current point to centroid of last ``samples`` matching events.
+
+    ``samples`` is BoundedByConfig("samples", 100) per V0-MEM-GOV-02 — see
+    docs/operators/buffer-geo/distance_from_home.md.
+    """
+    if samples < 1:
+        raise ValueError(
+            f"distance_from_home samples must be >= 1; got {samples}"
+        )
     return AggDescriptor(
         op="distance_from_home",
-        window=window,
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon, "samples": samples},
         where=_serialize_where(where),
     )
 

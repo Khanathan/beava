@@ -116,7 +116,8 @@ def test_age() -> None:
 
 
 def test_has_seen() -> None:
-    assert bv.has_seen("ip").to_dict()["op"] == "has_seen"
+    # Plan 13.5.1-07a: no field arg per docs/operators/recency/has_seen.md
+    assert bv.has_seen().to_dict()["op"] == "has_seen"
 
 
 def test_time_since() -> None:
@@ -128,20 +129,24 @@ def test_time_since_last_n() -> None:
 
 
 def test_streak() -> None:
-    assert bv.streak("flag").to_dict()["op"] == "streak"
+    # Plan 13.5.1-07a: no field arg
+    assert bv.streak().to_dict()["op"] == "streak"
 
 
 def test_max_streak() -> None:
-    assert bv.max_streak("flag").to_dict()["op"] == "max_streak"
+    # Plan 13.5.1-07a: no field arg
+    assert bv.max_streak().to_dict()["op"] == "max_streak"
 
 
 def test_negative_streak() -> None:
-    assert bv.negative_streak("flag").to_dict()["op"] == "negative_streak"
+    # Plan 13.5.1-07a: no field arg
+    assert bv.negative_streak().to_dict()["op"] == "negative_streak"
 
 
 def test_first_seen_in_window() -> None:
+    # Plan 13.5.1-07a: no field arg
     assert (
-        bv.first_seen_in_window("ip", window="1h").to_dict()["op"]
+        bv.first_seen_in_window(window="1h").to_dict()["op"]
         == "first_seen_in_window"
     )
 
@@ -229,35 +234,35 @@ def test_z_score() -> None:
 
 # ── Bounded buffers (7) ────────────────────────────────────────────────────
 def test_histogram() -> None:
+    # Plan 13.5.1-07a: histogram is lifetime-only with buckets: list[float]
     assert (
-        bv.histogram("amount", buckets=10, window="1h").to_dict()["op"] == "histogram"
+        bv.histogram("amount", buckets=[10.0, 50.0, 100.0]).to_dict()["op"]
+        == "histogram"
     )
 
 
 def test_hour_of_day_histogram() -> None:
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg
     assert (
-        bv.hour_of_day_histogram(window="7d").to_dict()["op"]
-        == "hour_of_day_histogram"
+        bv.hour_of_day_histogram().to_dict()["op"] == "hour_of_day_histogram"
     )
 
 
 def test_dow_hour_histogram() -> None:
-    assert (
-        bv.dow_hour_histogram(window="30d").to_dict()["op"] == "dow_hour_histogram"
-    )
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg
+    assert bv.dow_hour_histogram().to_dict()["op"] == "dow_hour_histogram"
 
 
 def test_seasonal_deviation() -> None:
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg
     assert (
-        bv.seasonal_deviation("amount", window="30d").to_dict()["op"]
-        == "seasonal_deviation"
+        bv.seasonal_deviation("amount").to_dict()["op"] == "seasonal_deviation"
     )
 
 
 def test_event_type_mix() -> None:
-    assert (
-        bv.event_type_mix("type", window="1h").to_dict()["op"] == "event_type_mix"
-    )
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg; categories/max_categories soft-defaulted
+    assert bv.event_type_mix("type").to_dict()["op"] == "event_type_mix"
 
 
 def test_most_recent_n() -> None:
@@ -265,26 +270,34 @@ def test_most_recent_n() -> None:
 
 
 def test_reservoir_sample() -> None:
-    assert bv.reservoir_sample("amount", k=100).to_dict()["op"] == "reservoir_sample"
+    # Plan 13.5.1-07a: kwarg renamed k → samples per docs/operators/buffer-geo/reservoir_sample.md
+    assert (
+        bv.reservoir_sample("amount", samples=100).to_dict()["op"]
+        == "reservoir_sample"
+    )
 
 
 # ── Geo (4) ────────────────────────────────────────────────────────────────
 def test_geo_velocity() -> None:
+    # Plan 13.5.1-07a: kw-only lat=/lon=, no window kwarg
     assert (
-        bv.geo_velocity("lat", "lon", window="1h").to_dict()["op"] == "geo_velocity"
+        bv.geo_velocity(lat="lat", lon="lon").to_dict()["op"] == "geo_velocity"
     )
 
 
 def test_geo_distance() -> None:
-    assert bv.geo_distance("lat", "lon").to_dict()["op"] == "geo_distance"
+    # Plan 13.5.1-07a: kw-only lat=/lon=
+    assert bv.geo_distance(lat="lat", lon="lon").to_dict()["op"] == "geo_distance"
 
 
 def test_geo_spread() -> None:
-    assert bv.geo_spread("lat", "lon", window="1h").to_dict()["op"] == "geo_spread"
+    # Plan 13.5.1-07a: kw-only lat=/lon=, no window kwarg
+    assert bv.geo_spread(lat="lat", lon="lon").to_dict()["op"] == "geo_spread"
 
 
 def test_distance_from_home() -> None:
+    # Plan 13.5.1-07a: kw-only lat=/lon=/samples=, no window kwarg
     assert (
-        bv.distance_from_home("lat", "lon", window="30d").to_dict()["op"]
+        bv.distance_from_home(lat="lat", lon="lon").to_dict()["op"]
         == "distance_from_home"
     )
