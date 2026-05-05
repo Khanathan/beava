@@ -1,11 +1,10 @@
-//! beava-bench-v2 — multi-target streaming benchmark for Beava
-//!
-//! Designed for testing sharding + multiple patterns in a single run.
+//! Multi-target streaming benchmark for Beava — designed for testing
+//! sharding + multiple patterns in a single run.
 //!
 //! Differences from `beava-bench-v18`:
-//!   * **Streaming key generation** — payloads built on the fly per push, no
-//!     pre-built `Pool=N` of frames. Lets you drive arbitrary unique-key
-//!     counts (10M+ entities) without RAM blowup.
+//!   * **Streaming key generation** — payloads built on the fly per push,
+//!     no pre-built Pool=N of frames. Drives arbitrary unique-key counts
+//!     (10 M+ entities) without RAM blowup.
 //!   * **Multi-target by design** — `--targets host:tcp_port,host:tcp_port,...`
 //!     drives 1..N servers from one process. Sharding via `--shard-strategy`
 //!     (`round-robin` pins each worker to one target; `hash` routes by key
@@ -14,8 +13,9 @@
 //!   * **Built-in metrics scraper** — polls `/metrics` on each admin endpoint
 //!     every N seconds, captures `beava_entity_count_resident`,
 //!     `beava_bucket_reclaim_total`, `beava_cold_entity_evictions_total`,
-//!     `beava_lifetime_op_cap_hit_total`, and `process_resident_memory_bytes`
-//!     (if exposed). Timestamped CSV-style trace per shard.
+//!     `beava_lifetime_op_cap_hit_total`, and (when exposed)
+//!     `process_resident_memory_bytes`. Timestamped CSV-style trace per
+//!     shard.
 //!   * **Pattern sweep** — `--sweep-pipeline-depth 1,16,256,1024
 //!     --sweep-blast-shape uniform,zipfian` runs the cartesian product in
 //!     one invocation, with one report per cell.
@@ -43,8 +43,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
-
-// ─── CLI ──────────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
 #[command(
@@ -152,8 +150,6 @@ enum BlastShape {
     Fixed,
 }
 
-// ─── Pipeline parsing ─────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone)]
 struct EventDef {
     name: String,
@@ -220,8 +216,6 @@ fn load_pipeline(path: &PathBuf) -> Result<Pipeline> {
     Ok(Pipeline { name, events })
 }
 
-// ─── Key generation (streaming, no pool) ──────────────────────────────────────
-
 trait KeyGen: Send + Sync {
     /// Draw the next key. Threadsafe (the worker passes its own &mut StdRng).
     fn draw(&self, rng: &mut StdRng) -> u64;
@@ -280,26 +274,24 @@ fn build_keygen(shape: BlastShape, cardinality: u64, alpha: f64) -> Arc<dyn KeyG
         BlastShape::Uniform => Arc::new(UniformKeyGen { cardinality }),
         BlastShape::Zipfian => Arc::new(ZipfianKeyGen::new(alpha, cardinality)),
         BlastShape::Fixed => Arc::new(FixedKeyGen {
-            // 100 fixed keys — useful as a "pure server-bound" comparison
+            // 100 fixed keys — a "pure server-bound" comparison
             // (cache-friendly, tiny working set).
             keys: (0..100u64).collect(),
         }),
     }
 }
 
-// ─── Payload synthesis ────────────────────────────────────────────────────────
-
-/// Build a JSON event body. Key field gets the supplied user_id; OTHER FIELDS
-/// ARE DERIVED FROM THE KEY (deterministic 1:1 mapping per field). This makes
-/// extra-field cardinality (card_fp, device_id, ip_address, merchant_id) bounded
-/// by user_id cardinality — important so per-aggregation entity counts don't
-/// explode unboundedly when `card_fp` is random per push. (Fraud-team has 9
-/// aggregations keyed on these fields; per-push random values would create
-/// O(N_pushes) entities not O(N_users).)
+/// Build a JSON event body. The key field gets the supplied `user_id`; other
+/// fields are DERIVED FROM THE KEY (deterministic 1:1 mapping per field).
+/// This makes extra-field cardinality (`card_fp`, `device_id`, `ip_address`,
+/// `merchant_id`) bounded by `user_id` cardinality — important so
+/// per-aggregation entity counts don't explode unboundedly when `card_fp` is
+/// random per push (fraud-team has 9 aggregations keyed on these fields;
+/// per-push random values would create O(N_pushes) entities, not O(N_users)).
 ///
-/// Fields named `event_time` get a monotonic timestamp from `seq`; numeric
-/// fields get a deterministic value from key+field_idx; `seq` and rng are
-/// only used for bit-of-noise where appropriate.
+/// `event_time` gets a monotonic timestamp from `seq`; numeric fields get a
+/// deterministic value from `key + field_idx`; `seq` and `rng` are only used
+/// where a bit of noise is appropriate.
 fn build_event_body(event: &EventDef, key: u64, seq: u64, _rng: &mut StdRng) -> Value {
     let mut obj = serde_json::Map::with_capacity(event.fields.len());
     for (field_idx, (name, ty)) in event.fields.iter().enumerate() {
@@ -351,17 +343,13 @@ fn encode_push_frame(event_name: &str, body: &Value, scratch: &mut BytesMut) -> 
     Bytes::copy_from_slice(scratch)
 }
 
-// ─── FxHash-ish for shard routing ─────────────────────────────────────────────
-
+/// splitmix64 — used for shard routing.
 fn fast_hash_u64(x: u64) -> u64 {
-    // splitmix64
     let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
 }
-
-// ─── Per-target shared state ──────────────────────────────────────────────────
 
 #[derive(Default)]
 struct ShardCounters {
@@ -370,8 +358,6 @@ struct ShardCounters {
     server_errors: AtomicU64,
     bytes_sent: AtomicU64,
 }
-
-// ─── Worker (one per TCP connection) ─────────────────────────────────────────
 
 struct WorkerCtx {
     target_idx: usize,
@@ -433,7 +419,6 @@ async fn run_worker(ctx: WorkerCtx) -> Result<()> {
     let notify_recv = inflight_notify.clone();
     let recv_done_clone = recv_done.clone();
 
-    // ── Receiver ──────────────────────────────────────────────────────────
     let recv_handle: JoinHandle<()> = tokio::spawn(async move {
         let mut buf = BytesMut::with_capacity(64 * 1024);
         let max_frame = 4 * 1024 * 1024;
@@ -491,7 +476,6 @@ async fn run_worker(ctx: WorkerCtx) -> Result<()> {
         }
     });
 
-    // ── Sender ────────────────────────────────────────────────────────────
     let mut rng = StdRng::seed_from_u64(seed.wrapping_add(worker_id));
     let mut scratch = BytesMut::with_capacity(2048);
     let mut seq: u64 = 0;
@@ -557,7 +541,7 @@ async fn run_worker(ctx: WorkerCtx) -> Result<()> {
         seq = seq.wrapping_add(1);
     }
 
-    // ── Drain: wait for inflight to drop or timeout ───────────────────────
+    // Drain: wait for inflight to drop, or timeout.
     let drain_deadline = Instant::now() + drain_timeout;
     while inflight.load(Ordering::Acquire) > 0 {
         if Instant::now() >= drain_deadline {
@@ -574,8 +558,6 @@ async fn run_worker(ctx: WorkerCtx) -> Result<()> {
     let _ = tokio::time::timeout(Duration::from_secs(2), recv_handle).await;
     Ok(())
 }
-
-// ─── Metrics scraper ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
 struct MetricSample {
@@ -647,8 +629,6 @@ async fn scrape_once(
     Some(sample)
 }
 
-// ─── Cell result ─────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize)]
 struct CellResult {
     cell_label: String,
@@ -691,8 +671,6 @@ struct ShardResult {
     max_us: u64,
 }
 
-// ─── Cell runner ─────────────────────────────────────────────────────────────
-
 async fn run_cell(
     cli: &Cli,
     pipeline: Arc<Pipeline>,
@@ -705,7 +683,7 @@ async fn run_cell(
     let keygen = build_keygen(blast_shape, cli.cardinality, cli.zipf_alpha);
 
     // Counters per target. Each worker has its OWN histogram (no contention);
-    // we merge per-shard at end-of-run.
+    // merge per-shard at end-of-run.
     let counters: Arc<Vec<Arc<ShardCounters>>> = Arc::new(
         (0..n_targets)
             .map(|_| Arc::new(ShardCounters::default()))
@@ -723,7 +701,6 @@ async fn run_cell(
 
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Metrics scraper task.
     let scraper_stop = Arc::new(AtomicBool::new(false));
     let metrics_trace: Arc<AsyncMutex<Vec<MetricSample>>> = Arc::new(AsyncMutex::new(Vec::new()));
     let scraper_handle = if !cli.metrics_targets.is_empty() {
@@ -753,7 +730,7 @@ async fn run_cell(
         None
     };
 
-    // Initial metric snapshot (pre-bench).
+    // Pre-bench snapshot of metrics.
     let initial_metrics = {
         let client = reqwest::Client::new();
         let mut out = Vec::new();
@@ -767,18 +744,15 @@ async fn run_cell(
         out
     };
 
-    // Spawn workers.
     let duration = Duration::from_secs(cli.duration_secs);
     let drain_timeout = Duration::from_secs(cli.drain_secs);
     let mut handles: Vec<JoinHandle<Result<()>>> = Vec::with_capacity(n_workers as usize);
     let push_start = Instant::now();
     for w in 0..n_workers {
-        // Round-robin worker → target. (Hash strategy is per-push routing,
-        // requires a different worker model — for now both strategies pin
-        // worker-to-target and the "hash" strategy is handled inside the
-        // worker by routing keys to the worker's own target only — i.e. a
-        // hash-based key filter. Simplification: same connection pinning;
-        // hash strategy currently behaves like round-robin. Documented for v0.)
+        // Round-robin worker → target. The `hash` shard strategy currently
+        // behaves like round-robin: per-push routing would need a different
+        // worker model (one connection per target, route per push), and v0
+        // pins worker → target with a key-filter only. v0.1+ may revisit.
         let target_idx = (w as usize) % n_targets;
         let ctx = WorkerCtx {
             target_idx,
@@ -822,17 +796,15 @@ async fn run_cell(
     }
     let total_elapsed = push_start.elapsed();
     // EPS uses the configured push window (excluding drain). The actual
-    // wall-clock includes drain — we report both for transparency.
+    // wall-clock includes drain — both are reported for transparency.
     let push_elapsed_secs = (cli.duration_secs as f64).min(total_elapsed.as_secs_f64());
 
-    // Stop scraper, capture trace.
     scraper_stop.store(true, Ordering::Relaxed);
     if let Some(h) = scraper_handle {
         let _ = tokio::time::timeout(Duration::from_secs(3), h).await;
     }
     let trace = metrics_trace.lock().await.clone();
 
-    // Final metric snapshot.
     let final_metrics = {
         let client = reqwest::Client::new();
         let mut out = Vec::new();
@@ -846,7 +818,6 @@ async fn run_cell(
         out
     };
 
-    // Merge per-worker histograms into per-shard histograms.
     let mut shard_histograms: Vec<Histogram<u64>> = (0..n_targets)
         .map(|_| Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap())
         .collect();
@@ -859,7 +830,6 @@ async fn run_cell(
         }
     }
 
-    // Per-shard summary.
     let mut per_shard = Vec::with_capacity(n_targets);
     let mut total_pushes = 0u64;
     let mut total_errors = worker_errors;
@@ -877,7 +847,6 @@ async fn run_cell(
         let p99 = h.value_at_quantile(0.99);
         let p999 = h.value_at_quantile(0.999);
         let mx = h.max();
-        // Add to aggregate.
         for v in h.iter_recorded() {
             let _ = agg_hist.record_n(v.value_iterated_to(), v.count_at_value());
         }

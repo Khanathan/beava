@@ -1,7 +1,6 @@
-//! Interactive walkthrough — Phase 13.5 Plan 10.
-//!
-//! Invoked when `beava-bench` is called with no subcommand. Prompts the user
-//! for: mode → workload → (size if dataset) → duration|entities → confirm.
+//! Interactive walkthrough — invoked when `beava-bench` is called with no
+//! subcommand. Prompts the user for: mode → workload → (size if dataset) →
+//! duration | entities → confirm.
 
 use anyhow::Result;
 use inquire::{Confirm, Select, Text};

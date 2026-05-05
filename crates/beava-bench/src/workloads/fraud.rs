@@ -1,9 +1,7 @@
-//! Fraud workload — Phase 13.5 Plan 09.
-//!
-//! v0 binding: reuses `configs/fraud-team.json` — the canonical realistic
-//! fraud pipeline (5 event types, 5 group_by axes, 90 features) per
-//! `project_fraud_team_primary_bench`. This is the same config used by the
-//! Phase 19 throughput regression-gate.
+//! Fraud workload — backed by `configs/fraud-team.json`, the canonical
+//! realistic fraud pipeline (5 event types, 5 group_by axes, 90 features)
+//! and the primary tuning shape for the throughput regression-gate per
+//! CLAUDE.md §"End-to-end throughput regression contract".
 
 use anyhow::Result;
 

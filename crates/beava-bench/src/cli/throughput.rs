@@ -1,4 +1,4 @@
-//! Phase 13.5 Plan 08 — throughput mode (acks=1 best-effort EPS).
+//! Throughput mode — acks=1 best-effort EPS.
 
 use anyhow::Result;
 use clap::Args;
@@ -32,7 +32,7 @@ pub struct ThroughputArgs {
     /// Append-mode ledger path (JSONL).
     #[arg(long)]
     pub append: Option<std::path::PathBuf>,
-    /// Skip interactive prompts (Plan 10 walkthrough); also used by smoke tests.
+    /// Skip the interactive walkthrough; also used by smoke tests.
     #[arg(long, default_value_t = false)]
     pub yes: bool,
 }

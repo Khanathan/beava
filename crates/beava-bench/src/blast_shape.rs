@@ -1,26 +1,23 @@
-//! Pool=N pre-encoded TCP-frame builder shared by Phase 19+ benches.
-//!
-//! See `.planning/phases/19-1m-bench/19-CONTEXT.md` § `<specifics>` for the
-//! full rationale. Summary:
+//! Pool=N pre-encoded TCP-frame builder for the standalone bench binaries.
 //!
 //! 1. **Why Pool=N (not a sampler):** pre-encoding ALL N frames at sender
 //!    startup eliminates per-iteration RNG cost AND per-iteration encode
 //!    cost from the bench hot loop. The bench-side floor becomes "as fast
 //!    as TCP `write_all` can drain" — the server-side ceiling is the only
 //!    number we're measuring. Pool memory is ~500 MB-1 GB for N = 1 M;
-//!    callers (Plan 19-02 CLI) are responsible for sizing against host RAM.
-//! 2. **Setup time excluded from `wall_clock_ms`:** `build_pool_timed`
+//!    callers are responsible for sizing against host RAM.
+//! 2. **Setup time excluded from `wall_clock_ms`:** [`build_pool_timed`]
 //!    returns `(Vec<Bytes>, Duration)` so the caller can subtract pool
-//!    setup from any saturation measurement (D-02).
+//!    setup from any saturation measurement.
 //! 3. **All four shapes share this abstraction:** fixed / uniform / zipfian
-//!    / mixed are emitted in identical TCP-frame envelopes (CT_JSON or
-//!    CT_MSGPACK) so the ledger rows are directly comparable (D-03).
+//!    / mixed are emitted in identical TCP-frame envelopes (`CT_JSON` or
+//!    `CT_MSGPACK`) so the ledger rows are directly comparable.
 //! 4. **Determinism:** every shape uses `StdRng::seed_from_u64(seed)` and
 //!    Zipfian's hybrid sampler is seeded the same way; same-seed runs
-//!    produce byte-identical pool output (Test 8 enforces).
+//!    produce byte-identical pool output.
 //!
-//! The module reuses `beava_core::wire::encode_frame` (Phase 2.5 codec)
-//! verbatim — zero new wire formats.
+//! The module reuses `beava_core::wire::encode_frame` verbatim — zero new
+//! wire formats.
 
 use beava_core::wire::{encode_frame, Frame, CT_JSON, CT_MSGPACK, OP_PUSH};
 use bytes::{Bytes, BytesMut};
@@ -30,13 +27,11 @@ use serde::Serialize;
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
 /// The per-pipeline configuration consumed by the pool builder.
 ///
-/// Field layout matches the binary harness (`crates/beava-bench/src/bin/
-/// beava-bench-v18.rs`) so the JSON files under `crates/beava-bench/configs/`
-/// deserialize directly into either type without conversion.
+/// Field layout matches the binary harness (`src/bin/beava-bench-v18.rs`) so
+/// the JSON files under `crates/beava-bench/configs/` deserialize directly
+/// into either type without conversion.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PipelineConfig {
     pub name: String,
@@ -50,6 +45,9 @@ pub struct PipelineConfig {
 }
 
 /// Wire format for the encoded pool. Matches `bin/beava-bench-v18.rs`.
+///
+/// JSON is the curl/HTTP-default; MessagePack is the production fast-path on
+/// TCP for blast benches.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum WireFormat {
     Json,
@@ -57,8 +55,7 @@ pub enum WireFormat {
 }
 
 /// One of the four blast shapes — controls how the pool's per-frame
-/// `key_field` and `event_name` are sampled. See D-01 in
-/// `.planning/phases/19-1m-bench/19-CONTEXT.md`.
+/// `key_field` and `event_name` are sampled.
 #[derive(Copy, Clone, Debug)]
 pub enum BlastShape {
     /// One pre-encoded frame, reused N times. Cache-warm marketing peak.
@@ -96,8 +93,6 @@ pub enum BlastShapeError {
     InvalidCardinality,
 }
 
-// ─── Zipfian sampler ──────────────────────────────────────────────────────────
-
 /// Deterministic, seedable Zipfian rank sampler.
 ///
 /// Implements the hybrid algorithm from Gray et al. ("Quickly Generating
@@ -110,8 +105,8 @@ pub enum BlastShapeError {
 ///
 /// Setup is O(k) (it sums `ζ(k, α) = Σ_{i=1..=k} 1/i^α`). For `k = 1 M` this
 /// is ~10 ms — fine for the Pool=N use case where the pool builder runs once
-/// at sender startup and setup time is captured in `build_pool_timed`'s
-/// returned `Duration` (D-02 — excluded from `wall_clock_ms`).
+/// at sender startup and setup time is captured in [`build_pool_timed`]'s
+/// returned `Duration` (excluded from `wall_clock_ms`).
 pub struct ZipfianSampler {
     rng: StdRng,
     alpha: f64,
@@ -191,8 +186,6 @@ fn zeta(n: u64, alpha: f64) -> f64 {
     s
 }
 
-// ─── Pool builder ─────────────────────────────────────────────────────────────
-
 /// Build N pre-encoded TCP frames matching the requested `BlastShape`.
 ///
 /// Each entry is a complete `[u32 length][u16 op][u8 ct][payload]` frame —
@@ -204,7 +197,6 @@ pub fn build_pool(
     cfg: &BlastShapeConfig,
     n: u64,
 ) -> Result<Vec<Bytes>, BlastShapeError> {
-    // ── Validation ───────────────────────────────────────────────────────────
     match shape {
         BlastShape::Mixed { event_count } => {
             if cfg.event_names_for_mixed.len() < event_count {
@@ -227,7 +219,6 @@ pub fn build_pool(
         BlastShape::Fixed => {}
     }
 
-    // ── Per-shape state setup ────────────────────────────────────────────────
     let mut rng = StdRng::seed_from_u64(cfg.seed);
     let mut zipf = if let BlastShape::Zipfian { alpha, cardinality } = shape {
         Some(ZipfianSampler::new(
@@ -242,18 +233,16 @@ pub fn build_pool(
     let mut pool: Vec<Bytes> = Vec::with_capacity(n as usize);
 
     // Single reusable encode buffer to amortise allocation across the loop.
-    // For BlastShape::Fixed we encode once and reuse — Test 2 confirms.
     let mut buf = BytesMut::with_capacity(4 * 1024);
 
-    // Cache the immutable bits we already know.
     let ct = match cfg.wire_format {
         WireFormat::Json => CT_JSON,
         WireFormat::Msgpack => CT_MSGPACK,
     };
 
     // Fixed shape: encode the single frame once and clone its Bytes N times.
-    // This is BOTH a perf-win (no per-frame encode) AND the test-2 contract
-    // (byte-identical entries).
+    // Both a perf-win (no per-frame encode) AND a contract guaranteed to the
+    // tests (every entry byte-identical to entry 0).
     if let BlastShape::Fixed = shape {
         let body = build_event_body(
             cfg.pipeline,
@@ -276,7 +265,6 @@ pub fn build_pool(
         return Ok(pool);
     }
 
-    // ── Per-iteration body builder for non-Fixed shapes ──────────────────────
     for seq in 0..n {
         let key_idx: u64 = match shape {
             BlastShape::Fixed => unreachable!("handled above"),
@@ -304,19 +292,18 @@ pub fn build_pool(
         };
         buf.clear();
         encode_frame(&frame, &mut buf);
-        // `split` consumes the active region back into the BytesMut,
-        // returning an owned BytesMut we can freeze without copying. The
-        // remaining capacity stays on `buf` for the next iteration — this
-        // is the no-extra-alloc-per-frame promise from the plan.
+        // `split` returns an owned BytesMut we can freeze without copying;
+        // the remaining capacity stays on `buf` for the next iteration. No
+        // extra allocation per frame.
         pool.push(buf.split().freeze());
     }
 
     Ok(pool)
 }
 
-/// Same as `build_pool`, but additionally returns the wall-clock time spent
+/// Same as [`build_pool`], but additionally returns the wall-clock time spent
 /// building the pool. The caller can subtract this from any `wall_clock_ms`
-/// measurement (D-02 — setup excluded from saturation reads).
+/// measurement (setup is excluded from saturation reads).
 pub fn build_pool_timed(
     shape: BlastShape,
     cfg: &BlastShapeConfig,
@@ -326,8 +313,6 @@ pub fn build_pool_timed(
     let pool = build_pool(shape, cfg, n)?;
     Ok((pool, t0.elapsed()))
 }
-
-// ─── Body + envelope encoders ─────────────────────────────────────────────────
 
 /// Build the per-event JSON `body` object that goes inside the envelope.
 /// Field set matches `make_event_payload` in `beava-bench-v18.rs`:

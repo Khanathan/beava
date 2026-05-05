@@ -1,20 +1,20 @@
-//! beava-bench — end-to-end throughput harness for the Beava server.
+//! Legacy end-to-end throughput harness for the Beava server.
 //!
 //! Drives a live `beava` server (HTTP + TCP) via in-process `TestServer` for
 //! N seconds at saturation, capturing:
 //! - Sustained EPS (events / wall-time)
-//! - P50/P95/P99 push latency (HDR histogram, 1µs precision)
+//! - P50 / P95 / P99 push latency (HDR histogram, 1µs precision)
 //! - P99 batch-get latency (sampled every second over the run)
-//! - Peak RSS (sampled every 500ms via sysinfo)
+//! - Peak RSS (sampled every 500 ms via `ps`)
 //!
 //! Pipeline configs live in `configs/{small,medium,large}.json`. Two
-//! transports supported: `http` (reqwest) and `tcp` (beava-server's
-//! TcpClient). Results emit as a markdown table row to stdout — copy/paste
+//! transports are supported: `http` (reqwest) and `tcp` (beava-server's
+//! `TcpClient`). Results emit as a markdown table row on stdout — copy/paste
 //! into `.planning/throughput-baselines.md`.
 //!
 //! Usage:
 //! ```text
-//! cargo run -p beava-bench --release -- \
+//! cargo run -p beava-bench --release --bin beava-bench-legacy -- \
 //!     --pipeline small --transport http --duration-secs 60
 //! ```
 
@@ -154,7 +154,6 @@ async fn main() -> Result<()> {
         cli.get_batch_keys,
     );
 
-    // Spawn the in-process server with per-run tempdirs.
     let wal = tempfile::tempdir()?;
     let snap = tempfile::tempdir()?;
     let ts = TestServerBuilder::new()
@@ -166,7 +165,6 @@ async fn main() -> Result<()> {
         .await
         .context("spawn TestServer")?;
 
-    // Register the pipeline.
     register_pipeline(&ts, &pipeline.register).await?;
 
     // Pre-warm: push 100 events serially so the WAL has something committed
@@ -175,7 +173,6 @@ async fn main() -> Result<()> {
         push_one_http(&ts, &pipeline, i, &mut sampling_rng(cli.seed ^ i)).await?;
     }
 
-    // Run the workload.
     let result = run_workload(&ts, &pipeline, &cli, parallel).await?;
 
     let report = format_report(&pipeline, cli.transport, &cli, &result);
@@ -280,8 +277,8 @@ async fn run_workload(
 
     let deadline = Instant::now() + Duration::from_secs(cli.duration_secs);
 
-    // RSS sampler — shell out to `ps` for cross-platform simplicity. macOS
-    // and Linux both report RSS in kilobytes via `ps -o rss= -p <pid>`.
+    // RSS sampler — shells out to `ps` for cross-platform simplicity (macOS
+    // and Linux both report kilobytes via `ps -o rss= -p <pid>`).
     let stop_rss = Arc::clone(&stop);
     let peak_rss = Arc::new(AtomicU64::new(0));
     let peak_rss_clone = Arc::clone(&peak_rss);
@@ -309,7 +306,6 @@ async fn run_workload(
         }
     });
 
-    // Batch-get latency sampler.
     let stop_get = Arc::clone(&stop);
     let get_hist: Arc<AsyncMutex<Histogram<u64>>> = Arc::new(AsyncMutex::new(
         Histogram::new_with_bounds(1, 60_000_000, 3)?,
@@ -361,7 +357,6 @@ async fn run_workload(
         }
     });
 
-    // Spawn N parallel push workers.
     let mut workers = Vec::with_capacity(parallel);
     for worker_id in 0..parallel {
         let stop = Arc::clone(&stop);
@@ -404,7 +399,6 @@ async fn run_workload(
     }
 
     let start = Instant::now();
-    // Wait for the deadline.
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -510,9 +504,7 @@ async fn run_push_worker(
                     return;
                 }
             };
-            // OP_PUSH frame: send raw JSON event with op = 0x10 (matches TCP wire spec).
-            // Phase 8 wire envelope: {"event": "<name>", "body": {...}}.
-            // Using OP_PUSH constant defined in beava-core wire module.
+            // OP_PUSH frame envelope: {"event": "<name>", "body": {...}}.
             use beava_core::wire::{CT_JSON, OP_PUSH};
             let mut seq = 0_u64;
             while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
@@ -529,14 +521,11 @@ async fn run_push_worker(
                 {
                     Ok(resp) => {
                         let elapsed_us = start.elapsed().as_micros() as u64;
-                        // Phase 2.5/7.5 truth: OP_PUSH on the TCP wire is
-                        // currently reserved (returns OP_ERROR_RESPONSE with
-                        // code "op_not_implemented"). Treat any non-OP_PUSH
-                        // response as an error so the EPS reading reflects
-                        // pushes-actually-applied, not bytes-bounced. Once
-                        // Phase 8+ implements TCP OP_PUSH, this branch will
-                        // start succeeding and the bench can capture real
-                        // TCP push throughput.
+                        // Treat any non-OP_PUSH response as an error so the
+                        // EPS reading reflects pushes-actually-applied, not
+                        // bytes-bounced. Earlier server revisions reserved
+                        // OP_PUSH on the TCP wire and answered with
+                        // OP_ERROR_RESPONSE.
                         if resp.op == OP_PUSH {
                             pushes.fetch_add(1, Ordering::Relaxed);
                             let mut h = push_hist.lock().await;
@@ -630,17 +619,15 @@ fn current_utc_date() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // Naive date conversion: YYYY-MM-DD.
-    // Avoids pulling chrono into the harness.
+    // YYYY-MM-DD without pulling chrono into the harness; reference epoch
+    // 1970-01-01.
     let days = secs / 86400;
-    // Reference epoch = 1970-01-01 (Thursday).
     let (y, m, d) = days_to_ymd(days as i64);
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// `civil_from_days` per <http://howardhinnant.github.io/date_algorithms.html>.
 fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
-    // Algorithm: civil_from_days from
-    // http://howardhinnant.github.io/date_algorithms.html
     let z = days_since_epoch + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = (z - era * 146097) as u64;

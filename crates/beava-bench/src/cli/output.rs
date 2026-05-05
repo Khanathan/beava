@@ -1,7 +1,6 @@
-//! Phase 13.5 Plan 08 — shared output struct + 4 formatters
-//! (human / JSON / markdown / append).
+//! Shared output struct + four formatters (human / JSON / markdown / append).
 //!
-//! All 4 mode modules return a [`BenchResult`] which is then formatted via
+//! All four mode modules return a [`BenchResult`] which is then formatted via
 //! [`dispatch_output`]. Schema is pinned at v0; future schema bumps must be
 //! gated by a new `schema_version`.
 

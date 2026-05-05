@@ -1,10 +1,9 @@
-//! Phase 13.5 Plan 08 — fsync mode (acks=all per-push fsync wait latency).
+//! Fsync mode — acks=all per-push fsync wait latency.
 //!
-//! Per D-03 2026-05-03 amendment: production fraud users running `push_sync`
-//! need to validate per-push fsync latency stays under the CLAUDE.md 10ms P99
-//! budget. Phase 6.1 only had a microbench; this gives real-workload
-//! validation. The harness wraps `force_snapshot_now()` after each push as a
-//! proxy for the group-commit watermark crossing.
+//! Production fraud users running `push_sync` need to validate per-push fsync
+//! latency stays under the CLAUDE.md 10 ms P99 budget. The harness wraps
+//! `force_snapshot_now()` after each push as a proxy for the group-commit
+//! watermark crossing.
 
 use anyhow::Result;
 use clap::Args;

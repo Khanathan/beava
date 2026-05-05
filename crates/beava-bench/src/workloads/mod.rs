@@ -1,14 +1,14 @@
-//! Workload registry — Phase 13.5 Plan 08 (skeleton) + Plan 09 (datasets).
+//! Workload registry.
 //!
 //! A [`Workload`] bundles a register payload + event generator. The CLI mode
 //! modules call [`load_by_name`] to obtain one and feed it to the harness.
 //!
-//! Strategy: workloads are backed by JSON config files under
-//! `crates/beava-bench/configs/` (small.json, medium.json, large.json,
-//! fraud-team.json) which carry the real wire-shape register payload. Plan 09
-//! datasets (`adtech`, `fraud`, `ecommerce`) reuse existing configs as their
-//! shape source — adtech reuses `small`, fraud reuses `fraud-team`, ecommerce
-//! reuses `medium-with-sketches`.
+//! Workloads are backed by JSON config files under `crates/beava-bench/configs/`
+//! (small.json, medium.json, large.json, fraud-team.json) carrying the real
+//! wire-shape register payload. The dataset shapes (`adtech`, `fraud`,
+//! `ecommerce`) reuse existing configs — adtech → `medium-with-sketches`,
+//! fraud → `fraud-team` (the canonical primary tuning shape), ecommerce →
+//! `large-with-sketches`.
 
 use std::path::PathBuf;
 

@@ -1,12 +1,9 @@
-//! Phase 13.5 Plan 08+ — minimal in-process TestServer harness shared by the
-//! 4 CLI mode modules (throughput / mixed / memory / fsync).
+//! Minimal in-process `TestServer` harness shared by the four CLI mode modules
+//! (throughput / mixed / memory / fsync).
 //!
-//! This is intentionally lighter than the legacy v18/v2 binaries — the legacy
-//! harness lives in `src/bin/beava-bench-legacy.rs` (and v18 / v2 binaries) for
-//! one milestone per Plan 08 D-03.
-//!
-//! The 4 entry points each return a [`BenchResult`] with the relevant
-//! measurement fields populated.
+//! Intentionally lighter than the standalone bench binaries (`beava-bench-v18`
+//! / `beava-bench-v2`); the four entry points each return a [`BenchResult`]
+//! with the relevant measurement fields populated.
 
 use std::time::{Duration, Instant};
 
@@ -44,7 +41,9 @@ pub async fn run_throughput_acks_one(
     }
 
     let mut hist: Histogram<u64> = Histogram::new_with_bounds(1, 60_000_000, 3)?;
-    let _ = parallel; // Sequential push for the smoke-test surface; real parallelism in legacy bin.
+    // Sequential push for the smoke-test surface; real parallelism lives in
+    // the standalone bench binaries.
+    let _ = parallel;
 
     let deadline = Instant::now() + duration;
     let start = Instant::now();
@@ -250,8 +249,6 @@ pub async fn run_fsync_acks_all(
     ts.shutdown().await.ok();
     Ok(result)
 }
-
-// ────────────────────────── helpers ──────────────────────────
 
 async fn spawn_test_server() -> Result<TestServer> {
     let wal = tempfile::tempdir()?;

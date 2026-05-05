@@ -1,9 +1,8 @@
-//! Beava bench CLI — Phase 13.5 Plan 08.
+//! `beava bench <mode>` CLI — the polished subcommand surface.
 //!
-//! Polished `beava bench <mode>` subcommand surface. The legacy in-process
-//! throughput harness lives at `src/bin/beava-bench-legacy.rs` (one milestone
-//! deprecation window). The Phase 19 alternates `beava-bench-v18` and
-//! `beava-bench-v2` are also retained.
+//! Standalone bench binaries (`beava-bench-legacy`, `beava-bench-v18`,
+//! `beava-bench-v2`) live alongside this one for the deeper harnesses used by
+//! `.planning/throughput-baselines.md` runs.
 
 use clap::{Parser, Subcommand};
 
@@ -26,7 +25,7 @@ enum Subcommands {
     Mixed(beava_bench::cli::mixed::MixedArgs),
     /// Memory mode (RSS / per-entity overhead).
     Memory(beava_bench::cli::memory::MemoryArgs),
-    /// Fsync mode (acks=all per-push fsync wait latency) — D-03 2026-05-03 amendment.
+    /// Fsync mode (acks=all per-push fsync wait latency).
     Fsync(beava_bench::cli::fsync::FsyncArgs),
 }
 

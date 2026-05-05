@@ -1,4 +1,4 @@
-//! Phase 13.5 Plan 08 — memory mode (RSS / per-entity overhead reporting).
+//! Memory mode — RSS / per-entity overhead reporting.
 
 use anyhow::Result;
 use clap::Args;

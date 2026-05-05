@@ -1,27 +1,27 @@
-//! beava-bench-v18 — standalone throughput harness binding ServerV18 directly.
+//! Standalone throughput harness binding `ServerV18` directly.
 //!
-//! Boots `ServerV18::bind()` + `serve_with_dirs()` directly (NOT TestServer),
-//! then drives it at saturation for N seconds (or N events, when
-//! `--total-events` is set). Captures:
+//! Boots `ServerV18::bind()` + `serve_with_dirs()` (NOT `TestServer`), then
+//! drives it at saturation for N seconds (or N events, when `--total-events`
+//! is set). Captures:
 //! - Sustained EPS (events / wall-time)
-//! - P50/P95/P99 push latency (HDR histogram, 1µs precision)
+//! - P50 / P95 / P99 push latency (HDR histogram, 1µs precision)
 //! - P99 batch-get latency (sampled every second)
-//! - Peak RSS (sampled every 500ms via `ps`)
+//! - Peak RSS (sampled every 500 ms via `ps`)
 //!
-//! Phase 19 additions (this file is the integration target of Plan 19-02):
-//! - `--total-events N` — fixed-event blast mode using the Plan 19-01
-//!   `blast_shape::build_pool` builder. `--duration-secs` becomes a safety
-//!   upper bound only; the receiver flips `stop` and closes the sender
-//!   semaphore as soon as `acks >= N` (D-12). Hard-cap counter on the
-//!   sender prevents over-pushing past `N` (D-13). Run end reports the
-//!   invariant tuple `{requested, pushed, acked}` (asserted equal when
-//!   `--total-events` is set).
+//! Blast modes:
+//! - `--total-events N` — fixed-event blast using the [`blast_shape`]
+//!   pre-encoded frame pool. `--duration-secs` becomes a safety upper bound
+//!   only; the receiver flips `stop` and closes the sender semaphore as soon
+//!   as `acks >= N`. A hard-cap counter on the sender prevents over-pushing
+//!   past `N`; run end reports the invariant tuple
+//!   `{requested, pushed, acked}` (asserted equal when `--total-events` is
+//!   set).
 //! - `--blast-shape={fixed,uniform,zipfian,mixed}` — distribution that the
-//!   Pool=N builder samples (D-01).
+//!   Pool=N builder samples.
 //! - `--isolation-mode` — adds `wall_clock_ms` / `send_drain_ms` /
-//!   `ack_lag_ms = wall_clock - send_drain` columns (D-07). Pool-build time
-//!   is excluded from `wall_clock_ms` via a `tokio::sync::Barrier::new(parallel + 1)`
-//!   synchronization point (BLOCKER 2 fix in 19-02-PLAN.md).
+//!   `ack_lag_ms = wall_clock - send_drain` columns. Pool-build time is
+//!   excluded from `wall_clock_ms` via a `tokio::sync::Barrier::new(parallel + 1)`
+//!   synchronization point.
 //!
 //! Usage:
 //! ```text
@@ -33,6 +33,8 @@
 //!     --wire-format msgpack --pipeline small --duration-secs 30 \
 //!     --parallel 16 --pipeline-depth 1024 --no-ledger --isolation-mode
 //! ```
+//!
+//! [`blast_shape`]: beava_bench::blast_shape
 
 use anyhow::{Context, Result};
 use beava_bench::blast_shape::{build_pool_timed, BlastShape, BlastShapeConfig, PipelineConfig};
@@ -90,13 +92,12 @@ struct Cli {
     #[arg(long, default_value_t = 100)]
     get_batch_keys: usize,
 
-    /// Number of parallel back-to-back /get worker tasks (Plan 12-07
-    /// follow-up). Each worker holds its own TcpClient connection (TCP
-    /// transport) or reqwest client (HTTP transport) and issues /get
-    /// requests as fast as the server responds — no sleep between requests.
-    /// Use this to measure read throughput, not just sampled latency.
-    /// 0 (default) disables parallel read workers; the legacy
-    /// `--get-sample-interval-ms` sampler still runs.
+    /// Number of parallel back-to-back /get worker tasks. Each worker holds
+    /// its own `TcpClient` connection (TCP transport) or reqwest client
+    /// (HTTP transport) and issues /get requests as fast as the server
+    /// responds — no sleep between requests. Use this to measure read
+    /// throughput, not just sampled latency. 0 (default) disables parallel
+    /// read workers; the `--get-sample-interval-ms` sampler still runs.
     #[arg(long, default_value_t = 0)]
     read_workers: usize,
 
@@ -132,11 +133,9 @@ struct Cli {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     continuous_pipeline: bool,
 
-    // ─── Phase 19 additions ──────────────────────────────────────────────
-    //
-    /// Send a fixed total number of events instead of running for `--duration-secs`.
-    /// When set, the bench reports wall_clock to push N events end-to-end. `--duration-secs`
-    /// becomes a safety upper bound only.
+    /// Send a fixed total number of events instead of running for
+    /// `--duration-secs`. When set, the bench reports `wall_clock` to push N
+    /// events end-to-end; `--duration-secs` becomes a safety upper bound only.
     #[arg(long)]
     total_events: Option<u64>,
 
@@ -160,15 +159,15 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     isolation_mode: bool,
 
-    /// IoPool worker count override (Phase 19.4 followup).
+    /// IoPool worker count override.
     ///
     /// Defaults to `max(2, available_parallelism / 4)` (Redis-style ratio).
-    /// On virtualized cloud servers with ≥16 vCPUs the auto-default can
-    /// underperform: the Hetzner sweep on 2026-04-28 showed iot=4 is the
-    /// worst config for fraud-team-shaped workloads (~10% lift available
-    /// at iot=2 or iot=8). Try `--io-threads 2` for feature-heavy
-    /// workloads or `--io-threads 8` for thin shapes if the auto-default
-    /// underperforms on your box. Equivalent to setting `BEAVA_IO_THREADS=N`.
+    /// On virtualized cloud servers with ≥ 16 vCPUs the auto-default can
+    /// underperform: the Hetzner sweep on 2026-04-28 showed `iot=4` is the
+    /// worst config for fraud-team-shaped workloads (~10% lift available at
+    /// `iot=2` or `iot=8`). Try `--io-threads 2` for feature-heavy workloads
+    /// or `--io-threads 8` for thin shapes if the auto-default underperforms
+    /// on your box. Equivalent to setting `BEAVA_IO_THREADS=N`.
     #[arg(long)]
     io_threads: Option<usize>,
 }
@@ -313,9 +312,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Phase 19.4 followup: --io-threads N overrides the IoPool worker count
-    // by setting BEAVA_IO_THREADS, which `default_io_threads()` reads inside
-    // `run_mio_event_loop`. Must be set BEFORE ServerV18::bind so the apply
+    // `--io-threads N` overrides the IoPool worker count by setting
+    // BEAVA_IO_THREADS, which `default_io_threads()` reads inside
+    // `run_mio_event_loop`. Must land BEFORE `ServerV18::bind` so the apply
     // thread sees it when it spawns the per-worker continuous-loop pool.
     if let Some(n) = cli.io_threads {
         std::env::set_var("BEAVA_IO_THREADS", n.to_string());
@@ -341,9 +340,9 @@ async fn main() -> Result<()> {
         cli.total_events,
     );
 
-    // Either bind a local ServerV18 OR connect to an existing remote one.
-    // The latter is the "many bench clients, one server" mode used to escape
-    // the per-process glibc mmap_lock contention that caps in-process push EPS.
+    // Bind a local ServerV18, or connect to an existing remote one. Remote
+    // mode is the "many bench clients, one server" pattern used to escape
+    // per-process glibc mmap_lock contention that caps in-process push EPS.
     let (http_addr, tcp_addr, _local_server_handles) = if let Some(remote) = &cli.remote_addr {
         let parts: Vec<&str> = remote.split(',').collect();
         anyhow::ensure!(
@@ -414,7 +413,6 @@ async fn main() -> Result<()> {
         .context("build reqwest client")?;
 
     if cli.remote_addr.is_none() {
-        // Local server — register pipeline + pre-warm.
         let reg_resp = client
             .post(format!("{http_base}/register"))
             .header("Content-Type", "application/json")
@@ -446,7 +444,6 @@ async fn main() -> Result<()> {
         eprintln!("beava-bench-v18: REMOTE mode — skipping pipeline register + pre-warm (assumed already done)");
     }
 
-    // Run the workload.
     let result = run_workload(
         http_addr,
         tcp_addr,
@@ -458,20 +455,18 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // Print results.
     let report = format_report(&pipeline, cli.transport, cli.wire_format, &cli, &result);
     if !cli.no_ledger {
         println!("{}", report.ledger_row);
     }
     eprintln!("\n=== beava-bench-v18 summary ===\n{}\n", report.human);
 
-    // D-13 invariant tuple: {requested, pushed, acked}. Printed unconditionally
-    // so smoke tests can grep for it; asserted equal when --total-events set.
+    // Invariant tuple {requested, pushed, acked}: printed unconditionally so
+    // smoke tests can grep for it; asserted equal when `--total-events` is
+    // set. `pushes` is incremented by the receiver per ack (so
+    // `push_count == acked`); `pushes_cap` tracks issued frames before
+    // `write_all` and is not reused here.
     let requested = cli.total_events.unwrap_or(0);
-    // `pushes` (counter passed to run_workload) is incremented by the receiver
-    // per ack — so push_count == acked. The sender's `pushes_cap` counter
-    // tracks issued frames before write_all (D-13 hard cap) but is NOT reused
-    // here; we only need the invariant tuple to assert measurement honesty.
     let pushed = result.push_count;
     let acked = pushed;
     eprintln!(
@@ -484,7 +479,6 @@ async fn main() -> Result<()> {
         );
     }
 
-    // D-07 isolation columns.
     if cli.isolation_mode {
         let wall_clock_ms = result.elapsed.as_millis() as u64;
         let send_drain_ms = result.send_drain_ms;
@@ -494,7 +488,6 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Shutdown — only when we own the local server.
     if let Some((_wal_dir, _snap_dir, shutdown_tx, serve_task)) = _local_server_handles {
         let _ = shutdown_tx.send(());
         let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
@@ -538,8 +531,8 @@ async fn run_workload(
         Histogram::new_with_bounds(1, 60_000_000, 3)?,
     ));
 
-    // When --total-events is set, --duration-secs is a safety upper bound only;
-    // raise the floor to 1h so an unbounded runaway is impossible (T-19-02-02).
+    // When --total-events is set, --duration-secs is a safety upper bound
+    // only; raise the floor to 1h so an unbounded runaway is impossible.
     let effective_duration_secs = if cli.total_events.is_some() {
         cli.duration_secs.max(3600)
     } else {
@@ -547,16 +540,16 @@ async fn run_workload(
     };
     let deadline = Instant::now() + Duration::from_secs(effective_duration_secs);
 
-    // D-13 hard-cap counter — sender uses fetch_add(1, Relaxed) >= cap before
-    // write_all so {requested, pushed, acked} stay equal at run end.
+    // Hard-cap counter: sender uses `fetch_add(1, Relaxed) >= cap` before
+    // `write_all` so `{requested, pushed, acked}` stay equal at run end.
     let pushes_cap = Arc::new(AtomicU64::new(0));
     let total_events_cap: Option<u64> = cli.total_events;
-    // Per-worker first/last send timestamps for --isolation-mode (D-07).
+    // Per-worker first/last send timestamps for --isolation-mode.
     let first_send_ts: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
     let last_send_ts: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
-    // BLOCKER 2 fix — Barrier of size (parallel + 1). Workers await AFTER pool-build,
-    // BEFORE first push. Main task awaits as the (parallel + 1)-th party THEN sets `start`.
-    // This excludes pool-build time from wall_clock_ms.
+    // Barrier of size (parallel + 1): workers await AFTER pool-build, BEFORE
+    // first push; the main task awaits as the (parallel + 1)-th party THEN
+    // sets `start`. Excludes pool-build time from wall_clock_ms.
     let pool_ready_barrier = Arc::new(tokio::sync::Barrier::new(parallel + 1));
 
     // Mixed-event-name list: harvest distinct event names from
@@ -596,23 +589,22 @@ async fn run_workload(
     };
     let blast_shape = cli.blast_shape.to_blast_shape(cli);
 
-    // Background-task stop signal — `tokio::sync::watch` lets each sampler
+    // Background-task stop signal: `tokio::sync::watch` lets each sampler
     // race its sleep against the stop signal in `tokio::select!` and exit
-    // promptly, instead of sleeping a full interval past `stop`. Required for
-    // honest wall_clock_ms measurement at any N (per Phase 19.1-01 D-06/D-07
-    // and memory `project_phase19_bench_wallclock_fix`).
+    // within select-poll latency of `stop`, not up to a full interval past.
+    // Required for honest wall_clock_ms measurement at any N — see the
+    // `bench_wallclock_capture_order` regression test.
     let (bg_stop_tx, _) = tokio::sync::watch::channel::<()>(());
 
-    // RSS sampler.
     let peak_rss = Arc::new(AtomicU64::new(0));
     let peak_rss_clone = Arc::clone(&peak_rss);
     let pid = std::process::id();
     let mut rss_stop_rx = bg_stop_tx.subscribe();
     let rss_task = tokio::spawn(async move {
         loop {
-            // tokio::select! between the stop signal and the 500 ms sample
-            // interval — exits within `select!` poll latency of `stop`, not
-            // up to a full 500 ms after.
+            // Race the stop signal against the 500 ms sample interval so the
+            // task exits within `select!` poll latency of `stop`, not up to
+            // a full 500 ms after.
             tokio::select! {
                 biased;
                 _ = rss_stop_rx.changed() => break,
@@ -636,7 +628,6 @@ async fn run_workload(
         }
     });
 
-    // Batch-get latency sampler.
     let get_hist: Arc<AsyncMutex<Histogram<u64>>> = Arc::new(AsyncMutex::new(
         Histogram::new_with_bounds(1, 60_000_000, 3)?,
     ));
@@ -656,10 +647,9 @@ async fn run_workload(
         use rand::Rng;
         let mut rng = sampling_rng(get_seed.wrapping_add(0xDEAD));
 
-        // Plan 12-07: when transport is TCP, drive /get over the framed-TCP
-        // OP_GET_MULTI opcode (matches HTTP /get's multi-key+multi-feature
-        // body shape). When transport is HTTP, keep the legacy reqwest path.
-        // Both share the same apply thread server-side.
+        // TCP path drives /get over the framed-TCP OP_GET_MULTI opcode (same
+        // multi-key + multi-feature body shape as HTTP /get); HTTP path keeps
+        // the reqwest client. Both share the same apply thread server-side.
         let mut tcp_client: Option<beava_server::testing::TcpClient> =
             if matches!(get_transport, Transport::Tcp) {
                 match beava_server::testing::TcpClient::connect(get_tcp_addr).await {
@@ -674,11 +664,10 @@ async fn run_workload(
             };
 
         loop {
-            // tokio::select! between the stop signal and the get-interval
-            // sleep — same rationale as rss_task above. Without this, the
-            // task lingers up to `get_interval_ms` (default 1000) past `stop`,
-            // contaminating wall_clock_ms for any N where the genuine bench
-            // time is shorter than the sleep cycle.
+            // Race the stop signal against the get-interval sleep — without
+            // this the task lingers up to `get_interval_ms` (default 1000)
+            // past `stop`, contaminating wall_clock_ms for any N where the
+            // genuine bench time is shorter than the sleep cycle.
             tokio::select! {
                 biased;
                 _ = get_stop_rx.changed() => break,
@@ -691,22 +680,17 @@ async fn run_workload(
 
                     let start = Instant::now();
 
-                    // Two transport paths share the same body shape; both
-                    // ultimately route to dispatch_get_batch_sync on the apply
-                    // thread.
                     let ok = match (get_transport, tcp_client.as_mut()) {
                         (Transport::Tcp, Some(client)) => {
-                            // OP_GET_MULTI framed-TCP request.
-                            // Body is JSON {"keys": [...], "features": [...]}.
+                            // OP_GET_MULTI body is JSON
+                            // {"keys": [...], "features": [...]}; success
+                            // returns OP_GET_RESPONSE, failure returns
+                            // OP_ERROR_RESPONSE.
                             let payload = Bytes::from(body.to_string().into_bytes());
                             match client.send_raw(OP_GET_MULTI, CT_JSON, payload).await {
-                                Ok(frame) => {
-                                    // Successful response is OP_GET_RESPONSE with a JSON body.
-                                    // Server emits OP_ERROR_RESPONSE on failure paths.
-                                    frame.op == OP_GET_RESPONSE
-                                }
+                                Ok(frame) => frame.op == OP_GET_RESPONSE,
                                 Err(_) => {
-                                    // Reconnect on transport error and skip this sample.
+                                    // Reconnect on transport error; skip this sample.
                                     if let Ok(c) = beava_server::testing::TcpClient::connect(get_tcp_addr).await {
                                         tcp_client = Some(c);
                                     }
@@ -715,7 +699,7 @@ async fn run_workload(
                             }
                         }
                         _ => {
-                            // HTTP path (transport == Http or TcpClient unavailable).
+                            // HTTP, or TCP-with-no-client.
                             match get_client
                                 .post(&get_url)
                                 .header("Content-Type", "application/json")
@@ -744,11 +728,11 @@ async fn run_workload(
         }
     });
 
-    // Plan 12-07 follow-up: parallel back-to-back read workers (read-throughput mode).
-    // Each worker holds its own TcpClient/reqwest client and issues /get requests
-    // as fast as the server responds — no sleep between requests. Aggregate reads
-    // across all workers count toward `get_samples_counter` (which becomes the
-    // total completed-read count under this mode) and `get_hist` (aggregated
+    // Parallel back-to-back read workers (read-throughput mode). Each worker
+    // holds its own TcpClient/reqwest client and issues /get requests as fast
+    // as the server responds — no sleep between requests. Aggregate reads
+    // across all workers count toward `get_samples_counter` (the total
+    // completed-read count under this mode) and `get_hist` (aggregated
     // latency histogram).
     let read_workers_count = cli.read_workers;
     let mut read_worker_handles: Vec<tokio::task::JoinHandle<()>> =
@@ -772,7 +756,6 @@ async fn run_workload(
             use rand::Rng;
             let mut rng = sampling_rng(read_seed);
 
-            // Per-worker client (one connection per worker for TCP).
             let mut tcp_client: Option<beava_server::testing::TcpClient> =
                 if matches!(read_transport, Transport::Tcp) {
                     match beava_server::testing::TcpClient::connect(read_tcp_addr).await {
@@ -789,7 +772,6 @@ async fn run_workload(
                 };
 
             loop {
-                // Stop signal — checked before each request, no sleep.
                 if read_stop_rx.has_changed().unwrap_or(false) {
                     break;
                 }
@@ -841,7 +823,6 @@ async fn run_workload(
         }));
     }
 
-    // Spawn N parallel push workers.
     let mut workers = Vec::with_capacity(parallel);
     for worker_id in 0..parallel {
         let stop = Arc::clone(&stop);
@@ -893,12 +874,12 @@ async fn run_workload(
         }));
     }
 
-    // BLOCKER 2 fix — wait for ALL parallel workers to finish pool-build (or
-    // signal "no pool to build" for HTTP transport) before any worker starts
-    // pushing. This ensures wall_clock_ms (set after barrier release) excludes
-    // pool-build time uniformly across workers.
+    // Wait for ALL parallel workers to finish pool-build (or signal "no pool
+    // to build" for the HTTP transport) before any worker starts pushing.
+    // wall_clock_ms (set after barrier release) excludes pool-build time
+    // uniformly across workers.
     pool_ready_barrier.wait().await;
-    // wall_clock_ms timer starts NOW — excludes per-worker pool-build time.
+    // wall_clock_ms timer starts NOW; excludes per-worker pool-build time.
     let start = Instant::now();
     while Instant::now() < deadline {
         if stop.load(Ordering::Relaxed) {
@@ -912,17 +893,16 @@ async fn run_workload(
         let _ = w.await;
     }
 
-    // wall_clock_ms — capture BEFORE awaiting `get_task` / `rss_task`. With
-    // their old raw `loop { sleep }` form, awaiting them would inflate elapsed
-    // by up to `get_interval_ms` + 500 ms at any N where the genuine bench
-    // time is shorter than those sleep cycles (the Phase 19 5x under-reporting
-    // bug — see memory `project_phase19_bench_wallclock_fix`). Background
-    // tasks now use tokio::select! so they exit promptly when signalled, but
-    // the elapsed capture stays before the awaits as a structural guard.
+    // Capture wall_clock_ms BEFORE awaiting `get_task` / `rss_task`. With
+    // their old raw `loop { sleep }` form, awaiting them would inflate
+    // elapsed by up to `get_interval_ms` + 500 ms at any N where the genuine
+    // bench time is shorter than those sleep cycles. Background tasks now
+    // use `tokio::select!` so they exit promptly when signalled, but the
+    // elapsed capture stays before the awaits as a structural guard
+    // (regression-pinned by `tests/bench_wallclock_capture_order.rs`).
     let elapsed = start.elapsed();
 
-    // Signal background tasks to stop (they tokio::select! on this watch
-    // channel) and join them for clean shutdown.
+    // Signal background tasks to stop and join them for clean shutdown.
     let _ = bg_stop_tx.send(());
     let _ = get_task.await;
     for h in read_worker_handles {
@@ -988,11 +968,10 @@ async fn run_push_worker(
     last_send_ts: Arc<AsyncMutex<Option<Instant>>>,
     pool_ready_barrier: Arc<tokio::sync::Barrier>,
 ) {
-    // Plan 18-12 follow-up: continuous pipelining for TCP.
-    // When enabled (default), the TCP path uses a split sender/receiver
-    // pattern with a semaphore-gated inflight queue, eliminating the
-    // burst-mode sawtooth (apply-thread idles between batches). HTTP and
-    // burst-mode TCP keep their existing single-task loop.
+    // Continuous pipelining for TCP: when enabled (default), the TCP path
+    // uses a split sender / receiver pattern with a semaphore-gated inflight
+    // queue, eliminating the burst-mode sawtooth (apply-thread idles between
+    // batches). HTTP and burst-mode TCP keep their existing single-task loop.
     if matches!(transport, Transport::Tcp) && continuous_pipeline {
         run_tcp_continuous_push_worker(
             seed,
@@ -1018,7 +997,7 @@ async fn run_push_worker(
     }
 
     if matches!(transport, Transport::Tcp) {
-        // Burst-mode TCP using Pool=N + receiver-flips-stop pattern (D-12).
+        // Burst-mode TCP using Pool=N + receiver-flips-stop pattern.
         run_tcp_burst_push_worker(
             seed,
             stop,
@@ -1051,7 +1030,7 @@ async fn run_push_worker(
     let mut local_first: Option<Instant> = None;
     let mut local_last: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-        // D-13 hard cap before send.
+        // Hard cap before send so {requested, pushed, acked} stay equal.
         if let Some(cap) = total_cap {
             let prev = pushes_cap.fetch_add(1, Ordering::Relaxed);
             if prev >= cap {
@@ -1180,8 +1159,8 @@ async fn run_tcp_burst_push_worker(
     use beava_core::wire::Frame;
     use beava_server::testing::TcpClient;
 
-    // Build Pool=N at worker startup. POOL BUILDING TIME IS NOT MEASURED in
-    // wall_clock_ms — wall_clock starts AFTER the barrier (D-02, D-15).
+    // Build Pool=N at worker startup. Pool-building time is NOT measured in
+    // wall_clock_ms — wall_clock starts AFTER the barrier.
     let (pool, _pool_build_dur) = match build_worker_pool(
         &pipeline,
         blast_shape,
@@ -1192,13 +1171,13 @@ async fn run_tcp_burst_push_worker(
     ) {
         Some(p) => p,
         None => {
-            // Still wait on the barrier so other workers + the main task don't deadlock.
+            // Wait on the barrier so other workers + the main task don't deadlock.
             pool_ready_barrier.wait().await;
             return;
         }
     };
 
-    // BLOCKER 2 fix — synchronize all workers BEFORE first push.
+    // Synchronize all workers BEFORE first push.
     pool_ready_barrier.wait().await;
 
     let mut client = match TcpClient::connect(tcp_addr).await {
@@ -1216,14 +1195,14 @@ async fn run_tcp_burst_push_worker(
     let mut local_last: Option<Instant> = None;
 
     'outer: while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-        // ─── Build N frames + send all of them, then read N acks ─────
+        // Build N frames + send all of them, then drain N acks.
         send_times.clear();
         let mut send_err = false;
         for _ in 0..pdepth {
             if stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
                 break;
             }
-            // D-13 hard cap BEFORE write.
+            // Hard cap BEFORE write so {requested, pushed, acked} stay equal.
             if let Some(cap) = total_cap {
                 let prev = pushes_cap.fetch_add(1, Ordering::Relaxed);
                 if prev >= cap {
@@ -1233,19 +1212,11 @@ async fn run_tcp_burst_push_worker(
             }
             let frame_bytes = pool[(idx % pool_len) as usize].clone();
             idx = idx.wrapping_add(1);
-            // Reconstruct the Frame from the pre-encoded bytes — the pool
-            // returns full encoded frames (length+op+ct+payload), but
-            // TcpClient::write_frame re-encodes from a Frame struct. Use the
-            // raw stream write instead by extracting the pre-encoded payload
-            // bytes (the ServerV18 wire is the same).
-            //
-            // Simpler: keep using TcpClient.write_frame with a re-decoded
-            // Frame so we don't have to expose a raw-bytes write_all on
-            // TcpClient. Re-decoding is "free" relative to the apply hot path
-            // (~50 ns) and keeps the public TcpClient API intact.
-            //
-            // The pool entries are full encoded frames; decode just enough to
-            // get the (op, ct, payload) back:
+            // Pool entries are full encoded frames `[len][op][ct][payload]`.
+            // TcpClient::write_frame re-encodes from a Frame struct, so we
+            // decode just enough to get `(op, ct, payload)` back and let it
+            // re-encode. ~50 ns per call is "free" relative to the apply hot
+            // path and keeps the public TcpClient API intact.
             let (op, ct, payload) = match decode_pool_frame(&frame_bytes) {
                 Some(t) => t,
                 None => {
@@ -1287,7 +1258,7 @@ async fn run_tcp_burst_push_worker(
             }
             continue;
         }
-        // ─── Read N acks (strict FIFO order) ─────────────────────────
+        // Read N acks (strict FIFO order — Redis-style wire contract).
         match client.read_n_frames(sent).await {
             Ok(frames) => {
                 let mut h = push_hist.lock().await;
@@ -1296,8 +1267,8 @@ async fn run_tcp_burst_push_worker(
                         let new_count = pushes.fetch_add(1, Ordering::Relaxed) + 1;
                         let elapsed_us = send_ts.elapsed().as_micros() as u64;
                         let _ = h.record(elapsed_us.max(1));
-                        // D-12: when ack count crosses the cap, flip stop.
-                        // No semaphore in burst mode; just store + break.
+                        // When ack count crosses the cap, flip stop. No
+                        // semaphore in burst mode; just store + break.
                         if let Some(cap) = total_cap {
                             if new_count >= cap {
                                 stop.store(true, Ordering::Release);
@@ -1390,8 +1361,8 @@ async fn run_tcp_continuous_push_worker(
 
     let pdepth = pipeline_depth.max(1);
 
-    // Build Pool=N at worker startup. POOL BUILDING TIME IS NOT MEASURED in
-    // wall_clock_ms — wall_clock starts AFTER the pool-ready barrier (D-02, D-15).
+    // Build Pool=N at worker startup. Pool-building time is NOT measured in
+    // wall_clock_ms — wall_clock starts AFTER the pool-ready barrier.
     let (pool, _pool_build_dur) = match build_worker_pool(
         &pipeline,
         blast_shape,
@@ -1402,13 +1373,13 @@ async fn run_tcp_continuous_push_worker(
     ) {
         Some(p) => p,
         None => {
-            // Still wait on the barrier so other workers + the main task don't deadlock.
+            // Wait on the barrier so other workers + the main task don't deadlock.
             pool_ready_barrier.wait().await;
             return;
         }
     };
 
-    // BLOCKER 2 fix — synchronize all workers BEFORE first push.
+    // Synchronize all workers BEFORE first push.
     pool_ready_barrier.wait().await;
 
     let stream = match TcpStream::connect(tcp_addr).await {
@@ -1424,7 +1395,6 @@ async fn run_tcp_continuous_push_worker(
     let sem = Arc::new(Semaphore::new(pdepth));
     let (ts_tx, mut ts_rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
 
-    // ─── Sender task ──────────────────────────────────────────────────────
     let sender_stop = Arc::clone(&stop);
     let sender_errors = Arc::clone(&errors);
     let sender_sem = Arc::clone(&sem);
@@ -1443,7 +1413,8 @@ async fn run_tcp_continuous_push_worker(
             if sender_stop.load(Ordering::Relaxed) || Instant::now() >= deadline {
                 break;
             }
-            // D-13 hard cap — break BEFORE write_all so {requested, pushed, acked} stay equal.
+            // Hard cap — break BEFORE write_all so {requested, pushed, acked}
+            // stay equal.
             if let Some(cap) = sender_total_cap {
                 let prev = sender_pushes_cap.fetch_add(1, Ordering::Relaxed);
                 if prev >= cap {
@@ -1493,14 +1464,12 @@ async fn run_tcp_continuous_push_worker(
         .await;
     });
 
-    // ─── Receiver loop (this task) ────────────────────────────────────────
-    //
-    // Latency batching: burst mode locks `push_hist` ONCE per N-event batch
-    // and records N values inside the lock. Continuous mode would otherwise
-    // lock once per event — 256× more lock ops at pd=256, contending with
-    // the other 15 workers' receivers. We mirror burst's batching by
-    // accumulating elapsed_us into a local Vec and flushing every
-    // HIST_FLUSH_BATCH records (or on shutdown) in a single lock.
+    // Receiver loop (this task). Burst mode locks `push_hist` ONCE per
+    // N-event batch and records N values inside the lock. Continuous mode
+    // would otherwise lock once per event — 256× more lock ops at pd=256,
+    // contending with the other 15 workers' receivers. Mirror burst's
+    // batching by accumulating elapsed_us into a local Vec and flushing
+    // every `HIST_FLUSH_BATCH` records (or on shutdown) in a single lock.
     let mut read_buf = BytesMut::with_capacity(8 * 1024);
     const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
     const HIST_FLUSH_BATCH: usize = 64;
@@ -1537,9 +1506,9 @@ async fn run_tcp_continuous_push_worker(
                         }
                         // Release the inflight slot.
                         sem.add_permits(1);
-                        // D-12: when ack count crosses the cap, flip stop AND close sem
-                        // so the sender (blocked on acquire_owned().await) returns
-                        // Err and exits the loop.
+                        // When ack count crosses the cap, flip stop AND close
+                        // the semaphore so the sender (blocked on
+                        // `acquire_owned().await`) returns `Err` and exits.
                         if let Some(cap) = total_cap {
                             if new_count >= cap {
                                 stop.store(true, Ordering::Release);
@@ -1589,7 +1558,7 @@ async fn run_tcp_continuous_push_worker(
     flush_latencies(&push_hist, &mut latency_batch).await;
 
     // Wait for the sender to finish before returning so the worker doesn't
-    // outlive its sender task (avoids Tokio "task stopped" warnings).
+    // outlive its sender task (avoids tokio "task stopped" warnings).
     let _ = sender_handle.await;
 }
 
@@ -1755,15 +1724,14 @@ mod tests {
         assert!(decode_pool_frame(&bytes).is_none());
     }
 
-    /// Phase 19.4 followup: `--io-threads N` must parse into `Cli::io_threads
-    /// = Some(N)` so users can override the auto-default IoPool worker count
-    /// without setting `BEAVA_IO_THREADS` env var.
+    /// `--io-threads N` must parse into `Cli::io_threads = Some(N)` so users
+    /// can override the auto-default IoPool worker count without setting the
+    /// `BEAVA_IO_THREADS` env var.
     ///
-    /// Hetzner sweep (2026-04-28, .planning/phases/19.4-final-100k-push/
-    /// 19.4-LINUX-PERF-TUNING.md) showed the auto-default `iot=4` on a
-    /// 16-vCPU vServer is the worst tested config for fraud-team workloads,
-    /// with 10% lift available at iot=2 or iot=8. CLI knob lets users tune
-    /// without env-var ceremony.
+    /// Rationale: the Hetzner sweep on 2026-04-28 (16-vCPU vServer) showed
+    /// the auto-default `iot=4` is the worst tested config for fraud-team
+    /// workloads, with ~10% lift available at `iot=2` or `iot=8`. Exposing
+    /// the CLI knob lets users tune without env-var ceremony.
     #[test]
     fn cli_parses_io_threads_flag() {
         let cli = Cli::try_parse_from(["beava-bench-v18", "--io-threads", "7"])

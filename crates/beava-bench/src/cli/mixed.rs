@@ -1,4 +1,4 @@
-//! Phase 13.5 Plan 08 — mixed read+write mode.
+//! Mixed read+write mode.
 
 use anyhow::Result;
 use clap::Args;

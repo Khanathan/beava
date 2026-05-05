@@ -1,8 +1,9 @@
-//! Pre-run memory estimator — Phase 13.5 Plan 10.
+//! Pre-run memory estimator.
 //!
-//! Uses Phase 12.9 cost model (`size_of::<AggOp>() = 80 bytes`, fraud-team
-//! weighted-avg ~6 KB/entity) projected over the workload's derivation count
-//! and the size-bucket's expected entity count.
+//! Uses the Phase 12.9 memory-governance cost model
+//! (`size_of::<AggOp>() = 80 bytes`, fraud-team weighted-avg ~6 KB/entity per
+//! CLAUDE.md §Constraints) projected over the workload's derivation count and
+//! the size-bucket's expected entity count.
 
 use anyhow::{anyhow, Result};
 
