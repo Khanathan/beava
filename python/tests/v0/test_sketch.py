@@ -212,8 +212,14 @@ def test_bloom_member_per_user_high_volume(app):
 
     @bv.table(key="user_id")
     def UserDeviceBloom(logins: Login):
+        # NOTE: capacity= and fpr= are NOT part of the v0 helper signature
+        # (python/beava/_agg.py::bloom_member accepts only field, *, window,
+        # where). If a future Plan 13.5.1-07a (Category 1 helper-drift cluster)
+        # determines they SHOULD be exposed, that plan will re-add them to
+        # both helper and test. For 13.5.1-07c (test-only surface), call the
+        # helper with the actually-supported signature.
         return logins.group_by("user_id").agg(
-            device_seen=bv.bloom_member("device_id", capacity=2048, fpr=0.01),
+            device_seen=bv.bloom_member("device_id"),
         )
 
     app.register(Login, UserDeviceBloom)
