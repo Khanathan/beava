@@ -919,7 +919,9 @@ Plans:
 
 ---
 
-### Phase 13.5.2: Decorator-only derivation surface (kill chain registration) — 📋 PLANNED 2026-05-04
+### Phase 13.5.2: Decorator-only derivation surface (kill chain registration) — ✅ COMPLETED 2026-05-04
+
+**Closed:** 2026-05-04. SUMMARY: `.planning/phases/13.5.2-decorator-only-derivations/13.5.2-SUMMARY.md`. VERIFICATION: `.planning/phases/13.5.2-decorator-only-derivations/13.5.2-VERIFICATION.md`. v0 acceptance: 81/89 GREEN (+7-8 from baseline); throughput small/tcp PASS at +1.6% (median 641,935 EPS vs 631,610 baseline). All 4 USER-LOCKED CONTEXT decisions D-01..D-04 landed plus a discovered scope expansion (per user direction Option B): runtime chain-op execution wired into `crates/beava-core/src/agg_apply.rs::apply_event_to_aggregations` via the existing `OpChain::apply` (which Phase 4 implemented but never called). The 5 `test_lit.py` rewrites now pass end-to-end against the real engine via `bv.App(test_mode=True)` embed-mode + the new runtime chain-op executor. Companion changes: chain-prefix compilation in `register_validate.rs` when GroupBy is present, SDK chain-flatten upstream resolution in `_app.py`, Python `&`/`|` → expr-grammar `and`/`or` in `_col.py`. Workspace gates GREEN.
 
 **Status:** Inserted 2026-05-04. Closes the architectural blocker named in `.planning/RESUME-2026-05-04-PM.md` ("sibling-event-derivation routing") that surfaces as 5 `python/tests/v0/test_lit.py` failures at the Phase 13.5.1 close (74/89 v0 acceptance GREEN).
 
