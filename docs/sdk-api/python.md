@@ -131,6 +131,17 @@ Calling `register(...)` on an embed-mode `App` outside a `with` block raises
 `RuntimeError`. Explicit-URL `App` instances may use `with` or be closed
 manually via `app.close()`; both are idempotent.
 
+**Embed-mode disk lifecycle (`test_mode=True` and the default
+embed-spawn path):** Each embed spawn allocates a unique tmpdir under
+`$TMPDIR/beava-embed-<pid>-<unix-ms>-<hex>/` holding the binary's
+`./wal` and `./snapshots` sub-dirs. The path is registered with
+`atexit.register(shutil.rmtree, ..., ignore_errors=True)`, so the dir
+is reaped at Python interpreter shutdown — long-running test processes
+(e.g. a pytest session that spawns 100s of embed apps) do not leak
+disk. SIGKILL'd Python processes leave the dir for the OS tmpfs reaper
+to handle (typical `$TMPDIR` aging is days). Users of `App(test_mode=True)`
+do not need to register their own cleanup; the SDK handles it.
+
 ### `app.register(*descriptors, force=False, dry_run=False)`
 
 **Wire opcode:** `OP_REGISTER` (`0x0001`).
