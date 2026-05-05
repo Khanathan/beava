@@ -176,10 +176,20 @@ app.get("TotalSpend")  # → {"spend": 12345.67}, no entity arg
 
 **`bv.lit` in expressions (new, per ADR-003):**
 
+Per Phase 13.5.2 D-01/D-02, every named derivation is declared via `@bv.event` (class for sources, function for derivations) or `@bv.table`. Raw chain expressions (e.g. `events.filter(...).named("Big")`) are rejected at register-time. The `bv.lit` examples below show the canonical `@bv.event def`-wrapped form:
+
 ```python
-events.filter(bv.col("amount") > bv.lit(100))             # explicit literal in filter
-events.with_columns(safe_div=bv.col("a") / bv.lit(10.0))  # force float division
-events.with_columns(source=bv.lit("web"))                  # constant column
+@bv.event
+def BigTxn(txn: Txn):
+    return txn.filter(bv.col("amount") > bv.lit(100))             # explicit literal in filter
+
+@bv.event
+def SafeRate(events: Counter):
+    return events.with_columns(safe_div=bv.col("a") / bv.lit(10.0))  # force float division
+
+@bv.event
+def Tagged(click: Click):
+    return click.with_columns(source=bv.lit("web"))                   # constant column
 ```
 
 ## Consequences
