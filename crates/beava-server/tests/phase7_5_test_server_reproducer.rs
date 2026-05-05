@@ -69,11 +69,15 @@ async fn register_and_query(ts: &beava_server::testing::TestServer, label: &str)
         );
     }
 
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4 (lockstep
+    // alignment exemption): post-13.4 POST /get takes verb-style
+    // {table, key, features?} and returns a flat dict. The derivation table
+    // queried here is "TxnAgg" (registered above).
     let url = format!("{}/get", ts.base_url());
     let r = reqwest::Client::new()
         .post(&url)
         .header("Content-Type", "application/json")
-        .body(json!({"keys": ["alice"], "features": ["cnt"]}).to_string())
+        .body(json!({"table": "TxnAgg", "key": "alice", "features": ["cnt"]}).to_string())
         .send()
         .await
         .expect("post /get");
@@ -84,7 +88,7 @@ async fn register_and_query(ts: &beava_server::testing::TestServer, label: &str)
         "[{label}] /get expected 200, got {status}: {body}"
     );
     let v: serde_json::Value = serde_json::from_str(&body).expect("body json");
-    assert_eq!(v["alice"]["cnt"], 5, "[{label}] expected cnt=5, got {v}");
+    assert_eq!(v["cnt"], 5, "[{label}] expected cnt=5, got {v}");
 }
 
 /// Two sequential TestServer spawns in ONE test, each with its own tempdirs
@@ -151,11 +155,13 @@ async fn restart_with_same_dirs_recovers_registry_and_state() {
             .spawn()
             .await
             .expect("spawn 2nd");
+        // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: verb-style
+        // {table, key, features?}; flat-dict response.
         let url = format!("{}/get", ts.base_url());
         let r = reqwest::Client::new()
             .post(&url)
             .header("Content-Type", "application/json")
-            .body(json!({"keys": ["alice"], "features": ["cnt"]}).to_string())
+            .body(json!({"table": "TxnAgg", "key": "alice", "features": ["cnt"]}).to_string())
             .send()
             .await
             .expect("post /get");
@@ -167,7 +173,7 @@ async fn restart_with_same_dirs_recovers_registry_and_state() {
         );
         let v: serde_json::Value = serde_json::from_str(&body).expect("body json");
         assert_eq!(
-            v["alice"]["cnt"], 5,
+            v["cnt"], 5,
             "[restart] expected cnt=5 after recovery, got {v}"
         );
         ts.shutdown().await.expect("shutdown 2nd");
