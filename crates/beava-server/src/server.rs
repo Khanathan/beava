@@ -1289,26 +1289,26 @@ fn default_io_threads() -> usize {
     std::cmp::max(2, p / 4)
 }
 
-/// Run the mio event loop on a dedicated `std::thread`.
-///
-/// Per-tick lifecycle:
-///   1. `EventLoop::tick` — poll mio (up to 5 ms timeout).
-///   2. Accept new connections; classify ready clients into read/write sets.
-///   3. **Read phase** — `IoPool::publish` parse work → `join_all`. Workers
-///      run `socket.read` + `parse_*_request` on their own threads.
-///   4. **Apply phase** — single-threaded on this thread. Drain each
-///      client's parsed requests → `apply_shard.dispatch_wire_request_sync`
-///      → push `GlueResponse`s into the client's `output_queue`.
-///   5. **Write phase** — `IoPool::publish` write work → `join_all`. Workers
-///      run `serialize` + `socket.write`.
-///   6. Cleanup closed clients; check shutdown flag.
-///
-/// `clients: Vec<Option<MioClient>>` is pre-allocated to
-/// `MAX_CONCURRENT_CLIENTS` at startup and never resized — IoPool worker
-/// threads hold raw pointers (`as_mut_ptr().add(idx)`) into the Vec for
-/// the duration of each publish + `join_all` cycle. The two phases are
-/// serialised by `IoPool::join_all()` Acquire barriers so the apply
-/// thread never touches the same client a worker is touching.
+// Architectural note: the mio event loop runs on a dedicated std::thread.
+//
+// Per-tick lifecycle:
+//   1. EventLoop::tick — poll mio (up to 5 ms timeout).
+//   2. Accept new connections; classify ready clients into read/write sets.
+//   3. Read phase — IoPool::publish parse work → join_all. Workers run
+//      socket.read + parse_*_request on their own threads.
+//   4. Apply phase — single-threaded on this thread. Drain each client's
+//      parsed requests → apply_shard.dispatch_wire_request_sync → push
+//      GlueResponses into the client's output_queue.
+//   5. Write phase — IoPool::publish write work → join_all. Workers run
+//      serialize + socket.write.
+//   6. Cleanup closed clients; check shutdown flag.
+//
+// clients: Vec<Option<MioClient>> is pre-allocated to MAX_CONCURRENT_CLIENTS
+// at startup and never resized — IoPool worker threads hold raw pointers
+// (as_mut_ptr().add(idx)) into the Vec for the duration of each publish +
+// join_all cycle. The two phases are serialised by IoPool::join_all()
+// Acquire barriers so the apply thread never touches the same client a
+// worker is touching.
 
 /// Per-iteration response batch entry: `(worker_index, slot_idx,
 /// encoder)`. The worker is selected by the apply thread

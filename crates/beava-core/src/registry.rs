@@ -147,9 +147,9 @@ pub struct DerivationDescriptor {
     pub ops: Vec<OpNode>,
     /// `serde(default)`-able so clients can omit the schema field entirely.
     /// Server's `validate_expressions` runs schema-propagation from upstream
-    /// + chain (via `OpChain::compile` → `propagated_schemas`) and writes
-    /// the inferred schema back to the registry post-validation. This is
-    /// the single source of truth — Python SDK does not mirror it.
+    /// chain (via `OpChain::compile` → `propagated_schemas`) and writes the
+    /// inferred schema back to the registry post-validation. This is the
+    /// single source of truth — Python SDK does not mirror it.
     #[serde(default)]
     pub schema: DerivedSchema,
     #[serde(default)]

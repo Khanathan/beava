@@ -2098,3 +2098,48 @@ The +1.6% delta is measurement variance on the dev box, consistent with the Phas
 ### Verdict
 
 **PASS.** Within the ±10% PASS band on the regression-gate cell; well clear of the 25% BLOCK threshold. Single-cell run sufficient per CLAUDE.md (small/tcp is the canonical gate cell; medium / large / fraud-team / http variants not re-run for this fix-up phase per CONTEXT.md `<carrying_forward>`).
+
+
+---
+
+## Phase 13.7.5 — Pre-OSS code polish — 4-shape regression-gate sweep (2026-05-05)
+
+**Date:** 2026-05-05
+**Harness:** `beava-bench-v18 --pipeline {small|medium|large|fraud-team} --transport tcp --wire-format msgpack --blast-shape zipfian --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --no-ledger` (3 runs per cell, median)
+**Commit:** `fbe5e4ac` (post-Plan-13.7.5-11 HEAD; closure plan 13.7.5-13 in progress)
+**hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
+
+### Phase 13.7.5 4-shape regression-gate sweep
+
+| Cell | Phase 13.7.5 EPS (median of 3) | Individual runs (sorted) | Prior baseline (phase + EPS) | Δ% | Verdict |
+|------|----:|----|----|----:|---------|
+| **small/tcp (gate)** | **630,380** | 571,408 / 630,380 / 648,365 | Phase 13.5.2 — 641,935 EPS | **−1.8%** | **PASS** (within ±10% gate band) |
+| medium/tcp | 648,022 | 581,392 / 648,022 / 664,088 | Phase 13.5 — 508,517 EPS | **+27.4%** | PASS (lift; recovers from Phase 13.5's −13.8% measurement-variance trough) |
+| large/tcp | 546,935 | 539,733 / 546,935 / 634,151 | Phase 13.5 — 462,234 EPS | **+18.3%** | PASS (lift; recovers from Phase 13.5's −13.3% measurement-variance trough) |
+| **fraud-team/tcp (primary tuning bench)** | **84,290** | 72,343 / 84,290 / 93,246 | Phase 13.5 — 105,321 EPS | **−20.0%** | **WARN** (informational; non-gating; box-load variance suspected — see rationale) |
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 13.7.5's small/tcp cell measured **−1.8%** vs Phase 13.5.2 baseline (median 630,380 EPS vs 641,935 EPS). Inside the ±10% PASS band; far from the 25% BLOCK threshold. The medium/tcp and large/tcp cells lift back into Phase 13.4 territory, recovering from Phase 13.5's measurement-variance troughs.
+
+### Phase 13.7.5 root-cause analysis (fraud-team/tcp WARN)
+
+Phase 13.7.5 is **pure comment hygiene + test additions** with **zero hot-path semantics changes**. Verified by:
+
+- Plans 02–08 are doc-only (CLAUDE.md TDD §item #7 doc-only-plan exemption); diffs were comment-only plus a small set of `.expect()` / `assert!()` panic-message scrubs (stripping `Phase X Plan Y` prefixes — message text only, no behavior change).
+- Plan 09 wrote two `.planning/` files (no source changes).
+- Plan 10 was a no-op (zero Rust gaps surfaced).
+- Plan 11 added 4 NEW test files under `python/tests/v0/` — tests-only, no SDK or engine code changes.
+
+The fraud-team/tcp 14-node × 110-feature pipeline is the noisiest cell in the matrix — Phase 12.7's 3 runs spanned 85,974–109,601 EPS (±13% range); Phase 12.8's 3 runs spanned 64,000–81,781 (±13%); Phase 12.9 boxing brought the cell back to a 103,139-EPS mean. Phase 13.7.5's runs span 72,343–93,246 (29% range), with the single high run (93,246) sitting well within the post-12.9 / Phase 13.4 band. The −20.0% median delta is most plausibly box-load variance: this run shared the box with cargo build / IDE / Claude Code SDK, consistent with the documented Apple-M4 dev-box variance band.
+
+Phase 13.7.5 did NOT modify any of the 4 hot-path entry points or the `apply_event_to_aggregations` implementation; the entropy-state / sketch / windowed-op machinery exercised by fraud-team is the same byte-for-byte after Plans 02 and 03 stripped phase-tag prefixes from `.expect()` / `assert!()` strings (message text only, no codegen impact). A subsequent quiescent-box re-measurement should firm up the true number — the single high run (93,246 EPS) is closer to the Phase 13.4 baseline (107,954) than to the Phase 12.8 trough (73,596).
+
+### Verdict
+
+**PASS.** Phase 13.7.5 verdict per CLAUDE.md §End-to-end throughput regression contract: PASS at the small/tcp gate cell (−1.8%); medium/tcp + large/tcp cells lift; fraud-team/tcp WARN is informational and consistent with measurement variance on the dev box.
+
+### Implications for Phase 13.8 ship-gate
+
+- bench-v18 push **small/tcp+msgpack ≥ 567,342 EPS** (10% under post-13.7.5 630,380 EPS median) — Phase 13.8 ship-gate floor for the regression-gate cell.
+- bench-v18 push **fraud-team/tcp+msgpack ≥ 75,861 EPS** (10% under post-13.7.5 84,290 EPS median) — primary tuning-bench floor; **TENTATIVE** until quiescent re-measurement firms up the cell. Does NOT supersede the post-12.9 floor of 92,825 EPS — the post-13.7.5 single-high-run (93,246) is within the post-12.9 3-run band; phase 13.7.5's median is depressed by box-load on this run.

@@ -644,9 +644,7 @@ impl ApplyShard {
                 if op == OP_PUSH_SYNC {
                     GlueResponse::TcpError {
                         code: "op_not_implemented",
-                        message: format!(
-                            "opcode {op:#06x} (push_sync) is not yet implemented",
-                        ),
+                        message: format!("opcode {op:#06x} (push_sync) is not yet implemented",),
                         extras: serde_json::json!({"op": op}),
                     }
                 } else {
