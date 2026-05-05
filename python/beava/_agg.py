@@ -358,40 +358,50 @@ def age() -> AggDescriptor:
     return AggDescriptor(op="age")
 
 
-def has_seen(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "has_seen")
-    return AggDescriptor(op="has_seen", field=field)
+def has_seen(*, where: Any = None) -> AggDescriptor:
+    """Boolean ever-matched flag per docs/operators/recency/has_seen.md (no field arg)."""
+    return AggDescriptor(op="has_seen", where=_serialize_where(where))
 
 
-def time_since() -> AggDescriptor:
-    return AggDescriptor(op="time_since")
+def time_since(*, where: Any = None) -> AggDescriptor:
+    """Query-time elapsed ms since last matching event per docs/operators/recency/time_since.md."""
+    return AggDescriptor(op="time_since", where=_serialize_where(where))
 
 
-def time_since_last_n(*, n: int) -> AggDescriptor:
+def time_since_last_n(*, n: int, where: Any = None) -> AggDescriptor:
+    """Silence relative to nth-most-recent matching event per docs/operators/recency/time_since_last_n.md."""
     if n < 1:
         raise ValueError(f"time_since_last_n n must be >= 1; got {n}")
-    return AggDescriptor(op="time_since_last_n", extras={"n": n})
+    return AggDescriptor(
+        op="time_since_last_n",
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
-def streak(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "streak")
-    return AggDescriptor(op="streak", field=field)
+def streak(*, where: Any = None) -> AggDescriptor:
+    """Current consecutive matching count per docs/operators/recency/streak.md (no field arg)."""
+    return AggDescriptor(op="streak", where=_serialize_where(where))
 
 
-def max_streak(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "max_streak")
-    return AggDescriptor(op="max_streak", field=field)
+def max_streak(*, where: Any = None) -> AggDescriptor:
+    """All-time peak match streak per docs/operators/recency/max_streak.md (no field arg)."""
+    return AggDescriptor(op="max_streak", where=_serialize_where(where))
 
 
-def negative_streak(field: Any) -> AggDescriptor:
-    _enforce_field_str(field, "negative_streak")
-    return AggDescriptor(op="negative_streak", field=field)
+def negative_streak(*, where: Any = None) -> AggDescriptor:
+    """Current consecutive non-matching count per docs/operators/recency/negative_streak.md (no field arg)."""
+    return AggDescriptor(op="negative_streak", where=_serialize_where(where))
 
 
-def first_seen_in_window(field: Any, *, window: str) -> AggDescriptor:
-    _enforce_field_str(field, "first_seen_in_window")
+def first_seen_in_window(*, window: str, where: Any = None) -> AggDescriptor:
+    """Was the entity active within the past ``window``? per docs/operators/recency/first_seen_in_window.md."""
     _validate_window(window, "first_seen_in_window", required=True)
-    return AggDescriptor(op="first_seen_in_window", field=field, window=window)
+    return AggDescriptor(
+        op="first_seen_in_window",
+        window=window,
+        where=_serialize_where(where),
+    )
 
 
 # ── Decay (6 + ema alias) ──────────────────────────────────────────────────

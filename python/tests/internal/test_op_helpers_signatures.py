@@ -116,7 +116,8 @@ def test_age() -> None:
 
 
 def test_has_seen() -> None:
-    assert bv.has_seen("ip").to_dict()["op"] == "has_seen"
+    # Plan 13.5.1-07a: no field arg per docs/operators/recency/has_seen.md
+    assert bv.has_seen().to_dict()["op"] == "has_seen"
 
 
 def test_time_since() -> None:
@@ -128,20 +129,24 @@ def test_time_since_last_n() -> None:
 
 
 def test_streak() -> None:
-    assert bv.streak("flag").to_dict()["op"] == "streak"
+    # Plan 13.5.1-07a: no field arg
+    assert bv.streak().to_dict()["op"] == "streak"
 
 
 def test_max_streak() -> None:
-    assert bv.max_streak("flag").to_dict()["op"] == "max_streak"
+    # Plan 13.5.1-07a: no field arg
+    assert bv.max_streak().to_dict()["op"] == "max_streak"
 
 
 def test_negative_streak() -> None:
-    assert bv.negative_streak("flag").to_dict()["op"] == "negative_streak"
+    # Plan 13.5.1-07a: no field arg
+    assert bv.negative_streak().to_dict()["op"] == "negative_streak"
 
 
 def test_first_seen_in_window() -> None:
+    # Plan 13.5.1-07a: no field arg
     assert (
-        bv.first_seen_in_window("ip", window="1h").to_dict()["op"]
+        bv.first_seen_in_window(window="1h").to_dict()["op"]
         == "first_seen_in_window"
     )
 
