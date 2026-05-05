@@ -624,13 +624,16 @@ mod tests {
         h.update(10_800_000, true);
         // 1970-01-01 05:30:00 UTC → 5 * 3_600_000 + 30*60_000
         h.update(5 * 3_600_000 + 30 * 60_000, true);
-        let m = match h.query() {
-            Value::Map(m) => m,
-            _ => panic!(),
+        // Phase 13.5.2 (cbf873fa): query now returns Value::List(24×I64) indexed
+        // 0..23 by hour-of-day UTC.
+        let counts = match h.query() {
+            Value::List(c) => c,
+            other => panic!("expected List, got {:?}", other),
         };
-        assert_eq!(m.get("03"), Some(&Value::I64(2)));
-        assert_eq!(m.get("05"), Some(&Value::I64(1)));
-        assert_eq!(m.get("00"), Some(&Value::I64(0)));
+        assert_eq!(counts.len(), 24);
+        assert_eq!(counts[3], Value::I64(2));
+        assert_eq!(counts[5], Value::I64(1));
+        assert_eq!(counts[0], Value::I64(0));
     }
 
     #[test]

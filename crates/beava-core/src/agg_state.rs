@@ -1734,17 +1734,16 @@ mod tests {
         for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
             s.update(&row_f64("amount", v), 0, Some("amount"), true);
         }
-        let q = s.query();
-        match q {
-            Value::Str(s) => assert_eq!(s, "[10.0,20.0,30.0]"),
-            other => panic!("expected Str, got {:?}", other),
-        }
+        assert_eq!(
+            s.query(),
+            Value::List(vec![Value::F64(10.0), Value::F64(20.0), Value::F64(30.0)])
+        );
     }
 
     #[test]
     fn first_n_empty_returns_empty_array() {
         let s = FirstNState::new(3);
-        assert_eq!(s.query(), Value::Str("[]".into()));
+        assert_eq!(s.query(), Value::List(vec![]));
     }
 
     #[test]
@@ -1753,10 +1752,10 @@ mod tests {
         s.update(&row_f64("amount", 10.0), 0, Some("amount"), false);
         s.update(&row_f64("amount", 20.0), 1, Some("amount"), true);
         s.update(&row_f64("amount", 30.0), 2, Some("amount"), true);
-        match s.query() {
-            Value::Str(s) => assert_eq!(s, "[20.0,30.0]"),
-            other => panic!("expected Str, got {:?}", other),
-        }
+        assert_eq!(
+            s.query(),
+            Value::List(vec![Value::F64(20.0), Value::F64(30.0)])
+        );
     }
 
     #[test]
@@ -1765,15 +1764,15 @@ mod tests {
         for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
             s.update(&row_f64("amount", v), 0, Some("amount"), true);
         }
-        match s.query() {
-            Value::Str(s) => assert_eq!(s, "[30.0,40.0,50.0]"),
-            other => panic!("expected Str, got {:?}", other),
-        }
+        assert_eq!(
+            s.query(),
+            Value::List(vec![Value::F64(30.0), Value::F64(40.0), Value::F64(50.0)])
+        );
     }
 
     #[test]
     fn last_n_empty_returns_empty_array() {
-        assert_eq!(LastNState::new(3).query(), Value::Str("[]".into()));
+        assert_eq!(LastNState::new(3).query(), Value::List(vec![]));
     }
 
     // ── Lag (Phase 8) ────────────────────────────────────────────────────────
