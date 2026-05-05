@@ -229,35 +229,35 @@ def test_z_score() -> None:
 
 # ── Bounded buffers (7) ────────────────────────────────────────────────────
 def test_histogram() -> None:
+    # Plan 13.5.1-07a: histogram is lifetime-only with buckets: list[float]
     assert (
-        bv.histogram("amount", buckets=10, window="1h").to_dict()["op"] == "histogram"
+        bv.histogram("amount", buckets=[10.0, 50.0, 100.0]).to_dict()["op"]
+        == "histogram"
     )
 
 
 def test_hour_of_day_histogram() -> None:
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg
     assert (
-        bv.hour_of_day_histogram(window="7d").to_dict()["op"]
-        == "hour_of_day_histogram"
+        bv.hour_of_day_histogram().to_dict()["op"] == "hour_of_day_histogram"
     )
 
 
 def test_dow_hour_histogram() -> None:
-    assert (
-        bv.dow_hour_histogram(window="30d").to_dict()["op"] == "dow_hour_histogram"
-    )
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg
+    assert bv.dow_hour_histogram().to_dict()["op"] == "dow_hour_histogram"
 
 
 def test_seasonal_deviation() -> None:
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg
     assert (
-        bv.seasonal_deviation("amount", window="30d").to_dict()["op"]
-        == "seasonal_deviation"
+        bv.seasonal_deviation("amount").to_dict()["op"] == "seasonal_deviation"
     )
 
 
 def test_event_type_mix() -> None:
-    assert (
-        bv.event_type_mix("type", window="1h").to_dict()["op"] == "event_type_mix"
-    )
+    # Plan 13.5.1-07a: lifetime-only — no window kwarg; categories/max_categories soft-defaulted
+    assert bv.event_type_mix("type").to_dict()["op"] == "event_type_mix"
 
 
 def test_most_recent_n() -> None:
@@ -265,7 +265,11 @@ def test_most_recent_n() -> None:
 
 
 def test_reservoir_sample() -> None:
-    assert bv.reservoir_sample("amount", k=100).to_dict()["op"] == "reservoir_sample"
+    # Plan 13.5.1-07a: kwarg renamed k → samples per docs/operators/buffer-geo/reservoir_sample.md
+    assert (
+        bv.reservoir_sample("amount", samples=100).to_dict()["op"]
+        == "reservoir_sample"
+    )
 
 
 # ── Geo (4) ────────────────────────────────────────────────────────────────
