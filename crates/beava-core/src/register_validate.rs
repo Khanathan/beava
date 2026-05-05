@@ -1318,7 +1318,13 @@ fn validate_derivation_struct(
     d: &crate::registry::DerivationDescriptor,
     errors: &mut Vec<ValidationError>,
 ) {
-    if d.schema.fields.is_empty() {
+    // Phase 13.5.1 Plan 07b: clients may omit `schema.fields` entirely (the
+    // descriptor field is `serde(default)`-able). The empty-fields check
+    // only fires when the derivation ALSO has no ops — i.e. no chain to
+    // infer from at the `validate_expressions` (Rule 10) pass. With ops
+    // present, schema-propagation runs from upstream + chain and writes
+    // the resulting fields back to the registry post-validation.
+    if d.schema.fields.is_empty() && d.ops.is_empty() {
         errors.push(ValidationError {
             code: ErrorCode::DerivationSchemaEmpty,
             path: path_field(i, "schema.fields"),
