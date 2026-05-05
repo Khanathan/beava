@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v0.0
 milestone_name: milestone
 status: "Phase 13.5.2 EXECUTED 2026-05-04 (PASS). Decorator-only derivation surface + runtime chain-op execution. 6 plans / 4 waves + discovered scope expansion landed in-session. 4 user-locked decisions D-01..D-04: D-01 App.register rejects EventDerivation instances with sharp 'wrap in @bv.event' hint; D-02 both decorator resolvers (@bv.table + @bv.event def) reject EventDerivation-instance annotations + closure-walk parity in _events.py + _is_bv_event_function marker handshake; D-03 multi-sibling N/A by construction; D-04 mechanical rewrite of 5 test_lit tests + ADR-003 examples to @bv.event def form. Discovered scope expansion (per user direction Option B): runtime chain-op execution wired into agg_apply.rs::apply_event_to_aggregations via existing OpChain::apply (which Phase 4 already implemented but never called); register_validate.rs now compiles chain prefix when GroupBy is present; _app.py SDK chain-flatten sets root EventSource as wire upstream for @bv.event def-rooted @bv.table consumers; _col.py serializes Python &/| as expr-grammar and/or. Throughput regression-gate small/tcp PASS at +1.6% (median 641,935 EPS vs 631,610 baseline; within ±10% band). Workspace gates GREEN: cargo clippy --workspace --all-targets --all-features -D warnings, cargo fmt --all --check, beava-core lib tests 618/618 + 1 ignored, mypy --strict python/beava 0 errors. v0 acceptance: 73-74/89 → 81/89 (+7-8: 5 test_lit GREEN end-to-end + 3 transport_equivalence reset_equivalent re-stabilized). 8 remaining failures all pre-existing flaky *_per_user_high_volume per resume doc. SUMMARY: .planning/phases/13.5.2-decorator-only-derivations/13.5.2-SUMMARY.md. VERIFICATION: .planning/phases/13.5.2-decorator-only-derivations/13.5.2-VERIFICATION.md. v0 OSS critical path: /gsd-execute-phase 13.7.5/13.7.6/13.8 → ship."
-last_updated: "2026-05-04T23:30:00.000Z"
+last_updated: "2026-05-05T11:45:38.361Z"
 progress:
-  total_phases: 46
-  completed_phases: 23
-  total_plans: 261
-  completed_plans: 175
-  percent: 67
+  total_phases: 51
+  completed_phases: 25
+  total_plans: 284
+  completed_plans: 208
+  percent: 73
 ---
 
 <!-- Phase 13.4 OFFICIALLY CLOSED 2026-05-04 (PASS-WITH-WARN). Engine wire-spec conformance per Phase 13.0 design contract. 10 plans across 5 waves (executed via parallel gsd-executor agents in waves 1+2; wave 1.5 cleanup folded in 7 op-rename lockstep tests + 1 clippy gap). 41 commits on v2/greenfield from f229755 → 0af054a. Delivered: ADR-002 op renames (avg→mean / variance→var / stddev→std / count_distinct→n_unique / quantile); flat-dict GET response (no `result` envelope); OP_BATCH_GET (0x0024) opcode + dispatch; verb-style HTTP routes (POST /ping/push/push-sync ADDED — legacy paths retained per A-07 for back-compat); D-01 force=True + dry_run=True with categorized-diff payload; D-02 Persistence::Memory in-RAM backend (snapshot no-op); D-03 OP_RESET (0x0040) gated on test_mode (3-ways-settable: env BEAVA_TEST_MODE=1 / Server::new Config / bv.App SDK kwarg); D-04 surgical-permit on phase12_7_no_table_surface FORBIDDEN_PATTERNS (top-level OpNode::Table removed; per-variant TableUpsert/TableDelete stay killed); ADR-003 global-aggregation sentinel routing (5-LOC parse_entity_key short-circuit; absence-of-special-case-rejection design). +60 new tests across 13.4-* test files; +14 lockstep test updates for envelope removal. Microbench: apply_path/cold_key/14_aggs -32.7% (substantially faster vs Phase 19.2). Throughput regression-gate (small/tcp): -0.4% PASS. **HTTP-transport regression**: small/medium/large/http -24% to -32% — flagged for v0.0.x investigation; non-gating per CLAUDE.md. fraud-team/http +35.5% PASS. Workspace: clippy/fmt clean; 1 pre-existing flake (phase2_5_smoke::criterion_6_pipelined_registers — Phase 12.6-06 origin, not 13.4). 5 deferred items surfaced for v0.0.x or 13.5+: OP_BATCH_GET wire-spec doc cohesion ({table, entity_id} vs {table, key}); OP_BATCH_GET DoS cap; sc6_aggregation_on_table_rejected (D-04 surfaced); parallel-flake infrastructure; HTTP-transport regression. SUMMARY: .planning/phases/13.4-engine-prep-wire-spec/13.4-SUMMARY.md. VERIFICATION: .planning/phases/13.4-engine-prep-wire-spec/13.4-VERIFICATION.md (verdict PASS-WITH-WARN). 13.5 Plan 11 acceptance tests + 13.6 Plan 07 conformance harness UNBLOCKED. -->
@@ -327,6 +327,14 @@ Post-architectural-pivot worktree fates. Plan 12.6-09 audits and records each br
 ## Blockers
 
 None active. Quota-wall blockers from the 2026-04-24 06:12 session have reset.
+
+## Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260505-bn7 | workspace test determinism (Phase 13.5.3) — Path A architectural fix: plumb 5 BEAVA_* env-var families through `ServerV18Config`, `tempfile::tempdir()` swap with `TempDir` RAII handles in `TestServer`, architectural tripwire `phase13_5_3_no_env_var_pokes_in_tests` | 2026-05-05 | 4531294a | [260505-bn7-workspace-test-determinism-phase-13-5-3](./quick/260505-bn7-workspace-test-determinism-phase-13-5-3/) |
+
+**Notes (260505-bn7):** Pulled forward from Phase 999.1 backlog. 5 commits across 3 tasks (red→green per CLAUDE.md TDD §item #1 / Task 3 RED commit closed by Task 2 GREEN per §item #4 architectural-invariant pattern). Targeted Phase 13.5.3 tests 31/31 GREEN across 9 binaries. Architectural tripwire enforces `set_var(` ban in `crates/beava-server/tests/`. Production `main.rs` operator env-var interface preserved (`ServerV18Config::from_env()`). **Acceptance gate NOT achieved on full workspace 5/5 GREEN** — pre-existing flake classes outside Phase 13.5.3's env-var scope persist: `phase2_5_smoke::criterion_6_pipelined_registers`, `phase5_smoke`, `phase4_smoke`, `phase7_5_test_server_reproducer`, `phase7_restart_cycle`, `phase18_05_continuous_workers_test` (all reproducible on parent `f8dcd662` per executor's bisect — these are non-env-var process-state pollution / TestServer setup races, separate smell from Phase 13.5.3's class). **Pytest v0 5/5 GREEN gate also NOT achieved** — `python/tests/v0/test_velocity.py::test_trend_per_user_high_volume` still flakes (89/88/88/89/89; trend-slope determinism under ms-clustered processing time, separate smell). Plan deviations: tempfile dep promoted from dev-only to feature-gated; `bind_with_state_and_overrides` introduced (preserves TestServer's WAL fsync interval control vs `bind_with_config`'s production defaults); 2× `#[allow(clippy::too_many_arguments)]` on internal helpers (consolidating into a config struct = future work). SUMMARY: `.planning/quick/260505-bn7-workspace-test-determinism-phase-13-5-3/260505-bn7-SUMMARY.md`. **Followup**: kill the pre-existing TestServer setup-race flake class (separate phase) before v0.0.0 GA tag — current state means workspace gate cannot reach 5/5 GREEN even though env-var class is now closed by tripwire.
 
 ## Historical session notes
 
