@@ -83,7 +83,6 @@ class MockApp:
             "registry_version": len(self._registered),
         }
 
-    # Helpers for tests to set up canned responses.
     def _set_get_response(
         self, table: str, key: Any, response: dict[str, Any]
     ) -> None:

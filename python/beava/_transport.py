@@ -1,17 +1,19 @@
 """Transport layer for the Beava Python SDK.
 
-Provides:
-  - :class:`Transport` protocol (abstract interface)
-  - :class:`HttpTransport` — ``httpx.Client`` over HTTP/HTTPS
-  - :class:`TcpTransport` — stdlib ``socket`` with the Phase 2.5 frame codec
-  - :class:`EmbedTransport` — wraps TcpTransport + a subprocess handle
-  - :func:`parse_url_to_transport` — URL scheme dispatch + embed-mode entry point
+- :class:`Transport` — abstract interface implemented by each backend.
+- :class:`HttpTransport` — ``httpx.Client`` over HTTP/HTTPS.
+- :class:`TcpTransport` — stdlib ``socket`` with the binary frame codec.
+- :class:`EmbedTransport` — wraps :class:`TcpTransport` plus a subprocess
+  handle for embed mode.
+- :func:`make_transport` / :func:`parse_url_to_transport` — URL-scheme
+  dispatch.
 
 URL dispatch:
-  ``http://...`` or ``https://...``  → :class:`HttpTransport`
-  ``tcp://...``                       → :class:`TcpTransport`
-  ``None``                            → :class:`EmbedTransport` (spawn subprocess)
-  anything else                       → :exc:`ValueError`
+
+- ``http://...`` / ``https://...`` → :class:`HttpTransport`
+- ``tcp://...`` → :class:`TcpTransport`
+- ``None`` → :class:`EmbedTransport` (spawn local binary)
+- anything else → :exc:`ValueError`
 """
 
 from __future__ import annotations
@@ -45,25 +47,14 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-# ─── Transport protocol (structural typing) ──────────────────────────────────
-
-
 class Transport:
-    """Abstract transport interface (duck-typed — use Protocol for strict checks).
+    """Abstract transport interface (duck-typed).
 
-    Both :class:`HttpTransport` and :class:`TcpTransport` implement:
-      - ``send_register(payload_json: bytes) -> dict``
-      - ``send_ping() -> dict``
-      - ``close() -> None``
-      - context manager (``__enter__`` / ``__exit__``)
-
-    Phase 13.5 Plan 11: extended with the App-facing methods (``send_push``,
-    ``send_get``, ``send_batch_get``, ``send_reset``) so ``App`` can call them
-    without ``# type: ignore[attr-defined]``. The base class raises
-    ``NotImplementedError`` for backends that don't yet wire the underlying
-    op; subclasses override. The actual wire payload is constructed by the
-    transport (it owns the wire-format choice — JSON for HTTP, msgpack for
-    TCP/Embed).
+    Concrete backends implement the seven ``send_*`` methods plus
+    :meth:`close` and the context-manager protocol. The transport owns the
+    wire-format choice (JSON over HTTP, default JSON over TCP / embed); the
+    :class:`App` only constructs Python-shaped payloads. Methods that a
+    backend doesn't support raise ``NotImplementedError`` from this base.
     """
 
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
@@ -117,9 +108,6 @@ class Transport:
         self.close()
 
 
-# ─── HTTP transport ──────────────────────────────────────────────────────────
-
-
 class HttpTransport(Transport):
     """Send register requests via HTTP/JSON using ``httpx.Client``.
 
@@ -136,16 +124,18 @@ class HttpTransport(Transport):
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
 
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
-        """POST /register with JSON payload.
+        """POST ``/register`` with a JSON payload.
 
         Args:
-            payload_json: UTF-8 JSON bytes matching the Phase 2 wire contract.
+            payload_json: UTF-8 JSON bytes matching the wire contract.
 
         Returns:
-            Parsed success body dict (``status='ok'``, ``registry_version=N``, …).
+            Parsed success body dict (``status='ok'``,
+            ``registry_version=N``, ...).
 
         Raises:
-            RegistrationError: Server returned 4xx or 5xx with a JSON error body.
+            RegistrationError: Server returned 4xx or 5xx with a JSON
+                error body.
         """
         r = self._client.post(
             "/register",
@@ -169,16 +159,12 @@ class HttpTransport(Transport):
         event_name: str,
         fields: dict[str, Any],
     ) -> dict[str, Any]:
-        """POST /push with verb-style body ``{event, data}``.
+        """POST ``/push`` with verb-style body ``{event, data}``.
 
-        Targets the post-Phase-13.4 verb-style route — NOT the legacy
-        path-encoded ``/push/{event_name}`` form. Body shape matches the
-        live server parser at
-        ``crates/beava-runtime-core/src/http_listener.rs::parse_verb_push``
-        which expects ``{"event": "<name>", "data": {<fields>}}``. The
-        docs at ``docs/http-api.md:176`` say ``{event_name, fields}`` but
-        the impl never migrated; SDK matches the impl (a docs erratum will
-        be filed in v0.0.x — Phase 13.4 missed-rename).
+        The wire body shape is ``{"event": <name>, "data": {<fields>}}`` —
+        matches the server parser. (The HTTP-API doc currently says
+        ``{event_name, fields}``; the SDK follows the impl, the doc is
+        scheduled for an erratum.)
 
         Returns:
             Parsed success body dict (``{"ack_lsn": int, ...}``).
@@ -212,14 +198,11 @@ class HttpTransport(Transport):
         key: str | list[Any],
         features: list[str] | None = None,
     ) -> dict[str, Any]:
-        """POST /get with verb-style body ``{table, key, features?}``.
+        """POST ``/get`` with verb-style body ``{table, key, features?}``.
 
-        Per Phase 13.4.1 wire-spec lockdown, the response is a row-shape
-        flat dict (cold-start = ``{}``). Features filter (D-03 USER-LOCKED)
-        is included when non-None and omitted when None (full row).
-
-        Returns:
-            Parsed row-shape flat dict (``{}`` on cold-start).
+        Returns a row-shape flat dict (cold-start = ``{}``). The
+        ``features`` filter is included on the wire when non-None and
+        omitted otherwise (full row).
 
         Raises:
             RegistrationError: Server returned non-2xx with a JSON error body.
@@ -252,17 +235,16 @@ class HttpTransport(Transport):
             | tuple[str, str | list[Any], list[str] | None]
         ],
     ) -> list[dict[str, Any]]:
-        """POST /batch_get with verb-style body ``{requests:[{table,key,features?}, ...]}``.
+        """POST ``/batch_get`` with body ``{requests:[{table,key,features?}, ...]}``.
 
-        Phase 13.4.1 returns ``body["results"]`` as a list of FLAT row dicts
-        (no wrapping envelope), so this method returns ``body["results"]``
-        verbatim. Per-entry ``features`` filter is supported via the
-        3-tuple form (D-03 USER-LOCKED).
+        The server returns ``body["results"]`` as a list of flat row dicts
+        (no wrapping envelope); this method returns that list verbatim.
+        Per-entry ``features`` filter is supported via the 3-tuple form.
 
         Args:
             requests: list of per-entry tuples — either ``(table, key)`` or
-                ``(table, key, features)``. ``features`` may be None to
-                request the full row.
+                ``(table, key, features)``. ``features=None`` requests the
+                full row.
 
         Returns:
             list of flat row dicts in request order.
@@ -309,14 +291,15 @@ class HttpTransport(Transport):
         )
 
     def send_reset(self) -> None:
-        """POST /reset (test_mode-gated per Phase 13.4 D-03).
+        """POST ``/reset``. Test-mode-gated server-side.
 
         On non-test-mode servers the engine returns 403 ``reset_disabled``;
-        this method surfaces that as ``RegistrationError(code="reset_disabled")``.
+        this method surfaces that as
+        ``RegistrationError(code="reset_disabled")``.
 
         Raises:
             RegistrationError: Server returned non-200; in particular,
-                ``code="reset_disabled"`` if the server is not in test_mode.
+                ``code="reset_disabled"`` if the server is not in test mode.
         """
         r = self._client.post(
             "/reset",
@@ -338,32 +321,27 @@ class HttpTransport(Transport):
         )
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
-        """Not implemented for HTTP transport.
+        """Always raises — HTTP has no ``/ping`` endpoint.
 
-        HTTP has no /ping endpoint in v0.  Use ``tcp://`` transport for ping.
+        Use ``tcp://`` transport for liveness checks.
 
         Raises:
             NotImplementedError: Always.
         """
         raise NotImplementedError(
-            "HTTP transport has no /ping endpoint in v0; "
-            "use tcp:// transport for ping"
+            "HTTP transport has no /ping endpoint; use tcp:// transport for ping"
         )
 
     def _http_get_single(self, feature: str, key: str) -> object:
-        """Plan 12-09: GET /get/{feature}/{key} → returns the unwrapped value.
-
-        HTTP /get is JSON-only per locked decision D-D — regardless of whether
-        the TCP transport defaults to msgpack on the read path, the HTTP path
-        always speaks JSON.
+        """``GET /get/{feature}/{key}`` → unwrapped feature value.
 
         Args:
-            feature: Feature name (e.g. "cnt").
-            key: Entity key value (e.g. "alice"; URL-encoded if needed).
+            feature: Feature name (e.g. ``"cnt"``).
+            key: Entity key value (e.g. ``"alice"``; URL-encoded if needed).
 
         Returns:
-            The unwrapped feature value (i.e. the contents of the response's
-            ``"value"`` field). Raises if the server returned a non-2xx.
+            The unwrapped feature value (contents of the response's
+            ``"value"`` field). Raises if the server returned non-2xx.
         """
         r = self._client.get(f"/get/{feature}/{key}")
         r.raise_for_status()
@@ -386,19 +364,17 @@ class HttpTransport(Transport):
         self.close()
 
 
-# ─── TCP transport ───────────────────────────────────────────────────────────
-
-
 class TcpTransport(Transport):
-    """Send register/ping requests over the Phase 2.5 binary-framed TCP protocol.
+    """Send requests over the binary-framed TCP protocol.
 
-    Connection is lazy — opened on first use, reused for the lifetime of the
-    transport.  Strict-FIFO: one in-flight request per connection (v0).
+    Connection is lazy — opened on first use, reused for the lifetime of
+    the transport. Strict-FIFO: one in-flight request per connection.
 
     Args:
         host: Server hostname or IP address.
         port: Server TCP port.
-        max_frame_bytes: Maximum frame size (must match server config; default 4 MiB).
+        max_frame_bytes: Maximum frame size (must match server config;
+            default 4 MiB).
         timeout: Socket connect/recv timeout in seconds.
     """
 
@@ -425,16 +401,16 @@ class TcpTransport(Transport):
         return self._socket
 
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
-        """Send an OP_REGISTER frame and return the parsed response dict.
+        """Send an ``OP_REGISTER`` frame; return the parsed response dict.
 
         Args:
-            payload_json: UTF-8 JSON bytes matching the Phase 2.5 wire contract.
+            payload_json: UTF-8 JSON bytes matching the wire contract.
 
         Returns:
             Parsed success body dict.
 
         Raises:
-            RegistrationError: Server responded with OP_ERROR_RESPONSE.
+            RegistrationError: Server responded with ``OP_ERROR_RESPONSE``.
         """
         sock = self._ensure_connected()
         sock.sendall(encode_frame(OP_REGISTER, CT_JSON, payload_json))
@@ -447,14 +423,14 @@ class TcpTransport(Transport):
         event_name: str,
         fields: dict[str, Any],
     ) -> dict[str, Any]:
-        """Send an OP_PUSH frame with the given event name and body fields.
+        """Send an ``OP_PUSH`` frame with the given event and fields.
 
-        Encodes the envelope ``{"event": event_name, "body": fields}`` as JSON
-        and sends it as an OP_PUSH frame. Default JSON encoding for v0
-        compatibility with the server's CT_JSON path.
+        The wire envelope is ``{"event": event_name, "body": fields}``,
+        JSON-encoded. v0 defaults to JSON on this path (the server's
+        msgpack path is reserved for the read fast-path only).
 
         Returns:
-            Parsed JSON ACK dict from the server (e.g. ``{"ack_lsn": 42}``).
+            Parsed JSON ACK dict (e.g. ``{"ack_lsn": 42}``).
         """
         envelope = json.dumps(
             {"event": event_name, "body": fields}, ensure_ascii=False
@@ -472,21 +448,17 @@ class TcpTransport(Transport):
         key: str | list[Any],
         features: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Send OP_GET (0x0020) frame; expect OP_GET_RESPONSE (0x0023).
+        """Send ``OP_GET`` (0x0020); expect ``OP_GET_RESPONSE`` (0x0023).
 
-        D-02 USER-LOCKED: JSON default on the read path (matches send_push).
-        D-03 USER-LOCKED: ``features`` is included in the body when non-None
-        and omitted when None (full row).
-
-        Wire body (verb-style, Phase 13.4.1 contract):
-            ``{"table": ..., "key": ..., "features"?: [...]}``
+        Wire body: ``{"table": ..., "key": ..., "features"?: [...]}``.
+        ``features`` is included only when non-None (full row otherwise).
 
         Returns:
             Parsed row-shape flat dict (cold-start = ``{}``).
 
         Raises:
-            RegistrationError: Server returned OP_ERROR_RESPONSE or an
-                unexpected response opcode.
+            RegistrationError: Server returned ``OP_ERROR_RESPONSE`` or
+                an unexpected response opcode.
         """
         payload: dict[str, Any] = {"table": table, "key": key}
         if features is not None:
@@ -518,23 +490,18 @@ class TcpTransport(Transport):
             | tuple[str, str | list[Any], list[str] | None]
         ],
     ) -> list[dict[str, Any]]:
-        """Send OP_BATCH_GET (0x0024) frame; expect OP_GET_RESPONSE (0x0023).
+        """Send ``OP_BATCH_GET`` (0x0024); expect ``OP_GET_RESPONSE`` (0x0023).
 
-        D-02 USER-LOCKED: JSON default. D-03 USER-LOCKED: per-entry features
-        filter via 3-tuple form is supported and included on the wire when
-        non-None.
-
-        Wire body (verb-style, Phase 13.4.1 contract):
-            ``{"requests": [{"table", "key", "features"?}, ...]}``
-        Wire response: ``{"results": [<flat row>, ...]}`` — flat-row contract
-        per Phase 13.4.1; this method returns ``body["results"]`` verbatim.
+        Wire body: ``{"requests": [{"table", "key", "features"?}, ...]}``;
+        wire response: ``{"results": [<flat row>, ...]}``. Per-entry
+        ``features`` filter is supported via the 3-tuple request form.
 
         Returns:
             list of flat row dicts in request order.
 
         Raises:
-            RegistrationError: Server returned OP_ERROR_RESPONSE or an
-                unexpected response shape.
+            RegistrationError: Server returned ``OP_ERROR_RESPONSE`` or
+                an unexpected response shape.
             TypeError: A request entry is neither a 2-tuple nor a 3-tuple.
         """
         wire_requests: list[dict[str, Any]] = []
@@ -582,27 +549,24 @@ class TcpTransport(Transport):
         return results
 
     def send_reset(self) -> None:
-        """Send OP_RESET (0x0040) frame; gated on server-side test_mode (Phase 13.4 D-03).
+        """Send ``OP_RESET`` (0x0040). Test-mode-gated server-side.
 
-        Successful reset: server returns OP_GET_RESPONSE (0x0023) — the
-        generic JSON success frame — with body
-        ``{"reset": true, "registry_version": N}`` (per
-        ``crates/beava-server/src/server.rs:2338-2344``). The plan-document /
-        PATTERNS.md initially predicted OP_RESET-on-success but the actual
-        server uses OP_GET_RESPONSE; SDK matches the live contract.
+        Successful reset: the server replies with ``OP_GET_RESPONSE``
+        (0x0023) — the generic JSON success frame — carrying
+        ``{"reset": true, "registry_version": N}``. (The opcode is reused
+        rather than introducing a dedicated ``OP_RESET_RESPONSE``.)
 
-        Disabled (non-test_mode): server returns OP_ERROR_RESPONSE with
-        ``code="reset_disabled_in_production"``.
+        Disabled (non-test mode): the server replies with
+        ``OP_ERROR_RESPONSE`` and ``code="reset_disabled_in_production"``.
 
         Raises:
-            RegistrationError: OP_RESET denied (non-test_mode) or
+            RegistrationError: ``OP_RESET`` denied (non-test mode) or
                 unexpected response opcode.
         """
         sock = self._ensure_connected()
         sock.sendall(encode_frame(OP_RESET, CT_JSON, b"{}"))
         frame = read_frame(sock, self.max_frame_bytes)
         if frame.op == OP_GET_RESPONSE:
-            # Success path — body is `{"reset": true, "registry_version": N}`.
             return
         try:
             err_body = json.loads(frame.payload.decode("utf-8"))
@@ -617,7 +581,7 @@ class TcpTransport(Transport):
         )
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
-        """Send an OP_PING frame and return the parsed response dict.
+        """Send an ``OP_PING`` frame; return the parsed response dict.
 
         Returns:
             Dict with ``server_version`` and ``registry_version`` keys.
@@ -643,15 +607,15 @@ class TcpTransport(Transport):
         *,
         wire_format: str = "msgpack",
     ) -> object:
-        """Plan 12-09: send OP_GET frame and return the unwrapped feature value.
+        """Send a single ``OP_GET`` frame; return the unwrapped feature value.
 
-        Defaults to **msgpack** on the wire (the production read fast-path per
-        locked decision D-A/D-B). Pass ``wire_format="json"`` to force the
-        legacy CT_JSON path (regression coverage / debugging).
+        Defaults to msgpack on the wire (the production read fast-path).
+        Pass ``wire_format="json"`` to force the JSON path (regression
+        coverage / debugging).
 
         Args:
-            feature: Feature name (e.g. "cnt").
-            key: Entity key value (e.g. "alice").
+            feature: Feature name (e.g. ``"cnt"``).
+            key: Entity key value (e.g. ``"alice"``).
             wire_format: ``"msgpack"`` (default) or ``"json"``.
 
         Returns:
@@ -659,8 +623,10 @@ class TcpTransport(Transport):
 
         Raises:
             ValueError: ``wire_format`` is not ``"msgpack"`` or ``"json"``.
-            ImportError: ``wire_format="msgpack"`` but ``msgpack`` not installed.
-            RegistrationError: Server returned OP_ERROR_RESPONSE or unexpected op.
+            ImportError: ``wire_format="msgpack"`` but ``msgpack`` package
+                is not installed.
+            RegistrationError: Server returned ``OP_ERROR_RESPONSE`` or an
+                unexpected op.
         """
         body_dict = {"feature": feature, "key": key}
         if wire_format == "msgpack":
@@ -685,7 +651,6 @@ class TcpTransport(Transport):
         sock.sendall(encode_frame(OP_GET, ct, body))
         frame = read_frame(sock, self.max_frame_bytes)
         if frame.op != OP_GET_RESPONSE:
-            # Could be OP_ERROR_RESPONSE (0xFFFF) — surface server's reason.
             try:
                 err_body = json.loads(frame.payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -698,8 +663,8 @@ class TcpTransport(Transport):
                 ),
             )
 
-        # Decode response per its content_type byte (server uses same-format-as-
-        # request; if we sent msgpack, response is msgpack).
+        # The server replies in the same content-type as the request: a
+        # msgpack request gets a msgpack response, a JSON request gets JSON.
         if frame.ct == CT_MSGPACK:
             try:
                 import msgpack
@@ -739,18 +704,16 @@ class TcpTransport(Transport):
         self.close()
 
 
-# ─── Embed transport ─────────────────────────────────────────────────────────
-
-
 class EmbedTransport(Transport):
     """Wraps a :class:`TcpTransport` and a subprocess handle for embed mode.
 
-    Created by :func:`parse_url_to_transport` when ``url=None``.
-    ``close()`` terminates the subprocess after closing the socket.
+    Created by :func:`parse_url_to_transport` / :func:`make_transport` when
+    ``url=None``. ``close()`` terminates the subprocess after closing the
+    socket.
 
     Args:
-        tcp: The TcpTransport connected to the embedded server.
-        proc: The subprocess.Popen handle for the embedded server.
+        tcp: The :class:`TcpTransport` connected to the embedded server.
+        proc: The :class:`subprocess.Popen` handle for the embedded server.
     """
 
     def __init__(
@@ -762,8 +725,8 @@ class EmbedTransport(Transport):
     ) -> None:
         self._tcp = tcp
         self._proc = proc
-        # Phase 13.5 Plan 02 D-05: expose the env dict that was passed to the
-        # spawned binary so tests can assert BEAVA_TEST_MODE=1 propagation.
+        # The env dict passed to the spawned binary is exposed so tests
+        # can assert ``BEAVA_TEST_MODE=1`` propagation.
         self._spawn_env: dict[str, str] = spawn_env or {}
 
     def send_register(self, payload_json: bytes) -> dict:  # type: ignore[type-arg]
@@ -785,7 +748,6 @@ class EmbedTransport(Transport):
         key: str | list[Any],
         features: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Delegate to the embedded TcpTransport (D-03 features filter)."""
         return self._tcp.send_get(table=table, key=key, features=features)
 
     def send_batch_get(
@@ -796,11 +758,9 @@ class EmbedTransport(Transport):
             | tuple[str, str | list[Any], list[str] | None]
         ],
     ) -> list[dict[str, Any]]:
-        """Delegate to the embedded TcpTransport (D-03 per-entry features filter)."""
         return self._tcp.send_batch_get(requests=requests)
 
     def send_reset(self) -> None:
-        """Delegate to the embedded TcpTransport (test_mode-gated)."""
         self._tcp.send_reset()
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
@@ -813,7 +773,6 @@ class EmbedTransport(Transport):
         *,
         wire_format: str = "msgpack",
     ) -> object:
-        """Delegate to the embedded TcpTransport (Plan 12-09; private per D-04)."""
         return self._tcp._tcp_get_single(feature, key, wire_format=wire_format)
 
     def close(self) -> None:
@@ -835,9 +794,6 @@ class EmbedTransport(Transport):
         self.close()
 
 
-# ─── URL dispatch ────────────────────────────────────────────────────────────
-
-
 def parse_url_to_transport(url: str | None) -> Transport:
     """Return the appropriate transport for the given URL or None (embed mode).
 
@@ -856,7 +812,6 @@ def parse_url_to_transport(url: str | None) -> Transport:
         BinaryNotFoundError: Embed mode but binary cannot be located.
     """
     if url is None:
-        # Embed mode: spawn local binary, connect via TCP.
         from beava._embed import spawn_embedded_server
 
         proc, _http_url, tcp_url, env = spawn_embedded_server()
@@ -881,27 +836,24 @@ def parse_url_to_transport(url: str | None) -> Transport:
     )
 
 
-# ─── Phase 13.5 Plan 02: make_transport factory ─────────────────────────────
-
-
 def make_transport(
     url: str | None = None,
     *,
     timeout: float = 30.0,
     test_mode: bool = False,
 ) -> Transport:
-    """Phase 13.5 Plan 02 factory — URL-scheme dispatch + test_mode propagation.
+    """URL-scheme dispatch with ``test_mode`` propagation.
 
-    Routes ``url=None`` → embed-mode subprocess spawn (with optional
-    BEAVA_TEST_MODE=1 env var per D-05), ``http(s)://`` → HttpTransport,
-    ``tcp://`` → TcpTransport.
+    Routes ``url=None`` to an embed-mode subprocess spawn (with optional
+    ``BEAVA_TEST_MODE=1`` env var); ``http(s)://`` to :class:`HttpTransport`;
+    ``tcp://`` to :class:`TcpTransport`.
 
     Args:
-        url: Server URL or None for embed mode.
+        url: Server URL or ``None`` for embed mode.
         timeout: HTTP / socket timeout in seconds.
-        test_mode: When True + url=None, spawns the binary with
-            BEAVA_TEST_MODE=1. Has no effect in network mode (caller is
-            expected to emit a UserWarning before calling).
+        test_mode: When True + ``url=None``, spawns the binary with
+            ``BEAVA_TEST_MODE=1``. Has no effect in network mode (the
+            caller is expected to emit a ``UserWarning`` before calling).
 
     Returns:
         A concrete :class:`Transport` instance.

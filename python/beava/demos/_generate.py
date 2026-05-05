@@ -1,17 +1,17 @@
-"""Deterministic dataset generator for ``bv.demo()`` — Phase 13.5 Plan 06.
+"""Deterministic dataset generator for ``bv.demo()``.
 
 Run via::
 
     python -m beava.demos._generate
 
-Generates 3 datasets (``adtech`` / ``fraud`` / ``ecommerce``). Total install
-impact ~3 MB per D-02. Uses stdlib ``random`` only (no numpy dep) seeded
-deterministically per dataset so re-running produces byte-identical output.
+Generates three datasets (``adtech`` / ``fraud`` / ``ecommerce``) totalling
+~3 MB on disk. Uses only stdlib ``random``, seeded deterministically per
+dataset so re-running produces byte-identical output.
 
-Each dataset is sized at ~10K events split across 2-3 event types and
-designed to exercise sketch / decay / velocity / windowed / geo ops
-meaningfully — not just ``bv.count``. See per-generator docstrings for the
-op-family coverage map.
+Each dataset is ~10K events across 2-3 event types, designed to exercise
+sketch / decay / velocity / windowed / geo ops meaningfully (not just
+``bv.count``). See each generator's docstring for the op-family coverage
+map.
 """
 from __future__ import annotations
 

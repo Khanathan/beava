@@ -1,24 +1,17 @@
-"""bv.App — Phase 13.5 v0 client core.
+"""``bv.App`` — synchronous client.
 
-Public client class implementing the 7 wire-mapped lifecycle methods documented
-in docs/sdk-api/python.md § App class:
+Implements the seven wire-mapped lifecycle methods (``register`` / ``push``
+/ ``get`` / ``batch_get`` / ``reset`` / ``ping`` / ``close``). Transport
+is selected from the URL scheme:
 
-  - register(*descriptors, force=False, dry_run=False) → dict
-  - push(event_name, fields)                            → dict
-  - get(table, key=None)                                → dict
-  - batch_get(requests)                                 → list[dict]
-  - reset()                                             → None
-  - ping()                                              → dict
-  - close()                                             → None
+  ``http(s)://`` → :class:`HttpTransport`
+  ``tcp://``     → :class:`TcpTransport`
+  ``None``       → :class:`EmbedTransport` (spawns the local binary)
 
-Transport selection is via URL scheme (handled by `make_transport`):
-  http(s):// → HttpTransport
-  tcp://     → TcpTransport
-  None       → EmbedTransport (spawns local binary)
-
-Per Phase 13.5 D-05 (cross-amendment from 13.4 D-03), the `test_mode=True`
-kwarg propagates BEAVA_TEST_MODE=1 to the spawned binary in embed mode; in
-network mode (url is set), test_mode is ignored with a UserWarning.
+The ``test_mode=True`` kwarg propagates ``BEAVA_TEST_MODE=1`` to the spawned
+binary in embed mode (gating ``OP_RESET`` and other test-only opcodes). In
+network mode the kwarg is ignored with a ``UserWarning`` — server-side
+configuration controls test mode for shared servers.
 """
 from __future__ import annotations
 
@@ -39,9 +32,8 @@ def _to_register_json(
     """Convert ``@bv.event`` / ``@bv.table`` descriptors into a UTF-8 JSON
     payload matching the wire-spec ``{"nodes": [...]}`` shape.
 
-    Plan 11 contract — exposed at module level so ``python/tests/v0/test_lit.py``
-    + ``test_global.py`` can introspect the wire payload independently of an
-    actual transport.
+    Module-level (not a method) so tests can introspect the wire payload
+    independently of an actual transport.
     """
     nodes: list[dict[str, Any]] = []
     for d in descriptors:
@@ -66,12 +58,10 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
       - ``TableDescriptor``
       - Plain dict (passthrough — for tests that hand-build payloads)
     """
-    # Plain dict — assume already wire-shaped.
     if isinstance(d, dict):
         return d
     kind = getattr(d, "_kind", None)
     if kind in ("event_source", None) and hasattr(d, "_schema"):
-        # @bv.event class form.
         name = getattr(d, "_name", getattr(d, "__name__", None))
         if not name:
             return None
@@ -85,22 +75,18 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
             "schema": {"fields": fields_obj, "optional_fields": []},
         }
     if kind == "table":
-        # @bv.table descriptor.
         chain = getattr(d, "_chain", []) or []
         key_cols = getattr(d, "_key_cols", []) or []
         parent = getattr(d, "_parent", None)
-        # Phase 13.5.2 D-02 SDK chain-flatten: when this @bv.table's parent
-        # chain contains an @bv.event def output (carrying
-        # `_is_bv_event_function=True`), set the upstream to the ROOT
-        # EventSource. This is required because the server's apply-time
-        # routing index `aggregations_by_source` keys aggregations by their
-        # direct upstream NAME — events arriving at the root EventSource
-        # only trigger aggregations whose declared upstream IS that root,
-        # not aggregations whose upstream is an intermediate derivation.
-        # Tagged's ops are already in `chain` via the standard
-        # `_make_derivation` chain-prepend behavior, so the wire payload
-        # for UserClicks correctly carries the full
-        # `[Tagged.ops..., UserClicks.ops...]` op sequence with upstream=Click.
+        # SDK chain-flatten: when an @bv.table's parent chain contains an
+        # @bv.event def output (marker `_is_bv_event_function=True`), the
+        # upstream must be the ROOT EventSource. The server's apply-time
+        # routing index keys aggregations by their direct upstream name —
+        # events arriving at the root only trigger aggregations whose
+        # declared upstream IS the root, not intermediate derivations. The
+        # intermediate ops are already prepended into `chain` by
+        # `_make_derivation`, so flattening upstream to the root produces a
+        # wire payload that routes correctly without losing chain steps.
         has_bv_event_def_ancestor = False
         ancestor: Any = parent
         while ancestor is not None:
@@ -119,9 +105,10 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
         elif parent is not None:
             parent_kind = getattr(parent, "_kind", None)
             parent_name = getattr(parent, "_name", "")
-            # Named-derivation upstreams (from .named(...)) keep their
-            # stable name; intermediate auto-named ones (Foo__derived_N)
-            # should resolve to the root.
+            # Named derivations (via `.named(...)`) keep their stable name
+            # as the upstream; auto-named intermediate steps
+            # (`Foo__derived_N`) are not addressable on the wire and must
+            # resolve to the root EventSource instead.
             if parent_kind == "event_source" or "__derived_" not in parent_name:
                 upstreams = [parent_name] if parent_name else []
             else:
@@ -135,9 +122,8 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
         else:
             upstreams = []
         ops = _chain_to_ops(chain)
-        # Phase 13.5.1 Plan 05 (Rule 3 — schema is required by the server's
-        # `DerivationDescriptor` deserializer). Compute schema.fields from
-        # key cols + chain agg outputs.
+        # The server's DerivationDescriptor deserializer requires a populated
+        # `schema` field; compute it from key cols + chain agg outputs.
         parent_schema = _parent_wire_schema(d)
         fields = _infer_derivation_schema(chain, parent_schema, list(key_cols))
         return {
@@ -151,9 +137,9 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
         }
     if kind in ("event_derivation", "aggregation"):
         chain = getattr(d, "_chain", []) or []
-        # Walk back through the parent chain to find the original
-        # event-source. Each EventDerivation step's _parent is the previous
-        # derivation; the root EventSource is the only node with kind=event_source.
+        # Walk back through the parent chain to find the root EventSource —
+        # the only node with kind=event_source. Each EventDerivation's
+        # _parent is the previous derivation in the chain.
         ev_root: Any = d
         while True:
             p = getattr(ev_root, "_parent", None)
@@ -164,16 +150,15 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
             [getattr(ev_root, "_name", "")] if ev_root is not d else []
         )
         ops = _chain_to_ops(chain)
-        # output_kind: "table" if the chain terminates in an agg step
-        # (event → table boundary); "event" otherwise (event-only
-        # transform: filter/select/with_columns/etc.).
+        # `output_kind = "table"` iff the chain terminates in an `agg` step
+        # (event → table boundary); `"event"` for pure event-to-event
+        # transforms (filter/select/with_columns/...).
         has_agg = any(step.get("op") == "agg" for step in chain)
         output_kind = "table" if has_agg else "event"
         parent_schema = _parent_wire_schema_from_root(ev_root)
         if has_agg:
             fields = _infer_derivation_schema(chain, parent_schema, [])
         else:
-            # Event-derivation: schema = upstream fields ∪ with_columns / rename targets.
             fields = _infer_event_derivation_schema(chain, parent_schema)
         return {
             "kind": "derivation",
@@ -199,39 +184,31 @@ def _python_type_to_wire(t: Any) -> str:
     return "str"
 
 
-# Agg-op output type mapping — mirrors Rust `output_type_for` in
-# `crates/beava-core/src/agg_op.rs::output_type_for`. Used by
-# `_infer_derivation_schema` to populate the `schema.fields` map of a
-# `kind: derivation` node so the server-side `DerivationDescriptor`
-# deserializer (which requires `schema`) accepts the payload.
-#
-# Phase 13.5.1 Plan 05 (Rule 3 — blocking issue auto-fix). Plan 13.5-11 left
-# `_descriptor_to_node` emitting derivation nodes without a `schema` field;
-# server rejected with `invalid_registration: missing field schema`. The fix
-# infers the schema Python-side from the chain.
-
-# Ops whose output type is fixed (independent of field).
+# Agg-op output type mapping — mirrors Rust ``agg_op::output_type_for``.
+# Used by ``_infer_derivation_schema`` to populate the ``schema.fields`` map
+# of a derivation node so the server's ``DerivationDescriptor``
+# deserializer (which requires ``schema``) accepts the payload. The
+# Python-side inference is best-effort — the server is the authoritative
+# source — but it must produce a non-empty schema dict to clear the
+# deserializer's invariant.
 _FIXED_OP_OUTPUT_TYPE: dict[str, str] = {
-    # Core scalar ops
     "count": "i64",
     "sum": "f64",
     "mean": "f64",
-    "avg": "f64",  # legacy alias
+    "avg": "f64",
     "var": "f64",
-    "variance": "f64",  # legacy alias
+    "variance": "f64",
     "std": "f64",
-    "stddev": "f64",  # legacy alias
+    "stddev": "f64",
     "ratio": "f64",
-    # Sketch family
     "n_unique": "i64",
-    "count_distinct": "i64",  # legacy alias
+    "count_distinct": "i64",
     "quantile": "f64",
-    "percentile": "f64",  # legacy alias
-    "top_k": "str",  # JSON-array-as-string per Rust schema propagation
+    "percentile": "f64",
+    "top_k": "str",
     "bloom_member": "bool",
     "entropy": "f64",
-    # Recency / streak
-    "first_seen": "i64",  # Datetime → i64 epoch ms on the wire
+    "first_seen": "i64",
     "last_seen": "i64",
     "age": "i64",
     "time_since": "i64",
@@ -241,7 +218,6 @@ _FIXED_OP_OUTPUT_TYPE: dict[str, str] = {
     "streak": "i64",
     "max_streak": "i64",
     "negative_streak": "i64",
-    # Decay / velocity / z
     "ewma": "f64",
     "ema": "f64",
     "ewvar": "f64",
@@ -257,17 +233,14 @@ _FIXED_OP_OUTPUT_TYPE: dict[str, str] = {
     "burst_count": "i64",
     "outlier_count": "i64",
     "value_change_count": "i64",
-    # Phase 8 point ops returning JSON-array-as-string
     "first_n": "str",
     "last_n": "str",
-    # Phase 11 buffer / histogram / mix → str (Json placeholder)
     "histogram": "str",
     "hour_of_day_histogram": "str",
     "dow_hour_histogram": "str",
     "event_type_mix": "str",
     "most_recent_n": "str",
     "reservoir_sample": "str",
-    # Phase 11 scalar geo + seasonal
     "seasonal_deviation": "f64",
     "geo_velocity": "f64",
     "geo_distance": "f64",
@@ -286,21 +259,16 @@ def _agg_output_type(
 ) -> str:
     """Return the wire-type string for an agg op's output column.
 
-    Mirrors Rust ``crates/beava-core/src/agg_op.rs::output_type_for``.
-    Falls back to ``str`` for unknown ops (server will validate at
-    register time and reject if the inferred type is wrong; the goal here
-    is to populate the schema field shape so the deserializer accepts the
-    payload — incorrect inferred types surface as ``invalid_registration``
-    with a helpful server-side message).
+    Mirrors the Rust authoritative mapping. Falls back to ``str`` for
+    unknown ops; an incorrect inference surfaces server-side as
+    ``invalid_registration`` with a useful message.
     """
     if op_name in _FIXED_OP_OUTPUT_TYPE:
         return _FIXED_OP_OUTPUT_TYPE[op_name]
     if op_name in _FIELD_INHERITING_OPS:
         if field_name is not None and field_name in upstream_schema:
             return upstream_schema[field_name]
-        # Fallback when field can't be resolved.
         return "str"
-    # Unknown op — defer to the server's validate pass.
     return "str"
 
 
@@ -328,14 +296,11 @@ def _infer_derivation_schema(
         ``schema`` JSON object.
     """
     fields: dict[str, str] = {}
-    # 1. Key columns — type from parent schema, fallback to str.
     for k in key_cols:
         fields[k] = parent_schema_wire.get(k, "str")
-    # 2. Agg output columns — walk the chain to find the agg step.
     for step in chain:
         if step.get("op") != "agg":
             continue
-        # Per `_chain_to_ops`, agg step shape: {"op":"agg", "keys":[...], "aggs":{name: spec}}
         aggs = step.get("aggs", {})
         for out_name, spec in aggs.items():
             if isinstance(spec, dict):
@@ -388,21 +353,19 @@ def _infer_event_derivation_schema(
     chain: list[dict[str, Any]],
     parent_schema_wire: dict[str, str],
 ) -> dict[str, str]:
-    """Compute schema.fields for an event-derivation (no agg) chain.
+    """Compute ``schema.fields`` for an event-derivation (no agg) chain.
 
-    Starts with the upstream event-source's schema and applies
-    ``with_columns`` / ``rename`` / ``drop`` / ``select`` op steps to
-    narrow / extend / rename the field set. Best-effort — server's own
-    schema propagation is the authoritative source; this just produces
-    a schema dict with ``len > 0`` to satisfy the registration
-    deserializer's ``derivation schema must have at least one field``
-    invariant.
+    Starts from the upstream event-source's schema and applies
+    ``with_columns`` / ``rename`` / ``drop`` / ``select`` / ``cast`` /
+    ``fillna`` / ``filter`` / ``rename_self`` step semantics. Best-effort —
+    the server's own schema propagation is authoritative; this just
+    produces a schema dict with ``len > 0`` to clear the registration
+    deserializer's invariant.
     """
     fields: dict[str, str] = dict(parent_schema_wire)
     for step in chain:
         op = step.get("op")
         if op == "with_columns" or op == "map":
-            # Add new columns; type is "str" for literal exprs (best-effort).
             for col in step.get("exprs", {}):
                 if col not in fields:
                     fields[col] = "str"
@@ -421,47 +384,36 @@ def _infer_event_derivation_schema(
             type_map = step.get("type_map", {})
             for col, ttype in type_map.items():
                 if col in fields:
-                    # Map cast targets to wire-type strings.
                     fields[col] = {
                         "str": "str",
                         "int": "i64",
                         "float": "f64",
                         "bool": "bool",
                     }.get(ttype, "str")
-        elif op == "fillna":
-            # No schema change — only fills missing values.
-            pass
-        elif op == "filter":
+        elif op in ("fillna", "filter", "rename_self"):
             # No schema change.
             pass
-        elif op == "rename_self":
-            # Python-side noop.
-            pass
-    # Always ensure at least one field — fallback to upstream key (best-effort).
+    # Ensure at least one field so the deserializer accepts the payload.
     if not fields and parent_schema_wire:
-        # Take the first upstream field as a placeholder.
         first_field = next(iter(parent_schema_wire))
         fields[first_field] = parent_schema_wire[first_field]
     return fields
 
 
 def _chain_to_ops(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert chain steps (list of ``{"op": ..., ...}`` dicts) to wire-shape
-    ops. The aggregation step shape uses ``{"op": "group_by", "keys": [...],
-    "agg": {name: {"op": <op>, "params": {...}}}}``.
+    """Convert chain steps to wire-shape ops.
 
-    ``rename_self`` is a Python-side chain-noop introduced by ``.named(...)``
-    (events.py:99-106) — it tags the derivation with a stable name but is
-    not a recognized server-side op variant. Skip it here so the wire
-    payload only carries server-recognized ops.
+    The aggregation step is rewritten as ``{"op": "group_by", "keys": [...],
+    "agg": {name: {"op": <op>, "params": {...}}}}``. The ``rename_self``
+    step is a Python-side chain-noop introduced by ``.named(...)`` — it
+    tags the derivation with a stable name but is not a server-recognized
+    op variant, so it is stripped from the wire payload (the name is
+    emitted via the node's ``name`` field instead).
     """
     out: list[dict[str, Any]] = []
     for step in chain:
         op = step.get("op")
         if op == "rename_self":
-            # Python-side noop; ``_name`` is already populated on the
-            # derivation by ``.named(...)`` and emitted in
-            # ``_descriptor_to_node``. Strip from the wire payload.
             continue
         if op == "agg":
             keys = step.get("keys", [])
@@ -476,7 +428,6 @@ def _chain_to_ops(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     agg_obj[name] = {"op": "count", "params": {}}
             out.append({"op": "group_by", "keys": list(keys), "agg": agg_obj})
         else:
-            # Pass-through for filter/select/etc.
             out.append(dict(step))
     return out
 
@@ -493,10 +444,10 @@ class App:
             ``tcp://...`` for the custom-framed TCP fast-path. ``None``
             (default) for embed mode (local binary spawn).
         timeout: Socket / HTTP timeout in seconds. Defaults to 30.0.
-        test_mode: When True + embed mode, sets BEAVA_TEST_MODE=1 in the
-            spawned binary's env (gates OP_RESET and other test-only
-            opcodes per Phase 13.4 D-03). When True + network mode,
-            emits a UserWarning and proceeds without effect.
+        test_mode: When True + embed mode, sets ``BEAVA_TEST_MODE=1`` in the
+            spawned binary's env so test-only opcodes (``OP_RESET``, …)
+            are accepted. When True + network mode, emits a UserWarning
+            and proceeds without effect.
     """
 
     def __init__(
@@ -513,7 +464,6 @@ class App:
         self._closed = False
         self._entered = False
 
-        # Transport-kind classification — used by tests + close() routing.
         if url is None:
             self._transport_kind = "embed"
         else:
@@ -523,7 +473,7 @@ class App:
                 if test_mode:
                     warnings.warn(
                         "test_mode kwarg ignored for network mode (url is set); "
-                        "server controls test mode in network mode per Phase 13.4 D-03.",
+                        "server controls test mode in network mode.",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -532,7 +482,7 @@ class App:
                 if test_mode:
                     warnings.warn(
                         "test_mode kwarg ignored for network mode (url is set); "
-                        "server controls test mode in network mode per Phase 13.4 D-03.",
+                        "server controls test mode in network mode.",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -580,8 +530,6 @@ class App:
             )
         return self._transport
 
-    # ── 7 wire-mapped methods ──────────────────────────────────────────────
-
     def register(
         self,
         *descriptors: Any,
@@ -591,24 +539,24 @@ class App:
         """Register one or more event/table descriptors with the server.
 
         Args:
-            *descriptors: Descriptor objects produced by ``@bv.event`` /
-                ``@bv.table`` decorators (Plan 03).
-            force: If True, server replaces any existing pipeline of the
-                same name.
-            dry_run: If True, server validates and returns a categorized
-                diff payload but does not commit. Implies dry_run=True
-                response shape per docs/error-codes.md.
+            *descriptors: Descriptor objects produced by the ``@bv.event``
+                or ``@bv.table`` decorators.
+            force: If True, the server replaces any existing pipeline of
+                the same name.
+            dry_run: If True, the server validates and returns a categorized
+                diff payload but does not commit.
 
         Raises:
-            RegistrationError: If any descriptor is an ``EventDerivation``
-                instance (a raw chain expression). Per Phase 13.5.2 D-01,
-                chain expressions must be wrapped in ``@bv.event def F(...)``
-                before being registered.
+            RegistrationError: A descriptor is an ``EventDerivation``
+                instance (a raw chain expression). Chain expressions must
+                be wrapped in ``@bv.event def F(...)`` before being
+                registered — that wrapper is what carries the stable name
+                the server's apply-time routing index keys on.
         """
-        # Phase 13.5.2 D-01 (USER-LOCKED): reject raw EventDerivation instances
-        # at register-time with a sharp client-side error pointing at the
-        # canonical @bv.event def rewrite. Local imports to avoid a circular
-        # import at module load (_app ← _events ← _col).
+        # Reject raw EventDerivation instances at register-time with a sharp
+        # client-side error pointing at the canonical `@bv.event def`
+        # rewrite. Local imports avoid a circular import at module load
+        # (_app ← _events ← _col).
         from beava._errors import RegistrationError
         from beava._events import EventDerivation
 
@@ -653,13 +601,12 @@ class App:
     ) -> dict[str, Any]:
         """Get a single feature row by entity key.
 
-        Per ADR-003 global-aggregation semantics, calling ``get(table)``
-        without a key (or with key=None) routes to the global table
-        sentinel (empty-string entity_id).
+        Calling ``get(table)`` without a key (or with ``key=None``) routes
+        to the global-aggregation sentinel (empty-string entity id) per
+        ADR-003.
 
-        ``features`` (D-03 USER-LOCKED, Phase 13.5.1): when provided, the
-        server narrows the returned row to the named subset. Default
-        ``None`` returns the full row (Redis-shaped).
+        When ``features`` is provided the server narrows the returned row
+        to the named subset; the default (``None``) returns the full row.
         """
         t = self._require_transport()
         effective_key: str | list[Any] = "" if key is None else key
@@ -678,14 +625,14 @@ class App:
         """Batch GET — N requests, returns a list of dicts in the same order.
 
         Args:
-            requests: A list of per-entry tuples. Each entry is EITHER a
-                ``(table, key)`` 2-tuple OR a ``(table, key, features)``
+            requests: A list of per-entry tuples. Each entry is either a
+                ``(table, key)`` 2-tuple or a ``(table, key, features)``
                 3-tuple where ``features`` is an optional ``list[str]``
-                filter (per D-03 USER-LOCKED — same shape as ``app.get``'s
-                ``features`` kwarg, applied per entry). The 2-tuple form
-                returns the full row; the 3-tuple form narrows to the
-                named features. Both shapes can be mixed within the same
-                call. Cold-start per-entry is ``{}``.
+                filter (same shape as :meth:`get`'s ``features`` kwarg,
+                applied per entry). The 2-tuple form returns the full row;
+                the 3-tuple form narrows to the named features. Both
+                shapes can be mixed within the same call. Cold-start
+                per-entry result is ``{}``.
         """
         t = self._require_transport()
         coerced: list[
@@ -693,11 +640,9 @@ class App:
             | tuple[str, str | list[Any], list[str] | None]
         ] = []
         for entry in requests:
-            # D-03 explicitly accepts ONLY the tuple shape (2 or 3); reject
-            # dict entries here so callers fall through to the tuple form
-            # (tests/v0/test_transport_equivalence.py:246-260 relies on this
-            # to test BOTH shapes — the dict path raises TypeError, the
-            # fallback tuple path is the lock-locked Plan-05 contract).
+            # The wire contract accepts the tuple shape only. Dict entries
+            # raise TypeError here; the transport-equivalence test suite
+            # asserts both code paths.
             if not isinstance(entry, tuple):
                 raise TypeError(
                     f"batch_get request entry must be a tuple "
@@ -720,17 +665,17 @@ class App:
         return result
 
     def reset(self) -> None:
-        """Reset all server state (test-mode-gated per Phase 13.4 D-03).
+        """Reset all server state. Test-mode-gated.
 
         Raises:
-            RuntimeError: If the server is not in test mode (error code
+            RuntimeError: The server is not in test mode (error code
                 ``reset_disabled_in_production``).
         """
         t = self._require_transport()
         t.send_reset()
 
     def ping(self) -> dict[str, Any]:
-        """Server liveness check; returns server_version + registry_version."""
+        """Server liveness check; returns ``server_version`` + ``registry_version``."""
         t = self._require_transport()
         result: dict[str, Any] = t.send_ping()
         return result

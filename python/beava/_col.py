@@ -1,19 +1,19 @@
-"""bv.col expression DSL — Phase 13.5 Plan 03.
+"""``bv.col`` / ``bv.lit`` expression DSL.
 
-Operator-overloaded AST. ``_Col`` / ``_Literal`` / ``_BinOp`` / ``_UnaryOp`` /
-``_CastOp`` form the AST; the public surface is ``bv.col(name)`` and
-``bv.lit(value)``. ``_coerce`` wraps Python literals encountered inside an
-operator overload into ``_Literal`` so users may write either::
+Operator-overloaded AST. ``_Col`` / ``_Literal`` / ``_BinOp`` / ``_UnaryOp``
+/ ``_CastOp`` are the node types; the public surface is :func:`col` and
+:func:`lit`. ``_coerce`` wraps a Python literal that appears inside an
+operator overload into a ``_Literal``, so::
 
     bv.col("amount") > 100
     bv.col("amount") > bv.lit(100)
 
-interchangeably (per ADR-003 Decision A — explicit literal helper coexists
-with implicit literal coercion).
+are interchangeable (the explicit literal helper coexists with implicit
+literal coercion).
 
-The AST is intentionally inert at construction-time — all evaluation happens
-on the server. ``to_expr_string()`` renders to the wire-JSON expression
-string consumed by ``crates/beava-core/src/expr.rs`` parser.
+The AST is inert at construction-time — all evaluation happens server-side.
+``to_expr_string()`` renders to the wire-JSON expression string consumed
+by the server's expression parser.
 """
 from __future__ import annotations
 
@@ -27,11 +27,10 @@ _VALID_CAST_TARGETS = ("str", "int", "float", "bool")
 class _Expr:
     """Base AST node. Operator overloads produce new ``_Expr`` nodes.
 
-    Subclasses are dataclasses with ``frozen=True`` so the AST is immutable —
+    Subclasses are frozen dataclasses, so the AST is immutable —
     re-using the same ``_Expr`` instance in multiple chains is safe.
     """
 
-    # Arithmetic ─────────────────────────────────────────────────────────────
     def __add__(self, other: Any) -> "_Expr":
         return _BinOp("+", self, _coerce(other))
 
@@ -56,7 +55,6 @@ class _Expr:
     def __rtruediv__(self, other: Any) -> "_Expr":
         return _BinOp("/", _coerce(other), self)
 
-    # Comparisons ────────────────────────────────────────────────────────────
     def __gt__(self, other: Any) -> "_Expr":
         return _BinOp(">", self, _coerce(other))
 
@@ -75,12 +73,10 @@ class _Expr:
     def __ne__(self, other: Any) -> "_Expr":  # type: ignore[override]
         return _BinOp("!=", self, _coerce(other))
 
-    # Boolean ────────────────────────────────────────────────────────────────
-    # Phase 13.5.2: serialize Python `&` / `|` to the server's expr-grammar
-    # `and` / `or` keywords (per `crates/beava-core/src/expr.rs` token table).
-    # The Python operators `&` / `|` are bitwise — we overload them as boolean
-    # combinators because Python forbids overloading `and` / `or`. The wire
-    # form must match the expr-parser's keyword tokens.
+    # Python forbids overloading `and` / `or`, so the SDK overloads `&` / `|`
+    # as boolean combinators and serializes them as the server-grammar
+    # keyword tokens `and` / `or` (rather than the bitwise `&` / `|` they
+    # would normally emit). Surface ergonomics > bitwise fidelity here.
     def __and__(self, other: Any) -> "_Expr":
         return _BinOp("and", self, _coerce(other))
 
@@ -96,11 +92,10 @@ class _Expr:
     def __invert__(self) -> "_Expr":
         return _UnaryOp("~", self)
 
-    # ``__hash__`` retained — frozen dataclasses define one. The override of
-    # ``__eq__`` (which produces an ``_Expr``, not a ``bool``) makes Python
-    # mark instances unhashable by default; restore it via dataclass below.
+    # `__eq__` is overridden to produce an `_Expr` (not a `bool`), which
+    # makes instances unhashable by default. Each concrete subclass restores
+    # `__hash__` explicitly so AST nodes can live in sets/dict keys.
 
-    # Helper methods ─────────────────────────────────────────────────────────
     def isnull(self) -> "_Expr":
         return _UnaryOp("isnull", self)
 
@@ -137,9 +132,9 @@ class _Literal(_Expr):
         if isinstance(self.value, bool):
             return "true" if self.value else "false"
         if isinstance(self.value, str):
-            # Single-quoted per docs/pipeline-dsl/expressions.md grammar.
+            # Single-quoted strings are required by the expression grammar.
             return repr(self.value)
-        return repr(self.value)  # int / float
+        return repr(self.value)
 
     def __hash__(self) -> int:
         return hash(("_Literal", repr(self.value)))
@@ -205,7 +200,7 @@ def col(name: str) -> _Col:
 
 
 def lit(value: Union[int, float, str, bool, None]) -> _Literal:  # noqa: UP007
-    """Construct an explicit literal expression — public per ADR-003.
+    """Construct an explicit literal expression.
 
     The implicit form ``bv.col("a") > 100`` and the explicit form
     ``bv.col("a") > bv.lit(100)`` are wire-equivalent. ``bv.lit`` is

@@ -1,39 +1,19 @@
-"""53 aggregation op helpers — Phase 13.5 Plan 04.
+"""Aggregation op helpers.
 
-Each helper returns an :class:`AggDescriptor` with ``to_dict()`` emitting
-wire-shape JSON consumed by ``crates/beava-core`` register-time compilation.
+Each helper returns an :class:`AggDescriptor` whose ``to_dict()`` emits
+wire-shape JSON consumed by the server's register-time compiler. Names
+follow Polars conventions (``mean`` / ``var`` / ``std`` / ``n_unique`` /
+``quantile``); the SQL-prose names (``avg`` / ``variance`` / ``stddev`` /
+``count_distinct`` / ``percentile``) are deprecation aliases that emit
+``DeprecationWarning``.
 
-Names follow Polars conventions per ADR-002 (``mean`` / ``var`` / ``std`` /
-``n_unique`` / ``quantile``). The old SQL-prose names (``avg`` / ``variance``
-/ ``stddev`` / ``count_distinct`` / ``percentile``) ship as deprecation
-aliases that emit ``DeprecationWarning`` referencing the new name.
-
-Q1 Path B is enforced on every field-bearing op: passing an ``_Expr``
-instance (e.g. ``bv.col("x") * 2``) where a column-name string is required
-raises ``RegistrationError(code='schema_mismatch')`` at decorator-time. Use
-a two-stage chain instead::
+Field-bearing ops require a string column name. Passing an ``_Expr`` (e.g.
+``bv.col("x") * 2``) raises ``RegistrationError(code='schema_mismatch')``;
+use a two-stage chain instead::
 
     events.with_columns(doubled=bv.col("x") * 2).group_by(...).agg(
         s=bv.sum("doubled", window="1h"),
     )
-
-Family breakdown (53 unique + 1 ``ema`` alias):
-
-- core (8): ``count`` ``sum`` ``mean`` ``min`` ``max`` ``var`` ``std`` ``ratio``
-- sketch (5): ``n_unique`` ``quantile`` ``top_k`` ``bloom_member`` ``entropy``
-- point/ordinal (5): ``first`` ``last`` ``first_n`` ``last_n`` ``lag``
-- recency (10): ``first_seen`` ``last_seen`` ``age`` ``has_seen`` ``time_since``
-  ``time_since_last_n`` ``streak`` ``max_streak`` ``negative_streak``
-  ``first_seen_in_window``
-- decay (6 + ``ema`` alias): ``ewma`` ``ewvar`` ``ew_zscore`` ``decayed_sum``
-  ``decayed_count`` ``twa``
-- velocity (9): ``rate_of_change`` ``inter_arrival_stats`` ``burst_count``
-  ``delta_from_prev`` ``trend`` ``trend_residual`` ``outlier_count``
-  ``value_change_count`` ``z_score``
-- bounded buffers (7): ``histogram`` ``hour_of_day_histogram``
-  ``dow_hour_histogram`` ``seasonal_deviation`` ``event_type_mix``
-  ``most_recent_n`` ``reservoir_sample``
-- geo (4): ``geo_velocity`` ``geo_distance`` ``geo_spread`` ``distance_from_home``
 """
 from __future__ import annotations
 
@@ -68,7 +48,7 @@ def _validate_half_life(half_life: str, op: str) -> None:
 
 
 def _enforce_field_str(field_arg: Any, op: str) -> str:
-    """Q1 Path B: ``field`` arg must be a string column name, not an ``_Expr``."""
+    """The ``field`` arg must be a string column name, not an ``_Expr``."""
     if isinstance(field_arg, _Expr):
         raise RegistrationError(
             code="schema_mismatch",
@@ -131,9 +111,6 @@ class AggDescriptor:
             d["where"] = self.where
         d.update(self.extras)
         return d
-
-
-# ── Core (8) ───────────────────────────────────────────────────────────────
 
 
 def count(*, window: str | None = None, where: Any = None) -> AggDescriptor:
@@ -210,9 +187,6 @@ def ratio(*, window: str | None = None, where: Any = None) -> AggDescriptor:
     """Server computes ratio = matched / total over window; ``where`` filters numerator."""
     _validate_window(window, "ratio", required=False)
     return AggDescriptor(op="ratio", window=window, where=_serialize_where(where))
-
-
-# ── Sketch (5) ─────────────────────────────────────────────────────────────
 
 
 def n_unique(
@@ -297,9 +271,6 @@ def entropy(
     )
 
 
-# ── Point/ordinal (5) ──────────────────────────────────────────────────────
-
-
 def first(field: Any) -> AggDescriptor:
     _enforce_field_str(field, "first")
     return AggDescriptor(op="first", field=field)
@@ -311,7 +282,7 @@ def last(field: Any) -> AggDescriptor:
 
 
 def first_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
-    """First N matching values (insertion order) per docs/operators/point-ordinal/first_n.md."""
+    """First N matching values in insertion order."""
     _enforce_field_str(field, "first_n")
     if n < 1:
         raise ValueError(f"first_n n must be >= 1; got {n}")
@@ -324,7 +295,7 @@ def first_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
 
 
 def last_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
-    """Last N matching values (oldest-to-newest) per docs/operators/point-ordinal/last_n.md."""
+    """Last N matching values, oldest-to-newest."""
     _enforce_field_str(field, "last_n")
     if n < 1:
         raise ValueError(f"last_n n must be >= 1; got {n}")
@@ -343,9 +314,6 @@ def lag(field: Any, *, n: int = 1) -> AggDescriptor:
     return AggDescriptor(op="lag", field=field, extras={"n": n})
 
 
-# ── Recency (10) ───────────────────────────────────────────────────────────
-
-
 def first_seen() -> AggDescriptor:
     return AggDescriptor(op="first_seen")
 
@@ -359,20 +327,17 @@ def age() -> AggDescriptor:
 
 
 def has_seen(*, where: Any = None) -> AggDescriptor:
-    """Boolean ever-matched flag per docs/operators/recency/has_seen.md (no field arg)."""
+    """Boolean ever-matched flag (no field arg)."""
     return AggDescriptor(op="has_seen", where=_serialize_where(where))
 
 
 def time_since(*, where: Any = None) -> AggDescriptor:
-    """Query-time elapsed ms since last matching event per docs/operators/recency/time_since.md."""
+    """Query-time elapsed ms since the last matching event."""
     return AggDescriptor(op="time_since", where=_serialize_where(where))
 
 
 def time_since_last_n(*, n: int, where: Any = None) -> AggDescriptor:
-    """Silence relative to nth-most-recent match.
-
-    See docs/operators/recency/time_since_last_n.md.
-    """
+    """Silence relative to the nth-most-recent match."""
     if n < 1:
         raise ValueError(f"time_since_last_n n must be >= 1; got {n}")
     return AggDescriptor(
@@ -383,37 +348,28 @@ def time_since_last_n(*, n: int, where: Any = None) -> AggDescriptor:
 
 
 def streak(*, where: Any = None) -> AggDescriptor:
-    """Current consecutive matching count per docs/operators/recency/streak.md (no field arg)."""
+    """Current consecutive matching count (no field arg)."""
     return AggDescriptor(op="streak", where=_serialize_where(where))
 
 
 def max_streak(*, where: Any = None) -> AggDescriptor:
-    """All-time peak match streak per docs/operators/recency/max_streak.md (no field arg)."""
+    """All-time peak match streak (no field arg)."""
     return AggDescriptor(op="max_streak", where=_serialize_where(where))
 
 
 def negative_streak(*, where: Any = None) -> AggDescriptor:
-    """Consecutive non-matching count (no field arg).
-
-    See docs/operators/recency/negative_streak.md.
-    """
+    """Consecutive non-matching count (no field arg)."""
     return AggDescriptor(op="negative_streak", where=_serialize_where(where))
 
 
 def first_seen_in_window(*, window: str, where: Any = None) -> AggDescriptor:
-    """Was the entity active within the past ``window``?
-
-    See docs/operators/recency/first_seen_in_window.md.
-    """
+    """Was the entity active within the past ``window``?"""
     _validate_window(window, "first_seen_in_window", required=True)
     return AggDescriptor(
         op="first_seen_in_window",
         window=window,
         where=_serialize_where(where),
     )
-
-
-# ── Decay (6 + ema alias) ──────────────────────────────────────────────────
 
 
 def ewma(
@@ -432,7 +388,7 @@ def ewma(
 def ema(
     field: Any, *, half_life: str, where: Any = None
 ) -> AggDescriptor:
-    """``ema`` is an alias of ``ewma`` per docs/sdk-api/python.md § Operator catalog."""
+    """Alias of :func:`ewma`."""
     return ewma(field, half_life=half_life, where=where)
 
 
@@ -493,9 +449,6 @@ def twa(field: Any, *, window: str, where: Any = None) -> AggDescriptor:
         window=window,
         where=_serialize_where(where),
     )
-
-
-# ── Velocity (9) ───────────────────────────────────────────────────────────
 
 
 def rate_of_change(
@@ -573,7 +526,7 @@ def outlier_count(
     sigma: float = 3.0,
     where: Any = None,
 ) -> AggDescriptor:
-    """Count of events outside ±sigma·stddev band per docs/operators/velocity/outlier_count.md."""
+    """Count of events outside the ±sigma·stddev band."""
     _enforce_field_str(field, "outlier_count")
     _validate_window(window, "outlier_count", required=True)
     return AggDescriptor(
@@ -611,20 +564,17 @@ def z_score(
     )
 
 
-# ── Bounded buffers (7) ────────────────────────────────────────────────────
-
-
 def histogram(
     field: Any,
     *,
     buckets: list[float],
     where: Any = None,
 ) -> AggDescriptor:
-    """Lifetime-only fixed-bucket count histogram per docs/operators/buffer-geo/histogram.md.
+    """Lifetime-only fixed-bucket count histogram.
 
-    `buckets` is a strictly-increasing list of split points (no `window=`
-    kwarg in v0; the operator is BoundedByRequiredKwarg("buckets") per
-    V0-MEM-GOV-02 — Phase 12.8).
+    ``buckets`` is a strictly-increasing list of split points; no ``window=``
+    kwarg in v0 (the operator's bound is the required ``buckets`` kwarg
+    itself, enforced by the memory-governance contract).
     """
     _enforce_field_str(field, "histogram")
     if not isinstance(buckets, list) or len(buckets) < 1:
@@ -650,10 +600,7 @@ def histogram(
 
 
 def hour_of_day_histogram(*, where: Any = None) -> AggDescriptor:
-    """Lifetime-only 24-bucket per-hour count.
-
-    See docs/operators/buffer-geo/hour_of_day_histogram.md.
-    """
+    """Lifetime-only 24-bucket per-hour count."""
     return AggDescriptor(
         op="hour_of_day_histogram",
         where=_serialize_where(where),
@@ -661,10 +608,7 @@ def hour_of_day_histogram(*, where: Any = None) -> AggDescriptor:
 
 
 def dow_hour_histogram(*, where: Any = None) -> AggDescriptor:
-    """Lifetime-only 168-bucket per-(dow, hour) count.
-
-    See docs/operators/buffer-geo/dow_hour_histogram.md.
-    """
+    """Lifetime-only 168-bucket per-(day-of-week, hour) count."""
     return AggDescriptor(
         op="dow_hour_histogram",
         where=_serialize_where(where),
@@ -674,10 +618,7 @@ def dow_hour_histogram(*, where: Any = None) -> AggDescriptor:
 def seasonal_deviation(
     field: Any, *, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only z-score vs hour-of-day baseline.
-
-    See docs/operators/buffer-geo/seasonal_deviation.md.
-    """
+    """Lifetime-only z-score versus hour-of-day baseline."""
     _enforce_field_str(field, "seasonal_deviation")
     return AggDescriptor(
         op="seasonal_deviation",
@@ -693,11 +634,11 @@ def event_type_mix(
     max_categories: int = 256,
     where: Any = None,
 ) -> AggDescriptor:
-    """Lifetime-only proportion-per-category sketch per docs/operators/buffer-geo/event_type_mix.md.
+    """Lifetime-only proportion-per-category sketch.
 
-    BoundedByConfig("max_categories", 256) per V0-MEM-GOV-02. When
-    ``categories`` is set, the allowlist takes precedence and the
-    cap-and-drop path is unreachable.
+    Bounded by ``max_categories`` (default 256). When ``categories`` is
+    explicitly set, the allowlist takes precedence and the cap-and-drop
+    path is unreachable.
     """
     _enforce_field_str(field, "event_type_mix")
     if max_categories < 1:
@@ -736,9 +677,9 @@ def most_recent_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
 def reservoir_sample(
     field: Any, *, samples: int, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only Vitter Algorithm R sample per docs/operators/buffer-geo/reservoir_sample.md.
+    """Lifetime-only Vitter Algorithm R reservoir sample.
 
-    ``samples`` is BoundedByRequiredKwarg("samples") per V0-MEM-GOV-02.
+    ``samples`` is the required bound on retained values.
     """
     _enforce_field_str(field, "reservoir_sample")
     if samples < 1:
@@ -751,16 +692,10 @@ def reservoir_sample(
     )
 
 
-# ── Geo (4) ────────────────────────────────────────────────────────────────
-
-
 def geo_velocity(
     *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only max km/h between consecutive matching events.
-
-    See docs/operators/buffer-geo/geo_velocity.md.
-    """
+    """Lifetime-only max km/h between consecutive matching events."""
     return AggDescriptor(
         op="geo_velocity",
         extras={"lat_field": lat, "lon_field": lon},
@@ -771,10 +706,7 @@ def geo_velocity(
 def geo_distance(
     *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only cumulative haversine path length.
-
-    See docs/operators/buffer-geo/geo_distance.md.
-    """
+    """Lifetime-only cumulative haversine path length."""
     return AggDescriptor(
         op="geo_distance",
         extras={"lat_field": lat, "lon_field": lon},
@@ -785,10 +717,7 @@ def geo_distance(
 def geo_spread(
     *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only RMS dispersion around running centroid.
-
-    See docs/operators/buffer-geo/geo_spread.md.
-    """
+    """Lifetime-only RMS dispersion around the running centroid."""
     return AggDescriptor(
         op="geo_spread",
         extras={"lat_field": lat, "lon_field": lon},
@@ -799,10 +728,8 @@ def geo_spread(
 def distance_from_home(
     *, lat: str, lon: str, samples: int = 100, where: Any = None
 ) -> AggDescriptor:
-    """Distance from current point to centroid of last ``samples`` matching events.
-
-    ``samples`` is BoundedByConfig("samples", 100) per V0-MEM-GOV-02 — see
-    docs/operators/buffer-geo/distance_from_home.md.
+    """Distance from the current point to the centroid of the last
+    ``samples`` matching events.
     """
     if samples < 1:
         raise ValueError(
@@ -815,13 +742,10 @@ def distance_from_home(
     )
 
 
-# ── ADR-002 deprecation aliases (5) ───────────────────────────────────────
-
-
 def avg(field: Any, **kw: Any) -> AggDescriptor:
-    """DEPRECATED: use ``bv.mean`` per ADR-002."""
+    """Deprecated alias for :func:`mean`."""
     warnings.warn(
-        "bv.avg is deprecated; use bv.mean per ADR-002",
+        "bv.avg is deprecated; use bv.mean",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -829,9 +753,9 @@ def avg(field: Any, **kw: Any) -> AggDescriptor:
 
 
 def variance(field: Any, **kw: Any) -> AggDescriptor:
-    """DEPRECATED: use ``bv.var`` per ADR-002."""
+    """Deprecated alias for :func:`var`."""
     warnings.warn(
-        "bv.variance is deprecated; use bv.var per ADR-002",
+        "bv.variance is deprecated; use bv.var",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -839,9 +763,9 @@ def variance(field: Any, **kw: Any) -> AggDescriptor:
 
 
 def stddev(field: Any, **kw: Any) -> AggDescriptor:
-    """DEPRECATED: use ``bv.std`` per ADR-002."""
+    """Deprecated alias for :func:`std`."""
     warnings.warn(
-        "bv.stddev is deprecated; use bv.std per ADR-002",
+        "bv.stddev is deprecated; use bv.std",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -849,9 +773,9 @@ def stddev(field: Any, **kw: Any) -> AggDescriptor:
 
 
 def count_distinct(field: Any, **kw: Any) -> AggDescriptor:
-    """DEPRECATED: use ``bv.n_unique`` per ADR-002."""
+    """Deprecated alias for :func:`n_unique`."""
     warnings.warn(
-        "bv.count_distinct is deprecated; use bv.n_unique per ADR-002",
+        "bv.count_distinct is deprecated; use bv.n_unique",
         DeprecationWarning,
         stacklevel=2,
     )
@@ -859,9 +783,9 @@ def count_distinct(field: Any, **kw: Any) -> AggDescriptor:
 
 
 def percentile(field: Any, *, p: float, **kw: Any) -> AggDescriptor:
-    """DEPRECATED: use ``bv.quantile(q=...)`` per ADR-002."""
+    """Deprecated alias for :func:`quantile` (use ``q=`` instead of ``p=``)."""
     warnings.warn(
-        "bv.percentile is deprecated; use bv.quantile(q=...) per ADR-002",
+        "bv.percentile is deprecated; use bv.quantile(q=...)",
         DeprecationWarning,
         stacklevel=2,
     )

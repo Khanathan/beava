@@ -1,23 +1,14 @@
-"""Beava Python SDK — Phase 13.5 Plan 01 minimal foundation.
+"""Beava Python SDK.
 
-The five-module surface (`__init__`, `_wire`, `_transport`, `_errors`, `_embed`)
-is intentionally bare after Plan 01 deletes the stale pre-Phase-13.0 surface.
-
-Plans 02-07 re-populate the public namespace:
-  - Plan 02: bv.App core + URL-scheme dispatch + test_mode kwarg
-  - Plan 03: pipeline DSL — bv.col, bv.lit, @bv.event, @bv.table
-  - Plan 04: 53 op helpers + ADR-002 deprecation aliases
-  - Plan 05: PEP 563 fix + bv.demo loader + beava.test/cli submodules
-  - Plan 06: in-package demo datasets
-  - Plan 07: beava.test fixtures + replay + MockApp
-
-v0 ships events-only per `project_v0_events_only_scope` (locked 2026-04-30,
-ADR-001 partial overturn 2026-05-03 revives @bv.table for aggregation-output).
+Public surface: ``bv.event`` / ``bv.table`` / ``bv.col`` / ``bv.lit`` /
+``bv.App`` plus the operator catalogue. v0 ships events-only per the locked
+``project_v0_events_only_scope`` commitment (ADR-001 partial overturn revives
+``@bv.table`` for aggregation-output only — no ``upsert`` / ``delete`` /
+``retract`` paths).
 """
 
 from __future__ import annotations
 
-# Re-exports from kept modules only:
 from beava._agg import (  # noqa: F401
     age,
     avg,
@@ -101,7 +92,6 @@ __all__ = [
     "event",
     "table",
     "demo",
-    # core (8)
     "count",
     "sum",
     "mean",
@@ -110,19 +100,16 @@ __all__ = [
     "var",
     "std",
     "ratio",
-    # sketch (5)
     "n_unique",
     "quantile",
     "top_k",
     "bloom_member",
     "entropy",
-    # point/ordinal (5)
     "first",
     "last",
     "first_n",
     "last_n",
     "lag",
-    # recency (10)
     "first_seen",
     "last_seen",
     "age",
@@ -133,7 +120,6 @@ __all__ = [
     "max_streak",
     "negative_streak",
     "first_seen_in_window",
-    # decay (6 + ema alias)
     "ewma",
     "ema",
     "ewvar",
@@ -141,7 +127,6 @@ __all__ = [
     "decayed_sum",
     "decayed_count",
     "twa",
-    # velocity (9)
     "rate_of_change",
     "inter_arrival_stats",
     "burst_count",
@@ -151,7 +136,6 @@ __all__ = [
     "outlier_count",
     "value_change_count",
     "z_score",
-    # bounded buffers (7)
     "histogram",
     "hour_of_day_histogram",
     "dow_hour_histogram",
@@ -159,12 +143,10 @@ __all__ = [
     "event_type_mix",
     "most_recent_n",
     "reservoir_sample",
-    # geo (4)
     "geo_velocity",
     "geo_distance",
     "geo_spread",
     "distance_from_home",
-    # ADR-002 deprecation aliases (5)
     "avg",
     "variance",
     "stddev",

@@ -1,11 +1,12 @@
-"""beava.test — pytest fixtures and assertion helpers for Beava users.
+"""``beava.test`` — pytest fixtures and assertion helpers.
 
-Public surface (per docs/sdk-api/python.md § bv.test fixtures):
+Public surface:
 
-- :func:`fixture` — pytest-shaped fixture yielding ``bv.App`` (embed mode,
-  ``test_mode=True`` default per Phase 13.5 D-05).
+- :func:`fixture` — pytest-shaped fixture yielding a ``bv.App`` (embed
+  mode, ``test_mode=True`` by default).
 - :func:`replay` — feed a list of event dicts into ``App.push`` in order.
-- :func:`assert_features_eq` — feature-dict comparison with float tolerance.
+- :func:`assert_features_eq` — feature-dict comparison with float
+  tolerance.
 - :class:`MockApp` — in-memory test double of ``bv.App``.
 """
 from __future__ import annotations

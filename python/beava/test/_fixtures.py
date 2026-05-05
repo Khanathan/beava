@@ -1,8 +1,9 @@
-"""beava.test.fixture — pytest-shaped fixture for embed-mode App.
+"""``beava.test.fixture`` — pytest-shaped fixture for embed-mode App.
 
-Default ``test_mode=True`` per Phase 13.5 D-05 cross-amendment from 13.4 D-03.
+Defaults to ``test_mode=True`` so :meth:`bv.App.reset` is callable inside
+the test body.
 
-Usage in user code::
+Usage::
 
     import pytest
     from beava.test import fixture

@@ -1,6 +1,6 @@
-"""@bv.event decorator + EventSource/EventDerivation/GroupBy classes — Phase 13.5 Plan 03.
+"""``@bv.event`` decorator and chain-building classes.
 
-@bv.event has two forms:
+``@bv.event`` has two forms:
 
 - **Class form:** declares an event source with a typed schema. Each
   annotated field becomes a schema column. Per-source kwargs
@@ -9,18 +9,19 @@
 
 - **Function form:** declares an event derivation — a pipeline that chains
   on one or more upstream event sources. The function body builds a chain
-  via the ``filter / select / drop / rename / with_columns / cast / fillna /
-  group_by / agg`` chain methods.
+  via the ``filter / select / drop / rename / with_columns / cast / fillna
+  / group_by / agg`` chain methods.
 
-ADR-003 amendment 2026-05-03: ``events.group_by()`` (no args) returns a
-*global* GroupBy whose subsequent ``.agg(...)`` produces a chain step with
-``keys=[]``. ``events.agg(**aggs)`` is a direct shorthand equivalent to
+``events.group_by()`` (no args) returns a *global* :class:`GroupBy` whose
+subsequent ``.agg(...)`` emits a chain step with ``keys=[]``;
+``events.agg(**aggs)`` is a direct shorthand for
 ``events.group_by().agg(**aggs)``.
 
-`project_redis_shaped_no_event_time_ever` (locked 2026-04-30) prohibits
-event-time semantics in v0; the decorator rejects ``event_time`` schema
-fields and the ``tolerate_delay`` / ``event_time_field`` decorator kwargs
-with ``TypeError`` at decorator-time.
+Per the locked ``project_redis_shaped_no_event_time_ever`` commitment, v0
+is processing-time only: the decorator rejects ``event_time`` schema fields
+and the ``tolerate_delay`` / ``event_time_field`` decorator kwargs with
+``TypeError`` at decorator time. Event-time semantics are roadmapped for
+post-v0.
 """
 from __future__ import annotations
 
@@ -32,9 +33,6 @@ from beava._col import _Expr
 _FORBIDDEN_FIELD_NAMES = ("event_time",)
 _FORBIDDEN_DECORATOR_KWARGS = ("tolerate_delay", "event_time_field")
 _VALID_CAST_TARGETS = ("str", "int", "float", "bool")
-
-
-# ── Chain mixin ─────────────────────────────────────────────────────────────
 
 
 class _ChainMixin:
@@ -89,24 +87,23 @@ class _ChainMixin:
         )
 
     def group_by(self, *keys: str) -> "GroupBy":
-        # ADR-003: empty *keys allowed → global GroupBy.
+        # Empty *keys is allowed and produces a global GroupBy.
         return GroupBy(parent=self, keys=tuple(keys))
 
     def agg(self, **named: Any) -> "EventDerivation":
-        """ADR-003 direct shorthand: events.agg(...) == events.group_by().agg(...)."""
+        """Shorthand for ``events.group_by().agg(...)`` (global aggregation)."""
         return self.group_by().agg(**named)
 
     def named(self, name: str) -> "EventDerivation":
-        """Tag a derivation with a stable name (used by v0 tests + register output)."""
-        # Implemented as a chain-noop step ``{"op": "rename_self", "name": ...}``
-        # so it survives the chain serialization unchanged but exposes a
-        # deterministic ``_name`` for downstream registration.
+        """Tag a derivation with a stable, registration-visible name.
+
+        Implemented as a chain-noop ``rename_self`` step so the chain
+        survives serialization unchanged while still exposing a
+        deterministic ``_name`` for downstream registration.
+        """
         d = _make_derivation(self, {"op": "rename_self", "name": name})
         d._name = name
         return d
-
-
-# ── Public classes ──────────────────────────────────────────────────────────
 
 
 class EventSource(_ChainMixin):
@@ -140,12 +137,12 @@ class EventDerivation(_ChainMixin):
         self._schema: dict[str, type] | None = None  # propagated at register-time
         self._kind = "event_derivation"
         self._key_cols: list[str] | None = None
-        # Phase 13.5.2 D-02 marker: True iff this EventDerivation is the output
-        # of an `@bv.event def F(...)` decoration. Raw chain expressions
-        # (e.g. `Click.with_columns(...).named("X")`) leave this False; the
-        # `_make_event_derivation` decorator function flips it to True before
-        # returning. `App.register` and `_resolve_upstream_proxies` use this
-        # marker to distinguish legitimate decorated outputs from raw chains.
+        # Marker set by ``_make_event_derivation`` — True iff this
+        # EventDerivation is the output of an ``@bv.event def F(...)``
+        # decoration. Raw chain expressions (e.g.
+        # ``Click.with_columns(...).named("X")``) keep it False so
+        # ``App.register`` and ``_resolve_upstream_proxies`` can reject
+        # them with a sharp error pointing at the canonical rewrite.
         self._is_bv_event_function: bool = False
 
 
@@ -165,7 +162,7 @@ class GroupBy:
     def agg(self, **named: Any) -> EventDerivation:
         """Apply named aggregations.
 
-        Each value is either a Plan-04 ``AggDescriptor`` (which exposes
+        Each value is either an :class:`AggDescriptor` (exposing
         ``to_dict()``) or a primitive that is serialized directly.
         """
         new_chain = list(self._parent._chain) + [
@@ -188,24 +185,23 @@ class GroupBy:
         return d
 
 
-# ── @bv.event decorator ─────────────────────────────────────────────────────
-
-
 def _validate_class_event(cls: type, kwargs: dict[str, Any]) -> None:
+    # Per `project_redis_shaped_no_event_time_ever` (locked 2026-04-30), v0
+    # is processing-time only — the server stamps wall-clock time on every
+    # push. Reject the event-time-shaped surface at decorator time so users
+    # never silently accumulate event-time semantics they can't actually use.
     for forbidden_kw in _FORBIDDEN_DECORATOR_KWARGS:
         if forbidden_kw in kwargs:
             raise TypeError(
-                f"@bv.event {forbidden_kw!r} kwarg is not supported in v0 "
-                f"per project_redis_shaped_no_event_time_ever (locked 2026-04-30); "
-                f"server stamps wall-clock processing time on every push."
+                f"@bv.event {forbidden_kw!r} kwarg is not supported in v0; "
+                f"the server stamps wall-clock processing time on every push."
             )
     hints = get_type_hints(cls, include_extras=True)
     for forbidden_field in _FORBIDDEN_FIELD_NAMES:
         if forbidden_field in hints:
             raise TypeError(
-                f"@bv.event class field {forbidden_field!r} is not supported in v0 "
-                f"per project_redis_shaped_no_event_time_ever; server stamps "
-                f"wall-clock processing time on every push."
+                f"@bv.event class field {forbidden_field!r} is not supported in v0; "
+                f"the server stamps wall-clock processing time on every push."
             )
 
 
@@ -213,8 +209,8 @@ def _make_event_source(cls: type, kwargs: dict[str, Any]) -> type:
     _validate_class_event(cls, kwargs)
     hints = get_type_hints(cls, include_extras=True)
     src = EventSource(name=cls.__name__, schema=hints, **kwargs)
-    # Attach EventSource fields to the class for static-attribute access
-    # (e.g., ``_Txn._schema`` / ``_Txn._chain``).
+    # Mirror EventSource state onto the class so users can access it as
+    # static attributes (`MyEvent._schema`, `MyEvent._chain`, ...).
     for attr in (
         "_name",
         "_schema",
@@ -226,7 +222,8 @@ def _make_event_source(cls: type, kwargs: dict[str, Any]) -> type:
         "_kind",
     ):
         setattr(cls, attr, getattr(src, attr))
-    # Attach chain methods as static methods (so ``Cls.filter(...)`` works).
+    # Attach the chain methods as staticmethods so user code can call
+    # `Cls.filter(...)` directly without instantiating the EventSource.
     for method_name in (
         "filter",
         "select",
@@ -249,10 +246,10 @@ _EVENTS_MODULE_FILE = __file__
 
 
 def _collect_closure_cells_for_events(fn: Callable[..., Any]) -> dict[str, Any]:
-    """Return a {name: value} map of ``fn``'s lexical closure cells.
+    """Return a ``{name: value}`` map of ``fn``'s lexical closure cells.
 
-    Mirror of `_table._collect_closure_cells` — Phase 13.5.2 D-02 + function-
-    local resolution parity. See `_table.py` for rationale.
+    Mirror of :func:`_table._collect_closure_cells` for resolution parity
+    with ``@bv.table`` — see that module for the rationale.
     """
     cells: dict[str, Any] = {}
     code = getattr(fn, "__code__", None)
@@ -271,10 +268,11 @@ def _collect_closure_cells_for_events(fn: Callable[..., Any]) -> dict[str, Any]:
 def _collect_caller_frame_locals_for_events() -> dict[str, Any]:
     """Return merged ``f_locals`` from user-code frames above ``_events.py``.
 
-    Mirror of `_table._collect_caller_frame_locals` — boundary detection by
-    file identity (``_EVENTS_MODULE_FILE``) so the resolver stays robust under
-    decorator-stack wrappers. Captures the function-local ``@bv.event class
-    Foo: ...`` pattern (e.g. inside a pytest test function body).
+    Mirror of :func:`_table._collect_caller_frame_locals` — boundary
+    detection is by file identity (``_EVENTS_MODULE_FILE``) so the resolver
+    stays robust under decorator-stack wrappers. Captures the
+    function-local ``@bv.event class Foo: ...`` pattern (e.g. inside a
+    pytest test function body).
     """
     merged: dict[str, Any] = {}
     frame = inspect.currentframe()
@@ -303,18 +301,17 @@ def _make_event_derivation(fn: Callable[..., Any]) -> EventDerivation:
         raise TypeError(
             f"@bv.event function {fn.__name__!r} must take at least one parameter"
         )
-    # Phase 13.5.2: mirror `_table._resolve_upstream_proxies` resolution
-    # protocol so function-local @bv.event class definitions (e.g. inside a
-    # pytest test fn) resolve correctly. Without this, `def Tagged(click:
-    # Click)` where `Click` is function-local resolves to the string
-    # `'Click'` and fn() crashes with `AttributeError: 'str' object has no
-    # attribute 'with_columns'`. Same closure-cell + caller-frame protocol
-    # as documented in `docs/sdk-api/python.md` § "Supported @bv.event
-    # declaration sites".
+    # Mirror `_table._resolve_upstream_proxies` so function-local
+    # @bv.event class definitions (e.g. inside a pytest test fn) resolve
+    # correctly. Under `from __future__ import annotations`, `def
+    # Tagged(click: Click)` where `Click` is function-local would otherwise
+    # leave the annotation as the string `'Click'` and cause an
+    # AttributeError when invoked. Resolution sources are checked in this
+    # priority order: globals, then closure cells, then caller-frame locals.
     closure_cells = _collect_closure_cells_for_events(fn)
     caller_locals = _collect_caller_frame_locals_for_events()
     localns: dict[str, Any] = dict(caller_locals)
-    localns.update(closure_cells)  # closure cells take priority
+    localns.update(closure_cells)  # closure cells outrank caller-frame locals
     try:
         resolved = get_type_hints(fn, globalns=fn.__globals__, localns=localns)
     except Exception:
@@ -323,16 +320,13 @@ def _make_event_derivation(fn: Callable[..., Any]) -> EventDerivation:
     for p in params:
         ann = resolved.get(p.name, p.annotation)
         if isinstance(ann, str):
-            # Try sources in documented contract order: globals, then
-            # closure cells, then caller f_locals.
             ann = fn.__globals__.get(
                 ann,
                 closure_cells.get(ann, caller_locals.get(ann, ann)),
             )
-        # Phase 13.5.2 D-02 (USER-LOCKED): reject raw EventDerivation
-        # instances. Legitimate @bv.event def outputs carry the
-        # `_is_bv_event_function` marker set below at the bottom of this
-        # function.
+        # Reject raw EventDerivation instances. Legitimate @bv.event def
+        # outputs carry the `_is_bv_event_function` marker set at the
+        # bottom of this function; raw chain expressions don't.
         if isinstance(ann, EventDerivation) and not getattr(
             ann, "_is_bv_event_function", False
         ):
@@ -354,11 +348,10 @@ def _make_event_derivation(fn: Callable[..., Any]) -> EventDerivation:
             f"(filter/select/group_by/agg/...); got {type(result).__name__}"
         )
     result._name = fn.__name__
-    # Phase 13.5.2 D-02 marker handshake: tag this EventDerivation as a
-    # legitimate @bv.event def output so `App.register` (Plan 03) and
-    # downstream decorator resolvers skip the chain-rejection check for it.
-    # Raw chain expressions (e.g. `Click.with_columns(...).named("X")`) lack
-    # this marker → REJECTED.
+    # Tag this EventDerivation as a legitimate @bv.event def output so
+    # `App.register` and downstream decorator resolvers accept it; raw
+    # chain expressions (e.g. `Click.with_columns(...).named("X")`) lack
+    # this marker and are rejected with a sharp error.
     result._is_bv_event_function = True
     return result
 
