@@ -28,7 +28,22 @@ use beava_runtime_core::wal_buffer::WalBufferRing;
 use beava_runtime_core::wal_lsn::WalLsn;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// Phase 13.5.2: helper to compute the effective query_time_ms used by
+// time_since / age / windowed ops. Takes the max of the watermark (D-06 —
+// last event-time seen, monotonic across pushes) and wall-clock now. The
+// watermark guarantees replay-determinism for already-advanced state; the
+// wall-clock floor ensures `time_since` reflects actual elapsed time when
+// the test sleeps + queries an entity that hasn't received fresh events.
+#[inline]
+fn effective_query_time_ms(watermark: u64) -> i64 {
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    (watermark as i64).max(wall)
+}
 
 /// The result of dispatching a `WireRequest` through the apply path.
 ///
@@ -175,18 +190,11 @@ fn dispatch_get_single(
     }
     let registry = &app.dev_agg.registry;
 
-    let query_time_ms = {
-        let raw = app
-            .dev_agg
+    let query_time_ms = effective_query_time_ms(
+        app.dev_agg
             .query_time_ms
-            .load(std::sync::atomic::Ordering::Acquire);
-        if raw == 0 {
-            // Fall back to wall clock when no events have been pushed yet.
-            Instant::now().elapsed().as_millis() as i64
-        } else {
-            raw as i64
-        }
-    };
+            .load(std::sync::atomic::Ordering::Acquire),
+    );
 
     // Case 1: `feature` is an individual feature name (e.g. "cnt").
     // Return `{"value": <single-value>}`.
@@ -337,17 +345,11 @@ pub fn dispatch_get_single_verb_style_sync(
         }
     }
     let registry = &app.dev_agg.registry;
-    let query_time_ms = {
-        let raw = app
-            .dev_agg
+    let query_time_ms = effective_query_time_ms(
+        app.dev_agg
             .query_time_ms
-            .load(std::sync::atomic::Ordering::Acquire);
-        if raw == 0 {
-            0i64
-        } else {
-            raw as i64
-        }
-    };
+            .load(std::sync::atomic::Ordering::Acquire),
+    );
 
     let descriptor = match registry.compiled_aggregation(table) {
         Some(d) => d,
@@ -525,17 +527,11 @@ fn dispatch_get_batch(app: &Arc<AppState>, body: &Bytes, body_format: u8) -> Glu
     let t_resolve = t0.map(|t| t.elapsed());
 
     // 3. Compute query_time_ms (D-06 — never wall clock).
-    let query_time_ms = {
-        let raw = app
-            .dev_agg
+    let query_time_ms = effective_query_time_ms(
+        app.dev_agg
             .query_time_ms
-            .load(std::sync::atomic::Ordering::Acquire);
-        if raw == 0 {
-            0i64
-        } else {
-            raw as i64
-        }
-    };
+            .load(std::sync::atomic::Ordering::Acquire),
+    );
 
     // 4. Single state_tables lock for the whole batch.
     let tables = app.dev_agg.state_tables.lock();
