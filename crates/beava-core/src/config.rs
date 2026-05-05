@@ -1,23 +1,16 @@
-//! Server configuration — Phase 1 shape.
-//!
-//! Minimal Config for Phase 1: only the knobs Plan 03 (logging) and Plan 04 (HTTP)
-//! consume. Later phases extend this struct additively.
+//! Server configuration.
 //!
 //! Loading order (later sources override earlier):
 //! 1. Defaults baked into `Config::default()`
 //! 2. YAML file at the path passed to `load_config`
 //! 3. Environment variables with `BEAVA_*` prefix
-//!
-//! Env vars recognized in Phase 1:
-//! - `BEAVA_LISTEN_ADDR` → `listen_addr`
-//! - `BEAVA_LOG_LEVEL`   → `log_level`
 
 use crate::defaults::{DEFAULT_TCP_HOST, DEFAULT_TCP_MAX_FRAME_BYTES, DEFAULT_TCP_PORT};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// Server configuration, Phase 1 shape.
+/// Server configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -27,13 +20,13 @@ pub struct Config {
     /// Log level for tracing filter (trace|debug|info|warn|error).
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    /// TCP wire listener config (Phase 2.5 D-06). Enabled by default alongside HTTP.
+    /// TCP wire listener config. Enabled by default alongside HTTP.
     #[serde(default)]
     pub tcp: TcpConfig,
-    /// Phase 6 D-06/D-13: WAL + idempotency cache knobs.
+    /// WAL + idempotency cache knobs.
     #[serde(default)]
     pub durability: DurabilityConfig,
-    /// Plan 12-07: Admin endpoint address (for /metrics, /registry, /debug).
+    /// Admin endpoint address (for /metrics, /registry, /debug).
     /// The data-plane (HTTP /push, /get; TCP) binds to `listen_addr` and
     /// `tcp.host:tcp.port`; the admin plane binds separately so prometheus
     /// scrapers and ops dashboards don't share a port with high-throughput
@@ -66,8 +59,6 @@ impl Default for Config {
     }
 }
 
-// ─── DurabilityConfig (Phase 6 D-06 / D-13) ──────────────────────────────────
-
 /// Durability + idempotency-cache tuning. All fields env-override via
 /// `BEAVA_WAL_DIR`, `BEAVA_WAL_FSYNC_INTERVAL_MS`, `BEAVA_WAL_FSYNC_BYTES`,
 /// `BEAVA_WAL_SEGMENT_BYTES`, and `BEAVA_DEDUPE_SWEEP_SECS`.
@@ -84,16 +75,16 @@ pub struct DurabilityConfig {
     pub wal_segment_bytes: u64,
     #[serde(default = "default_dedupe_sweep_interval_secs")]
     pub dedupe_sweep_interval_secs: u64,
-    /// Phase 7: directory where snapshot files are written.
+    /// Directory where snapshot files are written.
     #[serde(default = "default_snapshot_dir")]
     pub snapshot_dir: PathBuf,
-    /// Phase 7: periodic snapshot cadence in milliseconds (default 30_000).
+    /// Periodic snapshot cadence in milliseconds (default 30_000).
     #[serde(default = "default_snapshot_interval_ms")]
     pub snapshot_interval_ms: u64,
-    /// Phase 7: number of snapshots to retain after pruning (default 2).
+    /// Number of snapshots to retain after pruning (default 2).
     #[serde(default = "default_snapshot_retain_count")]
     pub snapshot_retain_count: usize,
-    /// Phase 6.1: WAL sync semantics for the default `/push` endpoint.
+    /// WAL sync semantics for the default `/push` endpoint.
     /// `Periodic` (default) ACKs after in-memory append (Kafka acks=1);
     /// `PerEvent` ACKs after fsync (Kafka acks=all). The `/push-sync`
     /// endpoint always uses PerEvent regardless of this value.
@@ -102,10 +93,10 @@ pub struct DurabilityConfig {
     pub wal_sync_mode: WalSyncMode,
 }
 
-/// Phase 6.1: serializable mirror of `beava_persistence::SyncMode`. We
-/// duplicate the enum here so beava-core (WASM-portable) doesn't need to
-/// depend on beava-persistence (syscall-bearing). The conversion lives in
-/// the server crate.
+/// Serializable mirror of `beava_persistence::SyncMode`. The enum is
+/// duplicated here so beava-core (WASM-portable) doesn't need to depend on
+/// beava-persistence (syscall-bearing). The conversion lives in the server
+/// crate.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WalSyncMode {
@@ -159,9 +150,7 @@ impl Default for DurabilityConfig {
     }
 }
 
-// ─── TcpConfig (Phase 2.5) ────────────────────────────────────────────────────
-
-/// TCP binary-framed wire listener configuration (Phase 2.5 D-06).
+/// TCP binary-framed wire listener configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TcpConfig {
@@ -221,8 +210,7 @@ pub enum ConfigError {
 
 /// Load a Config from the given YAML file path, apply env-var overrides, then validate.
 ///
-/// Env-var overrides follow the `BEAVA_*` prefix convention. Only string overrides for
-/// Phase 1 — later phases may introduce typed (numeric, bool) overrides as needed.
+/// Env-var overrides follow the `BEAVA_*` prefix convention.
 pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
     let path = path.as_ref();
     if !path.exists() {
@@ -250,7 +238,7 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
         cfg.log_level = v;
     }
     if let Ok(v) = std::env::var("BEAVA_TCP_ENABLED") {
-        // Accept "0"/"1"/"true"/"false" (case-insensitive)
+        // Accept "0"/"1"/"true"/"false" (case-insensitive).
         cfg.tcp.enabled = matches!(v.to_ascii_lowercase().as_str(), "1" | "true");
     }
     if let Ok(v) = std::env::var("BEAVA_TCP_HOST") {
@@ -272,7 +260,6 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
                     reason: format!("BEAVA_TCP_MAX_FRAME_BYTES=`{}`: {}", v, e),
                 })?;
     }
-    // Phase 6 DurabilityConfig env overrides.
     if let Ok(v) = std::env::var("BEAVA_WAL_DIR") {
         cfg.durability.wal_dir = PathBuf::from(v);
     }
@@ -342,7 +329,6 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
             }
         };
     }
-    // Plan 12-07: admin_addr env override.
     if let Ok(v) = std::env::var("BEAVA_ADMIN_ADDR") {
         cfg.admin_addr = v;
     }
@@ -350,7 +336,6 @@ fn apply_env_overrides(cfg: &mut Config) -> Result<(), ConfigError> {
 }
 
 fn validate(cfg: &Config) -> Result<(), ConfigError> {
-    // Validate listen_addr parses as a SocketAddr.
     cfg.listen_addr
         .parse::<std::net::SocketAddr>()
         .map_err(|e| ConfigError::Validation {
@@ -358,7 +343,7 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             reason: format!("`{}` is not a valid socket address: {}", cfg.listen_addr, e),
         })?;
 
-    // Plan 12-07: Validate admin_addr parses as a SocketAddr.
+    // Validate admin_addr parses as a SocketAddr.
     cfg.admin_addr
         .parse::<std::net::SocketAddr>()
         .map_err(|e| ConfigError::Validation {
@@ -366,7 +351,6 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
             reason: format!("`{}` is not a valid socket address: {}", cfg.admin_addr, e),
         })?;
 
-    // Validate log_level is one of the known tracing levels.
     match cfg.log_level.to_ascii_lowercase().as_str() {
         "trace" | "debug" | "info" | "warn" | "error" => Ok(()),
         other => Err(ConfigError::Validation {
@@ -481,8 +465,6 @@ mod tests {
             other => panic!("expected Validation, got {other:?}"),
         }
     }
-
-    // ─── Phase 2.5 TcpConfig tests ────────────────────────────────────────────
 
     const TCP_ENV_KEYS: &[&str] = &[
         "BEAVA_LISTEN_ADDR",

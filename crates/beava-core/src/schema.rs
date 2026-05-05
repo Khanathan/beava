@@ -1,14 +1,9 @@
-//! Schema primitives: FieldType, EventSchema, TableSchema, DerivedSchema,
-//! descriptor name validation.
-//!
-//! These are the locked data shapes for Phase 2. All higher-level constructs
-//! (EventDescriptor, TableDescriptor, DerivationDescriptor) reference these.
+//! Schema primitives: `FieldType`, `EventSchema`, `TableSchema`,
+//! `DerivedSchema`, descriptor name validation.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
-
-// ─── Field types ────────────────────────────────────────────────────────────
 
 /// The scalar field types supported by Beava v0 schemas.
 /// Serializes to/from lowercase strings (e.g., `"str"`, `"f64"`, `"i64"`).
@@ -21,11 +16,9 @@ pub enum FieldType {
     Bool,
     Bytes,
     Datetime,
-    /// Structured JSON output — used by sketch operators that return lists/objects (Phase 10).
+    /// Structured JSON output — used by sketch operators that return lists/objects.
     Json,
 }
-
-// ─── Schema structs ──────────────────────────────────────────────────────────
 
 /// Schema attached to an event descriptor.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,8 +43,6 @@ pub struct DerivedSchema {
     #[serde(default)]
     pub optional_fields: Vec<String>,
 }
-
-// ─── Descriptor name validation ──────────────────────────────────────────────
 
 const MAX_NAME_LEN: usize = 128;
 const RESERVED_PREFIX: &str = "_beava_";
@@ -89,9 +80,8 @@ pub fn validate_descriptor_name(name: &str) -> Result<(), DescriptorNameError> {
     if name.starts_with(RESERVED_PREFIX) {
         return Err(DescriptorNameError::ReservedPrefix(name.to_string()));
     }
-    // Validate pattern: [A-Za-z_][A-Za-z0-9_]*
     let mut chars = name.chars();
-    let first = chars.next().unwrap(); // safe: non-empty checked above
+    let first = chars.next().unwrap(); // non-empty checked above
     if !first.is_ascii_alphabetic() && first != '_' {
         return Err(DescriptorNameError::BadPattern(name.to_string()));
     }
@@ -103,13 +93,10 @@ pub fn validate_descriptor_name(name: &str) -> Result<(), DescriptorNameError> {
     Ok(())
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Test 1: FieldType serde round-trip for all 6 variants
     #[test]
     fn field_type_serde_round_trip_all_variants() {
         let cases = [
@@ -134,7 +121,6 @@ mod tests {
         }
     }
 
-    // Test 1b: FieldType::Json round-trips as "json"
     #[test]
     fn field_type_json_round_trips() {
         use crate::schema::FieldType;
@@ -144,20 +130,17 @@ mod tests {
         assert_eq!(r, FieldType::Json);
     }
 
-    // Test 2: unknown FieldType string returns Err with readable message
     #[test]
     fn field_type_unknown_string_returns_err() {
         let result: Result<FieldType, _> = serde_json::from_str("\"int\"");
         assert!(result.is_err(), "expected Err for unknown field type 'int'");
         let msg = result.unwrap_err().to_string();
-        // Should mention the unknown value and/or the valid ones
         assert!(
             msg.contains("unknown variant") || msg.contains("int"),
             "error message should mention 'int' or 'unknown variant', got: {msg}"
         );
     }
 
-    // Test 3: EventSchema round-trip
     #[test]
     fn event_schema_round_trip() {
         let schema = EventSchema {
@@ -179,52 +162,43 @@ mod tests {
         assert_eq!(schema, deserialized);
     }
 
-    // Test 4: validate_descriptor_name
     #[test]
     fn validate_descriptor_name_cases() {
-        // Valid names
         assert_eq!(validate_descriptor_name("Transaction"), Ok(()));
         assert_eq!(validate_descriptor_name("_private"), Ok(()));
         assert_eq!(validate_descriptor_name("a"), Ok(()));
         assert_eq!(validate_descriptor_name("A1_b2"), Ok(()));
 
-        // Empty
         assert_eq!(
             validate_descriptor_name(""),
             Err(DescriptorNameError::Empty)
         );
 
-        // Leading digit
         assert!(matches!(
             validate_descriptor_name("1abc"),
             Err(DescriptorNameError::BadPattern(_))
         ));
 
-        // Reserved prefix
         assert!(matches!(
             validate_descriptor_name("_beava_internal"),
             Err(DescriptorNameError::ReservedPrefix(_))
         ));
 
-        // Too long (129 chars)
         let long_name = "a".repeat(129);
         assert!(matches!(
             validate_descriptor_name(&long_name),
             Err(DescriptorNameError::TooLong { len: 129 })
         ));
 
-        // Exactly 128 chars — OK
         let max_name = "a".repeat(128);
         assert_eq!(validate_descriptor_name(&max_name), Ok(()));
 
-        // Hyphen — bad pattern
         assert!(matches!(
             validate_descriptor_name("foo-bar"),
             Err(DescriptorNameError::BadPattern(_))
         ));
     }
 
-    // Test 5: TableSchema and DerivedSchema round-trip with minimal JSON
     #[test]
     fn table_and_derived_schema_round_trip() {
         let table_json = r#"{"fields": {"k": "str"}, "optional_fields": []}"#;
@@ -237,7 +211,6 @@ mod tests {
         assert_eq!(derived.fields.get("k"), Some(&FieldType::Str));
         assert!(derived.optional_fields.is_empty());
 
-        // Round-trip both
         let ts2: TableSchema =
             serde_json::from_str(&serde_json::to_string(&table).unwrap()).unwrap();
         assert_eq!(table, ts2);

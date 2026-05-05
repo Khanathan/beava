@@ -11,16 +11,14 @@ pub const DEFAULT_KEEP_EVENTS_FOR_MS: u64 = 604_800_000; // 7 days
 /// Default dedupe window when `dedupe_key` is set but `dedupe_window_ms` is None.
 pub const DEFAULT_DEDUPE_WINDOW_MS: u64 = 86_400_000; // 24 hours
 
-// ─── Phase 2.5 TCP wire listener defaults ─────────────────────────────────────
-
-/// Default TCP listen host for the binary-framed wire (D-06).
+/// Default TCP listen host for the binary-framed wire.
 pub const DEFAULT_TCP_HOST: &str = "127.0.0.1";
 
-/// Default TCP port for the binary-framed wire (D-06).
+/// Default TCP port for the binary-framed wire.
 pub const DEFAULT_TCP_PORT: u16 = 7380;
 
 /// Default max frame size in bytes (4 MiB). Oversize frames produce a
-/// `frame_too_large` error response, then the connection closes (D-01).
+/// `frame_too_large` error response, then the connection closes.
 /// Recommended operator ceiling: 16 MiB; the u32 upper bound is 4 GiB and
 /// would OOM a typical box if configured that high.
 pub const DEFAULT_TCP_MAX_FRAME_BYTES: u32 = 4 * 1024 * 1024; // 4 MiB

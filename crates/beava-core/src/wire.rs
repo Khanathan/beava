@@ -1,6 +1,6 @@
 //! Wire-protocol constants for Beava's binary-framed TCP listener.
 //!
-//! # Frame envelope (v0, locked 2026-04-23)
+//! # Frame envelope
 //!
 //! ```text
 //! [u32 length BE][u16 op BE][u8 content_type][payload: length - 3 bytes]
@@ -10,44 +10,44 @@
 //! Minimum valid length is 3. All multi-byte integers are big-endian
 //! (network byte order).
 //!
-//! # Opcode table (D-02)
+//! # Opcode table
 //!
 //! Request and response frames share the same opcode space; the client-server
 //! direction is implicit. Errors use the dedicated `OP_ERROR_RESPONSE` (0xFFFF).
 //!
-//! | Opcode   | Name             | Status               | Wired in |
-//! |----------|------------------|----------------------|----------|
-//! | 0x0000   | ping             | Implemented          | Phase 2.5 |
-//! | 0x0001   | register         | Implemented          | Phase 2.5 |
-//! | 0x0010   | push             | Implemented          | Phase 8 (folded) |
-//! | 0x0011   | push_sync        | Reserved             | Phase 12 |
-//! | 0x0012   | push_many        | Reserved             | Phase 12 |
-//! | 0x0020   | get              | Implemented          | Phase 12-07 |
-//! | 0x0021   | mget             | Implemented          | Phase 12-07 |
-//! | 0x0022   | get_multi        | Implemented          | Phase 12-07 |
-//! | 0x0023   | get_response     | Implemented          | Phase 12-07 |
-//! | 0x0024   | batch_get        | Implemented          | Phase 13.4-03 |
-//! | 0x0030   | set              | Reserved             | Phase 12 |
-//! | 0x0031   | mset             | Reserved             | Phase 12 |
-//! | 0x0040   | reset            | Implemented          | Phase 13.4-08 |
-//! | 0xFFFF   | error_response   | Implemented          | Phase 2.5 |
+//! | Opcode   | Name             | Status      |
+//! |----------|------------------|-------------|
+//! | 0x0000   | ping             | Implemented |
+//! | 0x0001   | register         | Implemented |
+//! | 0x0010   | push             | Implemented |
+//! | 0x0011   | push_sync        | Reserved    |
+//! | 0x0012   | push_many        | Reserved    |
+//! | 0x0020   | get              | Implemented |
+//! | 0x0021   | mget             | Implemented |
+//! | 0x0022   | get_multi        | Implemented |
+//! | 0x0023   | get_response     | Implemented |
+//! | 0x0024   | batch_get        | Implemented |
+//! | 0x0030   | set              | Reserved    |
+//! | 0x0031   | mset             | Reserved    |
+//! | 0x0040   | reset            | Implemented |
+//! | 0xFFFF   | error_response   | Implemented |
 //!
-//! Plan 12.7-06: 0x0013/0x0014 (push_table/delete_table) deleted per
-//! `project_v0_events_only_scope` (locked 2026-04-30). v0 ships events-only;
-//! tables return in v0.1+ if/when justified by demand. Unknown opcodes
-//! (including 0x0013/0x0014 if a stale client sends them) return
-//! `OP_ERROR_RESPONSE` with code `unknown_op`.
+//! 0x0013/0x0014 (push_table/delete_table) are removed per the Phase 12.7
+//! events-only invariant (`project_v0_events_only_scope`); see CLAUDE.md
+//! §"Events-Only Invariant". Tables return in v0.1+ if/when justified.
+//! Unknown opcodes (including 0x0013/0x0014 if a stale client sends them)
+//! return `OP_ERROR_RESPONSE` with code `unknown_op`.
 //!
 //! Reserved opcodes return `OP_ERROR_RESPONSE` with payload
-//! `{error: {code: "op_not_implemented", message: "opcode 0xHHHH (name) reserved for Phase N"}, registry_version: N}`.
+//! `{error: {code: "op_not_implemented", message: "..."}, registry_version: N}`.
 //! Unknown opcodes (not in this table) return `OP_ERROR_RESPONSE` with code `unknown_op`.
 //!
-//! # Content types (D-05)
+//! # Content types
 //!
-//! | Byte | Name        | Status                   |
-//! |------|-------------|--------------------------|
-//! | 0x01 | JSON        | v0 implemented           |
-//! | 0x02 | MessagePack | Reserved (Phase 6/12)    |
+//! | Byte | Name        | Status            |
+//! |------|-------------|-------------------|
+//! | 0x01 | JSON        | v0 implemented    |
+//! | 0x02 | MessagePack | Reserved          |
 //!
 //! Frames with unknown content_type return `unsupported_content_type` error.
 //! The connection stays open (only that frame is rejected).
@@ -55,58 +55,55 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use thiserror::Error;
 
-// ─── Opcodes ──────────────────────────────────────────────────────────────────
-
 /// Health-check / version-probe opcode. Request payload ignored; response
-/// carries `{server_version, registry_version}` JSON (Phase 2.5).
+/// carries `{server_version, registry_version}` JSON.
 pub const OP_PING: u16 = 0x0000;
 
 /// Registration opcode. Request payload is the same JSON DAG as `POST /register`;
-/// response is the same 200/400/409 body (Phase 2.5).
+/// response is the same 200/400/409 body.
 pub const OP_REGISTER: u16 = 0x0001;
 
-/// Fire-and-forget push. Reserved Phase 6.
+/// Fire-and-forget push.
 pub const OP_PUSH: u16 = 0x0010;
 
-/// Synchronous push with FeatureResult response. Reserved Phase 12.
+/// Synchronous push with FeatureResult response. Reserved.
 pub const OP_PUSH_SYNC: u16 = 0x0011;
 
-/// Batched push (N events in one frame). Reserved Phase 12.
+/// Batched push (N events in one frame). Reserved.
 pub const OP_PUSH_MANY: u16 = 0x0012;
 
-// 0x0013 (push_table) and 0x0014 (delete_table) deleted by Plan 12.7-06
-// per `project_v0_events_only_scope` (locked 2026-04-30). v0 ships
-// events-only; tables return v0.1+ if/when justified by demand.
+// 0x0013 (push_table) and 0x0014 (delete_table) are excluded by the
+// Phase 12.7 events-only invariant (`project_v0_events_only_scope`);
+// see CLAUDE.md §"Events-Only Invariant". Tables return v0.1+ if/when
+// justified by demand.
 
-/// Single-key feature read. Reserved Phase 12.
+/// Single-key feature read.
 pub const OP_GET: u16 = 0x0020;
 
-/// Batched feature read (many keys, one feature). Reserved Phase 12.
+/// Batched feature read (many keys, one feature).
 pub const OP_MGET: u16 = 0x0021;
 
-/// Multi-descriptor batched read. Reserved Phase 12.
+/// Multi-descriptor batched read.
 pub const OP_GET_MULTI: u16 = 0x0022;
 
 /// Read response — payload is the JSON body for `OP_GET` / `OP_MGET` /
 /// `OP_GET_MULTI` (`{value: ...}` for single-feature, `{result: {...}}`
-/// for batch). Plan 12-07.
+/// for batch).
 pub const OP_GET_RESPONSE: u16 = 0x0023;
 
 /// Batched heterogeneous read — clients send a list of (table, entity_id)
 /// tuples in a single frame; server returns a single OP_GET_RESPONSE
 /// (0x0023) frame whose JSON body holds per-tuple results. Composes with
-/// the empty-string entity_id sentinel (ADR-003 — global tables).
-///
-/// Plan 13.4-03.
+/// the empty-string entity_id sentinel for global tables.
 pub const OP_BATCH_GET: u16 = 0x0024;
 
-/// Direct feature write. Reserved Phase 12.
+/// Direct feature write. Reserved.
 pub const OP_SET: u16 = 0x0030;
 
-/// Batched direct writes. Reserved Phase 12.
+/// Batched direct writes. Reserved.
 pub const OP_MSET: u16 = 0x0031;
 
-/// Full state + registry clear (Plan 13.4-08 / D-03 USER-LOCKED).
+/// Full state + registry clear.
 ///
 /// Gated on server `test_mode` (`BEAVA_TEST_MODE=1` env var OR
 /// `Config { test_mode: true }` at server construction). When the gate is
@@ -123,18 +120,13 @@ pub const OP_RESET: u16 = 0x0040;
 /// Dedicated error-response opcode. Payload matches the HTTP error body.
 pub const OP_ERROR_RESPONSE: u16 = 0xFFFF;
 
-// ─── Content types ────────────────────────────────────────────────────────────
-
 /// JSON content type — the only implementation in v0.
 pub const CT_JSON: u8 = 0x01;
 
 /// MessagePack content type — reserved, not implemented in v0.
 pub const CT_MSGPACK: u8 = 0x02;
 
-// ─── Lookup helpers ───────────────────────────────────────────────────────────
-
 /// Canonical snake_case name for a known opcode, or None if unknown.
-/// Used in error payloads ("opcode 0x0010 (push) reserved for Phase 6").
 pub fn opcode_name(op: u16) -> Option<&'static str> {
     match op {
         OP_PING => Some("ping"),
@@ -159,17 +151,15 @@ pub fn opcode_name(op: u16) -> Option<&'static str> {
 /// implemented / unknown opcodes.
 pub fn reserved_phase(op: u16) -> Option<&'static str> {
     match op {
-        // OP_PUSH wired in Phase 8 (folded scope: TCP push handler).
-        // OP_GET / OP_MGET / OP_GET_MULTI / OP_GET_RESPONSE wired in Phase 12-07.
-        // 0x0013/0x0014 (push_table/delete_table) deleted by Plan 12.7-06
-        // per `project_v0_events_only_scope`; treated as unknown_op.
+        // 0x0013/0x0014 (push_table/delete_table) are excluded by the
+        // Phase 12.7 events-only invariant (CLAUDE.md §"Events-Only
+        // Invariant") — they fall through to None and are treated as
+        // unknown_op by handlers, not Reserved.
         OP_PUSH_SYNC | OP_PUSH_MANY => Some("Phase 12"),
         OP_SET | OP_MSET => Some("Phase 12"),
         _ => None,
     }
 }
-
-// ─── Frame codec ──────────────────────────────────────────────────────────────
 
 /// A decoded frame. `payload` is a cheap-to-clone `Bytes` slice.
 ///
@@ -200,9 +190,9 @@ const LEN_PREFIX_BYTES: usize = 4;
 /// Size of the header that follows the length prefix (op + content_type).
 const HEADER_AFTER_LEN_BYTES: usize = 3;
 
-/// Codec-level errors. Handler-level errors (unknown_op / op_not_implemented /
-/// unsupported_content_type) are policy choices made AFTER the frame has been
-/// parsed successfully; they live in the server's tcp module.
+/// Codec-level errors. Handler-level errors (`unknown_op`, `op_not_implemented`,
+/// `unsupported_content_type`) are policy choices made after a frame parses
+/// successfully and live in the server's TCP module.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FrameError {
     #[error("frame length {declared_len} exceeds limit {limit} (max_frame_bytes + 3 for op+ct)")]
@@ -223,7 +213,7 @@ pub fn encode_frame(frame: &Frame, out: &mut BytesMut) {
     );
     let total_len = (payload_len + HEADER_AFTER_LEN_BYTES) as u32;
     out.reserve(LEN_PREFIX_BYTES + total_len as usize);
-    out.put_u32(total_len); // big-endian by default in `bytes`
+    out.put_u32(total_len); // big-endian by default in `bytes`.
     out.put_u16(frame.op);
     out.put_u8(frame.content_type);
     out.extend_from_slice(&frame.payload);
@@ -237,15 +227,14 @@ pub fn encode_frame(frame: &Frame, out: &mut BytesMut) {
 ///                      The cursor is NOT advanced on error, so the caller can
 ///                      decide connection fate without further decode ambiguity.
 ///
-/// `max_frame_bytes` is the configured maximum payload size (CONTEXT.md D-01).
-/// The frame's declared length includes op + content_type; a payload of exactly
+/// `max_frame_bytes` is the configured maximum payload size. The frame's
+/// declared length includes op + content_type; a payload of exactly
 /// `max_frame_bytes` bytes is accepted (declared_len = max_frame_bytes + 3).
 pub fn decode_frame(buf: &mut BytesMut, max_frame_bytes: u32) -> Result<Option<Frame>, FrameError> {
     if buf.len() < LEN_PREFIX_BYTES {
         return Ok(None);
     }
 
-    // Peek the length without advancing
     let declared_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
 
     if declared_len < HEADER_AFTER_LEN_BYTES as u32 {
@@ -262,15 +251,15 @@ pub fn decode_frame(buf: &mut BytesMut, max_frame_bytes: u32) -> Result<Option<F
 
     let total_needed = LEN_PREFIX_BYTES + declared_len as usize;
     if buf.len() < total_needed {
-        return Ok(None); // wait for more bytes
+        return Ok(None);
     }
 
     // Consume the frame atomically.
-    buf.advance(LEN_PREFIX_BYTES); // drop length prefix
-    let op = buf.get_u16(); // advances 2
-    let content_type = buf.get_u8(); // advances 1
+    buf.advance(LEN_PREFIX_BYTES);
+    let op = buf.get_u16();
+    let content_type = buf.get_u8();
     let payload_len = declared_len as usize - HEADER_AFTER_LEN_BYTES;
-    let payload = buf.split_to(payload_len).freeze(); // zero-copy-ish
+    let payload = buf.split_to(payload_len).freeze();
 
     Ok(Some(Frame {
         op,
@@ -279,14 +268,10 @@ pub fn decode_frame(buf: &mut BytesMut, max_frame_bytes: u32) -> Result<Option<F
     }))
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
-
-    // ─── Opcode constant values ───────────────────────────────────────────────
 
     #[test]
     fn opcode_constants_have_locked_values() {
@@ -295,15 +280,16 @@ mod tests {
         assert_eq!(OP_PUSH, 0x0010);
         assert_eq!(OP_PUSH_SYNC, 0x0011);
         assert_eq!(OP_PUSH_MANY, 0x0012);
-        // 0x0013 / 0x0014 deleted by Plan 12.7-06 (events-only).
+        // 0x0013 / 0x0014 are excluded by the Phase 12.7 events-only
+        // invariant (CLAUDE.md §"Events-Only Invariant").
         assert_eq!(OP_GET, 0x0020);
         assert_eq!(OP_MGET, 0x0021);
         assert_eq!(OP_GET_MULTI, 0x0022);
-        assert_eq!(OP_GET_RESPONSE, 0x0023); // Plan 12-07
-        assert_eq!(OP_BATCH_GET, 0x0024); // Plan 13.4-03
+        assert_eq!(OP_GET_RESPONSE, 0x0023);
+        assert_eq!(OP_BATCH_GET, 0x0024);
         assert_eq!(OP_SET, 0x0030);
         assert_eq!(OP_MSET, 0x0031);
-        assert_eq!(OP_RESET, 0x0040); // Plan 13.4-08
+        assert_eq!(OP_RESET, 0x0040);
         assert_eq!(OP_ERROR_RESPONSE, 0xFFFF);
     }
 
@@ -320,17 +306,18 @@ mod tests {
         assert_eq!(opcode_name(OP_PUSH), Some("push"));
         assert_eq!(opcode_name(OP_PUSH_SYNC), Some("push_sync"));
         assert_eq!(opcode_name(OP_PUSH_MANY), Some("push_many"));
-        // 0x0013 / 0x0014 deleted by Plan 12.7-06 — opcode_name returns None.
+        // 0x0013 / 0x0014 are excluded by the Phase 12.7 events-only
+        // invariant — opcode_name returns None.
         assert_eq!(opcode_name(0x0013), None);
         assert_eq!(opcode_name(0x0014), None);
         assert_eq!(opcode_name(OP_GET), Some("get"));
         assert_eq!(opcode_name(OP_MGET), Some("mget"));
         assert_eq!(opcode_name(OP_GET_MULTI), Some("get_multi"));
-        assert_eq!(opcode_name(OP_GET_RESPONSE), Some("get_response")); // Plan 12-07
-        assert_eq!(opcode_name(OP_BATCH_GET), Some("batch_get")); // Plan 13.4-03
+        assert_eq!(opcode_name(OP_GET_RESPONSE), Some("get_response"));
+        assert_eq!(opcode_name(OP_BATCH_GET), Some("batch_get"));
         assert_eq!(opcode_name(OP_SET), Some("set"));
         assert_eq!(opcode_name(OP_MSET), Some("mset"));
-        assert_eq!(opcode_name(OP_RESET), Some("reset")); // Plan 13.4-08
+        assert_eq!(opcode_name(OP_RESET), Some("reset"));
         assert_eq!(opcode_name(OP_ERROR_RESPONSE), Some("error_response"));
     }
 
@@ -343,24 +330,20 @@ mod tests {
 
     #[test]
     fn reserved_phase_covers_every_reserved() {
-        // OP_PUSH wired in Phase 8 (folded scope) — no longer reserved.
         assert_eq!(reserved_phase(OP_PUSH), None);
         assert_eq!(reserved_phase(OP_PUSH_SYNC), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_PUSH_MANY), Some("Phase 12"));
-        // 0x0013 / 0x0014 deleted by Plan 12.7-06 — fall through to None
-        // (treated as unknown_op by handlers, not Reserved).
+        // 0x0013 / 0x0014 are excluded by the Phase 12.7 events-only
+        // invariant — they fall through to None (treated as unknown_op).
         assert_eq!(reserved_phase(0x0013), None);
         assert_eq!(reserved_phase(0x0014), None);
-        // Plan 12-07: OP_GET / OP_MGET / OP_GET_MULTI / OP_GET_RESPONSE are now implemented.
         assert_eq!(reserved_phase(OP_GET), None);
         assert_eq!(reserved_phase(OP_MGET), None);
         assert_eq!(reserved_phase(OP_GET_MULTI), None);
         assert_eq!(reserved_phase(OP_GET_RESPONSE), None);
-        // Plan 13.4-03: OP_BATCH_GET is implemented; not reserved.
         assert_eq!(reserved_phase(OP_BATCH_GET), None);
         assert_eq!(reserved_phase(OP_SET), Some("Phase 12"));
         assert_eq!(reserved_phase(OP_MSET), Some("Phase 12"));
-        // Plan 13.4-08: OP_RESET is implemented; not reserved.
         assert_eq!(reserved_phase(OP_RESET), None);
     }
 
@@ -368,11 +351,11 @@ mod tests {
     fn reserved_phase_none_for_implemented() {
         assert_eq!(reserved_phase(OP_PING), None);
         assert_eq!(reserved_phase(OP_REGISTER), None);
-        assert_eq!(reserved_phase(OP_PUSH), None); // wired in Phase 8 (folded)
-        assert_eq!(reserved_phase(OP_GET), None); // Plan 12-07
-        assert_eq!(reserved_phase(OP_MGET), None); // Plan 12-07
-        assert_eq!(reserved_phase(OP_GET_MULTI), None); // Plan 12-07
-        assert_eq!(reserved_phase(OP_GET_RESPONSE), None); // Plan 12-07
+        assert_eq!(reserved_phase(OP_PUSH), None);
+        assert_eq!(reserved_phase(OP_GET), None);
+        assert_eq!(reserved_phase(OP_MGET), None);
+        assert_eq!(reserved_phase(OP_GET_MULTI), None);
+        assert_eq!(reserved_phase(OP_GET_RESPONSE), None);
         assert_eq!(reserved_phase(OP_ERROR_RESPONSE), None);
         assert_eq!(reserved_phase(0x4242), None);
     }
@@ -385,15 +368,15 @@ mod tests {
             OP_PUSH,
             OP_PUSH_SYNC,
             OP_PUSH_MANY,
-            // 0x0013 / 0x0014 deleted by Plan 12.7-06 (events-only).
+            // 0x0013 / 0x0014 are excluded by the Phase 12.7 events-only invariant.
             OP_GET,
             OP_MGET,
             OP_GET_MULTI,
-            OP_GET_RESPONSE, // Plan 12-07
-            OP_BATCH_GET,    // Plan 13.4-03
+            OP_GET_RESPONSE,
+            OP_BATCH_GET,
             OP_SET,
             OP_MSET,
-            OP_RESET, // Plan 13.4-08
+            OP_RESET,
             OP_ERROR_RESPONSE,
         ];
         let set: std::collections::HashSet<u16> = ops.iter().copied().collect();
@@ -403,8 +386,6 @@ mod tests {
             "opcodes must be unique — copy-paste drift?"
         );
     }
-
-    // ─── Frame construction + equality ────────────────────────────────────────
 
     #[test]
     fn frame_new_constructs() {
@@ -421,14 +402,11 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    // ─── encode_frame layout ──────────────────────────────────────────────────
-
     #[test]
     fn encode_frame_empty_payload() {
         let f = Frame::new(OP_PING, CT_JSON, Bytes::new());
         let mut buf = BytesMut::new();
         encode_frame(&f, &mut buf);
-        // [0,0,0,3] length, [0,0] op, [0x01] ct
         assert_eq!(buf.as_ref(), &[0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x01]);
     }
 
@@ -449,16 +427,11 @@ mod tests {
         let f = Frame::new(0x00AA, 0x01, payload.clone());
         let mut buf = BytesMut::new();
         encode_frame(&f, &mut buf);
-        // 4 (len) + 2 (op) + 1 (ct) + 1000 (payload) = 1007
         assert_eq!(buf.len(), 1007);
-        // length field = 1003 (big-endian)
         let declared = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
         assert_eq!(declared, 1003);
-        // op at bytes [4..6]
         assert_eq!(u16::from_be_bytes([buf[4], buf[5]]), 0x00AA);
-        // content_type at byte [6]
         assert_eq!(buf[6], 0x01);
-        // payload at bytes [7..1007]
         assert_eq!(&buf[7..1007], &payload[..]);
     }
 
@@ -469,7 +442,6 @@ mod tests {
         let f = Frame::new(OP_PING, CT_JSON, Bytes::new());
         encode_frame(&f, &mut buf);
         assert_eq!(buf[0], 0xAA);
-        // frame starts at offset 1
         assert_eq!(&buf[1..8], &[0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x01]);
     }
 
@@ -491,8 +463,6 @@ mod tests {
         assert!(s.contains('2'));
         assert!(s.contains('3'));
     }
-
-    // ─── decode_frame edge cases ──────────────────────────────────────────────
 
     #[test]
     fn decode_empty_buffer_returns_none() {
@@ -539,7 +509,7 @@ mod tests {
 
     #[test]
     fn decode_truncated_payload_returns_none() {
-        // declared_len = 10 (i.e., op + ct + 7 payload bytes) but we only have op+ct+1 byte
+        // declared_len=10 (op + ct + 7 payload bytes) but only op+ct+1 in the buffer.
         let mut buf = BytesMut::from(&[0u8, 0, 0, 10, 0, 0, 0x01, 0xAA][..]);
         let orig_len = buf.len();
         let out = decode_frame(&mut buf, 4 * 1024 * 1024).unwrap();
@@ -549,7 +519,6 @@ mod tests {
 
     #[test]
     fn decode_too_large_returns_error() {
-        // max_frame_bytes=1, declared_len=5 → limit=4
         let mut buf = BytesMut::from(&[0u8, 0, 0, 5][..]);
         let orig_len = buf.len();
         let err = decode_frame(&mut buf, 1).unwrap_err();
@@ -565,7 +534,6 @@ mod tests {
 
     #[test]
     fn decode_at_exactly_limit_accepted() {
-        // max_frame_bytes=10, payload=10 bytes, declared_len=13
         let mut buf = BytesMut::new();
         buf.extend_from_slice(&[0u8, 0, 0, 13, 0, 0, 0x01]);
         buf.extend_from_slice(&[0u8; 10]);
@@ -575,7 +543,6 @@ mod tests {
 
     #[test]
     fn decode_one_over_limit_rejected() {
-        // max_frame_bytes=10, payload=11 bytes, declared_len=14, limit=13
         let mut buf = BytesMut::from(&[0u8, 0, 0, 14][..]);
         let err = decode_frame(&mut buf, 10).unwrap_err();
         assert_eq!(
@@ -589,8 +556,9 @@ mod tests {
 
     #[test]
     fn decode_saturating_limit_no_overflow() {
-        // max_frame_bytes=u32::MAX, declared_len=u32::MAX — saturating_add must
-        // saturate; declared_len == limit → proceeds; incomplete payload → Ok(None).
+        // saturating_add must not overflow when declared_len == u32::MAX;
+        // with max_frame_bytes=u32::MAX the limit saturates and the decoder
+        // waits for more bytes (Ok(None)) instead of erroring.
         let mut buf = BytesMut::from(&[0xFFu8, 0xFF, 0xFF, 0xFF][..]);
         let out = decode_frame(&mut buf, u32::MAX).unwrap();
         assert!(out.is_none(), "should wait for bytes, not panic");
@@ -627,8 +595,6 @@ mod tests {
         let out = decode_frame(&mut buf, 4 * 1024 * 1024).unwrap().unwrap();
         assert_eq!(out, f);
     }
-
-    // ─── Proptest round-trip ──────────────────────────────────────────────────
 
     fn arb_frame() -> impl Strategy<Value = Frame> {
         (
@@ -687,8 +653,6 @@ mod tests {
         }
     }
 
-    // ─── Doc drift guard (Plan 05 Task 3 requirement, landed here) ────────────
-
     #[test]
     fn wire_module_doc_contains_full_opcode_table() {
         let src = include_str!("wire.rs");
@@ -704,17 +668,17 @@ mod tests {
             "push",
             "push_sync",
             "push_many",
-            // 0x0013 / 0x0014 (push_table / delete_table) deleted by Plan 12.7-06
-            // per `project_v0_events_only_scope`. The doc table no longer carries
-            // them as rows; this guard only enforces surviving v0 mnemonics.
+            // 0x0013 / 0x0014 (push_table / delete_table) are excluded by
+            // the Phase 12.7 events-only invariant; the doc table no longer
+            // carries them, so this guard only enforces surviving v0 mnemonics.
             "get",
             "mget",
             "get_multi",
-            "get_response", // Plan 12-07
-            "batch_get",    // Plan 13.4-03
+            "get_response",
+            "batch_get",
             "set",
             "mset",
-            "reset", // Plan 13.4-08
+            "reset",
             "error_response",
         ] {
             assert!(

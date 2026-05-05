@@ -1,13 +1,4 @@
-//! beava-core: shared library for Beava v2.
-//!
-//! This crate will grow over phases 2–10:
-//! - Phase 2: schema + registry (this phase)
-//! - Phase 3: Python SDK integration
-//! - Phase 4: expression evaluation + stateless op execution
-//! - Phase 5: aggregation operators + apply loop
-//! - Phase 6: WAL persistence
-//! - Phase 7: snapshot/recovery
-//! - Phases 8–10: advanced operators + infra
+//! beava-core: shared library for Beava.
 
 pub mod agg_apply;
 pub mod agg_buffer;

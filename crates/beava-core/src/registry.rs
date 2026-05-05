@@ -1,5 +1,5 @@
-//! Registry data model: descriptor structs, OutputKind, TableMode, RegistryInner,
-//! and the parking_lot::RwLock-guarded Registry wrapper.
+//! Registry data model: descriptor structs, `OutputKind`, `TableMode`,
+//! `RegistryInner`, and the parking_lot::RwLock-guarded `Registry` wrapper.
 
 use crate::agg_descriptor::AggregationDescriptor;
 use crate::op_chain::OpChain;
@@ -9,8 +9,6 @@ use parking_lot::{RwLock, RwLockReadGuard};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-// ─── Enums ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,10 +23,8 @@ pub enum TableMode {
     Upsert,
 }
 
-// ─── Descriptor structs ───────────────────────────────────────────────────────
-
 /// Default for the `name_arc` field — populated server-side at registration,
-/// so the deserialize default is just an empty Arc<str> placeholder. The
+/// so the deserialize default is just an empty `Arc<str>` placeholder. The
 /// install_descriptors / apply_registration / install_from_descriptors paths
 /// always overwrite this with `Arc::from(name.as_str())`.
 fn default_event_name_arc() -> Arc<str> {
@@ -45,55 +41,50 @@ pub struct EventDescriptor {
     pub dedupe_window_ms: Option<u64>,
     #[serde(default)]
     pub keep_events_for_ms: Option<u64>,
-    /// Plan 12.8-02 D-01: per-source cold-entity TTL (opt-in). When set,
-    /// the apply hot path (Plan 12.8-03) treats an entity whose
-    /// `last_seen_ms` is older than `now_ms - cold_after_ms` as a fresh
-    /// entity (clear state, increment `cold_entity_evictions_total{source=...}`
-    /// per CONTEXT D-04). `None` (omitted from wire) = no expiry; preserves
-    /// existing behavior for sources that don't opt in. Range is enforced
-    /// at decorator-time on the Python side: 1_000 ≤ cold_after_ms ≤
-    /// 365 * 86_400_000.
+    /// Per-source cold-entity TTL (opt-in). When set, the apply hot path
+    /// treats an entity whose `last_seen_ms` is older than
+    /// `now_ms - cold_after_ms` as a fresh entity (clear state, increment
+    /// `cold_entity_evictions_total{source=...}`). `None` (omitted from
+    /// wire) = no expiry; preserves existing behavior for sources that
+    /// don't opt in. Range is enforced at decorator-time on the Python
+    /// side: `1_000 ≤ cold_after_ms ≤ 365 * 86_400_000`.
     ///
-    /// Locked permanent on resurrect: FRESH state (Redis TTL pattern, D-04
-    /// in CONTEXT). No partial-state preservation; reviving requires
-    /// explicit user override + new ADR.
+    /// Resurrect semantics are locked to FRESH state (Redis TTL pattern):
+    /// no partial-state preservation. Reviving requires explicit user
+    /// override + new ADR.
     #[serde(default)]
     pub cold_after_ms: Option<u64>,
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
-    /// Plan 18-12: pre-allocated `Arc<str>` of `name`. The bookkeeping site in
-    /// dispatch_push_sync clones this (refcount bump, ~5 ns) instead of
-    /// calling `event_name.to_string()` (heap alloc, ~50-100 ns) on every push.
-    /// Populated server-side at registration; client-supplied JSON omits it
-    /// (skipped on serde, defaulted to `Arc::from("")` on deserialize, then
-    /// overwritten to `Arc::from(name.as_str())` by the install/registration
-    /// paths). Equality on Arc<str> is by `str` content, so derived PartialEq
-    /// behaves intuitively even across different allocations.
+    /// Pre-allocated `Arc<str>` of `name`. The bookkeeping site in
+    /// `dispatch_push_sync` clones this (refcount bump, ~5 ns) instead of
+    /// calling `event_name.to_string()` (heap alloc, ~50-100 ns) on every
+    /// push. Populated server-side at registration; client-supplied JSON
+    /// omits it (skipped on serde, defaulted to `Arc::from("")` on
+    /// deserialize, then overwritten to `Arc::from(name.as_str())` by the
+    /// install/registration paths). Equality on `Arc<str>` is by `str`
+    /// content, so derived PartialEq behaves intuitively even across
+    /// different allocations.
     #[serde(skip, default = "default_event_name_arc")]
     pub name_arc: Arc<str>,
-    /// Plan 19.2-01 (D-01): ordered list of distinct field names referenced by
-    /// ALL aggregations that source from this event. Built as the union of all
-    /// `AggregationDescriptor.field_names` lists across aggs for this source.
-    /// Each `AggOpDescriptor.field_idx` is an index into this per-event list.
-    /// The apply-loop pre-extracts `extracted[i] = row.get(apply_field_names[i])`
-    /// once per event — O(distinct_fields) total — then each feature reads
-    /// `extracted[feature.descriptor.field_idx]` in O(1).
-    /// Populated by `Registry::apply_registration`; client JSON omits it.
+    /// Ordered list of distinct field names referenced by ALL aggregations
+    /// that source from this event. Built as the union of all
+    /// `AggregationDescriptor.field_names` lists across aggs for this
+    /// source. Each `AggOpDescriptor.field_idx` is an index into this
+    /// per-event list. The apply-loop pre-extracts
+    /// `extracted[i] = row.get(apply_field_names[i])` once per event —
+    /// `O(distinct_fields)` total — then each feature reads
+    /// `extracted[feature.descriptor.field_idx]` in `O(1)`. Populated by
+    /// `Registry::apply_registration`; client JSON omits it.
     #[serde(skip, default)]
     pub apply_field_names: Vec<String>,
 }
 
 impl EventDescriptor {
     /// Compare two descriptors field-by-field, EXCLUDING `registered_at_version`.
-    /// Used by the diff engine (Plan 03) to detect conflicts without false positives
+    /// Used by the diff engine to detect conflicts without false positives
     /// from version stamps.
-    ///
-    /// Plan 12.6-06 D-03 hard-rip: `event_time_field` and `tolerate_delay_ms`
-    /// fields are gone (deleted from EventDescriptor). The equivalence relation
-    /// is therefore narrower than pre-pivot — two descriptors with the same
-    /// (name, schema, dedupe, retention) are now equivalent regardless of any
-    /// pre-pivot event-time / tolerance configuration.
     pub fn equiv_ignoring_version(&self, other: &Self) -> bool {
         self.name == other.name
             && self.schema == other.schema
@@ -115,19 +106,20 @@ pub struct TableDescriptor {
     /// Assigned server-side; ignored (defaulted to 0) when deserializing from client JSON.
     #[serde(default)]
     pub registered_at_version: u64,
-    /// Phase 11.5 (D-01): when `true`, the table is stored as an MVCC chain so
-    /// `as_of=<lsn>` queries and `POST /retract` work. Defaults to `false` so
-    /// pre-Phase-11.5 client payloads continue to deserialize as non-temporal.
+    /// When `true`, the table is stored as an MVCC chain so `as_of=<lsn>`
+    /// queries and `POST /retract` work. Defaults to `false` for backward
+    /// compatibility with non-temporal client payloads.
     #[serde(default)]
     pub temporal: bool,
-    /// Phase 11.5 (D-16): MVCC history-window in wall-clock milliseconds.
-    /// Distinct from `ttl_ms` (per-row TTL): `retention_ms` bounds how far
-    /// back `as_of` queries and retractions can reach. `None` means
-    /// "unbounded retention" (use with care; memory grows with history).
+    /// MVCC history-window in wall-clock milliseconds. Distinct from
+    /// `ttl_ms` (per-row TTL): `retention_ms` bounds how far back `as_of`
+    /// queries and retractions can reach. `None` means "unbounded
+    /// retention" (use with care; memory grows with history).
     ///
-    /// Note: `skip_serializing_if` is intentionally NOT used here — bincode's
-    /// positional layout would then become asymmetric with decode. JSON clients
-    /// can still omit the field (serde `default` handles the missing case).
+    /// `skip_serializing_if` is intentionally NOT used here — bincode's
+    /// positional layout would otherwise become asymmetric with decode.
+    /// JSON clients can still omit the field (serde `default` handles the
+    /// missing case).
     #[serde(default)]
     pub retention_ms: Option<u64>,
 }
@@ -150,15 +142,14 @@ pub struct DerivationDescriptor {
     pub name: String,
     pub output_kind: OutputKind,
     pub upstreams: Vec<String>,
-    /// Strongly-typed op pipeline. Plan 02-02 swapped this from Vec<serde_json::Value>.
+    /// Strongly-typed op pipeline.
     #[serde(default)]
     pub ops: Vec<OpNode>,
-    /// Phase 13.5.1 Plan 07b (Deviation 3 formalization): `serde(default)`-able
-    /// so clients can omit the schema field entirely. Server's
-    /// `validate_expressions` runs schema-propagation from upstream + chain
-    /// (via `OpChain::compile` → `propagated_schemas`) and writes the
-    /// inferred schema back to the registry post-validation. This is the
-    /// single source of truth — Python SDK no longer mirrors `output_type_for`.
+    /// `serde(default)`-able so clients can omit the schema field entirely.
+    /// Server's `validate_expressions` runs schema-propagation from upstream
+    /// + chain (via `OpChain::compile` → `propagated_schemas`) and writes
+    /// the inferred schema back to the registry post-validation. This is
+    /// the single source of truth — Python SDK does not mirror it.
     #[serde(default)]
     pub schema: DerivedSchema,
     #[serde(default)]
@@ -180,50 +171,49 @@ impl DerivationDescriptor {
     }
 }
 
-// ─── Registry types ───────────────────────────────────────────────────────────
-
-/// Runtime-only compiled op-chain cache. Parallel to `derivations` map.
-/// Arc<OpChain> allows cheap sharing with the future push-path (Phase 6).
-/// Not serialized — rebuilt from ops at register time.
+/// Runtime-only compiled op-chain cache. Not serialized — rebuilt from
+/// ops at register time.
 #[derive(Debug, Default, Clone)]
 pub struct RegistryInner {
     pub version: u64,
-    /// Plan 18-11 D-6: events stored as Arc so dispatch_push_sync can grab a
-    /// cheap refcount-bump pointer instead of cloning the EventDescriptor on
-    /// every push. snapshot/install paths convert via Arc::new and
-    /// (*arc).clone() at the boundaries (cold paths).
+    /// Events stored as `Arc` so `dispatch_push_sync` can grab a cheap
+    /// refcount-bump pointer instead of cloning the `EventDescriptor` on
+    /// every push. Snapshot/install paths convert via `Arc::new` and
+    /// `(*arc).clone()` at the boundaries (cold paths).
     pub events: BTreeMap<String, Arc<EventDescriptor>>,
     pub tables: BTreeMap<String, TableDescriptor>,
     pub derivations: BTreeMap<String, DerivationDescriptor>,
-    /// Phase 4: compiled op-chains keyed by derivation name.
-    /// Populated by `apply_registration` when a derivation with ops is installed.
+    /// Compiled op-chains keyed by derivation name. Populated by
+    /// `apply_registration` when a derivation with ops is installed.
     pub compiled_chains: BTreeMap<String, Arc<OpChain>>,
-    /// Phase 5 Plan 04: compiled aggregation descriptors keyed by derivation name.
-    /// Populated by `apply_registration` when a derivation with GroupBy ops is installed.
+    /// Compiled aggregation descriptors keyed by derivation name.
+    /// Populated by `apply_registration` when a derivation with `GroupBy`
+    /// ops is installed.
     pub compiled_aggregations: BTreeMap<String, Arc<AggregationDescriptor>>,
-    /// Phase 5 Plan 06: reverse index from feature name to (aggregation node_name, feature_index).
-    /// Built at register time alongside compiled_aggregations.
-    /// Enables O(1) feature-name → aggregation lookup at query time.
+    /// Reverse index from feature name to (aggregation node_name,
+    /// feature_index). Built at register time alongside
+    /// `compiled_aggregations`. Enables `O(1)` feature-name → aggregation
+    /// lookup at query time.
     pub feature_index: BTreeMap<String, (String, usize)>,
-    /// Plan 18-11 D-7: precomputed per-source index. Maps a source event/table
-    /// name to the list of compiled aggregations that watch it. Lookup is
-    /// O(1) at apply time — replaces the prior linear scan over the
-    /// compiled_aggregations BTreeMap. Built register-time alongside
-    /// compiled_aggregations; tracked here so it survives Registry::clone.
+    /// Precomputed per-source index. Maps a source event/table name to
+    /// the list of compiled aggregations that watch it. Lookup is `O(1)`
+    /// at apply time. Built register-time alongside
+    /// `compiled_aggregations`; tracked here so it survives
+    /// `Registry::clone`.
     pub aggregations_by_source: std::collections::HashMap<String, Vec<Arc<AggregationDescriptor>>>,
-    /// Plan 18-16: monotonic counter for stable u32 IDs assigned to each new
-    /// aggregation at `apply_registration` time. Used as O(1) Vec index into
-    /// `DevAggState.state_tables`. Increments by 1 per new aggregation; IDs
-    /// are stable for process lifetime (additive-only registration).
-    /// Default = 0; first aggregation gets ID 0.
+    /// Monotonic counter for stable u32 IDs assigned to each new
+    /// aggregation at `apply_registration` time. Used as `O(1)` Vec
+    /// index into `DevAggState.state_tables`. Increments by 1 per new
+    /// aggregation; IDs are stable for process lifetime (additive-only
+    /// registration). Default = 0; first aggregation gets ID 0.
     pub next_agg_id: u32,
-    /// Plan 19.2-03 (D-04): maps a cluster-signature hash to a stable u32
-    /// cluster_id. Aggregations sharing the same `group_keys` signature
-    /// (declaration-order hash, NOT sorted-lex — see Warning 4 in PLAN.md)
-    /// share a cluster_id so the apply loop builds EntityKey ONCE per cluster.
+    /// Maps a cluster-signature hash to a stable u32 `cluster_id`.
+    /// Aggregations sharing the same `group_keys` signature
+    /// (declaration-order hash, NOT sorted-lex) share a `cluster_id` so
+    /// the apply loop builds `EntityKey` ONCE per cluster.
     pub cluster_id_by_signature: std::collections::HashMap<u64, u32>,
-    /// Plan 19.2-03 (D-04): monotonic counter for cluster_id assignment.
-    /// Default = 0; first unique cluster gets ID 0.
+    /// Monotonic counter for `cluster_id` assignment. Default = 0; first
+    /// unique cluster gets ID 0.
     pub next_cluster_id: u32,
 }
 
@@ -241,10 +231,10 @@ impl Registry {
         self.inner.read().version
     }
 
-    /// Plan 18-16 Task 16.2: read the registry's monotonic agg_id counter.
-    /// Server-side register handlers call this after `apply_registration` to
-    /// resize `DevAggState.state_tables` (a `Vec<AggStateTable>`) so apply hot
-    /// path can index by `desc.agg_id` without bounds-issues.
+    /// Read the registry's monotonic `agg_id` counter. Server-side
+    /// register handlers call this after `apply_registration` to resize
+    /// `DevAggState.state_tables` (a `Vec<AggStateTable>`) so the apply
+    /// hot path can index by `desc.agg_id` without bounds issues.
     pub fn next_agg_id(&self) -> u32 {
         self.inner.read().next_agg_id
     }
@@ -257,7 +247,7 @@ impl Registry {
         self.inner.read().clone()
     }
 
-    /// Phase 4: Return the compiled OpChain for a derivation (if cached).
+    /// Return the compiled `OpChain` for a derivation (if cached).
     /// Returns `None` if the derivation has no ops or was not yet registered.
     pub fn compiled_chain(&self, derivation_name: &str) -> Option<Arc<OpChain>> {
         self.inner
@@ -267,8 +257,8 @@ impl Registry {
             .cloned()
     }
 
-    /// Phase 5 Plan 04: Return the compiled AggregationDescriptor for a derivation (if cached).
-    /// Returns `None` if the derivation has no GroupBy ops or was not yet registered.
+    /// Return the compiled `AggregationDescriptor` for a derivation (if cached).
+    /// Returns `None` if the derivation has no `GroupBy` ops or was not yet registered.
     pub fn compiled_aggregation(
         &self,
         derivation_name: &str,
@@ -280,34 +270,32 @@ impl Registry {
             .cloned()
     }
 
-    /// Plan 18-11 D-6: O(1) Arc-backed event-descriptor lookup.
+    /// `O(1)` Arc-backed event-descriptor lookup.
     ///
     /// Returns `None` if the event isn't registered. The returned `Arc` is a
-    /// refcount bump on the registry-owned Arc — dispatch_push_sync can hold
-    /// it for the duration of one push without cloning the EventDescriptor.
+    /// refcount bump on the registry-owned `Arc` — `dispatch_push_sync` can
+    /// hold it for the duration of one push without cloning the
+    /// `EventDescriptor`.
     pub fn get_event_descriptor(&self, name: &str) -> Option<Arc<EventDescriptor>> {
         self.inner.read().events.get(name).cloned()
     }
 
-    /// Phase 5 Plan 06: Return the (aggregation node_name, feature_index) for a
-    /// feature name, or `None` if the feature name is not registered.
-    /// O(1) reverse lookup into `feature_index`.
+    /// Return the `(aggregation node_name, feature_index)` for a feature name,
+    /// or `None` if the feature name is not registered. `O(1)` reverse lookup
+    /// into `feature_index`.
     pub fn resolve_feature(&self, feature_name: &str) -> Option<(String, usize)> {
         self.inner.read().feature_index.get(feature_name).cloned()
     }
 
-    /// Phase 5 Plan 05 + Plan 18-11 D-7: Return all compiled
-    /// AggregationDescriptors whose `source_node_name` matches `source_name`.
+    /// Return all compiled `AggregationDescriptor`s whose `source_node_name`
+    /// matches `source_name`. Used by `apply_event_to_aggregations` to route
+    /// an incoming event to every aggregation that watches the event's
+    /// source.
     ///
-    /// Used by `apply_event_to_aggregations` to route an incoming event to every
-    /// aggregation that watches the event's source.
-    ///
-    /// **Plan 18-11 D-7:** O(1) HashMap lookup via the precomputed
-    /// `aggregations_by_source` index. The returned Vec is cloned from the
-    /// index — cheap because (a) it's a Vec of Arc, and (b) typical apps
-    /// have 1-3 aggregations per source. Eliminates the prior
-    /// `compiled_aggregations.values().filter(...).collect()` scan that
-    /// allocated a fresh Vec on every push.
+    /// `O(1)` HashMap lookup via the precomputed `aggregations_by_source`
+    /// index. The returned `Vec` is cloned from the index — cheap because
+    /// (a) it's a `Vec<Arc<...>>`, and (b) typical apps have 1–3
+    /// aggregations per source.
     pub fn compiled_aggregations_for_source(
         &self,
         source_name: &str,
@@ -324,8 +312,8 @@ impl Registry {
     /// bumps the version to `new_version`. Panics in debug if `new_version` is
     /// not strictly greater than the current version.
     ///
-    /// NOTE: this is a low-level helper. Plan 05 adds `apply_registration` on top
-    /// which handles the PayloadNode dispatch and skips already-present descriptors.
+    /// Low-level helper. `apply_registration` sits on top and handles
+    /// `PayloadNode` dispatch + skips already-present descriptors.
     pub fn install_descriptors(
         &self,
         new_version: u64,
@@ -341,9 +329,9 @@ impl Registry {
         );
         for mut e in events {
             e.registered_at_version = new_version;
-            // Plan 18-12: pre-allocate the Arc<str> for the bookkeeping
-            // hot path. Client-supplied descriptors deserialize with an
-            // empty placeholder; we always overwrite it here.
+            // Pre-allocate the Arc<str> for the bookkeeping hot path.
+            // Client-supplied descriptors deserialize with an empty
+            // placeholder; we always overwrite it here.
             e.name_arc = Arc::from(e.name.as_str());
             w.events.insert(e.name.clone(), Arc::new(e));
         }
@@ -358,20 +346,24 @@ impl Registry {
         w.version = new_version;
     }
 
-    /// Atomically install a batch of already-validated, non-conflicting PayloadNodes.
-    /// Bumps version by 1 and stamps each NEW descriptor with `registered_at_version = new_version`.
-    /// Existing (already_present) descriptors are left unchanged.
+    /// Atomically install a batch of already-validated, non-conflicting
+    /// `PayloadNode`s. Bumps version by 1 and stamps each NEW descriptor
+    /// with `registered_at_version = new_version`. Existing
+    /// (already_present) descriptors are left unchanged.
     ///
-    /// Phase 4: Also installs compiled OpChains (`compiled_chains`) and overwrites the
-    /// derivation schema for any derivation that has a server-propagated schema
-    /// (`propagated_schemas`). Both lists come from `ValidatedPayload::into_parts()`.
+    /// Also installs compiled `OpChain`s (`compiled_chains`) and overwrites
+    /// the derivation schema for any derivation that has a server-propagated
+    /// schema (`propagated_schemas`). Both lists come from
+    /// `ValidatedPayload::into_parts()`.
     ///
-    /// Phase 5 Plan 04: Also installs compiled AggregationDescriptors (`compiled_aggregations`).
-    /// For aggregation derivations, the schema is overwritten with the server-authoritative
-    /// aggregation output schema (D-05).
+    /// Also installs compiled `AggregationDescriptor`s
+    /// (`compiled_aggregations`). For aggregation derivations, the schema
+    /// is overwritten with the server-authoritative aggregation output
+    /// schema.
     ///
-    /// Precondition: `nodes` has passed `validate_payload` and `compute_diff` yielded
-    /// `changed = []` AND `added != []`. Caller (Plan 05 endpoint) enforces this.
+    /// Precondition: `nodes` has passed `validate_payload` and
+    /// `compute_diff` yielded `changed = []` AND `added != []`. The caller
+    /// enforces this.
     ///
     /// Returns the new version number.
     pub fn apply_registration(
@@ -385,23 +377,24 @@ impl Registry {
         let new_version = w.version + 1;
 
         // Build lookup maps for propagated schemas, compiled chains, and
-        // compiled aggregations so we can apply them alongside their descriptor
-        // in the same write-lock pass.
-        // Chains/aggregations are inserted ONLY when the derivation descriptor is
-        // new — this prevents stale entries from accumulating if apply_registration
-        // is ever called with a derivation that is already present (WR-01).
+        // compiled aggregations so we can apply them alongside their
+        // descriptor in the same write-lock pass. Chains/aggregations are
+        // inserted ONLY when the derivation descriptor is new — this
+        // prevents stale entries from accumulating if `apply_registration`
+        // is ever called with a derivation that is already present.
         let schema_map: std::collections::HashMap<String, crate::schema::DerivedSchema> =
             propagated_schemas.into_iter().collect();
         let mut chains_map: std::collections::HashMap<String, Arc<OpChain>> =
             compiled_chains.into_iter().collect();
 
-        // Plan 19.4-04 (D-02): pre-compute the per-source field-union
-        // (alphabetical-sorted distinct fields any incoming agg consumes) so
-        // the EventDescriptor.apply_field_names can be set as the new event is
-        // inserted. The union is the union of declared fields across all aggs
-        // targeting the same `source_node_name`. BTreeSet's iteration order is
-        // alphabetical — required for deterministic `field_idx_into_event_extracted`
-        // resolution at register-time and snapshot replay.
+        // Pre-compute the per-source field-union (alphabetical-sorted
+        // distinct fields any incoming agg consumes) so the
+        // `EventDescriptor.apply_field_names` can be set as the new event
+        // is inserted. The union is the union of declared fields across
+        // all aggs targeting the same `source_node_name`. `BTreeSet`'s
+        // iteration order is alphabetical — required for deterministic
+        // `field_idx_into_event_extracted` resolution at register-time
+        // and snapshot replay.
         let mut new_union_per_source: std::collections::HashMap<
             String,
             std::collections::BTreeSet<String>,
@@ -426,7 +419,7 @@ impl Registry {
         let mut agg_map: std::collections::HashMap<String, Arc<AggregationDescriptor>> =
             compiled_aggregations.into_iter().collect();
 
-        // Track newly inserted aggregation node names for O(N_new) index update (WR-03).
+        // Track newly inserted aggregation node names for O(N_new) index update.
         let mut newly_inserted_agg_names: Vec<String> = Vec::new();
 
         for n in nodes {
@@ -434,17 +427,16 @@ impl Registry {
                 crate::registry_diff::PayloadNode::Event(mut e) => {
                     if !w.events.contains_key(&e.name) {
                         e.registered_at_version = new_version;
-                        // Plan 18-12: pre-allocate the Arc<str> for the
-                        // bookkeeping hot path (refcount bump per push, no
-                        // String alloc). See install_descriptors for the
-                        // companion site.
+                        // Pre-allocate the Arc<str> for the bookkeeping hot
+                        // path (refcount bump per push, no String alloc).
+                        // See `install_descriptors` for the companion site.
                         e.name_arc = Arc::from(e.name.as_str());
-                        // Plan 19.4-04 (D-02): seed apply_field_names from the
-                        // alphabetical-sorted field union for any aggs in this
-                        // batch targeting this source. If a future
-                        // apply_registration adds aggs targeting an existing
-                        // source, the post-loop union-extend pass below
-                        // re-derives apply_field_names against ALL aggs (new +
+                        // Seed apply_field_names from the alphabetical-sorted
+                        // field union for any aggs in this batch targeting
+                        // this source. If a future `apply_registration`
+                        // adds aggs targeting an existing source, the
+                        // post-loop union-extend pass below re-derives
+                        // `apply_field_names` against ALL aggs (new +
                         // pre-existing) so the union stays consistent.
                         if let Some(union) = new_union_per_source.get(&e.name) {
                             e.apply_field_names = union.iter().cloned().collect();
@@ -461,23 +453,24 @@ impl Registry {
                 crate::registry_diff::PayloadNode::Derivation(mut d) => {
                     if !w.derivations.contains_key(&d.name) {
                         d.registered_at_version = new_version;
-                        // Phase 4 (D-06): overwrite client-supplied schema with
-                        // server-authoritative propagated schema, if available.
+                        // Overwrite client-supplied schema with the
+                        // server-authoritative propagated schema, if
+                        // available.
                         if let Some(propagated) = schema_map.get(&d.name) {
                             d.schema = propagated.clone();
                         }
-                        // Install compiled chain alongside descriptor — only for
-                        // new derivations, so stale chains never accumulate.
+                        // Install compiled chain alongside descriptor —
+                        // only for new derivations, so stale chains never
+                        // accumulate.
                         if let Some(chain) = chains_map.remove(&d.name) {
                             w.compiled_chains.insert(d.name.clone(), chain);
                         }
-                        // Phase 5 Plan 04 + Plan 18-11 D-7: install compiled
-                        // aggregation descriptor and update the per-source
-                        // index.
-                        // Plan 18-16: assign a stable u32 agg_id from the
-                        // monotonic counter and write it into the descriptor
-                        // before inserting. We must clone+mutate since the
-                        // caller passed Arc<Desc>.
+                        // Install compiled aggregation descriptor and
+                        // update the per-source index. Assign a stable
+                        // u32 `agg_id` from the monotonic counter and
+                        // write it into the descriptor before inserting.
+                        // We must clone+mutate since the caller passed
+                        // `Arc<Desc>`.
                         if let Some(agg) = agg_map.remove(&d.name) {
                             newly_inserted_agg_names.push(d.name.clone());
                             // Assign the next available agg_id.
@@ -485,13 +478,15 @@ impl Registry {
                             agg_owned.agg_id = w.next_agg_id;
                             w.next_agg_id += 1;
 
-                            // Plan 19.2-03 (D-04): assign cluster_id — aggregations sharing
-                            // the same group_keys signature (declaration-order hash) share a
-                            // cluster_id so the apply loop builds EntityKey ONCE per cluster,
-                            // not once per agg.  The signature is stable across restarts
-                            // because it is computed from the group_keys in registration order
-                            // (NOT sorted-lex) and uses 0u8 separators to avoid prefix
-                            // collisions ("ab","c" ≠ "a","bc").
+                            // Assign cluster_id — aggregations sharing the
+                            // same group_keys signature (declaration-order
+                            // hash) share a cluster_id so the apply loop
+                            // builds EntityKey ONCE per cluster, not once
+                            // per agg. The signature is stable across
+                            // restarts because it is computed from the
+                            // group_keys in registration order (NOT
+                            // sorted-lex) and uses 0u8 separators to avoid
+                            // prefix collisions ("ab","c" ≠ "a","bc").
                             let sig = Self::cluster_signature(&agg_owned.group_keys);
                             agg_owned.cluster_id =
                                 if let Some(&existing) = w.cluster_id_by_signature.get(&sig) {
@@ -503,33 +498,34 @@ impl Registry {
                                     id
                                 };
 
-                            // Plan 19.2-01 (D-01): resolve field indices at registration time.
-                            // Look up the source event's schema to validate field references
-                            // and populate field_idx on each feature descriptor, plus
-                            // build agg.field_names (the per-agg distinct-fields list).
-                            // `field_idx` indexes into `agg.field_names`; the apply loop
-                            // pre-extracts by iterating `agg.field_names` once per event.
-                            // Silently skip if the source event is not yet registered
-                            // (register_validate enforces ordering before we reach here).
+                            // Resolve field indices at registration time.
+                            // Look up the source event's schema to validate
+                            // field references and populate `field_idx` on
+                            // each feature descriptor, plus build
+                            // `agg.field_names` (the per-agg distinct-fields
+                            // list). `field_idx` indexes into
+                            // `agg.field_names`; the apply loop pre-extracts
+                            // by iterating `agg.field_names` once per event.
+                            // Silently skip if the source event is not yet
+                            // registered (the register-validate pass
+                            // enforces ordering before we reach here).
                             if let Some(src_event) = w.events.get(&agg_owned.source_node_name) {
                                 let schema = src_event.schema.clone();
-                                // Plan 19.4-04 (D-02): pass the per-source
-                                // apply_field_names union so the resolver can
-                                // populate `field_idx_into_event_extracted`.
-                                // For new events in this batch the union was
-                                // seeded by the Event branch above; for
-                                // cross-batch additions to existing events
-                                // the union may be a subset of what THIS
-                                // agg's fields ultimately need — the post-loop
-                                // `apply_field_names_post_pass` then refreshes
-                                // `apply_field_names` (super-set) and
-                                // re-resolves the indices via the second-pass
-                                // `field_idx_into_event_extracted_post_pass`
-                                // below.
+                                // Pass the per-source apply_field_names
+                                // union so the resolver can populate
+                                // `field_idx_into_event_extracted`. For new
+                                // events in this batch the union was seeded
+                                // by the Event branch above; for cross-batch
+                                // additions to existing events the union
+                                // may be a subset of what THIS agg's fields
+                                // ultimately need — the post-loop pass then
+                                // refreshes `apply_field_names` (super-set)
+                                // and re-resolves the indices.
                                 let source_union = src_event.apply_field_names.clone();
-                                // Ignore errors: register_validate already checked field refs.
-                                // Any remaining mismatch is a latent inconsistency — don't
-                                // panic in the write path.
+                                // Ignore errors: register-validate already
+                                // checked field refs. Any remaining
+                                // mismatch is a latent inconsistency — do
+                                // not panic in the write path.
                                 let _ = Self::resolve_field_indices_for_agg_mut_inner(
                                     &mut agg_owned,
                                     &schema,
@@ -552,19 +548,19 @@ impl Registry {
             }
         }
 
-        // Plan 19.4-04 (D-02) post-loop apply_field_names_post_pass: walk the
-        // CURRENT registry's `compiled_aggregations` (post-insert) and rebuild
-        // each affected source's `apply_field_names` as the union of declared
-        // fields across ALL aggs targeting that source. This handles the
-        // cross-batch case where an Event was registered in a prior call and
-        // a new agg in this batch declares fields beyond what the prior union
-        // covered. Cost: O(N_aggs × M_features) at register time only —
-        // register-time is cold-path, the apply-loop reads the precomputed
-        // `apply_field_names` slice.
+        // Post-loop apply_field_names pass: walk the CURRENT registry's
+        // `compiled_aggregations` (post-insert) and rebuild each affected
+        // source's `apply_field_names` as the union of declared fields
+        // across ALL aggs targeting that source. This handles the
+        // cross-batch case where an Event was registered in a prior call
+        // and a new agg in this batch declares fields beyond what the
+        // prior union covered. Cost: O(N_aggs × M_features) at register
+        // time only — register-time is cold-path; the apply-loop reads
+        // the precomputed `apply_field_names` slice.
         //
         // Determinism: the union is built via BTreeSet → Vec, so iteration
-        // order is alphabetical. `field_idx_into_event_extracted` resolution
-        // (Task 4.2.b) reads this same alphabetical ordering, ensuring
+        // order is alphabetical. `field_idx_into_event_extracted`
+        // resolution reads this same alphabetical ordering, ensuring
         // reproducibility across snapshot replay.
         let affected_sources: std::collections::BTreeSet<String> = newly_inserted_agg_names
             .iter()
@@ -603,19 +599,20 @@ impl Registry {
                 }
             }
 
-            // Plan 19.4-04 (D-02) post-loop field_idx_into_event_extracted_post_pass:
-            // for every agg targeting `source_name`, re-resolve the per-feature
-            // mapping against the (possibly extended) `new_fields` union. The
-            // inline resolver call inside the per-derivation block above ran
-            // with whatever `apply_field_names` was on the EventDescriptor at
-            // that moment — which may have been a subset if the source event
-            // was registered in a prior batch and this batch only contributes
-            // new aggs. The post-pass walks every Arc in
-            // `aggregations_by_source[source]`, clones it, re-runs
-            // `resolve_field_indices_for_agg_mut_inner` against the final
-            // union, and re-Arcs it. Both `aggregations_by_source` and
-            // `compiled_aggregations` hold Arc<AggregationDescriptor> so we
-            // must replace the Arc in BOTH maps to keep them consistent.
+            // Post-loop field_idx_into_event_extracted pass: for every
+            // agg targeting `source_name`, re-resolve the per-feature
+            // mapping against the (possibly extended) `new_fields` union.
+            // The inline resolver call inside the per-derivation block
+            // above ran with whatever `apply_field_names` was on the
+            // EventDescriptor at that moment — which may have been a
+            // subset if the source event was registered in a prior batch
+            // and this batch only contributes new aggs. The post-pass
+            // walks every Arc in `aggregations_by_source[source]`, clones
+            // it, re-runs `resolve_field_indices_for_agg_mut_inner`
+            // against the final union, and re-Arcs it. Both
+            // `aggregations_by_source` and `compiled_aggregations` hold
+            // `Arc<AggregationDescriptor>`, so we must replace the Arc in
+            // BOTH maps to keep them consistent.
             let agg_clones: Vec<Arc<AggregationDescriptor>> = w
                 .aggregations_by_source
                 .get(&source_name)
@@ -647,10 +644,11 @@ impl Registry {
             }
         }
 
-        // Phase 5 Plan 06: update feature_index for ONLY the newly inserted aggregation
-        // nodes (WR-03: O(N_new) instead of O(N_total)).
-        // Additive-only: existing entries are preserved via `entry().or_insert()`.
-        // Collect new entries first to avoid simultaneous mutable + immutable borrows of `w`.
+        // Update feature_index for ONLY the newly inserted aggregation
+        // nodes (`O(N_new)` instead of `O(N_total)`). Additive-only:
+        // existing entries are preserved via `entry().or_insert()`.
+        // Collect new entries first to avoid simultaneous mutable +
+        // immutable borrows of `w`.
         let new_index_entries: Vec<(String, String, usize)> = newly_inserted_agg_names
             .iter()
             .filter_map(|node_name| {
@@ -677,31 +675,15 @@ impl Registry {
         new_version
     }
 
-    /// Phase 13.4 Plan 06 (D-01 force=true): remove the named descriptors from
-    /// the registry so a subsequent `apply_registration` treats them as
-    /// brand-new (additive) instead of conflicting. Used by the `force=true`
-    /// register path to "destructively replace" existing descriptors.
+    /// Drop ALL descriptors + ALL compiled chains/aggregations + ALL
+    /// reverse indices, and bump `version` by 1 so any cached client
+    /// `registry_version` becomes stale.
     ///
-    /// Removes the descriptor + its compiled artifacts (chains, aggregations,
-    /// feature_index entries, aggregations_by_source entries). Does NOT bump
-    /// `version` — the caller's `apply_registration` does that as part of the
-    /// re-install.
-    ///
-    /// Per-entity state held in `state_tables` (DevAggState) is NOT cleared
-    /// here — Plan 06's wire contract requires only `registry_version` bump
-    /// plus WAL append on force=true; per-entity state-zeroing is a future
-    /// refinement (the docs/schema-evolution.md text covers the eventual
-    /// semantic — v0 wire contract is satisfied by registry-level mutation).
-    ///
-    /// Plan 13.4-08 (D-03 USER-LOCKED): drop ALL descriptors + ALL compiled
-    /// chains/aggregations + ALL reverse indices, and bump `version` by 1
-    /// so any cached client `registry_version` becomes stale.
-    ///
-    /// Used exclusively by `OP_RESET`. The bump-by-1 (rather than reset to 0)
-    /// preserves the "registry_version is monotonic" invariant that callers
-    /// rely on for idempotent-replay deduplication and stale-cache detection.
-    /// Callers that wish to observe the change without a re-register first
-    /// can do so by polling `registry().version()`.
+    /// Used exclusively by `OP_RESET`. The bump-by-1 (rather than reset to
+    /// 0) preserves the "registry_version is monotonic" invariant that
+    /// callers rely on for idempotent-replay deduplication and stale-cache
+    /// detection. Callers that wish to observe the change without a
+    /// re-register first can do so by polling `registry().version()`.
     ///
     /// Per-entity state tables are NOT touched here — they live in
     /// `DevAggState.state_tables` and are cleared by the caller (the apply
@@ -750,9 +732,10 @@ impl Registry {
         removed
     }
 
-    /// Plan 19.2-01 (D-01): validate field references in `agg` against `schema`
-    /// and return an error if any field is missing. Does NOT mutate the descriptor.
-    /// Use `resolve_field_indices_for_agg_mut` for the in-place mutation path.
+    /// Validate field references in `agg` against `schema` and return an
+    /// error if any field is missing. Does NOT mutate the descriptor.
+    /// Use `resolve_field_indices_for_agg_mut` for the in-place mutation
+    /// path.
     ///
     /// Error message format:
     ///   `"aggregation '{node}': field '{fname}' referenced by feature '{feature}' is not in source schema for event '{source}'"`
@@ -791,7 +774,7 @@ impl Registry {
         Ok(())
     }
 
-    /// Plan 19.2-01 (D-01): resolve field indices in-place on `agg`.
+    /// Resolve field indices in-place on `agg`.
     ///
     /// For each feature with `field: Some(fname)`:
     ///   - Validates that `fname` exists in `schema`. Returns `Err` if not.
@@ -801,27 +784,24 @@ impl Registry {
     ///
     /// Features with `field: None` keep `field_idx = FIELD_IDX_NONE`.
     ///
-    /// Plan 19.4-03 (D-01): also resolves geo `ext.lat_idx`/`ext.lon_idx` from
-    /// `ext.lat_field`/`ext.lon_field` against the same `field_names` list —
-    /// engages the `update_at` fast path at agg_op.rs:933-960 for every geo
-    /// feature whose lat/lon fields exist in schema. This completes the
-    /// register-time index assignment that Plan 19.2-06 Task 3 left unfinished.
+    /// Also resolves geo `ext.lat_idx`/`ext.lon_idx` from
+    /// `ext.lat_field`/`ext.lon_field` against the same `field_names` list,
+    /// engaging the geo `update_at` fast path for every geo feature whose
+    /// lat/lon fields exist in schema.
     ///
-    /// Plan 19.4-04 (D-02): also writes `field_idx_into_event_extracted` on
-    /// each feature — a `Vec<u8>` mapping the agg's local field positions
+    /// Also writes `field_idx_into_event_extracted` on each feature — a
+    /// `Vec<u8>` mapping the agg's local field positions
     /// (i.e. `agg.field_names` indices) to the per-source-event
-    /// `apply_field_names` union indices. The apply-loop hoist (Task 4.3)
-    /// uses this mapping to remap `field_idx` lookups against the per-event
-    /// union slice without per-descriptor rebuild scaffolding. When
-    /// `source_union` is empty (e.g. test fixtures or Plan 19.2-01 callers
-    /// that haven't migrated to the union form yet), this resolver leaves
-    /// `field_idx_into_event_extracted` empty and Sum/Min/Max etc.
-    /// fall back to the per-agg `field_idx` against `agg.field_names` —
-    /// preserves backward compatibility with the pre-19.4-04 dispatch path
-    /// in `update_with_extracted` until Task 4.3.b switches the apply-loop
-    /// over.
+    /// `apply_field_names` union indices. The apply-loop uses this
+    /// mapping to remap `field_idx` lookups against the per-event union
+    /// slice without per-descriptor rebuild scaffolding. When
+    /// `source_union` is empty (e.g. test fixtures or callers that
+    /// haven't migrated to the union form yet), this resolver leaves
+    /// `field_idx_into_event_extracted` empty and `Sum`/`Min`/`Max` etc.
+    /// fall back to the per-agg `field_idx` against `agg.field_names`.
     ///
-    /// Populates `agg.field_names` with the distinct field list in resolution order.
+    /// Populates `agg.field_names` with the distinct field list in
+    /// resolution order.
     pub fn resolve_field_indices_for_agg_mut(
         &self,
         agg: &mut crate::agg_descriptor::AggregationDescriptor,
@@ -833,17 +813,19 @@ impl Registry {
         // First pass: validate all field references exist.
         self.resolve_field_indices_for_agg(agg, schema)?;
 
-        // Second pass: build field_names and assign field_idx + lat_idx/lon_idx
-        // to each feature. The same `field_names` list is referenced by
-        // `field_idx` (single-field ops) and `lat_idx`/`lon_idx` (geo ops);
-        // apply-loop pre-extraction populates one slot per `field_names` entry.
+        // Second pass: build field_names and assign field_idx +
+        // lat_idx/lon_idx to each feature. The same `field_names` list is
+        // referenced by `field_idx` (single-field ops) and
+        // `lat_idx`/`lon_idx` (geo ops); apply-loop pre-extraction
+        // populates one slot per `field_names` entry.
         let mut field_names: Vec<String> = Vec::new();
 
-        // Plan 19.4-04 (D-02): build a O(1) lookup from union field name to
-        // its position in source_union (the per-event-source apply_field_names
-        // union, alphabetically sorted). Empty when source_union is empty —
+        // Build an O(1) lookup from union field name to its position in
+        // source_union (the per-event-source `apply_field_names` union,
+        // alphabetically sorted). Empty when `source_union` is empty —
         // signals that the apply path is still on the per-desc rebuild
-        // codepath and the `field_idx_into_event_extracted` mapping is unused.
+        // codepath and the `field_idx_into_event_extracted` mapping is
+        // unused.
         let union_lookup: std::collections::HashMap<&str, u8> = source_union
             .iter()
             .enumerate()
@@ -867,10 +849,10 @@ impl Registry {
                 feat.descriptor.field_idx = FIELD_IDX_NONE;
             }
 
-            // Plan 19.4-03 (D-01): resolve geo lat_idx/lon_idx alongside field_idx.
-            // Engages the geo update_at fast path at agg_op.rs:933-960 — the
-            // dispatch arms branch on `if lat_idx != FIELD_IDX_NONE`, falling
-            // through to the slow `update()` row.get path when unresolved.
+            // Resolve geo lat_idx/lon_idx alongside field_idx. Engages the
+            // geo `update_at` fast path — the dispatch arms branch on
+            // `if lat_idx != FIELD_IDX_NONE`, falling through to the slow
+            // `update()` `row.get` path when unresolved.
             match (
                 &feat.descriptor.ext.lat_field,
                 &feat.descriptor.ext.lon_field,
@@ -896,10 +878,10 @@ impl Registry {
                     feat.descriptor.ext.lon_idx = lon_idx as u8;
                 }
                 _ => {
-                    // Partial or absent geo declaration — keep sentinel; dispatch
-                    // falls through to the slow update() path which reads by
-                    // field-name (agg_op.rs:937-959). Partial resolution would
-                    // be a bug because the dispatch only checks lat_idx.
+                    // Partial or absent geo declaration — keep sentinel;
+                    // dispatch falls through to the slow `update()` path
+                    // which reads by field-name. Partial resolution would
+                    // be a bug because dispatch only checks `lat_idx`.
                     feat.descriptor.ext.lat_idx = FIELD_IDX_NONE;
                     feat.descriptor.ext.lon_idx = FIELD_IDX_NONE;
                 }
@@ -908,25 +890,25 @@ impl Registry {
 
         agg.field_names = field_names;
 
-        // Plan 19.4-04 (D-02): populate `field_idx_into_event_extracted` AFTER
+        // Populate `field_idx_into_event_extracted` AFTER
         // `agg.field_names` is finalized. The mapping is per-feature:
         //   - For features WITH a declared `field` or geo `lat_field`/
         //     `lon_field`: the mapping has length = `agg.field_names.len()`,
-        //     with entry `i` = union position of `agg.field_names[i]`. The
-        //     apply-path consumer indexes via
+        //     with entry `i` = union position of `agg.field_names[i]`.
+        //     The apply-path consumer indexes via
         //     `field_idx_into_event_extracted[feat.descriptor.field_idx as usize]`
         //     (single-field ops) or
         //     `field_idx_into_event_extracted[feat.descriptor.ext.lat_idx as usize]`
         //     (geo ops).
-        //   - For features WITHOUT a declared field (e.g. AggKind::Count): the
-        //     mapping stays empty (length 0). The apply-path
+        //   - For features WITHOUT a declared field (e.g. AggKind::Count):
+        //     the mapping stays empty (length 0). The apply-path
         //     `if feat.descriptor.field_idx != FIELD_IDX_NONE` check
         //     short-circuits before indexing into the empty mapping.
-        // When `source_union` is empty (legacy test path that hasn't migrated
-        // to the union form), all mappings stay empty regardless of feature
-        // shape; apply-loop dispatch falls back to the per-agg `field_idx`
-        // codepath against `desc.field_names` and `extracted` from a per-desc
-        // rebuild.
+        // When `source_union` is empty (legacy test path that hasn't
+        // migrated to the union form), all mappings stay empty regardless
+        // of feature shape; apply-loop dispatch falls back to the per-agg
+        // `field_idx` codepath against `desc.field_names` and `extracted`
+        // from a per-desc rebuild.
         if !source_union.is_empty() {
             for feat in &mut agg.features {
                 let has_field = feat.descriptor.field.is_some()
@@ -939,25 +921,25 @@ impl Registry {
                     if let Some(&u) = union_lookup.get(fname.as_str()) {
                         feat.descriptor.field_idx_into_event_extracted.push(u);
                     } else {
-                        // Defensive: per Task 4.1.b's union-build, every
-                        // declared field IS in the union. If a field is
-                        // missing the cross-batch post-pass hasn't yet
-                        // refreshed the EventDescriptor — fall back to the
-                        // FIELD_IDX_NONE sentinel so apply-path recognizes
-                        // the absent slot and routes to the slow path.
+                        // Defensive: by construction every declared field
+                        // is in the union. If a field is missing, the
+                        // cross-batch post-pass hasn't yet refreshed the
+                        // `EventDescriptor` — fall back to the
+                        // `FIELD_IDX_NONE` sentinel so apply-path
+                        // recognizes the absent slot and routes to the
+                        // slow path.
                         feat.descriptor
                             .field_idx_into_event_extracted
                             .push(FIELD_IDX_NONE);
                     }
                 }
 
-                // Plan 19.4-04 (D-02) Task 4.3.b: under the apply-loop hoist,
-                // `update_with_extracted` consumes the per-event union slice
-                // (event_extracted) and indexes it via lat_idx/lon_idx
-                // directly. Re-point lat_idx/lon_idx from per-agg
-                // `agg.field_names` positions to per-source apply_field_names
-                // union positions so the geo dispatch arm
-                // (agg_op.rs:933-960) reads from the hoisted slice correctly.
+                // Under the apply-loop hoist, `update_with_extracted`
+                // consumes the per-event union slice (event_extracted) and
+                // indexes it via lat_idx/lon_idx directly. Re-point
+                // lat_idx/lon_idx from per-agg `agg.field_names` positions
+                // to per-source `apply_field_names` union positions so the
+                // geo dispatch arm reads from the hoisted slice correctly.
                 if let (Some(lat), Some(lon)) = (
                     &feat.descriptor.ext.lat_field,
                     &feat.descriptor.ext.lon_field,
@@ -969,10 +951,11 @@ impl Registry {
                         feat.descriptor.ext.lat_idx = lat_u;
                         feat.descriptor.ext.lon_idx = lon_u;
                     }
-                    // If union_lookup is missing lat/lon, the prior assignment
-                    // (per-agg field_names index) stays — but this never
-                    // happens in production since apply_field_names_post_pass
-                    // ensures every declared field is in the union.
+                    // If `union_lookup` is missing lat/lon, the prior
+                    // assignment (per-agg `field_names` index) stays —
+                    // this never happens in production because the
+                    // post-pass ensures every declared field is in the
+                    // union.
                 }
             }
         }
@@ -980,23 +963,25 @@ impl Registry {
         Ok(())
     }
 
-    /// Plan 19.2-01 (D-01): static (no `&self`) version of
-    /// `resolve_field_indices_for_agg_mut`, called inside the write-locked
-    /// `apply_registration` closure where borrowing `self` is not possible.
+    /// Static (no `&self`) version of `resolve_field_indices_for_agg_mut`,
+    /// called inside the write-locked `apply_registration` closure where
+    /// borrowing `self` is not possible.
     ///
     /// Same contract as `resolve_field_indices_for_agg_mut`:
-    ///   - Validates field refs against `schema`. Returns `Err` on first missing field.
-    ///   - Assigns `field_idx` (index into the per-agg `agg.field_names` list).
-    ///   - Plan 19.4-03 (D-01): also resolves geo `ext.lat_idx`/`ext.lon_idx`
-    ///     against the same `field_names` list — engages the `update_at` fast
-    ///     path at agg_op.rs:933-960. Runtime apply path (registry.rs:458 →
-    ///     `apply_registration` write-lock closure) calls THIS function, so the
-    ///     lat_idx/lon_idx resolution must mirror the public version exactly.
-    ///   - Plan 19.4-04 (D-02): also writes per-feature
-    ///     `field_idx_into_event_extracted: Vec<u8>` mapping the agg-local
-    ///     field positions to the per-source-event `apply_field_names` union
-    ///     indices. See public version's doc-comment for shape semantics.
-    ///   - Populates `agg.field_names` with the distinct ordered field list.
+    ///   - Validates field refs against `schema`. Returns `Err` on the
+    ///     first missing field.
+    ///   - Assigns `field_idx` (index into the per-agg `agg.field_names`
+    ///     list).
+    ///   - Resolves geo `ext.lat_idx`/`ext.lon_idx` against the same
+    ///     `field_names` list — engages the `update_at` fast path. The
+    ///     apply path calls THIS function, so the lat_idx/lon_idx
+    ///     resolution must mirror the public version exactly.
+    ///   - Writes per-feature `field_idx_into_event_extracted: Vec<u8>`
+    ///     mapping the agg-local field positions to the per-source-event
+    ///     `apply_field_names` union indices. See the public version's
+    ///     doc-comment for shape semantics.
+    ///   - Populates `agg.field_names` with the distinct ordered field
+    ///     list.
     fn resolve_field_indices_for_agg_mut_inner(
         agg: &mut crate::agg_descriptor::AggregationDescriptor,
         schema: &crate::schema::EventSchema,
@@ -1033,12 +1018,13 @@ impl Registry {
         }
 
         // Build field_names and assign field_idx + lat_idx/lon_idx.
-        // IDENTICAL logic to `resolve_field_indices_for_agg_mut`; both functions
-        // produce the same field_names ordering for the same input agg/schema.
+        // IDENTICAL logic to `resolve_field_indices_for_agg_mut`; both
+        // functions produce the same `field_names` ordering for the same
+        // input agg/schema.
         let mut field_names: Vec<String> = Vec::new();
 
-        // Plan 19.4-04 (D-02): O(1) lookup from union field name to its
-        // position in source_union (same shape as the public sibling).
+        // O(1) lookup from union field name to its position in
+        // `source_union` (same shape as the public sibling).
         let union_lookup: std::collections::HashMap<&str, u8> = source_union
             .iter()
             .enumerate()
@@ -1046,7 +1032,7 @@ impl Registry {
             .collect();
 
         for feat in &mut agg.features {
-            // Plan 19.4-04 (D-02): clear the mapping; rebuilt below.
+            // Clear the mapping; rebuilt below.
             feat.descriptor.field_idx_into_event_extracted.clear();
 
             if let Some(fname) = &feat.descriptor.field {
@@ -1062,10 +1048,10 @@ impl Registry {
                 feat.descriptor.field_idx = FIELD_IDX_NONE;
             }
 
-            // Plan 19.4-03 (D-01): geo lat_idx/lon_idx resolution. This is the
-            // runtime-critical path: `apply_registration` invokes _inner from
-            // its write-lock closure (registry.rs:458). Without this block
-            // fraud-team's geo features stay on the slow `update()` arm.
+            // Geo lat_idx/lon_idx resolution. This is the runtime-critical
+            // path: `apply_registration` invokes `_inner` from its
+            // write-lock closure. Without this block fraud-team's geo
+            // features stay on the slow `update()` arm.
             match (
                 &feat.descriptor.ext.lat_field,
                 &feat.descriptor.ext.lon_field,
@@ -1098,12 +1084,13 @@ impl Registry {
         }
         agg.field_names = field_names;
 
-        // Plan 19.4-04 (D-02): populate `field_idx_into_event_extracted` per
-        // feature against the per-source apply_field_names union. Matches the
-        // public sibling's logic exactly so both resolvers produce identical
-        // mappings (snapshot replay invariance). Empty mapping for features
-        // without a declared field. Also re-points lat_idx/lon_idx into the
-        // union when present (Task 4.3.b apply-loop hoist requirement).
+        // Populate `field_idx_into_event_extracted` per feature against
+        // the per-source `apply_field_names` union. Matches the public
+        // sibling's logic exactly so both resolvers produce identical
+        // mappings (snapshot replay invariance). Empty mapping for
+        // features without a declared field. Also re-points
+        // lat_idx/lon_idx into the union when present (apply-loop hoist
+        // requirement).
         if !source_union.is_empty() {
             for feat in &mut agg.features {
                 let has_field = feat.descriptor.field.is_some()
@@ -1122,7 +1109,7 @@ impl Registry {
                     }
                 }
 
-                // Re-point lat_idx/lon_idx into the per-source union (Task 4.3.b).
+                // Re-point lat_idx/lon_idx into the per-source union.
                 if let (Some(lat), Some(lon)) = (
                     &feat.descriptor.ext.lat_field,
                     &feat.descriptor.ext.lon_field,
@@ -1140,8 +1127,8 @@ impl Registry {
         Ok(())
     }
 
-    /// Plan 19.2-03 (D-03): validate that none of the aggregation's `group_keys`
-    /// reference a float-typed column.
+    /// Validate that none of the aggregation's `group_keys` reference a
+    /// float-typed column.
     ///
     /// Float group keys are rejected at register-time because NaN values are
     /// silently dropped at push time (they produce `None` from
@@ -1170,15 +1157,16 @@ impl Registry {
         Ok(())
     }
 
-    /// Plan 19.2-03 (D-04): compute a stable cluster signature hash for the
-    /// given `group_keys` in DECLARATION ORDER (NOT sorted-lex).
+    /// Compute a stable cluster signature hash for the given `group_keys`
+    /// in DECLARATION ORDER (NOT sorted-lex).
     ///
-    /// The existing `EntityKey::from_row` produces order-sensitive keys
-    /// (column_name + value pairs in a SmallVec; Hash derived over the SmallVec).
-    /// Sorting would create cluster_id collisions for aggs that produce different
-    /// EntityKeys at runtime, breaking the shared-lookup invariant.
+    /// `EntityKey::from_row` produces order-sensitive keys (column_name +
+    /// value pairs in a SmallVec; `Hash` derived over the SmallVec).
+    /// Sorting would create `cluster_id` collisions for aggs that produce
+    /// different `EntityKey`s at runtime, breaking the shared-lookup
+    /// invariant.
     ///
-    /// A separator byte (0u8) is hashed between each key so that
+    /// A separator byte (`0u8`) is hashed between each key so that
     /// `["a","bc"]` and `["ab","c"]` produce different signatures.
     fn cluster_signature(group_keys: &[String]) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -1190,30 +1178,31 @@ impl Registry {
         h.finish()
     }
 
-    /// Phase 7 Plan 03: install descriptors loaded from a snapshot.
+    /// Install descriptors loaded from a snapshot.
     ///
-    /// Replaces the in-memory registry contents with the descriptor set carried
-    /// by a `RegistryDescriptorsOnly` (the projection produced by
-    /// `SnapshotBody::from_live`). Runtime caches (compiled chains, compiled
-    /// aggregations, feature index) are NOT rebuilt here — recovery replays
-    /// `RegistryBump` WAL records via `apply_registration` which compiles and
-    /// caches them in normal flow. Cold start with snapshot only (no WAL
-    /// records past the snapshot LSN): caches are empty until next register.
+    /// Replaces the in-memory registry contents with the descriptor set
+    /// carried by a `RegistryDescriptorsOnly` (the projection produced by
+    /// `SnapshotBody::from_live`). Runtime caches (compiled chains,
+    /// compiled aggregations, feature index) are NOT rebuilt here —
+    /// recovery replays `RegistryBump` WAL records via
+    /// `apply_registration`, which compiles and caches them in normal
+    /// flow. Cold start with snapshot only (no WAL records past the
+    /// snapshot LSN): caches are empty until next register.
     ///
-    /// Idempotent: calling twice with the same descriptors leaves the same
-    /// state (modulo `version` which is overwritten). Caller MUST hold the
-    /// invariant that this runs BEFORE any concurrent reader (Server::bind
-    /// runs recovery before flipping readiness).
+    /// Idempotent: calling twice with the same descriptors leaves the
+    /// same state (modulo `version`, which is overwritten). Caller MUST
+    /// hold the invariant that this runs BEFORE any concurrent reader
+    /// (`Server::bind` runs recovery before flipping readiness).
     pub fn install_from_descriptors(&self, body: &crate::snapshot_body::RegistryDescriptorsOnly) {
         let mut w = self.inner.write();
         w.version = body.version;
-        // Plan 18-11 D-6: snapshot body holds plain EventDescriptor; wrap in
-        // Arc on install. snapshot writer (snapshot_body.rs::from_live)
-        // unwraps the Arc into a plain map for serialization.
-        // Plan 18-12: when reinstalling from a snapshot, populate name_arc
-        // alongside the Arc<EventDescriptor> wrap. Snapshot bodies serialize
-        // without name_arc (skipped on serde) so this re-derives it from the
-        // descriptor's `name`.
+        // Snapshot body holds plain `EventDescriptor`; wrap in `Arc` on
+        // install. Snapshot writer (`snapshot_body.rs::from_live`)
+        // unwraps the `Arc` into a plain map for serialization.
+        // When reinstalling from a snapshot, populate `name_arc`
+        // alongside the `Arc<EventDescriptor>` wrap. Snapshot bodies
+        // serialize without `name_arc` (skipped on serde) so this
+        // re-derives it from the descriptor's `name`.
         w.events = body
             .events
             .iter()
@@ -1230,25 +1219,21 @@ impl Registry {
     }
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::{EventSchema, FieldType};
     use std::collections::BTreeMap;
 
-    /// Phase 12.6 Plan 06 (Task 2.a / RED) — guards the D-03 hard-rip surface
-    /// at the EventDescriptor level. Reads the source via `include_str!` and
-    /// asserts the post-rip tokens are absent. RED today because EventDescriptor
-    /// still declares the legacy fields. Flips GREEN once Task 2.b deletes
-    /// those fields.
+    /// Guards the post-pivot surface at the `EventDescriptor` level. Reads
+    /// the source via `include_str!` and asserts the legacy event-time
+    /// tokens are absent.
     ///
-    /// **Forbidden tokens are reconstructed at runtime via chunked `concat`** so
-    /// the test source itself does not contain the literals it forbids — same
-    /// pattern as Plan 05's agg_windowed RED test. Function name is also
-    /// chunk-friendly (avoids `event_time_field` / `tolerate_delay_ms` as a
-    /// substring) so the include_str grep doesn't flag the test on itself.
+    /// **Forbidden tokens are reconstructed at runtime via chunked
+    /// `concat`** so the test source itself does not contain the literals
+    /// it forbids. The function name is also chunk-friendly (avoids
+    /// `event_time_field` / `tolerate_delay_ms` as a substring) so the
+    /// `include_str!` grep doesn't flag the test on itself.
     #[test]
     fn event_descriptor_post_d03_has_no_legacy_decorator_keys() {
         let src = include_str!("registry.rs");
@@ -1265,11 +1250,11 @@ mod tests {
         let forbidden_tdm = ["tolerate", "_delay_ms:"].concat();
         assert!(
             !stripped.contains(&forbidden_etf),
-            "Phase 12.6 Plan 06 D-03: EventDescriptor must not declare an `{forbidden_etf}` field after the hard rip. Found in registry.rs source."
+            "EventDescriptor must not declare an `{forbidden_etf}` field. Found in registry.rs source."
         );
         assert!(
             !stripped.contains(&forbidden_tdm),
-            "Phase 12.6 Plan 06 D-03: EventDescriptor must not declare a `{forbidden_tdm}` field after the hard rip. Found in registry.rs source."
+            "EventDescriptor must not declare a `{forbidden_tdm}` field. Found in registry.rs source."
         );
     }
 
@@ -1285,14 +1270,14 @@ mod tests {
         }
     }
 
-    // Test 1: EventDescriptor JSON round-trip (Transaction from 02-CONTEXT.md)
+    // EventDescriptor JSON round-trip (Transaction fixture).
     //
-    // Plan 12.6-06 D-03 hard-rip: legacy `event_time_field` / `tolerate_delay_ms`
-    // keys deleted from the fixture JSON. Per project_redis_shaped_no_event_time_ever
-    // these keys never round-trip the post-pivot descriptor. (The strict-deny
-    // shim in register_validate::pre_check_legacy_event_time_keys catches
-    // them at the dispatch layer; this test exercises the type-level
-    // round-trip without those keys.)
+    // Per `project_redis_shaped_no_event_time_ever` the legacy
+    // `event_time_field` / `tolerate_delay_ms` keys never round-trip the
+    // post-pivot descriptor. (The strict-deny shim in
+    // `register_validate::pre_check_legacy_event_time_keys` catches them
+    // at the dispatch layer; this test exercises the type-level round-trip
+    // without those keys.)
     #[test]
     fn event_descriptor_json_round_trip() {
         let json = r#"{
@@ -1324,7 +1309,6 @@ mod tests {
         assert_eq!(desc, desc2);
     }
 
-    // Test 2: TableDescriptor JSON round-trip (Merchant from 02-CONTEXT.md)
     #[test]
     fn table_descriptor_json_round_trip() {
         let json = r#"{
@@ -1355,10 +1339,10 @@ mod tests {
         assert_eq!(desc, desc2);
     }
 
-    // Phase 11.5: temporal table flag + retention_ms round-trip.
-    // Verifies D-01 + D-16: TableDescriptor carries `temporal: bool` and
-    // optional `retention_ms: u64` (MVCC history-window). Defaults to
-    // (false, None) when absent so legacy tables continue to deserialize.
+    // Temporal table flag + retention_ms round-trip. `TableDescriptor`
+    // carries `temporal: bool` and optional `retention_ms: u64` (MVCC
+    // history-window). Defaults to (false, None) when absent so legacy
+    // tables continue to deserialize.
     #[test]
     fn temporal_table_descriptor_round_trips() {
         // Sub-assertion 1: explicit construction round-trips.
@@ -1406,20 +1390,17 @@ mod tests {
         assert_eq!(desc3.retention_ms, None);
     }
 
-    // Test 3: TableMode strict — unknown variant returns Err
     #[test]
     fn table_mode_unknown_variant_rejected() {
         let result: Result<TableMode, _> = serde_json::from_str("\"changelog\"");
         assert!(result.is_err(), "expected Err for 'changelog'");
         let msg = result.unwrap_err().to_string();
-        // serde's built-in message includes the unknown variant name
         assert!(
             msg.contains("unknown variant") || msg.contains("changelog"),
             "error should mention unknown variant, got: {msg}"
         );
     }
 
-    // Test 4: OutputKind — valid and invalid
     #[test]
     fn output_kind_serde() {
         let e: OutputKind = serde_json::from_str("\"event\"").unwrap();
@@ -1431,7 +1412,6 @@ mod tests {
         assert!(result.is_err(), "expected Err for 'derivation'");
     }
 
-    // Test 5: Registry new() starts at version 0 with empty maps
     #[test]
     fn registry_new_starts_empty() {
         let r = Registry::new();
@@ -1447,7 +1427,6 @@ mod tests {
         assert!(snap.events.is_empty());
     }
 
-    // Test 6: registered_at_version is ignored in equiv_ignoring_version
     #[test]
     fn equality_ignores_registered_at_version() {
         let schema = make_event_schema();
@@ -1465,17 +1444,14 @@ mod tests {
         let mut b = a.clone();
         b.registered_at_version = 99;
 
-        // Derived PartialEq sees them as different (different version)
         assert_ne!(a, b, "derived PartialEq includes registered_at_version");
 
-        // equiv_ignoring_version sees them as equal
         assert!(
             a.equiv_ignoring_version(&b),
             "equiv_ignoring_version must ignore registered_at_version"
         );
     }
 
-    // Test 7: install_descriptors increments version + indexes by name
     #[test]
     fn install_descriptors_increments_version() {
         let r = Registry::new();
@@ -1504,7 +1480,6 @@ mod tests {
             );
         }
 
-        // Install a derivation at v2
         let deriv = DerivationDescriptor {
             name: "BigTx".to_string(),
             output_kind: OutputKind::Event,
@@ -1529,9 +1504,9 @@ mod tests {
         assert_eq!(snap.derivations["BigTx"].registered_at_version, 2);
     }
 
-    // Test 8 (Plan 02-02): DerivationDescriptor with OpNode round-trip (BigTx)
-    // NOTE: The outer JSON uses "kind" discrimination which is handled at the payload-parsing
-    // layer (Plan 05). Here we test the inner descriptor shape directly without "kind".
+    // The outer JSON uses "kind" discrimination which is handled at the
+    // payload-parsing layer; here we test the inner descriptor shape
+    // directly without "kind".
     #[test]
     fn derivation_with_ops_round_trip() {
         let json = r#"{
@@ -1556,14 +1531,12 @@ mod tests {
                 expr: "(amount > 500)".to_string()
             }
         );
-        // Round-trip
         let j2 = serde_json::to_string(&d).unwrap();
         let d2: DerivationDescriptor = serde_json::from_str(&j2).unwrap();
         assert_eq!(d.name, d2.name);
         assert_eq!(d.ops, d2.ops);
     }
 
-    // Test 9 (Plan 02-02): Derivation with GroupBy op round-trip
     #[test]
     fn derivation_with_group_by_round_trip() {
         let json = r#"{
@@ -1582,7 +1555,6 @@ mod tests {
         assert_eq!(d.ops, d2.ops);
     }
 
-    // Test 10 (Plan 02-02): equiv_ignoring_version still works with OpNode ops
     #[test]
     fn derivation_equiv_ignoring_version_with_ops() {
         let schema = crate::schema::DerivedSchema {
@@ -1605,7 +1577,6 @@ mod tests {
             registered_at_version: 1,
         };
 
-        // Same except version — equiv
         let mut same_diff_version = base.clone();
         same_diff_version.registered_at_version = 99;
         assert!(
@@ -1613,7 +1584,6 @@ mod tests {
             "must be equiv when only version differs"
         );
 
-        // Different ops — not equiv
         let mut diff_ops = base.clone();
         diff_ops.ops = vec![crate::op_node::OpNode::Filter {
             expr: "(amount > 999)".to_string(),
@@ -1623,8 +1593,6 @@ mod tests {
             "must NOT be equiv when ops differ"
         );
     }
-
-    // Plan 02-05 tests: apply_registration
 
     #[test]
     fn apply_registration_installs_events() {
@@ -1694,7 +1662,6 @@ mod tests {
         use crate::registry_diff::PayloadNode;
         let r = Registry::new();
 
-        // Seed EventA at v1
         let event_a = EventDescriptor {
             name: "A".to_string(),
             schema: make_event_schema(),
@@ -1714,7 +1681,6 @@ mod tests {
         );
         assert_eq!(r.version(), 1);
 
-        // Apply [EventA (identical), EventB (new)]
         let event_b = EventDescriptor {
             name: "B".to_string(),
             schema: make_event_schema(),
@@ -1734,13 +1700,9 @@ mod tests {
         );
         assert_eq!(v2, 2);
         let snap = r.snapshot();
-        // A's registered_at_version stays at 1 (not overwritten)
         assert_eq!(snap.events["A"].registered_at_version, 1);
-        // B is stamped at v2
         assert_eq!(snap.events["B"].registered_at_version, 2);
     }
-
-    // Plan 05-06 tests: feature_index + resolve_feature
 
     #[test]
     fn resolve_feature_after_register() {
@@ -1829,14 +1791,12 @@ mod tests {
             vec![("AggTable".to_string(), Arc::new(agg_desc))],
         );
 
-        // cnt is at feature_index 0
         let cnt = r.resolve_feature("cnt");
         assert!(cnt.is_some(), "resolve_feature('cnt') must return Some");
         let (node, idx) = cnt.unwrap();
         assert_eq!(node, "AggTable");
         assert_eq!(idx, 0, "cnt is at feature_index 0");
 
-        // total is at feature_index 1
         let total = r.resolve_feature("total");
         assert!(total.is_some(), "resolve_feature('total') must return Some");
         let (node2, idx2) = total.unwrap();
@@ -1861,7 +1821,6 @@ mod tests {
 
         let r = Registry::new();
 
-        // First registration: event + AggA with feature "cnt"
         let event_a = EventDescriptor {
             name: "EvA".to_string(),
             schema: make_event_schema(),
@@ -1929,7 +1888,6 @@ mod tests {
             "cnt must be in index after first register"
         );
 
-        // Second registration: event + AggB with feature "revenue"
         let event_b = EventDescriptor {
             name: "EvB".to_string(),
             schema: make_event_schema(),
@@ -1993,7 +1951,6 @@ mod tests {
             vec![("AggB".to_string(), agg_b)],
         );
 
-        // Both features must be in the index now
         assert!(
             r.resolve_feature("cnt").is_some(),
             "cnt must still be in index after second register"
@@ -2006,7 +1963,6 @@ mod tests {
         assert_eq!(node, "AggB");
     }
 
-    // Plan 05-04 test: compiled_aggregations cached after apply_registration
     #[test]
     fn compiled_aggregations_cached_after_apply_registration() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
@@ -2015,7 +1971,6 @@ mod tests {
 
         let r = Registry::new();
 
-        // Build a minimal event + aggregation derivation
         let event = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
@@ -2093,19 +2048,14 @@ mod tests {
         assert_eq!(cached.features[0].feature_name, "cnt");
     }
 
-    // Plan 18-12 RED: EventDescriptor gains a `name_arc: Arc<str>` field that
-    // is populated to the descriptor's `name` at install/registration time.
-    // The bookkeeping site in dispatch_push_sync uses
-    // `descriptor.name_arc.clone()` (refcount bump) instead of
-    // `event_name.to_string()` (heap alloc per push).
-    //
-    // This test pins three invariants:
-    //   1. `name_arc.as_ref() == name` after install (population at register time)
-    //   2. consecutive `get_event_descriptor` calls return Arcs whose
-    //      `name_arc` field shares the same `Arc<str>` allocation
-    //      (proves the Arc is registry-owned, not re-derived per-call)
-    //   3. the EventDescriptor itself is also shared via Arc::ptr_eq
-    //      (re-asserts Plan 18-11 D-6, here as the carrier for invariant 2)
+    // Pins three `name_arc` invariants:
+    //   1. `name_arc.as_ref() == name` after install (population at
+    //      register time).
+    //   2. Consecutive `get_event_descriptor` calls return `Arc`s whose
+    //      `name_arc` field shares the same `Arc<str>` allocation (proves
+    //      the Arc is registry-owned, not re-derived per-call).
+    //   3. The `EventDescriptor` itself is also shared via `Arc::ptr_eq`
+    //      (carrier for invariant 2).
     #[test]
     fn event_descriptor_has_name_arc_and_registry_shares_it() {
         let r = Registry::new();
@@ -2129,30 +2079,26 @@ mod tests {
             .get_event_descriptor("Txn")
             .expect("descriptor should be present on second lookup");
 
-        // Invariant 1: name_arc carries the event's name post-install.
         assert_eq!(
             d1.name_arc.as_ref(),
             "Txn",
             "install_descriptors must populate name_arc to the descriptor's name"
         );
 
-        // Invariant 2: name_arc shares the same allocation across lookups.
         assert!(
             Arc::ptr_eq(&d1.name_arc, &d2.name_arc),
             "consecutive get_event_descriptor calls must share the same name_arc allocation"
         );
 
-        // Invariant 3: the carrier Arc<EventDescriptor> is also shared.
         assert!(
             Arc::ptr_eq(&d1, &d2),
             "consecutive get_event_descriptor calls must share the same EventDescriptor Arc"
         );
     }
 
-    // Plan 18-12 RED (companion): apply_registration also populates name_arc.
-    // Mirrors the install_descriptors path so both registry-entry sites stay
-    // covered. This guards against accidentally regressing one path while
-    // fixing the other.
+    // Companion: `apply_registration` also populates `name_arc`. Mirrors
+    // the `install_descriptors` path so both registry-entry sites stay
+    // covered.
     #[test]
     fn apply_registration_populates_name_arc() {
         use crate::registry_diff::PayloadNode;
@@ -2181,14 +2127,10 @@ mod tests {
         );
     }
 
-    // Plan 18-16 Task 16.1.a (RED): AggregationDescriptor.agg_id assigned monotonically.
-    //
-    // Registers two aggregations sequentially and asserts:
-    // 1. agg_id values are 0 and 1 respectively (monotonic counter starting at 0).
-    // 2. Re-registering the same aggregation name is a no-op (additive idempotence) —
-    //    agg_id stays the same.
-    //
-    // This test FAILS before 16.1.b lands the `agg_id` field and `next_agg_id` counter.
+    // `AggregationDescriptor.agg_id` must be assigned monotonically.
+    // Registering two aggregations sequentially must yield agg_id 0 and 1;
+    // re-registering an existing aggregation must be a no-op (additive
+    // idempotence — agg_id stays the same).
     #[test]
     fn test_agg_id_assigned_monotonically() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
@@ -2197,7 +2139,6 @@ mod tests {
 
         let r = Registry::new();
 
-        // Helper: build a minimal AggregationDescriptor for a given source.
         let make_agg = |node_name: &str, source: &str| -> AggregationDescriptor {
             AggregationDescriptor {
                 node_name: node_name.to_string(),
@@ -2220,7 +2161,7 @@ mod tests {
                         field_idx_into_event_extracted: Vec::new(),
                     },
                 }],
-                agg_id: 0, // placeholder; registry overwrites at registration time
+                agg_id: 0, // overwritten by the registry at registration time
                 field_names: vec![],
                 cluster_id: 0,
             }
@@ -2260,7 +2201,6 @@ mod tests {
             }
         };
 
-        // Register first aggregation: AggA (source=EvA) → must get agg_id=0.
         let agg_a = Arc::new(make_agg("AggA", "EvA"));
         r.apply_registration(
             vec![
@@ -2280,7 +2220,6 @@ mod tests {
             "first registered aggregation must get agg_id=0"
         );
 
-        // Register second aggregation: AggB (source=EvB) → must get agg_id=1.
         let agg_b = Arc::new(make_agg("AggB", "EvB"));
         r.apply_registration(
             vec![
@@ -2300,7 +2239,6 @@ mod tests {
             "second registered aggregation must get agg_id=1"
         );
 
-        // Idempotence: re-register AggA (already present) — agg_id must stay 0.
         let agg_a_again = Arc::new(make_agg("AggA", "EvA"));
         r.apply_registration(
             vec![PayloadNode::Derivation(make_deriv("AggA", "EvA"))],
@@ -2318,11 +2256,10 @@ mod tests {
         );
     }
 
-    // Plan 19.4-03 (D-01) Task 3.a RED → 3.b GREEN: lat_idx/lon_idx must be resolved
-    // at register time so the existing geo update_at fast path (agg_op.rs:933-960)
-    // engages on the apply hot path. Pre-19.4-03 they defaulted to FIELD_IDX_NONE
-    // (agg_compile.rs:855-856) and the resolver was a no-op for those fields — see
-    // 19.3-FLAMEGRAPH.md §2 row #8 (agg_geo::read_lat_lon = 2.86% self-time).
+    // `lat_idx`/`lon_idx` must be resolved at register time so the geo
+    // `update_at` fast path engages on the apply hot path. Before this
+    // resolution lat/lon defaulted to `FIELD_IDX_NONE` and the dispatch
+    // fell through to the slow `update()` arm.
     #[test]
     fn geo_feature_resolves_lat_idx_and_lon_idx_at_register_time() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
@@ -2331,7 +2268,6 @@ mod tests {
 
         let r = Registry::new();
 
-        // Geo schema: lat, lon, plus a non-geo field for the union sanity check.
         let mut fields = std::collections::BTreeMap::new();
         fields.insert("lat".to_string(), FieldType::F64);
         fields.insert("lon".to_string(), FieldType::F64);
@@ -2377,12 +2313,12 @@ mod tests {
         let feat = &agg.features[0];
         assert_ne!(
             feat.descriptor.ext.lat_idx, FIELD_IDX_NONE,
-            "lat_idx must be resolved at register time (was FIELD_IDX_NONE — Plan 19.2-06 Task 3 never landed; \
-             agg_geo::read_lat_lon slow path stays engaged on hot path; see 19.3-FLAMEGRAPH §2 row #8)"
+            "lat_idx must be resolved at register time so the geo update_at \
+             fast path engages instead of the slow update() arm"
         );
         assert_ne!(
             feat.descriptor.ext.lon_idx, FIELD_IDX_NONE,
-            "lon_idx must be resolved at register time (was FIELD_IDX_NONE)"
+            "lon_idx must be resolved at register time"
         );
         assert_ne!(
             feat.descriptor.ext.lat_idx, feat.descriptor.ext.lon_idx,
@@ -2400,10 +2336,8 @@ mod tests {
         );
     }
 
-    // Plan 19.4-04 (D-02) Task 4.1.a RED: EventDescriptor.apply_field_names must be
-    // populated at register-time as the field-union of all aggs on this source.
-    // Uses the canonical Registry::apply_registration test pattern from line 1580's
-    // compiled_aggregations_cached_after_apply_registration test — no fictional helper.
+    // `EventDescriptor.apply_field_names` must be populated at
+    // register-time as the field-union of all aggs on this source.
     #[test]
     fn event_descriptor_apply_field_names_is_populated_at_registration() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
@@ -2412,8 +2346,6 @@ mod tests {
 
         let r = Registry::new();
 
-        // Event source with the make_event_schema() schema (card_id, amount,
-        // merchant_id, event_time).
         let event_txn = EventDescriptor {
             name: "Txn".to_string(),
             schema: make_event_schema(),
@@ -2423,10 +2355,10 @@ mod tests {
             cold_after_ms: None,
             registered_at_version: 0,
             name_arc: Arc::from(""),
-            apply_field_names: vec![], // <-- this is what the resolver must populate
+            apply_field_names: vec![], // populated by the resolver
         };
 
-        // 2-feature aggregation on Txn source: Count (no field) + Sum(amount).
+        // Two-feature aggregation on Txn source: Count (no field) + Sum(amount).
         let agg_desc = AggregationDescriptor {
             node_name: "AggTable".to_string(),
             source_node_name: "Txn".to_string(),
@@ -2507,8 +2439,8 @@ mod tests {
             .expect("Txn must be registered");
         assert!(
             !txn_desc.apply_field_names.is_empty(),
-            "EventDescriptor.apply_field_names is still vec![] post-registration; \
-             Plan 19.4-04 D-02 requires register-time population (union of agg-declared fields)"
+            "EventDescriptor.apply_field_names must be populated at \
+             register-time as the union of agg-declared fields"
         );
         assert!(
             txn_desc.apply_field_names.iter().any(|n| n == "amount"),
@@ -2525,10 +2457,8 @@ mod tests {
         }
     }
 
-    // Plan 19.4-04 (D-02) Task 4.2.a RED: each agg feature has
-    // field_idx_into_event_extracted mapping its declared fields to per-event
-    // union indices. RED state: AggOpDescriptor does not yet carry the field
-    // (compile error E0609 — added in Task 4.2.b).
+    // Each agg feature must carry `field_idx_into_event_extracted` —
+    // a map from its declared fields to per-event union indices.
     #[test]
     fn agg_field_idx_into_event_extracted_resolved_against_union() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
@@ -2632,10 +2562,8 @@ mod tests {
             .apply_field_names
             .iter()
             .position(|n| n == "amount")
-            .expect("amount must be in the union after Task 4.1.b")
-            as u8;
+            .expect("amount must be in the union") as u8;
 
-        // Find features by name and assert mapping shape.
         let count_feat = cached
             .features
             .iter()
@@ -2647,7 +2575,6 @@ mod tests {
             .find(|f| f.feature_name == "amount_sum")
             .expect("amount_sum feature");
 
-        // RED: field_idx_into_event_extracted does not exist as a field; E0609.
         assert!(
             count_feat
                 .descriptor
