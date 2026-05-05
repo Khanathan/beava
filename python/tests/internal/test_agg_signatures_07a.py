@@ -159,3 +159,60 @@ def test_point_ordinal_family() -> None:
 
     h = bv.last_n("action", n=5, where=bv.col("kind") == "click")
     assert h.where is not None
+
+
+# ---------------------------------------------------------------------------
+# Family D — Recency
+# ---------------------------------------------------------------------------
+
+
+def test_recency_family() -> None:
+    """7 recency ops match docs/operators/recency/<op>.md signature blocks."""
+
+    # bv.streak — no field, accepts where=
+    h = bv.streak(where=bv.col("outcome") == "win")
+    d = h.to_dict()
+    assert d["op"] == "streak"
+    assert "field" not in d
+    assert d["where"] is not None
+
+    # bv.max_streak — no field, accepts where=
+    h = bv.max_streak(where=bv.col("outcome") == "win")
+    d = h.to_dict()
+    assert d["op"] == "max_streak"
+    assert "field" not in d
+    assert d["where"] is not None
+
+    # bv.negative_streak — no field, accepts where=
+    h = bv.negative_streak(where=bv.col("result") == "fail")
+    d = h.to_dict()
+    assert d["op"] == "negative_streak"
+    assert "field" not in d
+    assert d["where"] is not None
+
+    # bv.has_seen — no field, accepts where=
+    h = bv.has_seen(where=bv.col("status") == "failed")
+    d = h.to_dict()
+    assert d["op"] == "has_seen"
+    assert "field" not in d
+    assert d["where"] is not None
+
+    # bv.first_seen_in_window — no field, requires window=, accepts where=
+    h = bv.first_seen_in_window(window="1h")
+    d = h.to_dict()
+    assert d["op"] == "first_seen_in_window"
+    assert "field" not in d
+    assert d["window"] == "1h"
+
+    h = bv.first_seen_in_window(window="1h", where=bv.col("kind") == "click")
+    assert h.where is not None
+
+    # bv.time_since — accepts where= parity
+    h = bv.time_since(where=bv.col("kind") == "alive")
+    assert h.where is not None
+
+    # bv.time_since_last_n — accepts where= parity
+    h = bv.time_since_last_n(n=3, where=bv.col("kind") == "p")
+    d = h.to_dict()
+    assert d["n"] == 3
+    assert h.where is not None
