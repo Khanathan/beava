@@ -153,6 +153,13 @@ pub struct DerivationDescriptor {
     /// Strongly-typed op pipeline. Plan 02-02 swapped this from Vec<serde_json::Value>.
     #[serde(default)]
     pub ops: Vec<OpNode>,
+    /// Phase 13.5.1 Plan 07b (Deviation 3 formalization): `serde(default)`-able
+    /// so clients can omit the schema field entirely. Server's
+    /// `validate_expressions` runs schema-propagation from upstream + chain
+    /// (via `OpChain::compile` → `propagated_schemas`) and writes the
+    /// inferred schema back to the registry post-validation. This is the
+    /// single source of truth — Python SDK no longer mirrors `output_type_for`.
+    #[serde(default)]
     pub schema: DerivedSchema,
     #[serde(default)]
     pub table_primary_key: Option<Vec<String>>,
