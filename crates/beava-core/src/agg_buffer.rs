@@ -147,11 +147,16 @@ impl HourOfDayHistogramState {
     }
 
     pub fn query(&self) -> Value {
-        let mut m = BTreeMap::new();
-        for h in 0..24 {
-            m.insert(format!("{:02}", h), Value::I64(self.counts[h] as i64));
-        }
-        Value::Map(m)
+        // Phase 13.5.2: emit as Value::List of 24 i64 counts (indexed 0..23
+        // by hour-of-day UTC). Was Value::Map with `"00".."23"` string keys
+        // which forced callers to do `hist["03"]` lookups; the list shape is
+        // simpler (`hist[3]`) and parses to a Python list at the wire boundary.
+        let counts: Vec<Value> = self
+            .counts
+            .iter()
+            .map(|c| Value::I64(*c as i64))
+            .collect();
+        Value::List(counts)
     }
 }
 
