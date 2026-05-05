@@ -634,11 +634,9 @@ impl AggOp {
             AggKind::MostRecentN => {
                 AggOp::MostRecentN(MostRecentNState::new(desc.ext.n.unwrap_or(10)))
             }
-            AggKind::ReservoirSample => {
-                AggOp::ReservoirSample(ReservoirSampleState::new(
-                    desc.ext.samples.or(desc.ext.k).unwrap_or(10),
-                ))
-            }
+            AggKind::ReservoirSample => AggOp::ReservoirSample(ReservoirSampleState::new(
+                desc.ext.samples.or(desc.ext.k).unwrap_or(10),
+            )),
             AggKind::GeoVelocity => AggOp::GeoVelocity(Box::new(GeoVelocityState::with_fields(
                 desc.ext.lat_field.clone().unwrap_or_else(|| "lat".into()),
                 desc.ext.lon_field.clone().unwrap_or_else(|| "lon".into()),

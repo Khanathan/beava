@@ -151,11 +151,7 @@ impl HourOfDayHistogramState {
         // by hour-of-day UTC). Was Value::Map with `"00".."23"` string keys
         // which forced callers to do `hist["03"]` lookups; the list shape is
         // simpler (`hist[3]`) and parses to a Python list at the wire boundary.
-        let counts: Vec<Value> = self
-            .counts
-            .iter()
-            .map(|c| Value::I64(*c as i64))
-            .collect();
+        let counts: Vec<Value> = self.counts.iter().map(|c| Value::I64(*c as i64)).collect();
         Value::List(counts)
     }
 }
