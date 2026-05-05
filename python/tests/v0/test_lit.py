@@ -10,6 +10,12 @@ Tests cover:
   - bv.lit-as-divisor for forced-float division (rate = count / bv.lit(60.0))
   - bv.lit value types — int / float / str / bool / None all roundtrip
   - bv.lit immutability — fresh AST node per call; same input → same wire form
+
+Phase 13.5.2 D-04 rewrite: every chain that previously used the
+``Click.with_columns(...).named("Tagged")`` chain-form is now wrapped in
+an ``@bv.event def Tagged(click: Click): return click.with_columns(...)``
+function. Per D-01+D-02, raw chain expressions are no longer registerable;
+the ``@bv.event def`` form is the canonical (and only) public surface.
 """
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ import random
 import pytest
 
 import beava as bv
+from beava._app import _descriptor_to_node
 
 from ._helpers import (
     ENTITIES,
@@ -44,10 +51,12 @@ def test_lit_constant_column(app):
         user_id: str
         page: str
 
-    Tagged = Click.with_columns(source=bv.lit("web")).named("Tagged")
+    @bv.event
+    def Tagged(click: Click):
+        return click.with_columns(source=bv.lit("web"))
 
     @bv.table(key="user_id")
-    def UserClicks(tagged: Click):
+    def UserClicks(tagged: Tagged):
         return tagged.group_by("user_id").agg(
             total=bv.count(window="forever"),
             web_only=bv.count(
@@ -92,20 +101,22 @@ def test_lit_explicit_filter_literal(app):
         amount: float
 
     # Two derivations, identical filter — one with bv.lit, one with implicit literal.
-    BigImplicit = Tx.filter(bv.col("amount") > 100).named("BigImplicit")
-    BigExplicit = Tx.filter(bv.col("amount") > bv.lit(100)).named("BigExplicit")
+    @bv.event
+    def BigImplicit(tx: Tx):
+        return tx.filter(bv.col("amount") > 100)
+
+    @bv.event
+    def BigExplicit(tx: Tx):
+        return tx.filter(bv.col("amount") > bv.lit(100))
 
     @bv.table(key="user_id")
-    def CountImplicit(big: Tx):
+    def CountImplicit(big: BigImplicit):
         return big.group_by("user_id").agg(nI=bv.count(window="forever"))
 
     @bv.table(key="user_id")
-    def CountExplicit(big: Tx):
+    def CountExplicit(big: BigExplicit):
         return big.group_by("user_id").agg(nE=bv.count(window="forever"))
 
-    # Bind upstream-by-name — both derivations independently feed their own table.
-    # We re-decorate with the right upstream below by relying on @bv.event
-    # function-form parameter annotation matching the named derivation.
     app.register(
         Tx,
         BigImplicit,
@@ -115,10 +126,10 @@ def test_lit_explicit_filter_literal(app):
     )
 
     # ── Wire-payload equivalence: both filter wire JSONs must be byte-identical.
-    impl_json = BigImplicit._to_register_json()
-    expl_json = BigExplicit._to_register_json()
-    impl_filter_op = next(op for op in impl_json["ops"] if op.get("op") == "filter")
-    expl_filter_op = next(op for op in expl_json["ops"] if op.get("op") == "filter")
+    impl_node = _descriptor_to_node(BigImplicit)
+    expl_node = _descriptor_to_node(BigExplicit)
+    impl_filter_op = next(op for op in impl_node["ops"] if op.get("op") == "filter")
+    expl_filter_op = next(op for op in expl_node["ops"] if op.get("op") == "filter")
     assert impl_filter_op["expr"] == expl_filter_op["expr"], (
         f"explicit/implicit literal compile to different exprs: "
         f"impl={impl_filter_op['expr']!r}, expl={expl_filter_op['expr']!r}"
@@ -168,10 +179,12 @@ def test_lit_force_float_division(app):
         user_id: str
         count: int
 
-    Rated = Telemetry.with_columns(rate=bv.col("count") / bv.lit(60.0)).named("Rated")
+    @bv.event
+    def Rated(telemetry: Telemetry):
+        return telemetry.with_columns(rate=bv.col("count") / bv.lit(60.0))
 
     @bv.table(key="user_id")
-    def UserMeanRate(rated: Telemetry):
+    def UserMeanRate(rated: Rated):
         return rated.group_by("user_id").agg(
             mean_rate=bv.mean("rate", window="forever"),
         )
@@ -225,16 +238,17 @@ def test_lit_value_types(app):
     #   x <= bv.lit(1000.0)         # float
     #   s != bv.lit("excluded")     # str
     #   b == bv.lit(True)           # bool
-    #   ~ ((b == bv.lit(False)) & (s == bv.lit(None)))  # None
-    Filtered = M.filter(
-        (bv.col("n") >= bv.lit(0))
-        & (bv.col("x") <= bv.lit(1000.0))
-        & (bv.col("s") != bv.lit("excluded"))
-        & (bv.col("b") == bv.lit(True))
-    ).named("Filtered")
+    @bv.event
+    def Filtered(m: M):
+        return m.filter(
+            (bv.col("n") >= bv.lit(0))
+            & (bv.col("x") <= bv.lit(1000.0))
+            & (bv.col("s") != bv.lit("excluded"))
+            & (bv.col("b") == bv.lit(True))
+        )
 
     @bv.table(key="user_id")
-    def UserFilteredCount(filtered: M):
+    def UserFilteredCount(filtered: Filtered):
         return filtered.group_by("user_id").agg(n=bv.count(window="forever"))
 
     app.register(M, Filtered, UserFilteredCount)
@@ -260,7 +274,7 @@ def test_lit_value_types(app):
 
     # Verify the wire payload references each lit value type at least once.
     filter_op = next(
-        op for op in Filtered._to_register_json()["ops"] if op.get("op") == "filter"
+        op for op in _descriptor_to_node(Filtered)["ops"] if op.get("op") == "filter"
     )
     expr_str = filter_op["expr"]
     # Sanity: each lit form's textual representation appears in the serialized expr.
@@ -293,15 +307,20 @@ def test_lit_immutability(app):
     assert a.to_expr_string() == b.to_expr_string() == "42"
 
     # Use both in a real pipeline; both compile to the same wire payload + same result.
-    UseA = M.filter(bv.col("n") > a).named("UseA")
-    UseB = M.filter(bv.col("n") > b).named("UseB")
+    @bv.event
+    def UseA(m: M):
+        return m.filter(bv.col("n") > a)
+
+    @bv.event
+    def UseB(m: M):
+        return m.filter(bv.col("n") > b)
 
     @bv.table(key="user_id")
-    def CountA(filt: M):
+    def CountA(filt: UseA):
         return filt.group_by("user_id").agg(nA=bv.count(window="forever"))
 
     @bv.table(key="user_id")
-    def CountB(filt: M):
+    def CountB(filt: UseB):
         return filt.group_by("user_id").agg(nB=bv.count(window="forever"))
 
     app.register(M, UseA, UseB, CountA, CountB)
