@@ -28,7 +28,7 @@ use beava_runtime_core::wal_buffer::WalBufferRing;
 use beava_runtime_core::wal_lsn::WalLsn;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // Phase 13.5.2: helper to compute the effective query_time_ms used by
 // time_since / age / windowed ops. Takes the max of the watermark (D-06 —

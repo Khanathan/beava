@@ -908,20 +908,9 @@ impl FirstSeenInWindowState {
 
 // ─── Helpers (Phase 8) ────────────────────────────────────────────────────────
 
-/// Encode a list of `Value`s as a JSON array string for first_n/last_n wire output.
-///
-/// We project each `Value` to a plain JSON scalar so the produced string is
-/// `"[10.0,20.0,30.0]"` rather than the tagged enum form
-/// `"[{\"F64\":10.0},...]"` that serde's default `Value::Serialize` impl
-/// produces. This matches the user-facing wire shape documented for
-/// `first_n` / `last_n` in `docs/operators.md`.
-pub(crate) fn values_to_json_array(values: &[Value]) -> String {
-    let projected: Vec<serde_json::Value> = values.iter().map(value_to_json).collect();
-    serde_json::to_string(&projected).unwrap_or_else(|_| "[]".to_string())
-}
-
-/// Project a `Value` to its untagged JSON form (plain scalar). `Bytes` and
-/// `Datetime` round-trip as integer / string respectively. `Null` → JSON null.
+/// Project a `Value` to its untagged JSON form (plain scalar). Used by
+/// `hash_value_for_hll` for List/Map projection. `Bytes` and `Datetime`
+/// round-trip as integer / string respectively. `Null` → JSON null.
 fn value_to_json(v: &Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
