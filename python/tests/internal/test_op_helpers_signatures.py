@@ -274,21 +274,25 @@ def test_reservoir_sample() -> None:
 
 # ── Geo (4) ────────────────────────────────────────────────────────────────
 def test_geo_velocity() -> None:
+    # Plan 13.5.1-07a: kw-only lat=/lon=, no window kwarg
     assert (
-        bv.geo_velocity("lat", "lon", window="1h").to_dict()["op"] == "geo_velocity"
+        bv.geo_velocity(lat="lat", lon="lon").to_dict()["op"] == "geo_velocity"
     )
 
 
 def test_geo_distance() -> None:
-    assert bv.geo_distance("lat", "lon").to_dict()["op"] == "geo_distance"
+    # Plan 13.5.1-07a: kw-only lat=/lon=
+    assert bv.geo_distance(lat="lat", lon="lon").to_dict()["op"] == "geo_distance"
 
 
 def test_geo_spread() -> None:
-    assert bv.geo_spread("lat", "lon", window="1h").to_dict()["op"] == "geo_spread"
+    # Plan 13.5.1-07a: kw-only lat=/lon=, no window kwarg
+    assert bv.geo_spread(lat="lat", lon="lon").to_dict()["op"] == "geo_spread"
 
 
 def test_distance_from_home() -> None:
+    # Plan 13.5.1-07a: kw-only lat=/lon=/samples=, no window kwarg
     assert (
-        bv.distance_from_home("lat", "lon", window="30d").to_dict()["op"]
+        bv.distance_from_home(lat="lat", lon="lon").to_dict()["op"]
         == "distance_from_home"
     )

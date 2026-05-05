@@ -714,47 +714,53 @@ def reservoir_sample(
 
 
 def geo_velocity(
-    lat_field: str, lon_field: str, *, window: str, where: Any = None
+    *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    _validate_window(window, "geo_velocity", required=True)
+    """Lifetime-only max km/h between consecutive matching events per docs/operators/buffer-geo/geo_velocity.md."""
     return AggDescriptor(
         op="geo_velocity",
-        window=window,
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon},
         where=_serialize_where(where),
     )
 
 
 def geo_distance(
-    lat_field: str, lon_field: str, *, where: Any = None
+    *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
+    """Lifetime-only cumulative haversine path length per docs/operators/buffer-geo/geo_distance.md."""
     return AggDescriptor(
         op="geo_distance",
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon},
         where=_serialize_where(where),
     )
 
 
 def geo_spread(
-    lat_field: str, lon_field: str, *, window: str, where: Any = None
+    *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    _validate_window(window, "geo_spread", required=True)
+    """Lifetime-only RMS dispersion around running centroid per docs/operators/buffer-geo/geo_spread.md."""
     return AggDescriptor(
         op="geo_spread",
-        window=window,
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon},
         where=_serialize_where(where),
     )
 
 
 def distance_from_home(
-    lat_field: str, lon_field: str, *, window: str, where: Any = None
+    *, lat: str, lon: str, samples: int = 100, where: Any = None
 ) -> AggDescriptor:
-    _validate_window(window, "distance_from_home", required=True)
+    """Distance from current point to centroid of last ``samples`` matching events.
+
+    ``samples`` is BoundedByConfig("samples", 100) per V0-MEM-GOV-02 — see
+    docs/operators/buffer-geo/distance_from_home.md.
+    """
+    if samples < 1:
+        raise ValueError(
+            f"distance_from_home samples must be >= 1; got {samples}"
+        )
     return AggDescriptor(
         op="distance_from_home",
-        window=window,
-        extras={"lat_field": lat_field, "lon_field": lon_field},
+        extras={"lat_field": lat, "lon_field": lon, "samples": samples},
         where=_serialize_where(where),
     )
 
