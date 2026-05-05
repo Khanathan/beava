@@ -216,3 +216,33 @@ def test_recency_family() -> None:
     d = h.to_dict()
     assert d["n"] == 3
     assert h.where is not None
+
+
+# ---------------------------------------------------------------------------
+# Family E — Velocity
+# ---------------------------------------------------------------------------
+
+
+def test_velocity_family() -> None:
+    """outlier_count.sigma rename + value_change_count regression guard."""
+
+    # bv.outlier_count — sigma= (NOT threshold=)
+    h = bv.outlier_count("x", window="1h", sigma=3.0)
+    d = h.to_dict()
+    assert d["op"] == "outlier_count"
+    assert d["field"] == "x"
+    assert d["window"] == "1h"
+    assert d["sigma"] == 3.0, f"outlier_count expects sigma=, got d={d!r}"
+    assert "threshold" not in d
+
+    # default sigma=3.0
+    h = bv.outlier_count("x", window="1h")
+    d = h.to_dict()
+    assert d["sigma"] == 3.0
+
+    # bv.value_change_count — regression guard; signature already matches
+    h = bv.value_change_count("state", window="1h")
+    d = h.to_dict()
+    assert d["op"] == "value_change_count"
+    assert d["field"] == "state"
+    assert d["window"] == "1h"
