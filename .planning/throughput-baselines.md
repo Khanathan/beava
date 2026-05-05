@@ -2066,3 +2066,35 @@ The `--blast-shape zipfian --cardinality 10000` shape is push-dominated; small/t
 ### Verdict
 
 **PASS.** Within the ±10% PASS band on the regression-gate cell; well clear of the 25% BLOCK threshold. Phase 13.4.1 verdict per CLAUDE.md §End-to-end throughput regression contract: PASS at the small/tcp gate cell. The 8-cell sweep (medium/tcp, large/tcp, fraud-team/tcp, http variants) was not re-run for this fix-up phase per CONTEXT.md `<carrying_forward>` ("Throughput regression gate — small/tcp baseline from Phase 13.5; 10% warn / 25% block thresholds") — single-cell run is sufficient for closure.
+
+---
+
+## Phase 13.5.2 — Decorator-only derivation surface + runtime chain-op execution — small/tcp regression-gate run (Apple-M4)
+
+**Date:** 2026-05-04
+**Harness:** `beava-bench-v18 --pipeline small --transport tcp --wire-format msgpack --blast-shape zipfian --cardinality 10000 --total-events 1000000 --parallel 16 --pipeline-depth 1024 --no-ledger` (small/tcp gate cell — 3 runs, median)
+**Commit:** `bab6b007` (Plan 13.5.2-05 doc rewrites; runtime chain-op execution at `9a3fdd74`)
+**hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
+**Runs (sustained_eps):** 641,935 / 621,589 / 693,262 → median **641,935 EPS**
+
+### Phase 13.5.2 small/tcp regression-gate row
+
+| Cell | Phase 13.5.2 EPS | Phase 13.4.1 baseline EPS | Δ% vs 13.4.1 | Verdict |
+|------|----------------:|--------------------------:|-------------:|---------|
+| small/tcp (gate) | 641,935 | 631,610 | **+1.6%** | **PASS** (within ±10% gate band) |
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 13.5.2 ships:
+- D-01 register-time `EventDerivation` rejection in `python/beava/_app.py::App.register` (~30 LOC)
+- D-02 decorator-time `EventDerivation`-instance annotation rejection in `python/beava/_table.py` + `python/beava/_events.py` (~120 LOC) plus the `_is_bv_event_function` marker handshake
+- SDK chain-flatten in `python/beava/_app.py::_descriptor_to_node` for `@bv.event def`-rooted `@bv.table` consumers
+- Python `&`/`|` → expr-grammar `and`/`or` serialization in `python/beava/_col.py`
+- Runtime chain-op execution in `crates/beava-core/src/agg_apply.rs::apply_event_to_aggregations` (per-desc `OpChain::apply` against the source row, fast-path zero-overhead when no chain registered)
+- Companion register-time chain-prefix compilation in `crates/beava-core/src/register_validate.rs::validate_expressions` (when GroupBy is present, compile the non-GroupBy ops as the chain prefix; previously skipped entirely)
+
+The +1.6% delta is measurement variance on the dev box, consistent with the Phase 13.4.1 −6.30% / Phase 13.5 −7.1% range on the same gate cell. The new per-desc `compiled_chain` lookup is a single `BTreeMap::get` (~5 ns) that returns `None` for direct event→table aggregations (the typical case), keeping the fast path zero-overhead.
+
+### Verdict
+
+**PASS.** Within the ±10% PASS band on the regression-gate cell; well clear of the 25% BLOCK threshold. Single-cell run sufficient per CLAUDE.md (small/tcp is the canonical gate cell; medium / large / fraud-team / http variants not re-run for this fix-up phase per CONTEXT.md `<carrying_forward>`).
