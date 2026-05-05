@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-05T03:53:00Z",
+  "phase": "13.5.2-postclose",
+  "phase_name": "Post-13.5.2 v0 high-volume test fix sweep",
+  "phase_dir": ".planning/phases/13.5.2-decorator-only-derivations",
+  "plan": null,
+  "task": 5,
+  "total_tasks": 6,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "fix reservoir_sample (samples→k fallback)", "status": "done", "commit": "74832eb4"},
+    {"id": 2, "name": "fix FirstN/LastN query → Value::List", "status": "done", "commit": "ec54a1d3"},
+    {"id": 3, "name": "fix hour_of_day_histogram → Value::List", "status": "done", "commit": "cbf873fa"},
+    {"id": 4, "name": "fix value_change_count → generic Value (string/bool/numeric)", "status": "done", "commit": "e746347f"},
+    {"id": 5, "name": "fix query_time_ms = max(watermark, wall_clock_now)", "status": "done", "commit": "ed439c5b"}
+  ],
+  "remaining_tasks": [
+    {"id": 6, "name": "fix geo_velocity (max_kmh=None for 5/5 entities)", "status": "not_started"},
+    {"id": 7, "name": "verify build + run pytest python/tests/v0/ — target 88/89 passing", "status": "not_started"},
+    {"id": 8, "name": "verify cargo test --workspace --features testing still GREEN", "status": "not_started"},
+    {"id": 9, "name": "verify cargo clippy --workspace --all-targets --all-features -D warnings + cargo fmt --all --check", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [],
+  "decisions": [
+    {"decision": "FirstN/LastN/HourOfDayHistogram switched from string-encoded to Value::List", "rationale": "matches modern ReservoirSample pattern; cleaner Python list / JS array surface; only test_buffer test_lit consumed these so blast radius is minimal", "phase": "13.5.2-postclose"},
+    {"decision": "ValueChangeCountState stores last_value as Option<Value>", "rationale": "previous f64-only impl silently dropped string/bool transitions; generic Value works for any type with == comparison", "phase": "13.5.2-postclose"},
+    {"decision": "query_time_ms = max(watermark, SystemTime::now() ms)", "rationale": "preserves D-06 replay-determinism (watermark wins during replay) AND lets live time_since/age advance with wall-clock after time.sleep(); existing zero-fallback used Instant::now().elapsed() which is always 0 — that was a latent bug too", "phase": "13.5.2-postclose"},
+    {"decision": "reservoir_sample: server reads desc.ext.samples.or(desc.ext.k)", "rationale": "SDK sends `samples`; server was reading `k` and silently defaulting to 10; fallback handles both names", "phase": "13.5.2-postclose"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "1) cd to project root; 2) cargo build --bin beava (verify compile); 3) pytest python/tests/v0/ --no-header -q 2>&1 | tail -5 — expect ~3 failed (only geo_velocity + maybe 2 high-volume flakes); 4) investigate geo_velocity: read `crates/beava-core/src/agg_state_geo.rs` (or wherever GeoVelocityState lives) — check whether lat_field/lon_field resolution works post-13.5.2 chain-flatten changes; the test pushes raw GeoTx events with lat/lon fields directly so chain-apply isn't relevant; the test expects max_kmh non-None even with sub-millisecond pushes, current behavior returns None.",
+  "context_notes": "Phase 13.5.2 OFFICIALLY CLOSED earlier this session at commit 95e5b129 (decorator-only derivation surface + runtime chain-op execution wired into agg_apply). User then said 'fix all the tests if tests' meaning: dig into the 8 remaining v0 acceptance failures and fix the real bugs (not just defer them). 5 of 6 distinct bugs landed atomically in commits 74832eb4..ed439c5b. geo_velocity is the 6th and its failure mode is just 'max_kmh = None' — needs investigation of GeoVelocityState. Build is clean (cargo build --bin beava succeeds). cargo clippy/fmt unverified post-fixes — assume needs check. pytest sweep unverified post-fixes."
+}
