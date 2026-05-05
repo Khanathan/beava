@@ -200,12 +200,17 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .get("precision")
         .and_then(|v| v.as_u64())
         .map(|n| n as u32);
+    // SDK sends canonical `lat_field`/`lon_field` (see python/beava/_agg.py geo helpers
+    // + python/tests/internal/test_agg_signatures_07a.py); legacy `lat`/`lon` keys
+    // accepted as alias for backward-compat with hand-rolled JSON payloads.
     let ext_lat_field = params
-        .get("lat")
+        .get("lat_field")
+        .or_else(|| params.get("lat"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let ext_lon_field = params
-        .get("lon")
+        .get("lon_field")
+        .or_else(|| params.get("lon"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let ext_samples = params
