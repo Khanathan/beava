@@ -146,6 +146,12 @@ def spawn_embedded_server(
         **os.environ,
         "BEAVA_LISTEN_ADDR": "127.0.0.1:0",
         "BEAVA_TCP_PORT": "0",
+        # Phase 13.5.1 Plan 07b (Rule 3 blocking-issue auto-fix): force the
+        # admin sidecar onto an OS-allocated ephemeral port so the binary's
+        # bind doesn't fight with whatever else is on 8090. Without this,
+        # any host with a prior beava on 8090 — or any parallel test spawn
+        # — fails ServerV18 boot with "Address already in use".
+        "BEAVA_ADMIN_ADDR": "127.0.0.1:0",
         "BEAVA_DEV_ENDPOINTS": "1",
         "BEAVA_WAL_DIR": str(wal_dir),
         "BEAVA_SNAPSHOT_DIR": str(snapshot_dir),
