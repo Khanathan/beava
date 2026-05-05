@@ -1,18 +1,8 @@
 //! Beava v2 server entry point.
 //!
-//! Plan 12.6-07: legacy axum `Server` deleted. ServerV18 (mio) is the SOLE
-//! data-plane runtime per `project_phase18_no_dual_runtime`. Admin endpoints
-//! mount via `BoundAdminServer` on `cfg.admin_addr` (default 127.0.0.1:8090).
-//!
-//! Wiring order:
-//! 1. Parse CLI
-//! 2. Load config (YAML + `BEAVA_*` env overrides + validation)
-//! 3. Init JSON logging (so steps 4+ log structured)
-//! 4. Build single-thread tokio runtime (admin endpoints + serve_with_dirs
-//!    orchestration; the apply thread is a separate std::thread spawned
-//!    inside ServerV18::serve_with_dirs and never touches tokio).
-//! 5. Bind ServerV18 (data-plane HTTP + TCP listeners + admin axum sidecar)
-//! 6. serve_with_dirs with SIGTERM/SIGINT graceful shutdown
+//! ServerV18 (mio) is the sole data-plane runtime per the mio-only invariant.
+//! Admin endpoints mount via `BoundAdminServer` on `cfg.admin_addr` (default
+//! 127.0.0.1:8090).
 
 use anyhow::{Context, Result};
 use beava_persistence::{Persistence, SyncMode};
@@ -34,14 +24,13 @@ fn main() -> Result<()> {
         config_path = %cli.config.display(),
         "beava starting"
     );
-    // Print banner to stdout as well — useful when logs are JSON but operators want
-    // a quick "yep it started" line.
+    // Banner goes to stdout so operators see a non-JSON "started" line even
+    // when log output is structured.
     println!("{}", banner());
 
-    // Single-thread tokio runtime: admin endpoints + serve_with_dirs orchestration
-    // run on this thread. The hand-rolled apply loop runs in a dedicated std::thread
-    // spawned inside ServerV18::serve_with_dirs (no tokio dependency on the data
-    // plane).
+    // Single-thread tokio: admin endpoints + serve orchestration only. The
+    // apply loop is a std::thread spawned inside `serve_with_dirs` and must
+    // not touch tokio (mio-only invariant).
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -67,18 +56,11 @@ fn main() -> Result<()> {
             http_addr = %http_addr,
             tcp_addr = %tcp_addr,
             admin_addr = %admin_addr,
-            "booting ServerV18 (Plan 12-07)"
+            "booting ServerV18"
         );
 
-        // Phase 13.5.3: production binary now constructs ServerV18Config
-        // via `from_env()` (which reads BEAVA_* env vars at boot) and calls
-        // `bind_with_config(...)`, replacing the legacy `bind() +
-        // serve_with_dirs(...)` path. The old path read BEAVA_TEST_MODE /
-        // BEAVA_MEMORY_GOV_ENFORCE / BEAVA_IO_THREADS / BEAVA_WAL_*
-        // process-globally on the hot path; the new path consolidates
-        // env-reading into a single boot-time site (preserving the operator
-        // env interface) and plumbs the resolved values through struct
-        // fields. See .planning/quick/260505-bn7-workspace-test-determinism-phase-13-5-3/.
+        // Read BEAVA_* env once at boot via `from_env()`; resolved values flow
+        // through `ServerV18Config` so the hot path never re-reads env.
         let mut sv18_cfg = ServerV18Config::from_env();
         sv18_cfg.persistence = Persistence::Disk {
             wal_dir: cfg.durability.wal_dir.clone(),

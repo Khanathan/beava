@@ -1,17 +1,15 @@
-//! Phase 7 Plan 03: recovery on startup.
+//! Recovery on startup.
 //!
-//! Order of operations:
-//! 1. `load_snapshot_if_any(dir, app_state)` — descending-LSN scan; first valid
-//!    snapshot wins; install registry descriptors + state tables; return
-//!    `snapshot_lsn`. Empty dir or all-corrupt files → 0 (cold start).
-//! 2. `replay_wal_from_lsn(wal_dir, snapshot_lsn, app_state)` — read every WAL
-//!    record in LSN order; skip `lsn <= snapshot_lsn`; for each remaining
-//!    record dispatch by `RecordType`:
-//!    - `Event` → decode payload + `apply_event_to_aggregations`.
-//!    - `RegistryBump` → `bincode`-decode `RegistryBumpPayload` + apply.
+//! 1. `load_snapshot_if_any(dir, dev_agg)` — descending-LSN scan; first valid
+//!    snapshot wins; install registry descriptors + state tables; return its
+//!    LSN. Empty dir or all-corrupt files → 0 (cold start).
+//! 2. `replay_wal_from_lsn(wal_dir, snapshot_lsn, dev_agg)` — replay every WAL
+//!    record with `lsn > snapshot_lsn` in LSN order: `Event` decodes its
+//!    payload and feeds `apply_event_to_aggregations`; `RegistryBump`
+//!    bincode-decodes a `RegistryBumpPayload` and applies it.
 //!
-//! Apply-AFTER-fsync still holds on replay because every WAL record is durable
-//! by definition; LSN order = apply order.
+//! Apply-after-fsync holds on replay because every WAL record is durable by
+//! definition; LSN order is apply order.
 
 use crate::register::RegistryBumpPayload;
 use crate::registry_debug::DevAggState;
@@ -49,11 +47,10 @@ pub fn load_snapshot_if_any(
                         snapshot_body.into_parts();
                     dev_agg.registry.install_from_descriptors(&registry_only);
                     {
-                        // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable>
-                        // indexed by agg_id. Registry.install_from_descriptors
-                        // assigned ids deterministically (in registration order);
-                        // grow Vec to fit, then place each table at its slot via
-                        // the registry's name→agg_id reverse lookup.
+                        // Registry.install_from_descriptors assigns agg_ids
+                        // deterministically (registration order); grow the
+                        // table vector to fit and place each entry at its
+                        // own slot via the name → agg_id reverse lookup.
                         let new_next_agg_id = dev_agg.registry.next_agg_id() as usize;
                         let mut tables = dev_agg.state_tables.lock();
                         tables.clear();
@@ -68,9 +65,6 @@ pub fn load_snapshot_if_any(
                             };
                             let tbl = &mut tables[agg_id];
                             for (key, ops) in entries {
-                                // Plan 19.2-03: AggStateTable no longer has a
-                                // direct `entities` map; use insert_from_entity_key
-                                // which routes through the multi sub-map.
                                 tbl.insert_from_entity_key(key, ops);
                             }
                         }
@@ -130,8 +124,6 @@ struct WalEventPayload {
     b: serde_json::Value,
 }
 
-// ─── Hand-rolled WAL replay (v=2 binary format) ───────────────────────────────
-
 /// A single decoded v=2 record from the hand-rolled WAL file.
 struct V2Record {
     body_format: u8,
@@ -154,15 +146,13 @@ fn parse_v2_records(data: &[u8]) -> Vec<V2Record> {
     let mut pos = 0usize;
 
     loop {
-        // Need at least the fixed header: 1+1+4+8+2 = 16 bytes.
+        // Fixed header is 1+1+4+8+2 = 16 bytes.
         if pos + 16 > data.len() {
             break;
         }
 
-        // Version byte — must be 0x02 for v=2 records.
         let version = data[pos];
         if version != 0x02 {
-            // Unknown version or padding — stop.
             break;
         }
         pos += 1;
@@ -179,9 +169,8 @@ fn parse_v2_records(data: &[u8]) -> Vec<V2Record> {
         let name_len = u16::from_be_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
         pos += 2;
 
-        // Need name_len + 4 (body_len prefix).
         if pos + name_len + 4 > data.len() {
-            break; // truncated
+            break;
         }
 
         let event_name = match std::str::from_utf8(&data[pos..pos + name_len]) {
@@ -194,7 +183,7 @@ fn parse_v2_records(data: &[u8]) -> Vec<V2Record> {
         pos += 4;
 
         if pos + body_len > data.len() {
-            break; // truncated
+            break;
         }
 
         let body = data[pos..pos + body_len].to_vec();
@@ -214,12 +203,10 @@ fn parse_v2_records(data: &[u8]) -> Vec<V2Record> {
 
 /// Replay hand-rolled WAL files (`*.wal`) from `wal_dir`.
 ///
-/// Hand-rolled WAL files are written by `WalBufferRing` + `WalWriter` and use
-/// the v=2 binary record format (see `dispatch_push_sync` in apply_shard.rs).
-/// This is distinct from the `beava-persistence` WalSink format (`*.log`).
-///
-/// Returns the last synthetic LSN assigned (based on record ordinal) and the
-/// count of events replayed. Assigns monotonic LSNs starting from `lsn_start`.
+/// Hand-rolled WAL files are written by `WalBufferRing` + `WalWriter` in the
+/// v=2 binary record format (see `dispatch_push_sync` in `apply_shard`),
+/// distinct from the `beava-persistence` `WalSink` format (`*.log`). Returns
+/// recovery counters; assigns monotonic LSNs starting from `lsn_start`.
 pub fn replay_handrolled_wal_dir(
     wal_dir: &Path,
     lsn_start: Lsn,
@@ -235,7 +222,7 @@ pub fn replay_handrolled_wal_dir(
         return Ok(outcome);
     }
 
-    // Collect all *.wal files, sorted by name (lexicographic = LSN order).
+    // *.wal filenames are LSN-prefixed, so lexicographic sort = LSN order.
     let mut wal_files: Vec<std::path::PathBuf> = std::fs::read_dir(wal_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -253,9 +240,6 @@ pub fn replay_handrolled_wal_dir(
             let lsn = next_lsn;
             next_lsn += 1;
 
-            // Decode body based on body_format.
-            // Row implements serde::Deserialize (Task 9.3) — works for both
-            // serde_json (CT_JSON) and rmp_serde (CT_MSGPACK).
             let row: Row = if rec.body_format == CT_MSGPACK {
                 match rmp_serde::from_slice::<Row>(&rec.body) {
                     Ok(r) => r,
@@ -271,7 +255,6 @@ pub fn replay_handrolled_wal_dir(
                     }
                 }
             } else {
-                // CT_JSON: serde_json decode.
                 match serde_json::from_slice::<Row>(&rec.body) {
                     Ok(r) => r,
                     Err(e) => {
@@ -287,13 +270,10 @@ pub fn replay_handrolled_wal_dir(
                 }
             };
 
-            // Plan 12.8-03 D-01/D-04: thread the source's cold_after_ms
-            // through the apply path. WAL replay rebuilds live state in
-            // time order; cold-TTL eviction during replay is correct
-            // (replay state == live state once recovery completes). When
-            // the source descriptor is missing (shouldn't happen — register
-            // records replay before event records — but defensive),
-            // cold_after_ms = None preserves pre-12.8-03 behavior.
+            // Thread the source's cold_after_ms through apply so cold-TTL
+            // eviction during replay reproduces live state. Missing event
+            // descriptors yield `None` (defensive — register records replay
+            // before event records).
             let cold_after_ms = dev_agg
                 .registry
                 .get_event_descriptor(&rec.event_name)
@@ -365,9 +345,6 @@ pub fn replay_wal_from_lsn(
                     }
                 };
                 let row = json_object_to_row(&payload.b);
-                // Plan 12.8-03 D-01/D-04: thread cold_after_ms through the
-                // legacy WalSink replay path too. payload.s is the source
-                // event name; descriptor lookup yields the configured TTL.
                 let cold_after_ms = dev_agg
                     .registry
                     .get_event_descriptor(&payload.s)
@@ -392,28 +369,15 @@ pub fn replay_wal_from_lsn(
                 }
                 outcome.replay_event_count += 1;
             }
-            // Plan 12.7-05 (CONTEXT D-01 hard rip RESET): the
-            // table-write + stream-retract replay arm (formerly Phase
-            // 11.5's logging stub) is deleted alongside the corresponding
-            // record-type variants. Pre-12.7 dev WALs that carried those
-            // bytes (0x03 / 0x04 / 0x05) fail earlier at
-            // `RecordType::from_u8` with the existing
-            // `PersistError::UnknownRecordType` error; recovery surfaces a
-            // hard read-error before reaching this match arm. v0 ships
-            // events-only per `project_v0_events_only_scope`.
             RecordType::RegistryBump => match RegistryBumpPayload::decode(&rec.payload) {
                 Ok(bump) => match crate::register::apply_registry_bump(&dev_agg.registry, bump) {
                     Ok(()) => {
                         outcome.replay_registry_bumps += 1;
                     }
                     Err(e) => {
-                        // Phase 7.5 Plan 01: a durable RegistryBump that
-                        // cannot apply is a hard recovery failure. Silently
-                        // skipping (the prior behavior) made the
-                        // serde_json::Value bincode bug invisible at the
-                        // integration level for an entire phase. The
-                        // apply-AFTER-fsync invariant says: if it's on
-                        // disk, it MUST replay.
+                        // Apply-after-fsync invariant: a durable RegistryBump
+                        // that fails to apply is a hard recovery failure —
+                        // silently skipping would let durable corruption hide.
                         tracing::error!(
                             target: "beava.recovery",
                             kind = "recovery.registry_bump_apply_failed",

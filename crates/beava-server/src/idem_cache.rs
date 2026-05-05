@@ -1,12 +1,8 @@
-//! Phase 6 Plan 03 idempotency cache — stream-level dedupe_key+window.
+//! Stream-level idempotency cache keyed by `(stream_id, dedupe_key)`.
 //!
-//! Keyed by `(stream_id, dedupe_key_string)`. `get` performs a lazy expiry
-//! check (miss if expired) under a read lock; a background sweeper task calls
-//! `sweep_expired` periodically to bound memory.
-//!
-//! Memory: one `CachedEntry` per unique (stream, dedupe_key) within the
-//! configured window. Operators size the box per project constraints — v0
-//! has no LRU cap.
+//! `get` is a read-lock lazy-expiry check (treats expired as a miss). A
+//! background sweeper periodically calls `sweep_expired` under a write lock
+//! to bound memory; v0 has no LRU cap, so operators must size the box.
 
 use bytes::Bytes;
 use parking_lot::RwLock;
@@ -47,11 +43,11 @@ impl IdemCache {
         Some(entry.response_bytes.clone())
     }
 
-    /// Plan 12.6-15: lookup that returns both the cached body bytes AND the
-    /// `ack_lsn` of the original push. The TCP push encoder needs the
-    /// ack_lsn to frame the dedupe-replay body
-    /// (`{ack_lsn, idempotent_replay: true, registry_version}`); HTTP
-    /// already gets it from the verbatim cached body.
+    /// Lookup returning both the cached body and the original push's
+    /// `ack_lsn`. The TCP push encoder needs `ack_lsn` to frame the
+    /// dedupe-replay body (`{ack_lsn, idempotent_replay: true,
+    /// registry_version}`); HTTP already encodes it inside the verbatim
+    /// cached body.
     pub fn get_with_ack_lsn(&self, stream: &str, key: &str, now_ms: u64) -> Option<(u64, Bytes)> {
         let g = self.inner.read();
         let entry = g.get(&(stream.to_string(), key.to_string()))?;

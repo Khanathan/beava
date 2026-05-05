@@ -1,15 +1,8 @@
-//! Phase 7 Plan 03: periodic snapshot task.
-//!
-//! Spawns a tokio task that, every `interval`:
-//! 1. Captures `wal_sink.durable_lsn()` as the snapshot_lsn.
-//! 2. Builds a `SnapshotBody` from live registry + state_tables.
-//! 3. Encodes with bincode (outside the state_tables lock).
-//! 4. Writes via `SnapshotWriter::write` (atomic rename).
-//! 5. Calls `wal_sink.truncate_up_to(snapshot_lsn)`.
-//! 6. Calls `prune_old_snapshots(dir, retain)`.
-//!
-//! Also exposes a manual trigger channel so test code can force a snapshot
-//! immediately (`TestServer::force_snapshot_now`).
+//! Periodic snapshot task: captures `wal_sink.durable_lsn()`, encodes the
+//! live registry + state tables outside the lock, atomic-renames into the
+//! snapshot dir, then truncates the WAL up to the snapshot LSN and prunes
+//! old snapshots. A manual-trigger channel lets tests force an immediate
+//! snapshot via `TestServer::force_snapshot_now`.
 
 use crate::AppState;
 use beava_core::snapshot_body::SnapshotBody;
@@ -53,7 +46,8 @@ pub fn spawn_snapshot_task(
     let join = tokio::spawn(async move {
         let mut iv = tokio::time::interval(cfg.interval);
         iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // First tick fires immediately — skip it so we don't snapshot on boot.
+        // First interval tick fires immediately; skip it so boot doesn't
+        // race a snapshot before the WAL has any records.
         iv.tick().await;
         loop {
             tokio::select! {
@@ -92,14 +86,13 @@ async fn do_snapshot(
     app_state: &AppState,
     wal_sink: &WalSink,
 ) -> Result<(), SnapshotTaskError> {
-    // Phase 7 Plan 04 hook: optional crash injection for crash probes.
     #[cfg(any(feature = "testing", test))]
     maybe_crash_at("before-snapshot");
 
-    // Capture the durable_lsn FIRST. This guarantees snapshot_lsn ≤ actual
-    // covered state; any WAL record past this LSN is safely re-applied on
-    // restart (idempotent on Event records via apply_event_to_aggregations,
-    // additive on RegistryBump records).
+    // Capture `durable_lsn` FIRST so `snapshot_lsn ≤ actual covered state`.
+    // Any WAL record past this LSN is safely re-applied on restart — Event
+    // records are idempotent through `apply_event_to_aggregations`,
+    // RegistryBump records are additive.
     let snapshot_lsn = wal_sink.durable_lsn();
     let next_event_id = app_state.dev_agg.next_event_id.load(Ordering::Relaxed);
     let query_time_ms = app_state.dev_agg.query_time_ms.load(Ordering::Relaxed) as i64;

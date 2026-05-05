@@ -1,8 +1,8 @@
-//! Server: ServerV18 (mio data-plane runtime) + tokio admin sidecar.
+//! `ServerV18` (mio data plane) + tokio admin sidecar.
 //!
-//! Plan 12.6-07: legacy axum `Server` deleted; `ServerV18` is the SOLE
-//! data-plane runtime per `project_phase18_no_dual_runtime`. Tokio admin
-//! sidecar (in `http_admin.rs`) binds on `cfg.admin_addr` (default 8090).
+//! `ServerV18` is the only data-plane runtime per the mio-only invariant;
+//! the admin sidecar in `http_admin.rs` binds on `cfg.admin_addr`
+//! (default 8090) and is the only legitimate axum surface in beava-server.
 
 use crate::idem_cache::IdemCache;
 use crate::recovery::{replay_handrolled_wal_dir, replay_wal_from_lsn};
@@ -18,60 +18,49 @@ use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-/// Phase 13.4 Plan 07 (D-02 USER-LOCKED) — server boot configuration.
+/// Server boot configuration carried via [`ServerV18::bind_with_config`].
 ///
-/// Carried via [`ServerV18::bind_with_config`]. Plan 13.4-08 (OP_RESET) extends
-/// this struct with `test_mode`; Plan 07 introduces it as a vehicle for the
-/// `Persistence` selector.
-///
-/// `Persistence::Memory` boots the server WITHOUT a WAL writer thread,
-/// WITHOUT a snapshot writer, and WITHOUT calling recovery — pure in-RAM
-/// state per D-02. `Persistence::Disk { .. }` preserves the existing WAL +
-/// snapshot + recovery path verbatim.
-///
-/// Named `ServerV18Config` (rather than `Config`) to avoid collision with
-/// the existing `beava_core::config::Config` re-export at the crate root.
+/// `Persistence::Memory` boots without a WAL writer thread, snapshot
+/// writer, or recovery call — pure in-RAM state for embed mode and tests.
+/// `Persistence::Disk { .. }` runs the full WAL + snapshot + recovery
+/// path. The struct is named `ServerV18Config` rather than `Config` to
+/// avoid clashing with the `beava_core::config::Config` re-export at the
+/// crate root.
 #[derive(Debug, Clone)]
 pub struct ServerV18Config {
     /// Persistence mode. `Persistence::Disk { .. }` is the production
-    /// default (via `Default::default()`); `Persistence::Memory` is opt-in
-    /// for embed mode + tests.
+    /// default; `Persistence::Memory` is opt-in for embed mode and tests.
     pub persistence: Persistence,
-    /// Plan 13.4-08 hook: gate for `OP_RESET` in production. `false` (the
-    /// default) blocks reset; `true` permits it. Plan 07 lands the field
-    /// shape; Plan 08 wires the actual reset dispatch.
+    /// Gate for `OP_RESET` in production. `false` (default) blocks reset;
+    /// `true` permits it.
     pub test_mode: bool,
-    /// Plan 13.5.2-postclose: TCP wire-decoder frame cap. Plumbed through to
-    /// `WorkerConfig.tcp_max_frame_bytes` instead of read from the
-    /// `BEAVA_TCP_MAX_FRAME_BYTES` env-var per-frame (which leaked across
-    /// parallel TestServers and broke pipelined-register determinism).
+    /// TCP wire-decoder frame cap, plumbed through `WorkerConfig` rather
+    /// than read from env per-frame so parallel `TestServer` instances
+    /// don't contaminate each other.
     pub tcp_max_frame_bytes: u32,
-    /// Phase 13.5.3: per-server WAL ring buffer count override. `None` = use
-    /// `WalConfig::DEFAULT_BUFFERS` (4); `Some(n)` clamps to `[BUFFERS_MIN,
-    /// BUFFERS_MAX]`. Production reads `BEAVA_WAL_BUFFERS` env at boot via
-    /// `from_env()`; tests pass explicit values via `TestServerBuilder` to
-    /// avoid process-global env contamination.
+    /// WAL ring buffer count override. `None` = `WalConfig::DEFAULT_BUFFERS`
+    /// (4); `Some(n)` clamps to `[BUFFERS_MIN, BUFFERS_MAX]`. Production
+    /// reads `BEAVA_WAL_BUFFERS` once via `from_env()`; tests pass explicit
+    /// values through `TestServerBuilder` to avoid process-global env
+    /// contamination.
     pub wal_buffers: Option<usize>,
-    /// Phase 13.5.3: per-server WAL ring buffer size (MiB) override. `None` =
-    /// use `WalConfig::DEFAULT_BUFFER_SIZE_MB` (32); `Some(mb)` clamps to
-    /// `[BUFFER_SIZE_MB_MIN, BUFFER_SIZE_MB_MAX]`. Production reads
-    /// `BEAVA_WAL_BUFFER_SIZE_MB` env at boot via `from_env()`.
+    /// WAL ring buffer size (MiB). `None` = `WalConfig::DEFAULT_BUFFER_SIZE_MB`
+    /// (32); `Some(mb)` clamps to `[BUFFER_SIZE_MB_MIN, BUFFER_SIZE_MB_MAX]`.
+    /// Production reads `BEAVA_WAL_BUFFER_SIZE_MB` once via `from_env()`.
     pub wal_buffer_size_mb: Option<usize>,
-    /// Phase 13.5.3: per-server WAL writer-thread tick interval (ms)
-    /// override. `None` = use `WalConfig::DEFAULT_TICK_MS` (20); `Some(ms)`
-    /// clamps to `[TICK_MS_MIN, TICK_MS_MAX]`. Production reads
-    /// `BEAVA_WAL_TICK_MS` env at boot via `from_env()`.
+    /// WAL writer-thread tick interval (ms). `None` =
+    /// `WalConfig::DEFAULT_TICK_MS` (20); `Some(ms)` clamps to
+    /// `[TICK_MS_MIN, TICK_MS_MAX]`. Production reads `BEAVA_WAL_TICK_MS`
+    /// once via `from_env()`.
     pub wal_tick_ms: Option<u64>,
-    /// Phase 13.5.3: per-server IoPool worker thread count override.
-    /// `None` = use `default_io_threads()` heuristic (max(2,
-    /// available_parallelism / 4)); `Some(n)` clamps to `n.max(1)`.
-    /// Production reads `BEAVA_IO_THREADS` env at boot via `from_env()`.
+    /// IoPool worker thread count. `None` = `default_io_threads()` heuristic
+    /// (`max(2, available_parallelism / 4)`); `Some(n)` clamps to
+    /// `n.max(1)`. Production reads `BEAVA_IO_THREADS` once via `from_env()`.
     pub io_threads: Option<usize>,
-    /// Phase 13.5.3: per-server memory-governance enforcement override.
-    /// `None` = default ON (Plan 12.8-06 D-03); `Some(false)` = explicit
-    /// escape hatch (the `BEAVA_MEMORY_GOV_ENFORCE=0` legacy semantic);
-    /// `Some(true)` = explicit ON. Production reads `BEAVA_MEMORY_GOV_ENFORCE`
-    /// env at boot via `from_env()`.
+    /// Memory-governance enforcement override. `None` = default ON;
+    /// `Some(false)` = explicit escape hatch (legacy
+    /// `BEAVA_MEMORY_GOV_ENFORCE=0` semantic); `Some(true)` = explicit ON.
+    /// Production reads `BEAVA_MEMORY_GOV_ENFORCE` once via `from_env()`.
     pub memory_governance_enforce: Option<bool>,
 }
 
@@ -91,28 +80,22 @@ impl Default for ServerV18Config {
 }
 
 impl ServerV18Config {
-    /// Phase 13.5.3 (D-04 mitigate): production env-var resolution — reads
-    /// `BEAVA_*` env vars at config-load time and stamps them into the
-    /// config struct. This is the SOLE legitimate env-read site for the five
-    /// per-server tunables (wal_buffers / wal_buffer_size_mb / wal_tick_ms /
-    /// io_threads / test_mode / memory_governance_enforce); hot-path code
-    /// reads from struct fields, never from process env.
+    /// Production env-var resolution: reads `BEAVA_*` once at config-load
+    /// time and stamps the values into the struct. This is the only
+    /// legitimate env-read site for the per-server tunables; the hot path
+    /// reads struct fields, never process env. Tests must NOT call this —
+    /// they use `TestServerBuilder` methods to avoid process-global env
+    /// contamination, enforced by the `phase13_5_3_no_env_var_pokes_in_tests`
+    /// architectural tripwire.
     ///
-    /// Tests must NOT call this — use `TestServerBuilder` builder methods to
-    /// pass explicit values, mirroring the `tcp_max_frame_bytes` plumbing
-    /// pattern from commit `acac4254`.
-    ///
-    /// The architectural tripwire `phase13_5_3_no_env_var_pokes_in_tests.rs`
-    /// enforces test-side env hygiene.
-    ///
-    /// Env-var contract preserved verbatim from pre-13.5.3 hot-path reads:
-    /// - `BEAVA_WAL_BUFFERS` (usize, range [2, 32], default 4 — clamps with WARN)
-    /// - `BEAVA_WAL_BUFFER_SIZE_MB` (usize, range [4, 256], default 32)
-    /// - `BEAVA_WAL_TICK_MS` (u64, range [1, 1000], default 20)
-    /// - `BEAVA_IO_THREADS` (usize, max(1) clamp, default heuristic)
-    /// - `BEAVA_TEST_MODE` (strict `== "1"` per Phase 13.4 D-03)
-    /// - `BEAVA_MEMORY_GOV_ENFORCE` ("0" → Some(false) escape hatch; unset
-    ///   → None = default ON per Plan 12.8-06; any other value → Some(true))
+    /// Recognised env vars:
+    /// - `BEAVA_WAL_BUFFERS` (usize, `[2, 32]`, default 4 — clamps with WARN)
+    /// - `BEAVA_WAL_BUFFER_SIZE_MB` (usize, `[4, 256]`, default 32)
+    /// - `BEAVA_WAL_TICK_MS` (u64, `[1, 1000]`, default 20)
+    /// - `BEAVA_IO_THREADS` (usize, `>= 1`, default heuristic)
+    /// - `BEAVA_TEST_MODE` (strict `== "1"`)
+    /// - `BEAVA_MEMORY_GOV_ENFORCE` (`"0"` → `Some(false)`; unset → `None`
+    ///   = default ON; any other value → `Some(true)`)
     pub fn from_env() -> Self {
         let wal_buffers = parse_clamp_usize_with_warn(
             "BEAVA_WAL_BUFFERS",
@@ -129,25 +112,21 @@ impl ServerV18Config {
             crate::wal_config::WalConfig::TICK_MS_MIN,
             crate::wal_config::WalConfig::TICK_MS_MAX,
         );
-        // BEAVA_IO_THREADS: parse usize, clamp to >= 1; None when unset.
+        // Parse-failure on `BEAVA_IO_THREADS` falls through to `None` and
+        // the default heuristic.
         let io_threads = match std::env::var("BEAVA_IO_THREADS") {
             Ok(s) => match s.parse::<usize>() {
                 Ok(n) => Some(n.max(1)),
-                Err(_) => None, // parse failure → silently fall through to default heuristic
+                Err(_) => None,
             },
             Err(_) => None,
         };
-        // BEAVA_TEST_MODE: strict `== "1"` per Phase 13.4 D-03 USER-LOCKED.
         let test_mode = std::env::var("BEAVA_TEST_MODE")
             .map(|v| v == "1")
             .unwrap_or(false);
-        // BEAVA_MEMORY_GOV_ENFORCE: "0" → Some(false); unset → None;
-        // anything else → Some(true). Default-ON semantic preserved per
-        // Plan 12.8-06 D-03 (the legacy `apply_shard.rs::memory_gov_enforce_enabled`
-        // returned `var != Some("0")`; we encode the same logic but split
-        // explicit-off / default / explicit-on so an absent env var stays
-        // visibly None on the config and the AppState reader applies the
-        // default).
+        // Split explicit-off / default / explicit-on so an absent env var
+        // stays visibly `None` on the config; the `AppState` reader applies
+        // the default-ON when it sees `None`.
         let memory_governance_enforce = match std::env::var("BEAVA_MEMORY_GOV_ENFORCE") {
             Ok(v) if v == "0" => Some(false),
             Ok(_) => Some(true),
@@ -167,10 +146,8 @@ impl ServerV18Config {
     }
 }
 
-/// Phase 13.5.3 helper: parse a usize env var; on parse failure or unset
-/// returns None. On parse success clamps to `[lo, hi]` with a WARN log
-/// (preserves legacy `wal_config.rs::parse_clamp_usize` operator-visibility
-/// behavior).
+/// Parse a usize env var; on parse failure or unset returns `None`. On
+/// parse success clamps to `[lo, hi]` and logs a WARN.
 fn parse_clamp_usize_with_warn(name: &str, lo: usize, hi: usize) -> Option<usize> {
     match std::env::var(name) {
         Ok(s) => match s.parse::<usize>() {
@@ -266,52 +243,35 @@ pub enum ServerError {
     Recovery(String),
 }
 
-// Plan 12.6-07: legacy `pub struct Server` + `impl Server` (axum data-plane)
-// deleted; ServerV18 (mio) is the SOLE production data-plane runtime per
-// `project_phase18_no_dual_runtime`.
-
-// ─── Phase 18 Plan 01: hand-rolled runtime entry point ────────────────────────
-
-/// A server bound with the hand-rolled event loop on the data-plane and
-/// tokio/axum on the admin plane.  Created by [`ServerV18::bind`].
+/// A server with the mio event loop on the data plane and tokio/axum on the
+/// admin plane. Created by [`ServerV18::bind`].
 ///
-/// The HTTP and TCP event-plane listeners run on the mio-based
-/// `beava-runtime-core` `EventLoop`; the admin plane runs on a separate
-/// tokio runtime so `/health`, `/metrics`, and `/registry` stay responsive
-/// even when the event loop is saturated.
-///
-/// See Plan 18-01 Task 1.5 and D-01 in 18-CONTEXT.md.
-/// Plan 18-07: feature flag removed; ServerV18 is now unconditionally compiled.
-///
-/// Plan 18-05.1: `serve()` wires the data-plane listeners into an actual
-/// dispatch path. The transport is tokio-based in this slice (matching the
-/// existing `Server::serve` path) — the pure mio EventLoop dispatch (Plans
-/// 18-05/18-06 proper) replaces this once the WAL is converted to sync.
+/// HTTP and TCP event-plane listeners run on the `beava-runtime-core`
+/// `EventLoop` (mio); the admin plane runs on a separate tokio runtime so
+/// `/health`, `/metrics`, and `/registry` stay responsive even when the
+/// event loop is saturated. This split is the mio-only invariant: the data
+/// plane must never touch tokio.
 pub struct ServerV18 {
     http_addr: std::net::SocketAddr,
     tcp_addr: std::net::SocketAddr,
     admin: crate::http_admin::BoundAdminServer,
-    // Event-plane listeners bound at construction time. serve() converts these
-    // to tokio listeners and hands them to the HTTP/TCP accept loops.
+    // Event-plane listeners bound at construction time and handed to the
+    // mio HTTP/TCP accept loops in `serve_with_dirs`.
     http_listener: std::net::TcpListener,
     tcp_listener: std::net::TcpListener,
-    /// Plan 12.6-01: pre-built runtime state populated by `bind_with_state`.
-    ///
-    /// When `Some`, the `serve_with_dirs` path consumes this instead of
-    /// re-building AppState/Registry/WalSink/snapshot trigger from scratch.
-    /// Used by `TestServer` (which needs `app_state()` / `registry()` /
-    /// `snapshot_trigger_handle()` accessors before `serve()` is called).
-    /// Plain `bind()` callers leave this `None` — back-compat preserved.
+    /// Pre-built runtime state populated by `bind_with_state` /
+    /// `bind_with_config`. When `Some`, `serve_with_dirs` consumes this
+    /// instead of rebuilding the AppState / Registry / WalSink / snapshot
+    /// trigger; `TestServer` needs the `app_state()` / `registry()` /
+    /// `snapshot_trigger_handle()` accessors before `serve()` is called.
+    /// Plain `bind()` callers leave this `None`.
     prebuilt_state: Option<ServerV18State>,
 }
 
-/// Plan 12.6-01: state pre-built by `ServerV18::bind_with_state` so that
-/// `TestServer` can grab Arc clones (`app_state`, `registry`,
-/// `snapshot_trigger`) BEFORE consuming the server with `serve_with_dirs`.
-///
-/// All fields are extracted by `serve_with_dirs` and consumed during the
-/// run loop; if `prebuilt_state` is `Some`, `serve_with_dirs` skips the
-/// equivalent construction in its prefix.
+/// State pre-built by `ServerV18::bind_with_state` /
+/// `ServerV18::bind_with_config` so `TestServer` can grab `Arc` clones
+/// before `serve_with_dirs` consumes the server. Every field is extracted
+/// during the run loop.
 struct ServerV18State {
     app_state: Arc<AppState>,
     registry: Arc<Registry>,
@@ -321,25 +281,22 @@ struct ServerV18State {
     wal_ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
     wal_lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
     wal_writer_handle: std::thread::JoinHandle<()>,
-    /// Plan 13.5.2-postclose: TCP frame size cap plumbed into `WorkerConfig`
-    /// instead of read from `BEAVA_TCP_MAX_FRAME_BYTES` env at parse time.
-    /// Was process-global env, leaked across parallel TestServers.
+    /// TCP frame-size cap plumbed through `WorkerConfig` rather than read
+    /// from env per-frame, so parallel `TestServer` instances don't
+    /// contaminate each other.
     tcp_max_frame_bytes: u32,
-    /// Phase 13.5.3: per-server IoPool worker thread count override.
-    /// `None` = use the documented default heuristic; `Some(n)` overrides
-    /// without consulting `BEAVA_IO_THREADS` env. Read by `run_mio_event_loop`
-    /// instead of the legacy `default_io_threads()` env-read.
+    /// IoPool worker thread count override. `None` keeps the default
+    /// heuristic; `Some(n)` overrides without reading `BEAVA_IO_THREADS`.
     io_threads_override: Option<usize>,
-    /// Plan 12.6-15: shutdown flag for the WalWriter loop. Set on server
-    /// shutdown to trigger the writer's final seal+drain+fsync block.
+    /// Shutdown flag for the WalWriter loop; set on shutdown to trigger
+    /// the writer's final seal + drain + fsync.
     wal_writer_shutdown: Arc<std::sync::atomic::AtomicBool>,
-    /// Plan 13.4-07 (D-02): None when `Persistence::Memory` (snapshot task
-    /// not spawned); `Some((cancel, worker))` for `Persistence::Disk`.
+    /// `None` when `Persistence::Memory` (snapshot task not spawned);
+    /// `Some((cancel, worker))` for `Persistence::Disk`.
     snapshot_task: Option<(CancellationToken, JoinHandle<()>)>,
-    /// Plan 13.4-07 (D-02): always `Some` — for memory mode we still own the
-    /// trigger sender side of a never-served channel so callers that
-    /// `force_snapshot_now` get a clean ack channel rather than panicking.
-    /// In Disk mode this is the real scheduler trigger.
+    /// Always `Some` — memory mode keeps a never-served sender so
+    /// `force_snapshot_now` callers get a clean ack channel instead of
+    /// panicking; disk mode plumbs through to the real scheduler trigger.
     snapshot_trigger: SnapshotTriggerTx,
     wal_dir: std::path::PathBuf,
     snapshot_dir: std::path::PathBuf,
@@ -372,16 +329,14 @@ impl ServerV18 {
                 source: e,
             })?;
         let http_bound = http_listener.local_addr().map_err(ServerError::Serve)?;
-        // Plan 12-09: emit `server.http_bound` log line (parsed by
-        // python/tests/conftest.py beava_server fixture + read_bench.py to
-        // discover the OS-assigned port when listen_addr=127.0.0.1:0).
-        // ServerV18::bind didn't emit this in Plan 12-07; tests that use the
-        // env-var override pattern need it.
+        // `server.http_bound` is parsed by python/tests/conftest.py and
+        // read_bench.py to discover the OS-assigned port when
+        // `listen_addr=127.0.0.1:0`.
         tracing::info!(
             target: "beava.server",
             kind = "server.http_bound",
             addr = %http_bound,
-            "HTTP server bound (ServerV18)"
+            "HTTP server bound"
         );
 
         let tcp_listener =
@@ -398,13 +353,11 @@ impl ServerV18 {
                 source: e,
             })?;
         let tcp_bound = tcp_listener.local_addr().map_err(ServerError::Serve)?;
-        // Plan 12-09: emit `server.tcp_bound` log line (parsed by
-        // python/tests/conftest.py beava_server fixture).
         tracing::info!(
             target: "beava.server",
             kind = "server.tcp_bound",
             addr = %tcp_bound,
-            "TCP wire listener bound (ServerV18)"
+            "TCP wire listener bound"
         );
 
         // Bind admin (tokio/axum).
@@ -428,24 +381,19 @@ impl ServerV18 {
         })
     }
 
-    /// Plan 13.4-07 (D-02 USER-LOCKED) — extended constructor accepting a
-    /// `ServerV18Config` struct (persistence + test_mode). Memory mode boots
-    /// the server WITHOUT a WAL writer thread, WITHOUT a snapshot writer,
-    /// and WITHOUT calling recovery — pure in-RAM state. Disk mode preserves
-    /// the existing WAL + snapshot + recovery path verbatim.
+    /// Constructor that takes a [`ServerV18Config`] for persistence +
+    /// test-mode + per-server tunables. Memory mode skips the WAL writer
+    /// thread, snapshot writer, and recovery; Disk mode runs them.
     ///
-    /// Like `bind_with_state`, this constructor builds the full runtime
-    /// state at bind-time so `TestServer` can grab Arc clones via
-    /// `app_state()` / `registry()` / `snapshot_trigger_handle()` BEFORE
-    /// `serve_with_dirs` consumes the server.
+    /// Builds the full runtime state at bind time so `TestServer` can grab
+    /// `Arc` clones via `app_state()` / `registry()` /
+    /// `snapshot_trigger_handle()` before `serve_with_dirs` consumes the
+    /// server.
     ///
-    /// `tcp_addr` is `Option<SocketAddr>` to mirror the planned wire-spec
-    /// shape (TCP listener can be skipped in HTTP-only embed mode); when
-    /// `None`, the TCP listener still binds on `127.0.0.1:0` so the mio
-    /// event loop has a uniform listener set, but the bound TCP addr is
-    /// not surfaced through any user-visible interface. Plan 13.4-07
-    /// keeps the TCP listener mandatory in the implementation; the
-    /// `Option` is for API forward-compatibility.
+    /// `tcp_addr` is `Option<SocketAddr>` for API forward-compatibility
+    /// (HTTP-only embed mode is in scope for v0.1+); when `None` an
+    /// ephemeral 127.0.0.1:0 listener still binds so the mio event loop
+    /// has a uniform listener set.
     pub async fn bind_with_config(
         http_addr: std::net::SocketAddr,
         tcp_addr: Option<std::net::SocketAddr>,
@@ -453,19 +401,16 @@ impl ServerV18 {
         cfg: ServerV18Config,
     ) -> Result<Self, ServerError> {
         // The mio event loop expects two listeners (HTTP + TCP); when the
-        // caller passes `None` for tcp_addr we bind it to a throwaway
-        // ephemeral 127.0.0.1:0. Plan 13.4-04 may revisit this once the
-        // verb-style HTTP migration is in place.
+        // caller passes `None` for tcp_addr we bind an ephemeral
+        // 127.0.0.1:0 throwaway.
         let resolved_tcp_addr = tcp_addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
         let mut sv18 = Self::bind(http_addr, resolved_tcp_addr, admin_addr).await?;
-        // Phase 13.5.3: env-var resolution moved to `ServerV18Config::from_env()`.
-        // The struct field `cfg.test_mode` already carries the resolved value
-        // (production main.rs calls `from_env()` at boot; tests pass explicit
-        // `.test_mode(true)` via TestServerBuilder). Reading env again here
-        // would re-introduce the cross-test pollution Phase 13.5.3 closes.
+        // `cfg.test_mode` already carries the env-resolved value from
+        // `from_env()` (production) or `.test_mode(true)` (tests). Reading
+        // env again here would re-introduce cross-test pollution.
         let effective_test_mode = cfg.test_mode;
-        // 60s default snapshot interval mirrors the production tuning;
-        // memory mode ignores it (snapshot task not spawned).
+        // 60 s default snapshot interval mirrors production tuning; memory
+        // mode ignores it (snapshot task not spawned).
         let state = build_runtime_state_with_persistence(
             cfg.persistence,
             60_000,
@@ -485,19 +430,12 @@ impl ServerV18 {
         Ok(sv18)
     }
 
-    /// Plan 12.6-01: variant of `bind` that ALSO eagerly builds AppState,
-    /// Registry, WalSink, hand-rolled WAL ring/writer, and the snapshot
-    /// task — so `TestServer` can return Arc clones via `app_state()`,
-    /// `registry()`, `snapshot_trigger_handle()` BEFORE `serve_with_dirs`
-    /// is called.
-    ///
-    /// Per `project_phase18_no_dual_runtime` and Phase 12.6 D-01 this is
-    /// the canonical bootstrap shape for the test harness.  Production
-    /// callers continue to use `bind()` + `serve()`.
-    ///
-    /// Arguments mirror `serve_with_dirs` (which `serve_with_dirs` will
-    /// consume after this method returns) plus snapshot/fsync intervals
-    /// that were previously hard-coded inside `serve_with_dirs`.
+    /// Variant of `bind` that also eagerly builds `AppState`, `Registry`,
+    /// `WalSink`, the WAL ring + writer, and the snapshot task so
+    /// `TestServer` can return `Arc` clones via `app_state()`,
+    /// `registry()`, and `snapshot_trigger_handle()` before
+    /// `serve_with_dirs` is called. Production callers use `bind()` +
+    /// `serve()`.
     #[allow(clippy::too_many_arguments)]
     pub async fn bind_with_state(
         http_addr: std::net::SocketAddr,
@@ -522,19 +460,15 @@ impl ServerV18 {
         Ok(sv18)
     }
 
-    /// Phase 13.5.3: variant of `bind_with_state` that ALSO accepts
-    /// `ServerV18Config` overrides for the per-server tunables
-    /// (`test_mode`, `wal_buffers`, `wal_buffer_size_mb`, `wal_tick_ms`,
-    /// `io_threads`, `memory_governance_enforce`). Used by
-    /// `TestServerBuilder::spawn()` so the override values from
-    /// `.test_mode(true)` / `.io_threads(n)` / etc. plumb through to
-    /// the spawned ServerV18 without process-env reads.
-    ///
-    /// Preserves `snapshot_interval_ms` + `wal_fsync_interval_ms` knobs
-    /// (TestServer-only, not on the production env interface) — those are
-    /// hard-coded inside `bind_with_config` to 60_000 / 2 respectively
-    /// and tests need finer control (most TestServers ship `1` to keep
-    /// macOS F_FULLSYNC latency from blocking the test wall-clock).
+    /// `bind_with_state` plus `ServerV18Config` overrides for the
+    /// per-server tunables (`test_mode`, `wal_buffers`, `wal_buffer_size_mb`,
+    /// `wal_tick_ms`, `io_threads`, `memory_governance_enforce`). Used by
+    /// `TestServerBuilder::spawn()` so override values plumb through
+    /// without process-env reads. The `snapshot_interval_ms` and
+    /// `wal_fsync_interval_ms` knobs stay separate because tests need
+    /// finer control than the production env interface exposes (most
+    /// `TestServer`s pass `1` to keep macOS `F_FULLSYNC` latency from
+    /// dominating wall-clock).
     #[allow(clippy::too_many_arguments)]
     pub async fn bind_with_state_and_overrides(
         http_addr: std::net::SocketAddr,
@@ -547,13 +481,11 @@ impl ServerV18 {
         cfg: ServerV18Config,
     ) -> Result<Self, ServerError> {
         let mut sv18 = Self::bind(http_addr, tcp_addr, admin_addr).await?;
-        // Note: cfg.persistence is IGNORED here — wal_dir / snapshot_dir
-        // arguments take precedence (Disk mode is forced for TestServer
-        // bootstrap because `bind_with_state` callers always want disk
-        // persistence with explicit dirs). Future work could collapse
-        // bind_with_state* into bind_with_config by exposing the
-        // snapshot/fsync intervals on ServerV18Config; out of scope for
-        // Phase 13.5.3.
+        // `cfg.persistence` is intentionally ignored — `wal_dir` /
+        // `snapshot_dir` take precedence because `TestServer` always wants
+        // disk persistence with explicit dirs. Collapsing
+        // `bind_with_state*` into `bind_with_config` would require
+        // exposing the snapshot/fsync intervals on `ServerV18Config`.
         let state = build_runtime_state_with_persistence(
             Persistence::Disk {
                 wal_dir,
@@ -577,9 +509,9 @@ impl ServerV18 {
         Ok(sv18)
     }
 
-    /// Plan 12.6-01: clone of the shared `Arc<AppState>` populated by
-    /// `bind_with_state`.  Panics if called on a server bound via
-    /// plain `bind()` (no pre-built state).
+    /// Clone of the shared `Arc<AppState>` populated by
+    /// `bind_with_state` / `bind_with_config`. Panics on plain-`bind()`
+    /// servers.
     pub fn app_state(&self) -> Arc<AppState> {
         Arc::clone(
             &self
@@ -593,8 +525,8 @@ impl ServerV18 {
         )
     }
 
-    /// Plan 12.6-01: clone of the shared `Arc<Registry>` populated by
-    /// `bind_with_state`.  Panics on plain-`bind` servers.
+    /// Clone of the shared `Arc<Registry>` populated by `bind_with_state`
+    /// / `bind_with_config`. Panics on plain-`bind()` servers.
     pub fn registry(&self) -> Arc<Registry> {
         Arc::clone(
             &self
@@ -608,11 +540,10 @@ impl ServerV18 {
         )
     }
 
-    /// Plan 12.6-01: clone of the snapshot-trigger channel populated by
-    /// `bind_with_state`.  Panics on plain-`bind` servers.
-    ///
-    /// `TestServer::force_snapshot_now` holds onto the cloned sender so
-    /// it remains valid after `serve_with_dirs` consumes the server.
+    /// Clone of the snapshot-trigger channel populated by
+    /// `bind_with_state` / `bind_with_config`. Panics on plain-`bind()`
+    /// servers. `TestServer::force_snapshot_now` keeps the cloned sender
+    /// alive after `serve_with_dirs` consumes the server.
     pub fn snapshot_trigger_handle(&self) -> SnapshotTriggerTx {
         self.prebuilt_state
             .as_ref()
@@ -639,17 +570,9 @@ impl ServerV18 {
         self.admin.local_addr
     }
 
-    /// Run the server until `shutdown` completes.
-    ///
-    /// Plan 18-05.1: wires the already-bound HTTP and TCP event-plane listeners
-    /// into real dispatch using the same tokio/axum + AppState path as the
-    /// legacy `Server::serve()`. This gives measured EPS numbers immediately.
-    /// The pure mio EventLoop dispatch (Plans 18-05/18-06 proper) replaces this
-    /// accept path once the WAL is converted to synchronous `Write`.
-    ///
-    /// Boots a temporary WAL in `std::env::temp_dir()` for the duration of the
-    /// serve call. Callers that need a durable WAL path should use
-    /// `serve_with_dirs()` instead (added in Plan 18-06).
+    /// Run the server until `shutdown` completes. Boots a temporary WAL
+    /// in `std::env::temp_dir()` for the duration of the call; callers
+    /// that need a durable WAL path use [`Self::serve_with_dirs`].
     pub async fn serve<F>(self, shutdown: F) -> Result<(), ServerError>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -674,20 +597,18 @@ impl ServerV18 {
         self.serve_with_dirs(shutdown, wal_dir, snapshot_dir).await
     }
 
-    /// Run with explicit WAL + snapshot directories. Called by `serve()` with
-    /// temp dirs, and by the bench harness with configured paths.
+    /// Run with explicit WAL + snapshot directories. Called by `serve()`
+    /// with temp dirs and by the bench harness with configured paths.
     ///
-    /// Plan 18-04.6: REPLACES the tokio shim (Plan 18-05.1) with a real mio
-    /// EventLoop on a dedicated `std::thread`. Threading model (D-4):
-    ///   - 1 apply thread: mio Poll + EventLoop::tick + ApplyShard::dispatch
-    ///   - N IoPool workers: parallel read-parse + write-serialize
-    ///   - 1 WalWriter thread: drain sealed WAL buffers → write + fsync
-    ///   - 1 tokio runtime: admin endpoints only (/metrics /health /ready /registry)
+    /// Threading model:
+    ///   - 1 apply thread (mio Poll + `EventLoop::tick` +
+    ///     `ApplyShard::dispatch`)
+    ///   - N IoPool workers (parallel read-parse + write-serialize)
+    ///   - 1 WalWriter thread (drains sealed WAL buffers → write + fsync)
+    ///   - 1 tokio runtime for admin endpoints only
     ///
-    /// Plan 12.6-01: if `bind_with_state` was used to construct `self`, the
-    /// pre-built `prebuilt_state` is consumed here in place of building
-    /// fresh state.  Plain `bind()` callers retain the original behavior
-    /// (state built inside `serve_with_dirs`).
+    /// If `bind_with_state` / `bind_with_config` populated `prebuilt_state`,
+    /// it's consumed here instead of rebuilding from scratch.
     pub async fn serve_with_dirs<F>(
         self,
         shutdown: F,
@@ -697,9 +618,6 @@ impl ServerV18 {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        // Plan 12.6-01: extract pre-built state (from `bind_with_state`) or
-        // fall back to building it here. Both paths funnel into the same
-        // run-loop body.
         let state = match self.prebuilt_state {
             Some(state) => state,
             None => build_runtime_state(wal_dir, snapshot_dir, 60_000, 2, 4 * 1024 * 1024).await?,
@@ -722,13 +640,9 @@ impl ServerV18 {
     }
 }
 
-// ─── Plan 12.6-01: shared runtime-state builder ─────────────────────────────
-
-/// Build the shared AppState/Registry/WalSink/snapshot stack used by both
-/// `serve_with_dirs` (legacy in-line path) and `bind_with_state`
-/// (TestServer path). Identical construction sequence — extracted so
-/// `TestServer` can grab Arc clones BEFORE `serve_with_dirs` consumes the
-/// server. See `serve_with_dirs` for line-by-line history.
+/// Build the shared `AppState` / `Registry` / `WalSink` / snapshot stack.
+/// Extracted so `TestServer` can grab `Arc` clones from `bind_with_state`
+/// before `serve_with_dirs` consumes the server.
 async fn build_runtime_state(
     wal_dir: std::path::PathBuf,
     snapshot_dir: std::path::PathBuf,
@@ -736,11 +650,10 @@ async fn build_runtime_state(
     wal_fsync_interval_ms: u64,
     tcp_max_frame_bytes: u32,
 ) -> Result<ServerV18State, ServerError> {
-    // Phase 13.5.3: env-reading moved to `ServerV18Config::from_env()`.
-    // The legacy `bind()` path (used by tests that don't go through
-    // bind_with_config) defaults all fields to None / false (production
-    // main.rs no longer takes this path — it calls bind_with_config with
-    // the from_env() result).
+    // Production callers go through `bind_with_config` / `from_env()`;
+    // this path is only used by tests that don't construct a config and
+    // is safe to default to `test_mode = false`, default WAL overrides,
+    // default IoPool, and memory-governance ON.
     build_runtime_state_with_persistence(
         Persistence::Disk {
             wal_dir,
@@ -749,33 +662,28 @@ async fn build_runtime_state(
         },
         snapshot_interval_ms,
         wal_fsync_interval_ms,
-        false, // test_mode default
+        false,
         tcp_max_frame_bytes,
         crate::wal_config::WalConfigOverrides::default(),
-        None, // io_threads default
-        None, // memory_governance_enforce default = ON
+        None,
+        None,
     )
     .await
 }
 
-/// Plan 13.4-07 (D-02 USER-LOCKED): build runtime state branched on the
-/// `Persistence` variant.
+/// Build runtime state branched on the [`Persistence`] variant.
 ///
-/// `Persistence::Disk { .. }` runs the original boot path verbatim — recovery
-/// from snapshots + WAL tails, real `WalSink::spawn`, real
-/// `WalWriter::new(..).spawn()`, real `spawn_snapshot_task`.
+/// `Persistence::Disk { .. }` runs the full path: snapshot + WAL recovery,
+/// real `WalSink::spawn`, real `WalWriter`, real snapshot task.
 ///
-/// `Persistence::Memory` skips ALL filesystem interaction:
-///   - No `recovery::*` calls (state starts fresh).
-///   - `WalSink::spawn_no_op()` instead of `WalSink::spawn(WalSinkConfig {..})`.
-///   - A no-op WAL writer thread that drains sealed `WalBufferRing` buffers
-///     into the free pool without writing or fsync'ing.
-///   - The snapshot task is not spawned at all; only its trigger channel is
-///     created so `TestServer::force_snapshot_now` has a sender to talk to.
+/// `Persistence::Memory` skips filesystem interaction entirely: no
+/// recovery, `WalSink::spawn_no_op()`, a no-op writer that drains sealed
+/// buffers back to the free pool without fsync, and the snapshot task
+/// stays unspawned (the trigger channel is created so
+/// `TestServer::force_snapshot_now` has somewhere to send).
 ///
-/// `wal_fsync_interval_ms` is honored in Disk mode and ignored in Memory mode
-/// (Memory mode uses the env-resolved `wal_cfg.tick_ms` for the no-op
-/// writer's drain cadence).
+/// `wal_fsync_interval_ms` is honoured only in Disk mode; Memory mode
+/// drives the no-op writer at `wal_cfg.tick_ms`.
 #[allow(clippy::too_many_arguments)]
 async fn build_runtime_state_with_persistence(
     persistence: Persistence,
@@ -791,17 +699,13 @@ async fn build_runtime_state_with_persistence(
     use beava_runtime_core::wal_lsn::WalLsn;
     use beava_runtime_core::wal_writer::WalWriter;
 
-    // ── Build AppState ────────────────────────────────────────────────────
     let idem_cache = Arc::new(IdemCache::new());
     let registry = Arc::new(beava_core::registry::Registry::new());
     let dev_agg = crate::registry_debug::DevAggState::new(registry.clone());
 
-    // Resolve persistence-mode-specific paths. Memory mode uses placeholder
-    // paths that are never read or written.
+    // Memory mode uses placeholder paths that are never read or written.
     let (wal_dir, snapshot_dir, sync_mode, is_memory) = match &persistence {
         Persistence::Memory => (
-            // Placeholder paths — never touched in memory mode (no WAL
-            // recovery, no WalSink spawn against disk, no snapshot task).
             std::path::PathBuf::from("<memory-mode-no-wal>"),
             std::path::PathBuf::from("<memory-mode-no-snapshots>"),
             SyncMode::Periodic,
@@ -814,37 +718,26 @@ async fn build_runtime_state_with_persistence(
         } => (wal_dir.clone(), snapshot_dir.clone(), *sync_mode, false),
     };
 
-    // ── Recovery: snapshot install → *.log replay (post-snapshot) → *.wal replay ──
-    //
-    // Plan 13.4-07 (D-02): in `Persistence::Memory` mode this whole block is
-    // skipped. State starts FRESH — no replay, no recovery — per D-02
-    // USER-LOCKED ("On process restart: state is gone; clean slate").
-    //
-    // Plan 12.6-15: install latest *.bvs snapshot BEFORE replaying WAL tails.
-    // The legacy Server::bind path already does this; Plan 12.6-01's
-    // build_runtime_state extraction copied only the WAL replay paths and
-    // skipped the snapshot loader — losing all events between the snapshot
-    // and shutdown after restart (phase7_restart_cycle::sc1_snapshot_then_restart
-    // expected 1250, observed 1189; 61 missing = events past the snapshot
-    // that snapshot-replay would otherwise re-feed via the snapshot's
-    // pre-aggregated state tables).
+    // Recovery sequence:
+    //   1. Install the latest `*.bvs` snapshot (registry descriptors +
+    //      state tables + counters); skipping this would lose every
+    //      event that landed between the snapshot and the previous
+    //      shutdown. Returns `snapshot_lsn` so the WAL replays can gate
+    //      on it.
+    //   2. Replay `*.log` records with `lsn > snapshot_lsn` (RegistryBumps
+    //      and any persistence-WAL events from the legacy `WalSink`
+    //      path).
+    //   3. Replay `*.wal` data-plane events (v=2 binary format from
+    //      `apply_shard`).
+    // Memory mode skips this whole block — state starts fresh.
     let initial_start_lsn = if is_memory {
-        // Memory mode — no recovery, start at LSN 1.
         tracing::info!(
             target: "beava.recovery",
             kind = "recovery.skipped_memory_mode",
-            "Persistence::Memory: recovery skipped (D-02 USER-LOCKED)"
+            "Persistence::Memory: recovery skipped"
         );
         1
     } else {
-        // Step 1: install snapshot if any (registry descriptors + state tables +
-        //   next_event_id + max_event_time_ms). Returns snapshot_lsn for WAL gating.
-        //
-        // Step 2: replay *.log records with `lsn > snapshot_lsn`
-        //   (RegistryBump records that landed after the snapshot, plus any
-        //    persistence-WAL events from the legacy WalSink path).
-        //
-        // Step 3: replay *.wal data-plane events (v=2 binary format from apply_shard).
         let snapshot_lsn = crate::recovery::load_snapshot_if_any(&snapshot_dir, &dev_agg)
             .ok()
             .unwrap_or(0);
@@ -858,8 +751,9 @@ async fn build_runtime_state_with_persistence(
             snapshot_lsn
         };
 
-        // Step 3: replay hand-rolled *.wal data-plane events.
-        // lsn_start = persistence_lsn + 1 to keep LSNs monotonic across all paths.
+        // Replay hand-rolled `*.wal` data-plane events. Setting
+        // `lsn_start = persistence_lsn + 1` keeps LSNs monotonic across
+        // the snapshot, persistence, and hand-rolled paths.
         let handrolled_lsn_start = persistence_lsn + 1;
         let handrolled_outcome =
             replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
@@ -881,19 +775,17 @@ async fn build_runtime_state_with_persistence(
         initial
     };
 
-    // Legacy WalSink: still used for /register cold path (admin endpoint).
-    // Data-plane push uses WalBufferRing directly (D-2).
-    // initial_start_lsn ensures the new *.log segment doesn't collide with
-    // the existing one from the previous server instance.
-    //
-    // Plan 13.4-07 (D-02): in Memory mode we use `WalSink::spawn_no_op()`
-    // which drains append requests with fake LSNs and never touches disk.
+    // `WalSink` is still used for the `/register` cold path; data-plane
+    // push goes through `WalBufferRing` directly. `initial_start_lsn`
+    // keeps the new `*.log` segment from colliding with the previous
+    // server instance's tail. Memory mode uses `spawn_no_op` so the
+    // sink never touches disk.
     let (wal_sink, legacy_wal_worker) = if is_memory {
         let (sink, worker) = WalSink::spawn_no_op();
         tracing::info!(
             target: "beava.wal",
             kind = "wal.no_op_sink_spawned",
-            "Persistence::Memory: WalSink::spawn_no_op (D-02 USER-LOCKED)"
+            "Persistence::Memory: WalSink::spawn_no_op"
         );
         (sink, worker)
     } else {
@@ -910,45 +802,30 @@ async fn build_runtime_state_with_persistence(
     };
 
     let mut app_state_inner = AppState::new(dev_agg, wal_sink.clone(), idem_cache.clone());
-    // Plan 13.4-08 (D-03 USER-LOCKED): stamp effective_test_mode at boot time.
-    // Resolution lives at the bind_with_config / build_runtime_state call
-    // site (cfg.test_mode || env::BEAVA_TEST_MODE=="1"); this struct field is
-    // read-only after bind so reset cannot be re-enabled at runtime.
+    // `effective_test_mode` is stamped at boot only — read-only after bind
+    // so reset cannot be re-enabled at runtime.
     app_state_inner.effective_test_mode = effective_test_mode;
-    // Phase 13.5.3 (D-04 mitigate): stamp memory-governance enforcement at
-    // boot time. Default-ON (Plan 12.8-06 D-03) when override is None;
-    // explicit Some(false) (escape hatch — `BEAVA_MEMORY_GOV_ENFORCE=0` /
-    // `.memory_governance_enforce(false)`) disables enforcement. Replaces
-    // the per-call `apply_shard.rs::memory_gov_enforce_enabled` env-read.
+    // Default-ON when no explicit override; `Some(false)` is the escape
+    // hatch (`BEAVA_MEMORY_GOV_ENFORCE=0` /
+    // `.memory_governance_enforce(false)`).
     app_state_inner.memory_governance_enforce = memory_governance_enforce.unwrap_or(true);
     let app_state = Arc::new(app_state_inner);
     if effective_test_mode {
         tracing::warn!(
             target: "beava.server",
             kind = "server.test_mode_enabled",
-            "test_mode is ENABLED: OP_RESET will accept reset requests \
-             (D-03 USER-LOCKED). Disable for production deployments."
+            "test_mode ENABLED: OP_RESET will accept reset requests. \
+             Disable for production."
         );
     }
-    // Plan 12.6-07: production data-plane `/registry` is permanently 404. The
-    // tokio admin sidecar (cfg.admin_addr; default 127.0.0.1:8090) is the
-    // canonical /registry surface. TestServer flips
-    // `app_state.dev_endpoints` directly via `.dev_endpoints(true)` builder
-    // for white-box tests.
 
-    // ── Hand-rolled WAL stack ────────────────────────────────────────────
     let wal_lsn = Arc::new(WalLsn::new());
-    // WAL ring config — Phase 13.5.3: resolved from explicit overrides
-    // (default 4 × 32 MiB tick=20ms; production reads BEAVA_WAL_BUFFERS /
-    // BEAVA_WAL_BUFFER_SIZE_MB / BEAVA_WAL_TICK_MS at boot via
-    // ServerV18Config::from_env(); tests pass explicit values via
-    // TestServerBuilder builder methods. NO process-env reads on this hot
-    // path — the per-server override pattern from `tcp_max_frame_bytes`
-    // (commit acac4254) is replicated here.
-    //
-    // Phase 18 invariants UNCHANGED: lock-free apply, single writer+fsync,
-    // O_APPEND, four-watermark discipline. Only buffer count, size, and
-    // tick interval are tuned (Phase 19.1-03 D-01..D-04).
+    // Resolve WAL config from explicit overrides — hot path never reads
+    // env. Production resolves from `ServerV18Config::from_env()` at
+    // boot; tests pass explicit values via `TestServerBuilder`. The
+    // underlying WAL invariants (lock-free apply, single writer + fsync,
+    // `O_APPEND`, four-watermark discipline) are untouched; only buffer
+    // count, size, and tick interval are tunable.
     let wal_cfg = crate::wal_config::WalConfig::resolve(wal_overrides);
     tracing::info!(
         target: "beava.wal",
@@ -956,8 +833,7 @@ async fn build_runtime_state_with_persistence(
         buffers = wal_cfg.buffers,
         buffer_size_mb = wal_cfg.buffer_size_mb,
         tick_ms = wal_cfg.tick_ms,
-        "WAL config resolved (per-server overrides; env reading lives in \
-         ServerV18Config::from_env() at production boot)"
+        "WAL config resolved"
     );
     let buf_bytes = wal_cfg.buffer_size_mb * 1024 * 1024;
     let wal_ring = Arc::new(WalBufferRing::new(
@@ -966,10 +842,10 @@ async fn build_runtime_state_with_persistence(
         Arc::clone(&wal_lsn),
     ));
 
-    // WAL writer thread: in Disk mode drains sealed buffers, calls
-    // write() + fsync(); in Memory mode (D-02) drains sealed buffers
-    // back to the free pool with NO file I/O so the apply hot path
-    // doesn't backpressure-block once buffers fill.
+    // Disk mode: real `WalWriter` drains sealed buffers via write +
+    // fsync. Memory mode: drain sealed buffers back to the free pool
+    // with no file I/O so the apply hot path can't backpressure-block
+    // once buffers fill.
     let (wal_writer_shutdown, wal_writer_handle) = if is_memory {
         spawn_no_op_wal_writer(Arc::clone(&wal_ring), Arc::clone(&wal_lsn), wal_cfg.tick_ms)
     } else {
@@ -980,36 +856,26 @@ async fn build_runtime_state_with_persistence(
             wal_cfg.tick_ms,
         )
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
-        // Plan 12.6-15: capture WalWriter's shutdown flag BEFORE spawn() consumes
-        // self. Without this we couldn't actually trigger the writer's
-        // final-drain-and-fsync block at server shutdown — the writer loop
-        // would just keep ticking (sleep → seal → drain → check shutdown
-        // (always false) → loop) and the JoinHandle drop would detach the
-        // thread mid-tick, losing any active-buffer contents that hadn't
-        // been sealed yet. Surfaced by phase7_restart_cycle::sc1 (1216 of
-        // 1250 expected post-restart events; 34 lost in the active buffer).
+        // Capture the shutdown flag BEFORE `spawn()` consumes the writer.
+        // Without it, the writer loop would never see the shutdown signal
+        // and `JoinHandle` drop would detach the thread mid-tick, losing
+        // any active-buffer contents that hadn't been sealed yet.
         let shutdown = wal_writer.shutdown_flag();
         let handle = wal_writer.spawn();
         (shutdown, handle)
     };
 
-    // ── Spawn snapshot task (admin plane) ────────────────────────────────
-    //
-    // Plan 13.4-07 (D-02 USER-LOCKED): in Memory mode the snapshot task is
-    // not spawned at all — saves a tokio task and ensures zero file I/O. We
-    // still create a (sender, receiver) channel pair so callers that hold a
-    // `snapshot_trigger` clone (e.g. `TestServer::force_snapshot_now`) get
-    // an ack-channel-closed error rather than panicking on a missing handle.
+    // Memory mode skips the snapshot task entirely (zero file I/O), but
+    // still creates a `(sender, receiver)` pair so external trigger
+    // clones (e.g. `TestServer::force_snapshot_now`) hit a structured
+    // closed-channel error instead of panicking.
     let (snapshot_task, snapshot_trigger) = if is_memory {
         let (trigger_tx, _trigger_rx) =
             tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<Result<(), String>>>(8);
-        // _trigger_rx is dropped immediately; manual-trigger sends will fail
-        // closed-channel — caller surface returns a structured error
-        // ("snapshot task channel closed") rather than performing I/O.
         tracing::info!(
             target: "beava.snapshot",
             kind = "snapshot.task_skipped_memory_mode",
-            "Persistence::Memory: snapshot task not spawned (D-02 USER-LOCKED)"
+            "Persistence::Memory: snapshot task not spawned"
         );
         (None, trigger_tx)
     } else {
@@ -1046,17 +912,15 @@ async fn build_runtime_state_with_persistence(
     })
 }
 
-/// Plan 13.4-07 (D-02 USER-LOCKED) — no-op WAL writer thread for memory mode.
+/// No-op WAL writer thread for memory mode. Mirrors the loop shape of
+/// `WalWriter::run_writer_loop` (sleep → seal_active → drain → check
+/// shutdown) but replaces every `write()` / `fsync()` with
+/// `return_to_free`, so buffers recycle without disk I/O. The four-watermark
+/// LSN state is still advanced (`mark_written` + `mark_synced`) so any
+/// durable-LSN waiters unblock immediately.
 ///
-/// Mirrors the structure of `beava_runtime_core::wal_writer::run_writer_loop`
-/// (sleep → seal_active → drain sealed buffers → check shutdown) but with
-/// the file `write()` and `fsync()` calls REPLACED by direct `return_to_free`
-/// — buffers are recycled without any disk I/O, and the four-watermark LSN
-/// state is advanced (`mark_written` + `mark_synced`) so any waiters that
-/// depend on the durable watermark unblock immediately.
-///
-/// Returns `(shutdown_flag, join_handle)` matching the shape of
-/// `WalWriter::shutdown_flag()` + `WalWriter::spawn()`.
+/// Returns `(shutdown_flag, join_handle)` matching `WalWriter::shutdown_flag`
+/// + `WalWriter::spawn`.
 fn spawn_no_op_wal_writer(
     ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
     lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
@@ -1080,10 +944,9 @@ fn spawn_no_op_wal_writer(
             // accumulate beyond `tick_ms` worth of data.
             ring.seal_active();
 
-            // Drain sealed buffers without writing to disk. Advance the
-            // written + synced watermarks so PerEvent-style waiters
-            // (none in memory mode, but the contract still holds) don't
-            // stall on a never-incrementing durable LSN.
+            // Drain sealed buffers without disk I/O; advance the written
+            // and synced watermarks so any PerEvent-style waiter unblocks
+            // even though nothing is durable.
             while let Some(buf) = ring.pop_sealed() {
                 let hi = buf.lsn_hi();
                 lsn.mark_written(hi);
@@ -1092,7 +955,6 @@ fn spawn_no_op_wal_writer(
             }
 
             if shutdown_thread.load(AOrdering::Acquire) {
-                // Final drain on shutdown.
                 ring.seal_active();
                 while let Some(buf) = ring.pop_sealed() {
                     let hi = buf.lsn_hi();
@@ -1109,9 +971,8 @@ fn spawn_no_op_wal_writer(
 }
 
 /// Run the apply thread + admin server until `shutdown` resolves, then
-/// drain everything cleanly.  Extracted from the original
-/// `serve_with_dirs` body so it can be invoked from both the legacy
-/// build path and the `bind_with_state` path (Plan 12.6-01).
+/// drain everything cleanly. Shared by `serve_with_dirs` and the
+/// `bind_with_state` / `bind_with_config` paths.
 async fn run_serve_loop<F>(
     http_listener: std::net::TcpListener,
     tcp_listener: std::net::TcpListener,
@@ -1143,14 +1004,12 @@ where
         io_threads_override,
     } = state;
 
-    // Snapshot trigger lifecycle: drop our copy.  Any clones held externally
-    // (`TestServer`) keep the channel sender count > 0 until they're
-    // dropped or used. Without external clones the channel becomes
-    // unreachable, which is fine — the snapshot task itself owns the
-    // receiver and continues servicing scheduled ticks.
+    // Drop our snapshot-trigger copy. External clones (`TestServer`) keep
+    // the sender count > 0 until they're dropped; without external clones
+    // the channel becomes unreachable, which is fine because the snapshot
+    // task owns the receiver and keeps servicing scheduled ticks.
     drop(snapshot_trigger);
 
-    // ── Apply shard ───────────────────────────────────────────────────────
     let apply_shard = ApplyShard::new(
         Arc::clone(&app_state),
         Arc::clone(&wal_ring),
@@ -1184,12 +1043,11 @@ where
     // Wait for the apply thread to drain.
     let _ = apply_join.join();
 
-    // Plan 12.6-15: signal the WalWriter to seal+drain+fsync the active
-    // buffer (which may hold ~tick_ms worth of post-snapshot pushes that
-    // would otherwise be lost when JoinHandle is dropped) and JOIN the
-    // thread so we wait for the final fsync to land BEFORE we let the
-    // WAL ring/lsn Arcs drop. Surfaced by phase7_restart_cycle::sc1
-    // (~34 events / ~1 tick of pushes lost per restart pre-fix).
+    // Signal the WalWriter to seal + drain + fsync the active buffer
+    // (which may hold ~tick_ms worth of post-snapshot pushes that would
+    // otherwise be lost when the JoinHandle drops) and join the thread so
+    // we wait for the final fsync to land BEFORE the WAL ring + lsn Arcs
+    // drop.
     wal_writer_shutdown.store(true, AOrdering::Release);
     let _ = wal_writer_handle.join();
 
@@ -1212,36 +1070,28 @@ where
     Ok(())
 }
 
-// ─── Plan 18-04.6: real mio EventLoop driver ─────────────────────────────────
-
 /// Token assignments for the mio event loop.
 const TOKEN_HTTP_LISTENER: mio::Token = mio::Token(0);
 const TOKEN_TCP_LISTENER: mio::Token = mio::Token(1);
-/// Plan 18-06 follow-up: token used by `mio::Waker` registered with the
-/// apply thread's listener `EventLoop`. Workers fire this waker after they
-/// push `RingItem`s to `read_rx` so apply doesn't sleep in `tick(timeout)`
-/// while there's already work waiting in the channel.
+/// Token used by `mio::Waker` registered with the apply thread's listener
+/// `EventLoop`. Workers fire this waker after pushing `RingItem`s to
+/// `read_rx` so apply doesn't sleep in `tick(timeout)` while there's
+/// already work waiting in the channel.
 const TOKEN_APPLY_WAKER: mio::Token = mio::Token(usize::MAX);
-/// Client connections start at token 2; new ones increment this counter.
+/// Client connections start at token 2.
 ///
-/// **Dead post-Plan 18-05/18-06**: clients are owned by per-worker IoBackends
-/// now. Kept for the legacy IoPool helpers below (still compiled but never
-/// invoked at runtime).
+/// Currently unused — connections are owned by per-worker IoBackends in
+/// `beava-runtime-core`. Retained for the legacy IoPool helpers below
+/// (still compiled but never invoked at runtime).
 #[allow(dead_code)]
 const TOKEN_CLIENT_BASE: usize = 2;
 
-/// Maximum concurrent clients supported by the legacy per-tick IoPool lifecycle.
-///
-/// **Dead post-Plan 18-05/18-06**: see TOKEN_CLIENT_BASE.
+/// Maximum concurrent clients supported by the legacy per-tick IoPool
+/// lifecycle. See `TOKEN_CLIENT_BASE` — unused at runtime.
 #[allow(dead_code)]
 const MAX_CONCURRENT_CLIENTS: usize = 8192;
 
 /// Per-client connection state for the mio event loop.
-///
-/// Plan 18-04.7 D-1: parsed_requests and partially-decoded responses live
-/// inside the slot so IoPool workers can populate them while the apply
-/// thread waits on `IoPool::join_all()`. The apply thread reads them
-/// after the join Acquire barrier.
 #[allow(dead_code)]
 struct MioClient {
     stream: mio::net::TcpStream,
@@ -1250,14 +1100,10 @@ struct MioClient {
     proto: MioProto,
     /// Inbound read buffer.
     read_buf: bytes::BytesMut,
-    /// Plan 18-04.7: queue of responses produced by the apply phase, waiting
-    /// for the write-phase IoPool worker to serialize into write_buf.
-    ///
-    /// Plan 18-13: populated directly by the apply thread's drain loop
-    /// (`drain_channel_until_workers_done`) as it consumes RingItems from the
-    /// crossbeam channel. The prior `parsed_requests` + `parsed_rows` Vec
-    /// fields were removed in Plan 18-13 — the channel carries those payloads
-    /// per-event instead of accumulating them per-client per-tick.
+    /// Queue of `GlueResponse`s produced by the apply phase. Populated
+    /// directly by the apply thread's drain loop as it consumes `RingItem`s
+    /// from the crossbeam channel; emptied by the write-phase IoPool worker
+    /// when it serialises into `write_buf`.
     output_queue: std::collections::VecDeque<crate::runtime_core_glue::GlueResponse>,
     /// Serialized response bytes waiting to be written to the socket.
     /// Populated by the write-phase IoPool worker (off-apply).
@@ -1277,25 +1123,19 @@ enum MioProto {
     Tcp,
 }
 
-// ─── Plan 18-04.7 IoPool observer (test instrumentation) ─────────────────────
-
-/// Observability hooks used by `tests/phase18_04_7_iopool_test.rs` to verify
-/// the apply-thread invariant: parse and encode MUST run on IoPool worker
-/// threads, never on the apply thread.
-///
-/// In production the counters are essentially free (single AtomicUsize bump
-/// per parse / encode call). Tests reset them before each run and assert
-/// that `apply_*_count()` stays at 0 while `off_apply_*_count()` grows.
+/// Observability hooks asserting the off-apply invariant: parse and encode
+/// MUST run on IoPool worker threads, never on the apply thread. In
+/// production each call is a single `AtomicUsize` bump; tests reset and
+/// assert that `apply_*_count()` stays at 0 while `off_apply_*_count()`
+/// grows.
 pub mod iopool_observer {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
-    /// Apply-thread id, set by `serve_with_dirs` before the IoPool spins up.
-    /// Workers compare `std::thread::current().id() == APPLY_TID` to decide
-    /// which counter pair to bump.
-    ///
-    /// Stored as a `Mutex<Option<ThreadId>>` because ThreadId is Copy but
-    /// not representable as a plain AtomicUsize across the kernel ABI.
+    /// Apply-thread id, set by `run_mio_event_loop` at startup. Workers
+    /// compare `std::thread::current().id() == APPLY_TID` to decide
+    /// which counter pair to bump. `Mutex<Option<ThreadId>>` because
+    /// `ThreadId` isn't representable as a plain `AtomicUsize`.
     pub(crate) static APPLY_TID: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
 
     static APPLY_PARSE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -1320,12 +1160,10 @@ pub mod iopool_observer {
     }
 
     /// Bump the appropriate parse counter based on whether we're on the
-    /// apply thread. Called from inside the parse helper.
-    ///
-    /// Plan 18-05/18-06: parse now runs inside per-worker IoBackend threads
-    /// in `beava-runtime-core`, which can't reach back into this module.
-    /// Kept for potential re-instrumentation; tests query the counter via
-    /// `parse_calls()` and may currently see 0.
+    /// apply thread. Currently unreached at runtime — parse lives inside
+    /// per-worker `IoBackend` threads in `beava-runtime-core`, which
+    /// can't reach back into this module — but kept for potential
+    /// re-instrumentation.
     #[allow(dead_code)]
     pub(crate) fn record_parse() {
         if is_apply_thread() {
@@ -1353,8 +1191,8 @@ pub mod iopool_observer {
         }
     }
 
-    /// Number of parse calls made by the apply thread. MUST be 0 in healthy
-    /// IoPool wiring (Plan 18-04.7 invariant 4.7.2).
+    /// Number of parse calls made by the apply thread. MUST be 0 in
+    /// healthy IoPool wiring.
     pub fn apply_parse_count() -> usize {
         APPLY_PARSE_COUNT.load(Ordering::Acquire)
     }
@@ -1376,83 +1214,74 @@ pub mod iopool_observer {
     }
 }
 
-// ─── Plan 12-08 (D-A) — apply-thread busy-poll instrumentation ───────────────
+// Apply-thread busy-poll instrumentation (test hooks).
 
-/// Plan 12-08: cumulative count of `read_rx.recv_timeout(50µs)` calls made
-/// by the apply thread when spin-K=10_000 elapses without seeing work.
-/// Test hook only — production code never reads this.
+/// Cumulative count of `read_rx.recv_timeout(50µs)` calls made by the
+/// apply thread when the spin budget elapses without work. Test hook only.
 static APPLY_RECV_TIMEOUT_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Plan 12-08: max drain count observed in a single apply-loop iteration
-/// (fetch_max'd on every drain; never reset). Test hook for D-D verification.
+/// Max drain count observed in a single apply-loop iteration (fetch_max'd
+/// on every drain; never reset). Test hook for the drain-until-empty
+/// invariant.
 static APPLY_MAX_DRAIN_PER_ITER: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Plan 12-08: pthread_t of the apply thread, set by `run_mio_event_loop` at
-/// startup. Test hook for per-thread CPU accounting (`mach_thread_basic_info`
-/// on macOS; `pthread_getcpuclockid` on Linux). Stored as `usize` because
-/// `pthread_t` is opaque + Send-unfriendly across an `AtomicUsize`.
+/// Apply-thread `pthread_t`, set by `run_mio_event_loop` at startup.
+/// Stored as `usize` because `pthread_t` is opaque + Send-unfriendly
+/// across `AtomicUsize`. Test hook for per-thread CPU accounting
+/// (`mach_thread_basic_info` on macOS; `pthread_getcpuclockid` on Linux).
 static APPLY_PTHREAD_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Plan 12-08 (D-B): cumulative count of `flush_response_batch` calls that
-/// flushed a non-empty batch. Test hook only.
+/// Cumulative count of `flush_response_batch` calls that flushed a
+/// non-empty batch. Test hook only.
 static APPLY_RESPONSE_BATCH_FLUSHES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Plan 12-08 test hook. Cumulative count of apply-thread idle fall-through
-/// calls into `read_rx.recv_timeout(50µs)` since process start.
+/// Cumulative count of apply-thread idle fall-throughs into
+/// `read_rx.recv_timeout(50µs)` since process start.
 #[doc(hidden)]
 pub fn apply_recv_timeout_calls() -> u64 {
     APPLY_RECV_TIMEOUT_CALLS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Plan 12-08 test hook. Max number of `RingItem`s drained in a single
-/// apply-loop iteration since process start. Used by Wave 2 tests to verify
-/// the DRAIN_CAP=1024 cap was removed (drain-until-empty).
+/// Max `RingItem`s drained in a single apply-loop iteration since process
+/// start. Used by tests to verify the drain-until-empty invariant.
 #[doc(hidden)]
 pub fn apply_max_drain_per_iter() -> u64 {
     APPLY_MAX_DRAIN_PER_ITER.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Plan 12-08 (D-B) test hook. Cumulative count of response-batch flushes
-/// (a flush fires when the batch reaches BATCH_SIZE_FLUSH=16 OR
-/// BATCH_TIME_FLUSH=100µs elapses). Used by Wave 3 tests to verify D-B has
-/// landed.
+/// Cumulative count of response-batch flushes (a flush fires when the
+/// batch reaches `BATCH_SIZE_FLUSH=16` OR `BATCH_TIME_FLUSH=100µs`
+/// elapses).
 #[doc(hidden)]
 pub fn response_batch_flushes() -> u64 {
     APPLY_RESPONSE_BATCH_FLUSHES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Plan 12-08 test hook. Returns the apply thread's pthread_t (as a libc
-/// pthread_t value) once the apply thread has booted, or `None` if the apply
-/// thread has not yet registered. Used by tests to call
-/// `mach_thread_basic_info` / `pthread_getcpuclockid` for per-thread CPU
-/// accounting.
+/// Returns the apply thread's `pthread_t` once it has booted, or `None`
+/// if the apply thread has not yet registered. Used by tests for
+/// per-thread CPU accounting.
 #[doc(hidden)]
 pub fn apply_pthread_id() -> Option<libc::pthread_t> {
     let raw = APPLY_PTHREAD_ID.load(std::sync::atomic::Ordering::Acquire);
     if raw == 0 {
         None
     } else {
-        // SAFETY: we stored a pthread_t (opaque pointer-sized handle) earlier;
-        // pthread_t is layout-compatible with usize on linux+macos. We never
-        // dereference the value — we only hand it back to libc functions.
+        // SAFETY: we stored a `pthread_t` (opaque pointer-sized handle)
+        // earlier; `pthread_t` is layout-compatible with `usize` on Linux
+        // and macOS. We never dereference the value — we only hand it
+        // back to libc.
         Some(raw as libc::pthread_t)
     }
 }
 
-/// Phase 13.5.3 — IoPool thread count default heuristic.
-///
-/// Default = `max(2, available_parallelism / 4)` — Redis-style ratio that
-/// keeps IoPool threads conservative (they spin briefly between ticks and
-/// don't burn full cores).
-///
-/// Pre-13.5.3 this also read `BEAVA_IO_THREADS` env directly. The env-read
-/// is now consolidated into `ServerV18Config::from_env()` (production boot)
-/// and plumbed via `ServerV18State.io_threads_override`. Tests pass the
-/// override explicitly via `TestServerBuilder.io_threads(n)` to avoid
-/// process-global env contamination.
+/// IoPool thread count default heuristic: `max(2, available_parallelism
+/// / 4)`. Conservative because IoPool threads spin briefly between ticks
+/// and shouldn't burn full cores. Tests pass overrides via
+/// `TestServerBuilder.io_threads(n)` so production env reads stay
+/// consolidated in `ServerV18Config::from_env()`.
 fn default_io_threads() -> usize {
     let p = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1460,54 +1289,52 @@ fn default_io_threads() -> usize {
     std::cmp::max(2, p / 4)
 }
 
-/// Run the mio event loop on a dedicated std::thread (Plan 18-04.6 D-4 +
-/// Plan 18-04.7 IoPool integration).
+/// Run the mio event loop on a dedicated `std::thread`.
 ///
-/// Per-tick lifecycle (Plan 18-04.7 D-1):
-///   1. `EventLoop::tick` — poll mio for ready events (up to 5ms timeout)
+/// Per-tick lifecycle:
+///   1. `EventLoop::tick` — poll mio (up to 5 ms timeout).
 ///   2. Accept new connections; classify ready clients into read/write sets.
-///   3. **Read phase** — `IoPool::publish` parse work items → `join_all`.
-///      IoPool workers do `socket.read` + `parse_*_request` on their threads.
-///   4. **Apply phase** — single-threaded on this thread. Drain each client's
-///      `parsed_requests` → `apply_shard.dispatch_wire_request_sync` → push
-///      `GlueResponse`s into the client's `output_queue`.
-///   5. **Write phase** — `IoPool::publish` write work items → `join_all`.
-///      IoPool workers do `serialize` + `socket.write` on their threads.
+///   3. **Read phase** — `IoPool::publish` parse work → `join_all`. Workers
+///      run `socket.read` + `parse_*_request` on their own threads.
+///   4. **Apply phase** — single-threaded on this thread. Drain each
+///      client's parsed requests → `apply_shard.dispatch_wire_request_sync`
+///      → push `GlueResponse`s into the client's `output_queue`.
+///   5. **Write phase** — `IoPool::publish` write work → `join_all`. Workers
+///      run `serialize` + `socket.write`.
 ///   6. Cleanup closed clients; check shutdown flag.
 ///
-/// `clients: Vec<Option<MioClient>>` is pre-allocated to MAX_CONCURRENT_CLIENTS
-/// at startup and never resized — IoPool worker threads hold raw pointers
-/// (`as_mut_ptr().add(idx)`) into the Vec for the duration of each
-/// publish + join_all cycle. The two phases are strictly serialized by
-/// `IoPool::join_all()` Acquire barriers, so the apply thread never touches
-/// the same client a worker is touching.
-/// Plan 12-08: per-iteration response batch entry.
-///
-/// `(worker_index, slot_idx, encoder)` — the worker is selected by the apply
-/// thread (`slot_idx % n_workers`), and the encoder runs on the IO worker
-/// thread once the batch is flushed.
+/// `clients: Vec<Option<MioClient>>` is pre-allocated to
+/// `MAX_CONCURRENT_CLIENTS` at startup and never resized — IoPool worker
+/// threads hold raw pointers (`as_mut_ptr().add(idx)`) into the Vec for
+/// the duration of each publish + `join_all` cycle. The two phases are
+/// serialised by `IoPool::join_all()` Acquire barriers so the apply
+/// thread never touches the same client a worker is touching.
+
+/// Per-iteration response batch entry: `(worker_index, slot_idx,
+/// encoder)`. The worker is selected by the apply thread
+/// (`slot_idx % n_workers`); the encoder runs on the IO worker thread
+/// once the batch is flushed.
 type ResponseBatchEntry = (
     usize,
     u64,
     beava_runtime_core::io_thread_worker::WriteEncoder,
 );
 
-/// Plan 12-08 (D-A + D-B): dispatch a single `RingItem` from the apply-thread.
+/// Dispatch a single `RingItem` from the apply thread. Extracted into a
+/// free helper so the top-of-loop `try_recv()` drain and the idle-backoff
+/// `recv_timeout` Ok arm share one dispatch shape.
 ///
-/// Extracted into a free helper so both the top-of-loop `try_recv()` drain AND
-/// the idle-backoff `recv_timeout(50µs)` Ok arm share the same dispatch shape.
+/// Pushes responses into the per-iteration `response_batch` rather than
+/// calling `write_txs[w].send` immediately; the caller flushes when the
+/// batch reaches `BATCH_SIZE_FLUSH=16` OR `BATCH_TIME_FLUSH=100µs`
+/// elapsed. `batch_started_at` is set on the FIRST push into an empty
+/// batch so the timer starts from "first response of this batch", not
+/// "last drain pass".
 ///
-/// Wave 3 (D-B): pushes responses into a per-iteration `response_batch`
-/// instead of immediately calling `write_txs[w].send`. The caller flushes
-/// the batch when it reaches BATCH_SIZE_FLUSH=16 OR BATCH_TIME_FLUSH=100µs
-/// elapsed. `batch_started_at` is set on the FIRST push into an empty batch
-/// so the timer starts from "first response of this batch", not "last drain
-/// pass".
-///
-/// Wave 4 (D-C): the encoder closure now takes a `&BytesMutPool` from the
-/// worker side; it acquires a pool buffer, encodes the framed response into
-/// it, extends `client_write_buf` from the pool buffer (reuses the
-/// allocation), then releases the pool buffer back.
+/// The encoder closure takes a `&BytesMutPool` from the worker side, so
+/// each response acquires a pool buffer, encodes into it, extends
+/// `client_write_buf` from the pool buffer (reusing the allocation),
+/// then returns the pool buffer.
 #[inline]
 fn dispatch_one_ring_item(
     item: beava_runtime_core::work_ring::RingItem,
@@ -1550,8 +1377,6 @@ fn dispatch_one_ring_item(
             let slot_u64 = slot_idx as u64;
             let w = (slot_u64 as usize) % n_workers;
             let resp = match kind {
-                // Plan 12.6-15: oversize frames get the rich `frame_too_large`
-                // error frame with `limit` field (criterion 7).
                 ParseErrorKind::TcpFrameTooLarge { declared, limit } => GlueResponse::TcpError {
                     code: "frame_too_large",
                     message: format!("declared frame length {declared} exceeds limit {limit}",),
@@ -1583,14 +1408,11 @@ fn dispatch_one_ring_item(
     }
 }
 
-/// Plan 12-08 (D-B): flush the per-iteration response batch.
-///
-/// Groups by worker index `w`, sends each worker's slice via
-/// `WriteRingExt::send_batch` (one channel.send per item; the amortization
-/// is in firing the worker waker ONCE per worker per flush instead of once
-/// per response). Resets `batch_started_at` to `None`.
-///
-/// Returns the total number of items flushed.
+/// Flush the per-iteration response batch. Groups by worker index `w`,
+/// sends each worker's slice via `WriteRingExt::send_batch` (one
+/// `channel.send` per item; amortisation comes from firing each worker's
+/// waker once per flush rather than once per response). Resets
+/// `batch_started_at` to `None` and returns the total items flushed.
 #[inline]
 fn flush_response_batch(
     response_batch: &mut smallvec::SmallVec<[ResponseBatchEntry; 16]>,
@@ -1608,8 +1430,8 @@ fn flush_response_batch(
         return 0;
     }
     let total = response_batch.len();
-    // Group items by worker index. n_workers is small (≤ 32 by
-    // default_io_threads()); fixed-size stack array beats a HashMap.
+    // `n_workers` is small (≤ 32 with `default_io_threads`); a fixed-size
+    // stack array beats a HashMap here.
     let mut per_worker: smallvec::SmallVec<[Vec<(u64, WriteEncoder)>; 32]> =
         smallvec::SmallVec::with_capacity(n_workers);
     for _ in 0..n_workers {
@@ -1646,17 +1468,18 @@ fn run_mio_event_loop(
     tcp_max_frame_bytes: u32,
     io_threads_override: Option<usize>,
 ) {
-    // Plan 18-05/18-06 wiring: replaces the prior IoPool + per-tick join_all
-    // architecture with the per-worker continuous-loop (Valkey 8) model.
-    // Each worker owns its own MioBackend (its own mio::Poll + Waker + a
-    // disjoint subset of clients keyed by `slot_idx % n_workers`). Apply
-    // thread now owns ONLY the two listeners and the dispatch path:
-    //   - polls the listeners (HTTP + TCP) on its own EventLoop
-    //   - drains a shared MPSC `read_rx` (workers parse + send RingItems)
-    //   - dispatches via apply_shard, encodes responses, sends bytes back
-    //     to the owning worker via `write_tx[w]` and wakes the worker
-    //   - on accept, hands the new client to a worker via `new_client_tx[w]`
-    // No `IoPool::join_all` anywhere; reads and writes flow continuously.
+    // Per-worker continuous-loop model (Valkey 8 shape): each worker owns
+    // its own `MioBackend` (its own `mio::Poll` + `Waker` + a disjoint
+    // subset of clients keyed by `slot_idx % n_workers`). The apply
+    // thread owns only the two listeners and the dispatch path:
+    //   - polls the listeners on its own `EventLoop`
+    //   - drains a shared MPSC `read_rx` (workers parse and forward
+    //     `RingItem`s)
+    //   - dispatches via `apply_shard`, encodes responses, sends bytes
+    //     back to the owning worker via `write_tx[w]` and wakes that
+    //     worker
+    //   - on accept, hands the new client to a worker via
+    //     `new_client_tx[w]`.
     use beava_runtime_core::event_loop::EventLoop;
     use beava_runtime_core::http_listener::HttpListener;
     use beava_runtime_core::io_backend::MioBackend;
@@ -1667,22 +1490,23 @@ fn run_mio_event_loop(
     use beava_runtime_core::work_ring::RingItem;
     use std::sync::atomic::Ordering as AOrdering;
 
-    // Plan 18-04.7: record this thread as the apply thread. Test instrumentation
-    // (iopool_observer) compares parse/encode call sites against this id.
+    // Record this thread as the apply thread; the iopool observer
+    // compares parse/encode call sites against this id.
     iopool_observer::set_apply_tid();
 
-    // Plan 12-08 (D-A): record the apply thread's pthread_t for per-thread CPU
-    // accounting. macOS uses `mach_thread_basic_info` via pthread_mach_thread_np;
-    // Linux uses `pthread_getcpuclockid`. Process-level rusage is unreliable
-    // here because it sums across apply + N IO workers + admin tokio workers.
+    // Record the apply thread's `pthread_t` for per-thread CPU accounting
+    // — process `rusage` is useless here because it sums across apply +
+    // N IO workers + admin tokio workers. macOS uses
+    // `mach_thread_basic_info` via `pthread_mach_thread_np`; Linux uses
+    // `pthread_getcpuclockid`.
     {
         let pid: libc::pthread_t = unsafe { libc::pthread_self() };
         APPLY_PTHREAD_ID.store(pid as usize, std::sync::atomic::Ordering::Release);
     }
 
-    // ── Apply-thread EventLoop: just the two listeners + the worker waker ────
-    // (Created BEFORE workers so we can register the apply-side waker with this
-    // event_loop's mio::Registry and clone it into each worker's config.)
+    // Build the apply-thread `EventLoop` BEFORE the workers so we can
+    // register the apply-side waker with its `mio::Registry` and clone
+    // it into each worker's config.
     let mut event_loop = match EventLoop::new() {
         Ok(el) => el,
         Err(e) => {
@@ -1691,9 +1515,9 @@ fn run_mio_event_loop(
         }
     };
 
-    // Plan 18-06 follow-up: mio::Waker bound to apply's listener event_loop.
-    // Workers fire this after pushing RingItems to read_rx so apply doesn't
-    // sit in event_loop.tick(timeout) while the channel has work waiting.
+    // `mio::Waker` bound to apply's listener `EventLoop`. Workers fire
+    // this after pushing `RingItem`s to `read_rx` so apply doesn't sit in
+    // `event_loop.tick(timeout)` while the channel has work waiting.
     let apply_waker = match mio::Waker::new(event_loop.registry(), TOKEN_APPLY_WAKER) {
         Ok(w) => Arc::new(w),
         Err(e) => {
@@ -1702,23 +1526,21 @@ fn run_mio_event_loop(
         }
     };
 
-    // ── Spin up N per-worker continuous loops (Plan 18-05) ───────────────────
-    // Phase 13.5.3: explicit override (from `ServerV18Config.io_threads`)
-    // wins. Falls back to `default_io_threads()` heuristic when None.
-    // `default_io_threads()` itself no longer reads BEAVA_IO_THREADS — the
-    // env-read lives in ServerV18Config::from_env() at production boot.
+    // Explicit override wins; falls back to `default_io_threads()` when
+    // `None`. The env-read lives in `ServerV18Config::from_env()`.
     let n_workers = io_threads_override
         .map(|n| n.max(1))
         .unwrap_or_else(default_io_threads);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Single MPSC for parsed RingItems: every worker clones the sender; apply
-    // owns the receiver. Capacity 16384 = old IoPool budget × 4× headroom.
+    // Single MPSC for parsed `RingItem`s: every worker clones the sender;
+    // apply owns the receiver. 16384 capacity gives ~4× headroom over
+    // the legacy IoPool budget.
     let (read_tx, read_rx) = crossbeam_channel::bounded::<RingItem>(16_384);
 
-    // Per-worker write_tx (apply → worker, encoder closures), and the
-    // corresponding worker handles. Wakers cached in a parallel Vec so the hot
-    // dispatch loop doesn't re-Arc-clone per send.
+    // Per-worker `write_tx` (apply → worker, encoder closures) plus
+    // matching `WorkerHandle`s. Wakers are cached in a parallel `Vec` so
+    // the hot dispatch loop doesn't re-`Arc::clone` per send.
     use beava_runtime_core::io_thread_worker::WriteEncoder;
     let mut write_txs: Vec<crossbeam_channel::Sender<(u64, WriteEncoder)>> =
         Vec::with_capacity(n_workers);
@@ -1745,15 +1567,15 @@ fn run_mio_event_loop(
         workers.push(handle);
         write_txs.push(write_tx);
     }
-    // Apply only reads from read_rx; drop our spare sender clone so the
-    // channel can disconnect cleanly when all workers exit.
+    // Apply reads from `read_rx`; drop our spare sender clone so the
+    // channel disconnects cleanly when all workers exit.
     drop(read_tx);
 
     tracing::info!(
         target: "beava.server",
         kind = "workers.started",
         threads = n_workers,
-        "Plan 18-05 per-worker continuous-loop pool started"
+        "per-worker continuous-loop pool started"
     );
     let mut http_listener = match HttpListener::from_std(http_listener_std) {
         Ok(l) => l,
@@ -1786,37 +1608,32 @@ fn run_mio_event_loop(
         return;
     }
 
-    // Per-slot proto, used at response-encode time. Workers track their own
-    // WorkerClient.proto independently; this map is the apply-side mirror so
-    // we know whether to encode TCP framed or HTTP responses for each slot.
-    // TODO Plan 18-06+: workers don't currently signal close back to apply,
-    // so entries leak slowly until process exit.
+    // Apply-side mirror of the per-slot proto so the response encoder
+    // can pick the right wire shape. Workers don't signal close back, so
+    // entries leak slowly until process exit (TODO once close-notify
+    // lands).
     let mut slot_proto: std::collections::HashMap<u64, WorkerProto> =
         std::collections::HashMap::new();
     let mut accept_seq: u64 = 0;
 
     tracing::info!(target: "beava.server", "apply thread: dispatcher loop started");
 
-    // Plan 12-08 (D-A): adaptive busy-poll on apply.
-    //
-    // The apply thread tight-spins on `read_rx.try_recv()` for up to
-    // `SPIN_BUDGET_K` consecutive empty iterations. After that it falls
-    // through to a single blocking `read_rx.recv_timeout(50µs)` — wakes
-    // immediately when a worker sends, otherwise returns Err(Timeout) so
-    // the apply core doesn't burn 100% CPU at no-load.
+    // Adaptive busy-poll: tight-spin on `read_rx.try_recv()` for up to
+    // `SPIN_BUDGET_K` consecutive empty iterations, then fall through to
+    // a single blocking `read_rx.recv_timeout(50µs)`. The blocking call
+    // wakes immediately when a worker sends; otherwise it returns
+    // `Err(Timeout)` so the apply core doesn't burn 100% CPU at no-load.
     //
     // The listener-poll cadence ALWAYS runs every `LISTENER_POLL_EVERY`
     // iterations as a non-blocking `event_loop.tick(0)` — accept latency
-    // stays bounded regardless of read pressure. The 50ms blocking
-    // `tick(50ms)` shape that 12-07 shipped is removed; idleness now lives
-    // entirely on the channel side via recv_timeout.
+    // stays bounded regardless of read pressure. Idleness lives entirely
+    // on the channel side via `recv_timeout` (no blocking listener poll).
     //
-    // Plan 12-08 (D-B): per-iteration response_batch. Responses queue into
-    // a SmallVec inline-cap=16; flush fires when batch reaches
-    // BATCH_SIZE_FLUSH=16 OR BATCH_TIME_FLUSH=100µs elapsed since first
-    // push (whichever comes first). The flush groups items by worker and
-    // fires worker_wakers[w].wake() ONCE per affected worker — collapses
-    // N response wakes into 1 wake per batch.
+    // Per-iteration `response_batch`: responses queue into a SmallVec
+    // (inline-cap 16); flush fires at `BATCH_SIZE_FLUSH=16` OR
+    // `BATCH_TIME_FLUSH=100µs` elapsed since first push. The flush groups
+    // by worker and wakes each affected worker ONCE — N response wakes
+    // collapse into 1 wake per batch.
     const LISTENER_POLL_EVERY: u32 = 1024;
     const SPIN_BUDGET_K: u32 = 10_000;
     const BATCH_SIZE_FLUSH: usize = 16;
@@ -1828,23 +1645,14 @@ fn run_mio_event_loop(
     let mut batch_started_at: Option<Instant> = None;
 
     loop {
-        // ── 1. Drain read_rx — dispatch + queue into response_batch ──────────
-        // Plan 12-08 (D-D): drain-until-empty. The previous DRAIN_CAP=1024
-        // forced re-entry into the listener-poll cadence after every 1024
-        // items, costing an extra event_loop.tick(0) syscall + idle/iter
-        // bookkeeping pass between batches. Apply is single-threaded; we
-        // WANT to fully drain the channel and dispatch all queued work in
-        // arrival order before checking accepts.
-        //
-        // Plan 12-08 (D-B): inside the drain we also check the size-flush
-        // trigger (batch.len() ≥ 16) — keeps the response_batch from growing
-        // unboundedly inside one big drain pass.
-        //
-        // Safety: read_rx is bounded(16_384), so even under burst load the
-        // drain is bounded by channel capacity (workers can't outpace apply
-        // forever — they backpressure on the bounded send). The accept
-        // cadence still runs every LISTENER_POLL_EVERY=1024 OUTER iterations,
-        // not every 1024 items.
+        // Drain `read_rx` until empty: apply is single-threaded so we want
+        // to dispatch every queued item in arrival order before checking
+        // accepts. `read_rx` is bounded(16_384) so even under burst load
+        // the drain is bounded by channel capacity (workers backpressure
+        // on the send). The accept cadence runs every
+        // `LISTENER_POLL_EVERY=1024` OUTER iterations, not every 1024
+        // items. Inside the drain we also size-flush at
+        // `BATCH_SIZE_FLUSH=16` so the batch can't grow unboundedly.
         let mut drained: u64 = 0;
         let mut read_rx_disconnected = false;
         loop {
@@ -1868,10 +1676,8 @@ fn run_mio_event_loop(
                 &mut response_batch,
                 &mut batch_started_at,
             );
-            // Plan 12-08 (D-B): size-flush inside the drain so a long drain
-            // pass doesn't grow the batch unboundedly. The Smallvec inline
-            // cap is 16; once we exceed it the batch spills to heap, but
-            // we'd rather flush + restart accumulation.
+            // The SmallVec inline cap is 16; flush + restart accumulation
+            // once we'd otherwise spill to heap.
             if response_batch.len() >= BATCH_SIZE_FLUSH {
                 flush_response_batch(
                     &mut response_batch,
@@ -1883,11 +1689,8 @@ fn run_mio_event_loop(
             }
         }
 
-        // ── 2. Time-flush trigger ────────────────────────────────────────────
-        // Plan 12-08 (D-B): after a drain pass, check if the batch's first
-        // entry has been waiting ≥ 100µs. Under sparse load this dominates:
-        // the size-16 trigger never fires, so the time floor delivers
-        // responses with bounded p99 latency.
+        // Time-flush trigger: under sparse load the size-16 flush never
+        // fires, so the 100 µs floor bounds response p99 latency.
         if !response_batch.is_empty()
             && batch_started_at.is_some_and(|t| t.elapsed() >= BATCH_TIME_FLUSH)
         {
@@ -1900,7 +1703,6 @@ fn run_mio_event_loop(
             );
         }
 
-        // ── 3. Update idle/iter bookkeeping ──────────────────────────────────
         iter_counter = iter_counter.wrapping_add(1);
         if drained > 0 {
             APPLY_MAX_DRAIN_PER_ITER.fetch_max(drained, std::sync::atomic::Ordering::Relaxed);
@@ -1909,11 +1711,10 @@ fn run_mio_event_loop(
             idle_iters = idle_iters.saturating_add(1);
         }
 
-        // ── 4. Listener poll cadence (non-blocking) ──────────────────────────
-        // Plan 12-08 (D-A): listener poll is ALWAYS non-blocking. Idle backoff
-        // moved to the recv_timeout branch below. This way listener accepts
-        // never block on the channel, and channel recv never blocks on
-        // listener events.
+        // Listener poll is ALWAYS non-blocking; idle backoff lives in the
+        // `recv_timeout` branch below. This way listener accepts never
+        // block on the channel and channel recv never blocks on listener
+        // events.
         if iter_counter % LISTENER_POLL_EVERY == 0 {
             let tokens: Vec<mio::Token> = match event_loop.tick(Some(Duration::from_millis(0))) {
                 Ok(events) => events.map(|e| e.token()).collect(),
@@ -1941,39 +1742,31 @@ fn run_mio_event_loop(
                         &mut accept_seq,
                     );
                 } else if token == TOKEN_APPLY_WAKER {
-                    // Worker pushed RingItems to read_rx; loop back to drain.
-                    // No work needed here — the next iteration's drain pass
-                    // will process the items. (Pre-12-08 this token also
-                    // unblocked tick(50ms); post-12-08 the recv_timeout
-                    // branch handles the wake directly via the channel.)
+                    // Worker pushed `RingItem`s to `read_rx`; the next
+                    // iteration's drain pass picks them up. No work here.
                 }
-                // Client-token events stay on the workers' EventLoops; apply
-                // thread should never see them. Defensive: ignore unknown tokens.
+                // Client-token events stay on the workers' `EventLoop`s —
+                // apply thread should never see them. Defensive: ignore
+                // unknown tokens.
             }
         }
 
-        // ── 5. Idle backoff via recv_timeout (D-A) ───────────────────────────
-        // After SPIN_BUDGET_K consecutive empty try_recv passes, give up CPU
-        // for at most 50µs by blocking on the channel. A worker push wakes
-        // us within ~50ns (channel signal is in-process; no kqueue/epoll
-        // syscall round-trip). On Timeout we re-enter the tight try_recv
-        // loop — listener poll cadence is unchanged.
+        // Idle backoff: after `SPIN_BUDGET_K` consecutive empty
+        // `try_recv` passes, block on the channel for up to 50 µs. A
+        // worker push wakes us within ~50 ns (in-process signal; no
+        // kqueue/epoll round-trip). On `Timeout` we re-enter the spin
+        // loop and listener-poll cadence is unchanged.
         //
-        // Plan 12-08 (D-B): before blocking, flush any pending response_batch
-        // — the recv_timeout might block for the full 50µs and we don't want
-        // to delay queued responses by another 50µs while our own apply
-        // thread is idle.
+        // Before blocking we flush any pending `response_batch` — the
+        // `recv_timeout` might block for the full 50 µs and queued
+        // responses shouldn't pay that latency while we're idle.
         //
-        // Listener cross-wake (D-A correctness fix, observed 2026-04-29):
-        // Pre-12-08 the apply thread blocked on `event_loop.tick(50ms)` so
-        // listener events (accept) and apply_waker fired on the SAME blocking
-        // primitive. Post-12-08 it blocks on `recv_timeout` (channel-side),
-        // which the listener event_loop can't wake. Without an explicit
-        // listener-poll on each idle backoff, accept latency under sparse
-        // load grows to LISTENER_POLL_EVERY × recv_timeout duration ≈ 50 ms
-        // (1024 × 50 µs). That's a 1000× regression on first-connection
-        // latency. Mitigation: do a non-blocking `event_loop.tick(0)` here
-        // BEFORE the recv_timeout. Cheap (~1 µs syscall) and bounded.
+        // Listener cross-wake: a non-blocking `event_loop.tick(0)` runs
+        // BEFORE `recv_timeout` so accept latency stays bounded. Without
+        // it, a sparse-load accept would have to wait
+        // `LISTENER_POLL_EVERY × recv_timeout ≈ 1024 × 50 µs ≈ 50 ms` —
+        // a 1000× first-connection-latency regression. The extra
+        // `tick(0)` is ~1 µs and bounded.
         if idle_iters >= SPIN_BUDGET_K {
             if !response_batch.is_empty() {
                 flush_response_batch(
@@ -2016,8 +1809,8 @@ fn run_mio_event_loop(
                         &mut response_batch,
                         &mut batch_started_at,
                     );
-                    // Flush immediately on the recv_timeout Ok arm — we
-                    // were just blocked, no point holding the response.
+                    // Flush immediately — we were just blocked, no point
+                    // holding the response back further.
                     flush_response_batch(
                         &mut response_batch,
                         &mut batch_started_at,
@@ -2028,9 +1821,9 @@ fn run_mio_event_loop(
                     idle_iters = 0;
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Idle 50µs elapsed — fall back into the spin loop. Don't
-                    // reset idle_iters; we want to immediately re-enter
-                    // recv_timeout next iteration if still idle.
+                    // Don't reset `idle_iters` — if still idle next
+                    // iteration we want to immediately re-enter
+                    // `recv_timeout`.
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     tracing::info!(
@@ -2042,7 +1835,6 @@ fn run_mio_event_loop(
             }
         }
 
-        // ── 6. Shutdown check ────────────────────────────────────────────────
         if shutdown.load(AOrdering::Acquire) {
             tracing::info!(
                 target: "beava.server",
@@ -2050,15 +1842,12 @@ fn run_mio_event_loop(
             );
             break;
         }
-        // Plan 12-08 (D-D): if the drain pass observed a disconnected channel,
-        // exit the loop after honouring the existing shutdown contract.
         if read_rx_disconnected {
             break;
         }
     }
 
-    // Plan 12-08 (D-B): on shutdown, flush any pending responses so we
-    // don't lose acks queued in the batch.
+    // Final flush on shutdown so queued acks aren't lost.
     if !response_batch.is_empty() {
         flush_response_batch(
             &mut response_batch,
@@ -2069,7 +1858,6 @@ fn run_mio_event_loop(
         );
     }
 
-    // ── Shutdown sequence: tell workers to stop, then join ───────────────────
     stop.store(true, AOrdering::Release);
     for w in &workers {
         w.stop();
@@ -2080,11 +1868,11 @@ fn run_mio_event_loop(
     tracing::info!(target: "beava.server", "apply thread: exiting");
 }
 
-/// Plan 18-05/18-06: route accepted clients to per-worker IoBackends.
-/// Each accepted stream is assigned a monotonic `slot_idx` and dispatched to
-/// `worker[slot_idx % n_workers]` via `send_new_client_with_proto`. Apply
-/// records the slot's protocol in `slot_proto` so it can encode responses
-/// correctly (the worker tracks the same proto independently for parse).
+/// Route accepted clients to per-worker `IoBackend`s. Each accepted stream
+/// gets a monotonic `slot_idx` and is dispatched to `worker[slot_idx %
+/// n_workers]` via `send_new_client_with_proto`. Apply records the slot's
+/// protocol in `slot_proto` so it can encode responses correctly; the
+/// worker tracks the same proto independently for parse.
 fn accept_clients_to_workers<L>(
     listener: &mut L,
     proto: beava_runtime_core::io_thread_worker::WorkerProto,
@@ -2127,29 +1915,27 @@ fn accept_clients_to_workers<L>(
     }
 }
 
-// ─── Plan 18-04.7 IoPool wiring helpers ──────────────────────────────────────
-
-/// Newtype wrapper that lets us send a raw mut pointer into a Send WorkItem
-/// closure without the per-call `unsafe impl Send` boilerplate.
+/// Newtype wrapping a raw mut pointer so it can ride inside a `Send`
+/// `WorkItem` closure without the per-call `unsafe impl Send` boilerplate.
 ///
-/// SAFETY of the Send impl: the pointer always points into a Vec that is
-/// pre-allocated and never resized (`MAX_CONCURRENT_CLIENTS`). Synchronization
-/// is provided externally by the IoPool's Release/Acquire barrier — only one
-/// worker accesses any given slot index per tick, and the apply thread waits
-/// at `join_all()` before touching the slot.
+/// SAFETY (`Send` / `Sync` impls): the pointer always points into a `Vec`
+/// pre-allocated to `MAX_CONCURRENT_CLIENTS` and never resized. Aliasing is
+/// bounded by the IoPool's Release/Acquire barrier — only one worker
+/// touches a given slot index per tick, and the apply thread waits at
+/// `join_all()` before reading.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct ClientsPtr(*mut Option<MioClient>);
 
-// SAFETY: see ClientsPtr docs — pointer aliases are bounded by IoPool barriers.
+// SAFETY: see `ClientsPtr` docs — aliasing is bounded by IoPool barriers.
 unsafe impl Send for ClientsPtr {}
 unsafe impl Sync for ClientsPtr {}
 
 #[allow(dead_code)]
 impl ClientsPtr {
-    /// Access the slot at `idx`. Method-based access forces the closure to
-    /// capture the whole `ClientsPtr` instead of disjointly capturing the
-    /// inner `*mut` field (Rust 2021 RFC 2229 closure-capture rules).
+    /// Access the slot at `idx`. Method form (rather than direct field
+    /// access) forces closures to capture the whole `ClientsPtr` instead
+    /// of the inner pointer disjointly (RFC 2229).
     ///
     /// SAFETY: see the struct-level docs.
     #[inline]
@@ -2241,21 +2027,16 @@ impl AcceptStream for beava_runtime_core::tcp_listener::TcpListener {
     }
 }
 
-/// Plan 18-13: Read-phase variant that pushes parsed requests directly into a
-/// crossbeam channel as each frame is decoded, rather than batching them into
-/// `client.parsed_requests` + `client.parsed_rows` Vecs. This lets the apply
-/// thread start dispatching events the instant a single worker has parsed
-/// one — eliminating the per-tick `IoPool::join_all` spin barrier (the
-/// dominant source of inter-event gap on macOS, ~218 µs every ~128 events
-/// at p=4/pd=64).
+/// Read-phase that pushes each decoded frame straight into a crossbeam
+/// channel rather than batching into `client.parsed_requests` /
+/// `client.parsed_rows` `Vec`s. Lets the apply thread dispatch events the
+/// instant a single worker has parsed one — removes the per-tick
+/// `IoPool::join_all` spin barrier (the dominant source of inter-event
+/// gap on macOS pre-fix: ~218 µs every ~128 events at p=4/pd=64).
 ///
-/// The channel is bounded; if it fills (apply thread is far behind), `send`
-/// blocks the worker briefly. In normal operation apply is faster than parse
-/// (apply ~0.9 µs vs parse ~4 µs per push), so the channel rarely contends.
-///
-/// Backward compat: callers that need the legacy batched behavior continue
-/// to call `read_and_parse_client` (used by Phase 18-04.6/18-04.8 tests
-/// that exercise `dispatch_wire_request_with_row` directly).
+/// The channel is bounded; if apply falls behind, `send` blocks the
+/// worker briefly. In normal operation apply is faster than parse (apply
+/// ~0.9 µs vs parse ~4 µs per push), so contention is rare.
 #[allow(dead_code)]
 fn read_and_parse_client_to_channel(
     client: &mut MioClient,
@@ -2274,7 +2055,7 @@ fn read_and_parse_client_to_channel(
         return;
     }
 
-    // Phase A: drain socket → read_buf.
+    // Drain socket → read_buf.
     let mut tmp_buf = [0u8; 16 * 1024];
     loop {
         match client.stream.read(&mut tmp_buf) {
@@ -2297,11 +2078,11 @@ fn read_and_parse_client_to_channel(
         return;
     }
 
-    // Phase B+C: parse each frame, do body→Row inline, push to channel.
+    // Parse each frame, do body→Row inline, push to channel.
     iopool_observer::record_parse();
 
-    // Helper closure: deserialize body→Row for push variants. None for non-push
-    // or when deserialization fails (apply will retry / emit invalid_event).
+    // Deserialize body → `Row` for push variants. `None` for non-push or
+    // when deserialization fails — apply will surface `invalid_event`.
     let body_to_row = |req: &WireRequest| -> Option<Row> {
         match req {
             WireRequest::TcpPush {
@@ -2340,7 +2121,7 @@ fn read_and_parse_client_to_channel(
                         })
                         .is_err()
                     {
-                        // Receiver dropped — server shutting down.
+                        // Receiver dropped (server shutting down).
                         return;
                     }
                 }
@@ -2383,20 +2164,20 @@ fn read_and_parse_client_to_channel(
     }
 }
 
-/// Plan 18-13: Drain the work-ring receiver concurrently with IoPool workers
-/// running. Returns when:
-///   1. All IoPool worker threads have signaled `pending = 0` (no more work)
-///   2. AND the receiver channel is empty (all parsed events dispatched).
+/// Drain the work-ring receiver concurrently with IoPool workers
+/// running. Returns when both:
+///   1. all IoPool worker threads have signalled `pending = 0`
+///   2. the receiver channel is empty.
 ///
-/// This replaces the prior `IoPool::join_all + drain_parsed_requests` two-step
-/// (which forced the apply thread to wait for ALL workers to finish parsing
-/// before processing ANY parsed event). Now apply dispatches events as they
-/// arrive — overlap of parse-on-IoPool with apply-on-apply-thread.
+/// Replaces the prior `IoPool::join_all` + `drain_parsed_requests`
+/// two-step that forced apply to wait for every worker to finish parsing
+/// before dispatching any event. Now apply dispatches as events arrive,
+/// overlapping parse-on-IoPool with apply-on-apply-thread.
 ///
-/// Per-event flow inside the loop:
+/// Per-event flow:
 /// - `try_recv` → `dispatch_wire_request_with_row` → push response to
 ///   `clients[slot_idx].output_queue`
-/// - `ParseError` → push error response, mark client closed
+/// - `ParseError` → push error response, mark client closed.
 #[allow(dead_code)]
 fn drain_channel_until_workers_done(
     io_pool: &beava_runtime_core::io_pool::IoPool,
@@ -2436,8 +2217,6 @@ fn drain_channel_until_workers_done(
                         if let Some(client) = slot.as_mut() {
                             use crate::runtime_core_glue::GlueResponse;
                             client.output_queue.push_back(match kind {
-                                // Plan 12.6-15: rich frame_too_large frame
-                                // (criterion 7).
                                 ParseErrorKind::TcpFrameTooLarge { declared, limit } => {
                                     GlueResponse::TcpError {
                                         code: "frame_too_large",
@@ -2505,7 +2284,6 @@ fn serialize_and_write_client(client: &mut MioClient) {
         return;
     }
 
-    // Phase A: serialize any queued responses.
     if !client.output_queue.is_empty() {
         iopool_observer::record_encode();
         let queue = std::mem::take(&mut client.output_queue);
@@ -2517,7 +2295,6 @@ fn serialize_and_write_client(client: &mut MioClient) {
         }
     }
 
-    // Phase B: drain write_buf to the socket.
     while !client.write_buf.is_empty() {
         match client.stream.write(&client.write_buf) {
             Ok(0) => break,
@@ -2542,10 +2319,6 @@ fn encode_glue_response_tcp(
     use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_GET_RESPONSE, OP_PING, OP_PUSH};
 
     match resp {
-        // Plan 12.6-01: Pong body matches the legacy TCP encoder so
-        // `tcp_client::ping` can read `server_version` + `registry_version`
-        // back. Pre-rewrite the mio path emitted `{}` here, breaking
-        // `testing::tests::tcp_client_connect_and_ping` against ServerV18.
         GlueResponse::Pong { registry_version } => {
             let body = serde_json::json!({
                 "server_version": crate::VERSION,
@@ -2558,9 +2331,8 @@ fn encode_glue_response_tcp(
             ack_lsn,
             registry_version,
         } => {
-            // Plan 12.6-15: include `idempotent_replay: false` flag so phase8
-            // TCP push tests can discriminate between fresh ack and dedupe
-            // replay. Matches legacy axum TCP encoder shape.
+            // Include `idempotent_replay: false` so callers can
+            // discriminate fresh ack from dedupe replay.
             let body = serde_json::json!({
                 "ack_lsn": ack_lsn,
                 "idempotent_replay": false,
@@ -2574,12 +2346,10 @@ fn encode_glue_response_tcp(
             ack_lsn,
             cached_body: _,
         } => {
-            // Plan 12.6-15: TCP idempotent-replay body. TCP has no
-            // replay header (HTTP gets `X-Beava-Idempotent-Replay: 1`);
-            // the body flag `idempotent_replay: true` IS the
-            // discriminator. Include the cached `ack_lsn` so callers can
-            // assert `ack1.ack_lsn == ack2.ack_lsn` (dedupe replay LSN
-            // identity per phase8_tcp_push expectations).
+            // TCP has no idempotent-replay header (HTTP uses
+            // `X-Beava-Idempotent-Replay: 1`); on the TCP wire, the body
+            // flag IS the discriminator. Include the original `ack_lsn`
+            // so callers can assert `ack1.ack_lsn == ack2.ack_lsn`.
             let body = match ack_lsn {
                 Some(lsn) => serde_json::json!({
                     "ack_lsn": lsn,
@@ -2594,12 +2364,10 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_PUSH, CT_JSON, &b, buf);
         }
-        // Plan 12.6-01: register response (success and error paths funnel
-        // through here). `body` is pre-serialised by
-        // `register::register_outcome_to_glue` to match the legacy axum
-        // `map_outcome_to_http` body verbatim — `RegisterSuccess` on
-        // success, `RegisterErrorBody` on failure.  `tcp_op` is
-        // `OP_REGISTER` on success, `OP_ERROR_RESPONSE` on failure.
+        // Register response (success and error paths funnel through
+        // here). `body` is pre-serialised by
+        // `register::register_outcome_to_glue`; `tcp_op` is `OP_REGISTER`
+        // on success and `OP_ERROR_RESPONSE` on failure.
         GlueResponse::Register { body, tcp_op, .. } => {
             encode_tcp_frame_bytes(*tcp_op, CT_JSON, body, buf);
         }
@@ -2607,9 +2375,8 @@ fn encode_glue_response_tcp(
             code,
             registry_version,
         } => {
-            // Plan 12.6-15: TCP error-frame body must match legacy axum
-            // shape — `{"error": {"code": "..."}}`, not `{"code": "..."}`.
-            // phase8_tcp_push tests assert on `body["error"]["code"]`.
+            // Body shape is `{"error": {"code": "..."}}` so callers can
+            // pattern-match on `body["error"]["code"]`.
             let body = serde_json::json!({
                 "error": {"code": code},
                 "registry_version": registry_version,
@@ -2617,17 +2384,12 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
-        // Plan 12-07 Wave 5 + Plan 12-09 Wave 3: TCP /get response framing.
-        // Echo back the (already-serialised) body framed as
-        // OP_GET_RESPONSE = 0x0023. FIFO correlation on the connection
-        // ties this frame to its originating OP_GET / OP_MGET / OP_GET_MULTI
-        // request — Redis-style strict-FIFO ordering, no request_id needed.
-        //
-        // Plan 12-09: `*format` is the request frame's content_type byte
-        // (CT_JSON or CT_MSGPACK) propagated end-to-end via
-        // GlueResponse::QueryResult.format — msgpack-in produces msgpack-out
-        // (locked decision D-B). The dispatch helpers in runtime_core_glue.rs
-        // already encoded the body with the matching codec.
+        // TCP `/get` response framing. Echo back the (already-serialised)
+        // body framed as `OP_GET_RESPONSE` (0x0023). FIFO correlation on
+        // the connection ties this frame to its request — no request_id
+        // needed (Redis-shaped strict-FIFO). `*format` is the request
+        // frame's content-type byte propagated end-to-end so msgpack-in
+        // produces msgpack-out.
         GlueResponse::QueryResult { body, format } => {
             encode_tcp_frame_bytes(OP_GET_RESPONSE, *format, body, buf);
         }
@@ -2636,10 +2398,9 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
-        // Plan 13.4-08 (D-03): OP_RESET success — body shape
-        // `{"reset": true, "registry_version": N}`. Frame opcode is
-        // OP_GET_RESPONSE (0x0023) — the generic JSON success frame
-        // (matching the OP_GET / OP_BATCH_GET response opcode reuse).
+        // `OP_RESET` success — body `{"reset": true, "registry_version":
+        // N}`. Frame opcode is `OP_GET_RESPONSE` (0x0023), the generic
+        // JSON success frame.
         GlueResponse::ResetOk { registry_version } => {
             let body = serde_json::json!({
                 "reset": true,
@@ -2648,26 +2409,22 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_GET_RESPONSE, CT_JSON, &b, buf);
         }
-        // Plan 13.4-08 (D-03): OP_RESET rejected — frame opcode is the
-        // dedicated 0xFFFF error frame; body matches the HTTP 403 body
-        // verbatim.
+        // `OP_RESET` rejected — frame opcode is the dedicated 0xFFFF
+        // error; body matches the HTTP 403 body verbatim.
         GlueResponse::ResetForbidden => {
             let body = reset_forbidden_body();
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
-        // Plan 12.6-15: rich TCP error frame (op_not_implemented, unknown_op,
-        // unsupported_content_type, frame_too_large). Body shape:
-        // `{"error": {"code": <code>, "message": <msg>, ...extras}}` —
-        // matches phase2_5_smoke criterion-5/7/bonus_msgpack expectations.
+        // Rich TCP error frame: `{"error": {"code": <code>, "message":
+        // <msg>, ...extras}}`. `extras` is merged into the error object
+        // so callers can carry structured fields (e.g.
+        // `frame_too_large.limit`) without new variants.
         GlueResponse::TcpError {
             code,
             message,
             extras,
         } => {
-            // Merge `extras` into the error object so callers can carry
-            // structured fields like `frame_too_large.limit` without
-            // proliferating GlueResponse variants.
             let mut error_obj = serde_json::Map::new();
             error_obj.insert("code".to_string(), serde_json::json!(code));
             error_obj.insert("message".to_string(), serde_json::json!(message));
@@ -2680,9 +2437,8 @@ fn encode_glue_response_tcp(
             let b = serde_json::to_vec(&body).unwrap_or_default();
             encode_tcp_frame_bytes(OP_ERROR_RESPONSE, CT_JSON, &b, buf);
         }
-        // Plan 13.4.1 D-05: legacy request shape rejected. TCP frame is
-        // OP_ERROR_RESPONSE (0xFFFF) with the locked body shape that mirrors
-        // the HTTP 400 response.
+        // Legacy request shape rejected. TCP frame `OP_ERROR_RESPONSE`
+        // (0xFFFF); body mirrors the HTTP 400 response.
         GlueResponse::UnsupportedRequestShape { hint } => {
             let body = serde_json::json!({
                 "error": {
@@ -2711,9 +2467,9 @@ fn encode_glue_response_http(
 ) {
     use crate::runtime_core_glue::GlueResponse;
 
-    // Plan 12.6-15: extra response headers (e.g. `x-beava-idempotent-replay: 1`
-    // on PushReplay). Empty when no extras apply; appended verbatim to the
-    // standard HTTP response header block below.
+    // Extra response headers (e.g. `x-beava-idempotent-replay: 1` on
+    // `PushReplay`). Empty when no extras apply; appended verbatim to
+    // the standard HTTP header block below.
     let mut extra_headers = String::new();
 
     let (status, body_bytes): (u16, Vec<u8>) = match resp {
@@ -2729,16 +2485,14 @@ fn encode_glue_response_http(
             ack_lsn: _,
             cached_body,
         } => {
-            // Plan 12.6-15: byte-identical replay (success criterion #2).
-            // The cached `Bytes` IS the verbatim original /push response
-            // body (e.g. `{ack_lsn:N, idempotent_replay:false,
-            // registry_version:V}`); pass it through unchanged. When
-            // `None` (cache miss), synthesise the legacy generic
+            // Byte-identical replay: `cached_body` IS the verbatim
+            // original `/push` response (e.g. `{ack_lsn:N,
+            // idempotent_replay:false, registry_version:V}`); pass it
+            // through unchanged. On cache miss, synthesise the generic
             // `{idempotent_replay: true, registry_version: V}` shape.
             //
-            // Plan 12.6-15: also emit the `x-beava-idempotent-replay: 1`
-            // response header (legacy axum push handler did this; the
-            // mio path was missing it pre-Plan-15).
+            // The `X-Beava-Idempotent-Replay: 1` header is the wire
+            // discriminator on HTTP (TCP uses the body flag instead).
             extra_headers.push_str("X-Beava-Idempotent-Replay: 1\r\n");
             if let Some(cached) = cached_body {
                 (200, cached.to_vec())
@@ -2747,11 +2501,9 @@ fn encode_glue_response_http(
                 (200, serde_json::to_vec(&body).unwrap_or_default())
             }
         }
-        // Plan 12.6-01: HTTP /register response — body is pre-serialised
-        // by `register::register_outcome_to_glue` to match the legacy
-        // axum `map_outcome_to_http` JSON shape exactly (used by ~30
-        // phase2/4/5/etc. tests).  Status is 200 on success, 400/409/503
-        // on failure.
+        // HTTP `/register` response — body is pre-serialised by
+        // `register::register_outcome_to_glue`. Status: 200 on success,
+        // 400/409/503 on failure.
         GlueResponse::Register {
             http_status, body, ..
         } => (*http_status, body.to_vec()),
@@ -2760,9 +2512,9 @@ fn encode_glue_response_http(
             let status = if *code == "event_not_found" { 404 } else { 400 };
             (status, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 12-09 D-D: HTTP /get is JSON-only. Format byte from the
-        // request path is intentionally ignored here — the response header
-        // below always sets `Content-Type: application/json` regardless.
+        // HTTP `/get` is JSON-only — the request format byte is ignored
+        // here, and the response header below always sets
+        // `Content-Type: application/json`.
         GlueResponse::QueryResult { body, format: _ } => (200, body.to_vec()),
         GlueResponse::QueryNotFound { code } => {
             let body = serde_json::json!({"error": {"code": code}});
@@ -2772,33 +2524,26 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"pong": true, "registry_version": registry_version});
             (200, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 12-07: /health on mio data-plane port. Always 200.
+        // `/health` on the data plane. Always 200.
         GlueResponse::HealthOk => (200, br#"{"status":"ok"}"#.to_vec()),
-        // Plan 12.6-01: /ready on mio data-plane port. Always 200 once the
-        // listener is up — readiness is gated by the admin sidecar's
-        // recovery flag, but the data-plane mirror returns 200
-        // unconditionally so test fixtures that poll `base_url + /ready`
-        // converge.  Body matches admin's `{"status":"ready"}`.
+        // `/ready` on the data plane. Always 200 once the listener is
+        // up — readiness state lives on the admin sidecar; the data-
+        // plane mirror returns 200 unconditionally so test fixtures
+        // polling `base_url/ready` converge.
         GlueResponse::ReadyOk => (200, br#"{"status":"ready"}"#.to_vec()),
-        // Plan 12.6-01: /registry on mio data-plane port. Body is the live
-        // registry snapshot (matches the legacy axum dev endpoint shape).
+        // `/registry` on the data plane. Body is the live registry
+        // snapshot (the dev-endpoint shape).
         GlueResponse::RegistrySnapshot { body } => (200, body.to_vec()),
-        // Plan 12.6-01: 404 Not Found for paths not in the router table.
         GlueResponse::HttpRouteNotFound { path } => {
             let body = serde_json::json!({"error": {"code": "not_found", "path": path}});
             (404, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 12.6-01: 405 Method Not Allowed for path-known but
-        // method-mismatched requests.
         GlueResponse::HttpMethodNotAllowed { method, path } => {
             let body = serde_json::json!({
                 "error": {"code": "method_not_allowed", "method": method, "path": path},
             });
             (405, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 12.6-14: 415 Unsupported Media Type for POST endpoints.
-        // Body matches legacy axum register handler `RegisterErrorBody`
-        // shape (`error.code = "unsupported_media_type"`).
         GlueResponse::HttpUnsupportedMediaType { received, path } => {
             let _ = received;
             let body = serde_json::json!({
@@ -2815,23 +2560,16 @@ fn encode_glue_response_http(
             let body = serde_json::json!({"error": {"code": "internal_error", "reason": reason}});
             (500, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 13.4-08 (D-03): OP_RESET success — HTTP 200 + body
-        // `{"reset": true, "registry_version": N}`.
         GlueResponse::ResetOk { registry_version } => {
             let body = serde_json::json!({"reset": true, "registry_version": registry_version});
             (200, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 13.4-08 (D-03): OP_RESET rejected — HTTP 403 + structured
-        // `reset_disabled_in_production` body. Reason text mentions both
-        // opt-in paths (`BEAVA_TEST_MODE` env var, `test_mode` kwarg) per
-        // Test 1 in `phase13_4_reset_default_rejected.rs`.
         GlueResponse::ResetForbidden => {
             let body = reset_forbidden_body();
             (403, serde_json::to_vec(&body).unwrap_or_default())
         }
-        // Plan 13.4.1 D-05: legacy request shape rejected. HTTP 400 with the
-        // locked body shape `{"error":{"code":"unsupported_request_shape",
-        // "message":<hint>}}` where `hint` points at the relevant doc anchor.
+        // Legacy request shape rejected. HTTP 400 with body
+        // `{"error":{"code":"unsupported_request_shape","message":<hint>}}`.
         GlueResponse::UnsupportedRequestShape { hint } => {
             let body = serde_json::json!({
                 "error": {
@@ -2847,7 +2585,6 @@ fn encode_glue_response_http(
     let status_text = match status {
         200 => "OK",
         400 => "Bad Request",
-        // Plan 13.4-08 (D-03): 403 added for `reset_disabled_in_production`.
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -2870,15 +2607,11 @@ fn encode_glue_response_http(
     buf.extend_from_slice(&body_bytes);
 }
 
-/// Plan 13.4-08 (D-03 USER-LOCKED): canonical body for the
-/// `reset_disabled_in_production` error. Used by both the HTTP encoder
-/// (403) and the TCP encoder (OP_ERROR_RESPONSE) so callers see
-/// identical body shape regardless of transport — the error.code is the
-/// stable contract per `docs/error-codes.md`.
-///
-/// Reason text mentions BOTH opt-in paths (`BEAVA_TEST_MODE` env var and
-/// `test_mode` kwarg) so users see actionable error text — pinned by
-/// `phase13_4_reset_default_rejected::default_config_no_env_var_post_reset_returns_403_structured`.
+/// Canonical body for `reset_disabled_in_production`. Used by the HTTP
+/// (403) and TCP (`OP_ERROR_RESPONSE`) encoders so callers see an
+/// identical shape regardless of transport. The reason text mentions
+/// both opt-in paths (`BEAVA_TEST_MODE` env, `test_mode` kwarg) so the
+/// error is actionable.
 fn reset_forbidden_body() -> serde_json::Value {
     serde_json::json!({
         "error": {
@@ -2891,10 +2624,10 @@ fn reset_forbidden_body() -> serde_json::Value {
 }
 
 /// Encode a raw TCP framed response into `buf`.
-/// Wire format: [u32 length BE][u16 op BE][u8 content_type][payload]
+/// Wire format: `[u32 length BE][u16 op BE][u8 content_type][payload]`.
 fn encode_tcp_frame_bytes(op: u16, content_type: u8, payload: &[u8], buf: &mut bytes::BytesMut) {
     use bytes::BufMut;
-    // Length field = op(2) + content_type(1) + payload.len()
+    // Length covers op(2) + content_type(1) + payload.
     let frame_len = 2 + 1 + payload.len() as u32;
     buf.put_u32(frame_len);
     buf.put_u16(op);
@@ -2905,11 +2638,8 @@ fn encode_tcp_frame_bytes(op: u16, content_type: u8, payload: &[u8], buf: &mut b
 mod tests {
     use super::*;
 
-    // ─── Plan 12-07 Wave 5 (RED) — TCP encoder for QueryResult / QueryNotFound ─
-
-    /// Plan 12-07 Task 5.a: encode_glue_response_tcp must emit OP_GET_RESPONSE
-    /// for QueryResult so that batched/single TCP /get clients can read back
-    /// the JSON body framed under the new opcode.
+    /// `QueryResult` must frame as `OP_GET_RESPONSE` so TCP `/get`
+    /// clients can read the JSON body back under the response opcode.
     #[test]
     fn test_encode_tcp_query_result_emits_op_get_response_frame() {
         use crate::runtime_core_glue::GlueResponse;
@@ -2933,8 +2663,8 @@ mod tests {
         assert_eq!(frame.payload.as_ref(), br#"{"value":42}"#);
     }
 
-    /// Plan 12-07 Task 5.a: QueryNotFound emits an OP_ERROR_RESPONSE frame
-    /// whose payload carries the error code.
+    /// `QueryNotFound` emits an `OP_ERROR_RESPONSE` frame carrying the
+    /// error code in the payload.
     #[test]
     fn test_encode_tcp_query_not_found_emits_error_response() {
         use crate::runtime_core_glue::GlueResponse;
@@ -2961,29 +2691,20 @@ mod tests {
     }
 }
 
-/// Phase 13.5.3 — env-var plumbing unit tests.
-///
-/// These tests cover `ServerV18Config::from_env()` + `WalConfig::resolve()`
-/// — the production env-read site + the override-driven WAL config resolver.
-/// Lives in `src/` (not `tests/`) so the architectural tripwire
-/// `phase13_5_3_no_env_var_pokes_in_tests.rs` doesn't false-positive on the
-/// legitimate env mutation these tests need to exercise.
-///
-/// Tests inherit the env-mutex pattern from the original
-/// `crates/beava-server/tests/wal_env_var_tunables.rs` (deleted in the
-/// GREEN commit) — `std::env::*` is process-global, so we serialize via a
-/// std::sync::Mutex. `#[test]` (sync) is used; the from_env() / resolve()
-/// surface is sync.
+/// Env-var plumbing unit tests for `ServerV18Config::from_env()` +
+/// `WalConfig::resolve()`. Lives in `src/` (not `tests/`) so the
+/// `phase13_5_3_no_env_var_pokes_in_tests` tripwire doesn't false-positive
+/// on the legitimate env mutation these tests perform. `std::env::*` is
+/// process-global, so the `ENV_LOCK` mutex serialises this module's
+/// tests.
 #[cfg(test)]
 mod env_var_plumbing_tests {
     use super::*;
     use crate::wal_config::{WalConfig, WalConfigOverrides};
 
-    /// Process-global env mutex. Required because `std::env::*` is
-    /// process-global; tests in this module set/clear env vars and would
-    /// race each other (and any other tests in this binary that read the
-    /// same env vars during cargo's --test-threads N parallelism) without
-    /// it.
+    /// Serialises tests in this module that mutate process-global env
+    /// vars; without it `cargo --test-threads N` would race them against
+    /// each other and any other test that reads the same vars.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const ALL_VARS: &[&str] = &[
@@ -3001,8 +2722,6 @@ mod env_var_plumbing_tests {
         }
     }
 
-    /// Test 1: `Default::default()` returns all None / false for the new
-    /// override fields + existing tcp_max_frame_bytes default.
     #[test]
     fn test_default_returns_all_none_overrides() {
         let cfg = ServerV18Config::default();
@@ -3020,8 +2739,6 @@ mod env_var_plumbing_tests {
         );
     }
 
-    /// Test 2: `from_env()` with no env vars set returns None / false for
-    /// the new fields.
     #[test]
     fn test_from_env_unset_returns_defaults() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3035,9 +2752,6 @@ mod env_var_plumbing_tests {
         assert_eq!(cfg.memory_governance_enforce, None);
     }
 
-    /// Test 3: `from_env()` reads all five env-var families and populates
-    /// fields. Test 4 below covers the BEAVA_TEST_MODE strict `== "1"`
-    /// semantic.
     #[test]
     fn test_from_env_populates_all_fields() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3064,8 +2778,8 @@ mod env_var_plumbing_tests {
         );
     }
 
-    /// Test 4: `BEAVA_TEST_MODE` strict `== "1"` semantic per Phase 13.4
-    /// D-03 USER-LOCKED. Truthy strings like "true" do NOT enable.
+    /// `BEAVA_TEST_MODE` is strict `== "1"`; "true", "yes", "0" all
+    /// leave test_mode disabled.
     #[test]
     fn test_from_env_test_mode_strict_eq_one() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3100,9 +2814,8 @@ mod env_var_plumbing_tests {
         assert!(cfg_one.test_mode, "BEAVA_TEST_MODE=1 MUST enable test_mode");
     }
 
-    /// Test 5: `BEAVA_MEMORY_GOV_ENFORCE` truthy semantics — "0" → Some(false)
-    /// (escape hatch), unset → None (= default ON per Plan 12.8-06 D-03),
-    /// any other value → Some(true).
+    /// `BEAVA_MEMORY_GOV_ENFORCE`: `"0"` → `Some(false)` (escape hatch),
+    /// unset → `None` (= default ON), any other value → `Some(true)`.
     #[test]
     fn test_from_env_memory_governance_enforce_semantics() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3129,16 +2842,14 @@ mod env_var_plumbing_tests {
         assert_eq!(
             cfg_other.memory_governance_enforce,
             Some(true),
-            "any non-\"0\" value should produce Some(true) (preserves Plan 12.8-06 default-ON)"
+            "any non-\"0\" value should produce Some(true)"
         );
     }
 
-    /// Test 6: `from_env()` clamps WAL fields to their documented ranges.
-    /// Mirrors the legacy `wal_env_var_tunables::test_clamp_ranges_reject_oom_typos`.
+    /// `from_env()` clamps WAL fields to their documented ranges.
     #[test]
     fn test_from_env_clamp_ranges_reject_oom_typos() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        // High side
         clear_env();
         std::env::set_var("BEAVA_WAL_BUFFERS", "99999");
         std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "10000");
@@ -3167,7 +2878,6 @@ mod env_var_plumbing_tests {
             cfg.wal_tick_ms
         );
 
-        // Low side
         clear_env();
         std::env::set_var("BEAVA_WAL_BUFFERS", "0");
         std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "0");
@@ -3179,9 +2889,9 @@ mod env_var_plumbing_tests {
         assert_eq!(cfg.wal_tick_ms, Some(WalConfig::TICK_MS_MIN));
     }
 
-    /// Test 7: `WalConfig::resolve(WalConfigOverrides)` honors explicit
-    /// values WITHOUT consulting any env var. Sets a poisonous env in the
-    /// process, calls resolve with overrides, asserts the override wins.
+    /// `WalConfig::resolve(WalConfigOverrides)` honours explicit values
+    /// without consulting env. Sets a poisonous env, calls resolve with
+    /// overrides, asserts the override wins.
     #[test]
     fn test_wal_config_resolve_overrides_win_over_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -3205,8 +2915,9 @@ mod env_var_plumbing_tests {
         assert_eq!(cfg.tick_ms, 100);
     }
 
-    /// Test 8: `WalConfig::resolve(WalConfigOverrides::default())` returns
-    /// the documented defaults (4 × 32 MiB tick=20ms) WITHOUT consulting env.
+    /// `WalConfig::resolve(WalConfigOverrides::default())` returns the
+    /// documented defaults (4 × 32 MiB, tick=20 ms) without consulting
+    /// env.
     #[test]
     fn test_wal_config_resolve_none_returns_defaults_no_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

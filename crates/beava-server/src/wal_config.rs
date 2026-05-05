@@ -1,12 +1,12 @@
-//! WAL config with env-var tunables — Phase 19.1-03 (D-01, D-02, D-03).
+//! WAL config with env-var tunables.
 //!
-//! Default config: **4 buffers x 32 MiB, tick = 20 ms** (~128 MiB resident).
+//! Default config: **4 buffers × 32 MiB, tick = 20 ms** (~128 MiB resident).
 //!
-//! Three env vars override the defaults at startup; values out-of-range clamp
-//! to documented safe limits with a WARN log so operators see what actually
-//! got applied. Parse failures (e.g. `BEAVA_WAL_BUFFERS=xyz`) fall back to the
-//! default with a WARN log instead of refusing to start — operators often
-//! inherit env vars from shell scripts they don't fully control.
+//! Three env vars override the defaults at startup. Out-of-range values
+//! clamp to the documented safe limits with a WARN log; parse failures
+//! (e.g. `BEAVA_WAL_BUFFERS=xyz`) fall back to the default with a WARN log
+//! rather than refusing to start, since operators often inherit env vars
+//! from shell scripts they don't fully control.
 //!
 //! | Env var                    | Type   | Default | Range       |
 //! | -------------------------- | ------ | ------- | ----------- |
@@ -14,20 +14,16 @@
 //! | `BEAVA_WAL_BUFFER_SIZE_MB` | usize  | 32      | [4, 256]    |
 //! | `BEAVA_WAL_TICK_MS`        | u64    | 20      | [1, 1000]   |
 //!
-//! ## Phase 18 WAL architecture invariants — UNCHANGED
+//! ## WAL architecture invariants (untouched by this module)
 //!
-//! Per `~/.claude/projects/-Users-petrpan26-work-tally/memory/project_phase18_wal_architecture.md`,
-//! these invariants are NOT touched by this module:
-//!
-//! - Lock-free apply path (single writer to active buffer, no Mutex).
-//! - Multi-buffer state machine (active / sealed / flushing / free) — now
-//!   defaults to 4 active slots; the algorithm is identical.
+//! - Lock-free apply path (single writer to the active buffer, no Mutex).
+//! - Multi-buffer state machine (active / sealed / flushing / free).
 //! - Single writer + fsync thread.
 //! - Four-watermark LSN discipline (committed / written / synced / acked).
 //! - `O_APPEND` on the WAL file.
-//! - Refuse-on-network-FS check at startup (lives elsewhere in the stack).
+//! - Refuse-on-network-FS check at startup (enforced elsewhere in the stack).
 //!
-//! Phase 19.1-03 only changes COUNT, SIZE, and TICK INTERVAL of buffers.
+//! This module only sets COUNT, SIZE, and TICK INTERVAL of buffers.
 
 #[derive(Debug, Clone, Copy)]
 pub struct WalConfig {
@@ -76,12 +72,11 @@ impl WalConfig {
         }
     }
 
-    /// Phase 13.5.3: resolve a `WalConfig` from explicit overrides + defaults
-    /// — no env-var consultation. `None` fields fall back to the documented
-    /// `DEFAULT_*` constants; `Some(v)` is clamped to the documented
-    /// `[*_MIN, *_MAX]` ranges (with WARN log on clamp). Replaces the
-    /// `resolve_from_env()` env-read on the hot path; `from_env()` resolution
-    /// happens once in `ServerV18Config::from_env()` at production boot.
+    /// Resolve a `WalConfig` from explicit overrides + defaults — no env-var
+    /// consultation. `None` fields fall back to the documented `DEFAULT_*`
+    /// constants; `Some(v)` clamps into `[*_MIN, *_MAX]` (with WARN log on
+    /// clamp). Used on the boot path so the hot path never re-reads env;
+    /// `resolve_from_env()` is the production boot-time entry point.
     pub fn resolve(overrides: WalConfigOverrides) -> Self {
         let buffers = clamp_usize_with_warn(
             overrides.buffers,
@@ -112,7 +107,7 @@ impl WalConfig {
     }
 }
 
-/// Phase 13.5.3: explicit override carrier passed by `ServerV18Config::from_env()`
+/// Explicit override carrier passed by `ServerV18Config::from_env()`
 /// (production) or `TestServerBuilder` (tests). All fields `Option`: `None`
 /// = use `WalConfig::DEFAULT_*`, `Some(v)` = clamp into safe range.
 #[derive(Debug, Clone, Copy, Default)]

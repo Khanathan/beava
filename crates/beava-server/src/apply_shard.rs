@@ -1,21 +1,13 @@
-//! Single-writer apply shard — Phase 18 Plan 04.6 Task 4.6.1.
+//! Single-writer apply shard for the mio event loop.
 //!
-//! `ApplyShard` wraps the shared `AppState` (behind `Arc<Mutex>`/parking_lot)
-//! with a synchronous dispatch path for the hand-rolled mio event loop.
+//! `ApplyShard` wraps the shared `AppState` (behind a `parking_lot::Mutex`
+//! held inside an `Arc`) with a synchronous dispatch path. No `.await`,
+//! no mpsc, no tokio on the hot path.
 //!
-//! # Design (D-1, D-2, D-3 from 18-04.6-PLAN.md)
-//!
-//! - D-1: keep `Arc<AppState>` (uncontended Mutex on apply thread).
-//! - D-2: async-to-sync bridge REMOVED. `dispatch_wire_request_sync` is purely
-//!   synchronous — no `.await`, no mpsc, no tokio dependency on the hot path.
-//! - D-3: the legacy async `dispatch_wire_request` stays in `runtime_core_glue`
-//!   for tests and admin callers. This file adds the NEW sync path.
-//!
-//! # Thread safety
-//!
-//! `ApplyShard` is `Send + Sync` because all interior mutability uses `Arc`.
-//! In the serve loop, only the single apply thread calls `dispatch_wire_request_sync`;
-//! the Mutex is uncontended → lock+unlock cost ~10–20 ns on macOS/Linux.
+//! `ApplyShard` is `Send + Sync` because every interior-mutable field is
+//! an `Arc`. In the serve loop only the single apply thread calls
+//! `dispatch_wire_request_sync`, so the Mutex is uncontended and a
+//! lock+unlock costs ~10–20 ns on macOS/Linux.
 
 use crate::register::RegisterPayload;
 use crate::runtime_core_glue::GlueResponse;
@@ -54,30 +46,25 @@ impl ApplyShard {
 
     /// Synchronous dispatch — the hot path for the apply thread.
     ///
-    /// Processes one `WireRequest` and returns a `Vec<GlueResponse>` (almost
-    /// always exactly one element; Vec used for future pipelining / batch
-    /// expansion).
-    ///
-    /// No `.await`, no tokio, no mpsc. The WAL append uses
+    /// Processes one `WireRequest` and returns a `Vec<GlueResponse>`
+    /// (almost always exactly one element; the `Vec` is for future
+    /// pipelining / batch expansion). The WAL append uses
     /// `WalBufferRing::append` (lock-free memcpy + atomic position bump).
     pub fn dispatch_wire_request_sync(&self, req: WireRequest) -> Vec<GlueResponse> {
         vec![self.dispatch_one(req, None)]
     }
 
-    /// Plan 18-04.8: dispatch with an optional pre-parsed Row.
+    /// Dispatch with an optional pre-parsed `Row`. The IoPool worker
+    /// deserialises push-frame bodies into `Row` while bytes are hot in
+    /// L1 and hands the result here; the apply thread skips the
+    /// redundant `from_slice::<Row>` call (~190 ns per push at
+    /// parallel=4/pd=64).
     ///
-    /// The IoPool worker thread (`read_and_parse_client` in server.rs) eagerly
-    /// deserialises push-frame bodies into `Row` while it has the bytes hot in
-    /// L1, then hands the result to the apply thread via the
-    /// `MioClient.parsed_rows` side-channel. This method consumes that
-    /// pre-parsed Row when present; the apply thread skips the redundant
-    /// `from_slice::<Row>` call (saves ~190 ns per push at parallel=4/pd=64).
-    ///
-    /// `pre_parsed_row = None` is the fallback path — used when:
-    /// - the request is not a push variant (Ping, Register, GetSingle …)
-    /// - IoPool pre-parse failed (malformed body); apply path retries the
-    ///   parse and emits `invalid_event` per the existing error path
-    /// - test/legacy callers that don't run through the IoPool
+    /// `pre_parsed_row = None` is the fallback path:
+    /// - non-push variants (`Ping`, `Register`, `GetSingle`, …)
+    /// - IoPool pre-parse failed (malformed body) → apply retries the
+    ///   parse and emits `invalid_event`
+    /// - test / legacy callers that don't run through IoPool.
     pub fn dispatch_wire_request_with_row(
         &self,
         req: WireRequest,
@@ -88,26 +75,23 @@ impl ApplyShard {
 
     fn dispatch_one(&self, req: WireRequest, pre_parsed_row: Option<Row>) -> GlueResponse {
         match req {
-            // ─── Ping ─────────────────────────────────────────────────────────
             WireRequest::Ping => GlueResponse::Pong {
                 registry_version: self.state.dev_agg.registry.version() as u32,
             },
 
-            // ─── Register ─────────────────────────────────────────────────────
-            // Register is a cold path on the mio event loop. Routed here so the
-            // apply thread owns all mutations. WAL RegistryBump durability is
-            // deferred to Plan 18-06 (currently the legacy WalSink path handles
-            // durability for /register; the mio path calls it without WAL for now).
+            // Register is the cold path on the mio loop. It funnels here so
+            // the apply thread owns every registry mutation. Durability is
+            // still routed through the legacy `WalSink` path; the mio
+            // direct path doesn't yet WAL-append the `RegistryBump`.
             WireRequest::Register { payload } => {
-                // Plan 12.6-04: JSON-prelude shim — intercept removed ops
-                // (`{"op":"join"}` / `{"op":"union"}`) BEFORE strict
-                // RegisterPayload deserialize so the rejection path is
-                // independent of whether the OpNode variants still exist.
-                // Per CONTEXT.md §Implementation Decisions / Bucket 5,
-                // emits structured error codes (feature_removed_no_joins_v0 /
-                // feature_removed_no_unions_v0) instead of opaque serde
-                // "unknown variant" errors after the variant deletion.
+                // JSON-prelude shims run BEFORE strict `RegisterPayload`
+                // deserialize so rejection paths stay independent of
+                // whether the corresponding `OpNode` / `PayloadNode`
+                // variants still exist in the enum. Each shim emits a
+                // structured error code (see `register_validate`) instead
+                // of opaque serde "unknown variant" errors.
                 if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                    // Joins / unions: rejected as feature-removed in v0.
                     if let Some(removed) =
                         beava_core::register_validate::pre_check_removed_ops(&json_value)
                     {
@@ -125,12 +109,9 @@ impl ApplyShard {
                             tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
-                    // Plan 12.6-06: legacy event-time JSON-key strict-deny shim.
-                    // Same JSON-prelude posture as Plan 04's removed-ops check
-                    // — runs BEFORE strict RegisterPayload deserialize so legacy
-                    // `event_time_field` / `tolerate_delay_ms` keys raise a
-                    // structured error code (unknown_field_event_time_v0 /
-                    // unknown_field_tolerate_delay_v0) per D-03 hard-rip.
+                    // Legacy event-time keys (`event_time_field`,
+                    // `tolerate_delay_ms`): rejected as unknown fields in
+                    // a Redis-shaped (processing-time) world.
                     if let Some(removed) =
                         beava_core::register_validate::pre_check_legacy_event_time_keys(&json_value)
                     {
@@ -148,18 +129,11 @@ impl ApplyShard {
                             tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
-                    // Plan 12.7-01: events-only register-time enforcement.
-                    // Third JSON-prelude shim — sits alongside Plan 12.6-04
-                    // (joins/unions) and Plan 12.6-06 (event-time keys). Rejects
-                    // payloads with `{"kind": "table", ...}` (or any other
-                    // non-event/non-derivation kind) at the JSON layer BEFORE
-                    // strict RegisterPayload deserialize, so the rejection path
-                    // is independent of whether `OpNode::Table*` /
-                    // `PayloadNode::Table` variants still exist in the enum.
-                    // Per CONTEXT D-02 the structured error code is
-                    // `unsupported_node_kind` (forward-looking) — v0 is the
-                    // FIRST public release; tables were never available, so a
-                    // retrospective code naming would confuse fresh users.
+                    // Events-only enforcement: reject payloads with
+                    // `{"kind": "table", ...}` (or any other non-event /
+                    // non-derivation kind) with `unsupported_node_kind`.
+                    // This is the events-only invariant gate at register
+                    // time — see `CLAUDE.md` §"Events-Only Invariant".
                     if let Some(removed) =
                         beava_core::register_validate::pre_check_unsupported_node_kind(&json_value)
                     {
@@ -177,27 +151,14 @@ impl ApplyShard {
                             tcp_op: beava_core::wire::OP_ERROR_RESPONSE,
                         };
                     }
-                    // Plan 12.8-01: 4th JSON-prelude shim — events-only memory
-                    // governance. Rejects derivation payloads with windowless
-                    // aggregation ops whose lifetime bound is Unbounded per
-                    // `lifetime_bound_for_op_str`. Per CONTEXT D-03 hard-reject
-                    // posture; per CONTEXT D-02 forward-looking framing
-                    // (`unbounded_op_in_lifetime_mode`).
-                    //
-                    // **Wave 3 (Plan 12.8-06): env-gate default flipped OFF → ON.**
-                    // Now defaults to ENABLED — every `/register` validates
-                    // declarations against the per-op classification table from
-                    // Plan 12.8-04. Explicit escape hatch:
-                    // `BEAVA_MEMORY_GOV_ENFORCE=0` (production env) or
-                    // `.memory_governance_enforce(false)` (test builder)
-                    // disables enforcement.
-                    //
-                    // Phase 13.5.3 (D-04 mitigate): the per-call env-var read
-                    // moved to a struct field on AppState resolved at boot
-                    // (`ServerV18Config::from_env() -> AppState.memory_governance_enforce`).
-                    // Removes a process-global env read from the cold register
-                    // path that leaked enforcement state across parallel
-                    // TestServers.
+                    // Memory governance: reject windowless aggregation
+                    // ops whose lifetime bound is `Unbounded` (per
+                    // `lifetime_bound_for_op_str`). Default ON; the
+                    // escape hatch is `BEAVA_MEMORY_GOV_ENFORCE=0` in
+                    // production or `.memory_governance_enforce(false)`
+                    // in tests, both resolved at boot into
+                    // `AppState.memory_governance_enforce` so the cold
+                    // register path doesn't read process env per-call.
                     if self.state.memory_governance_enforce {
                         if let Some(removed) =
                             beava_core::register_validate::pre_check_unbounded_op_in_lifetime_mode(
@@ -222,10 +183,9 @@ impl ApplyShard {
                         }
                     }
                 }
-                // Plan 12.6-01: parse + dispatch on the apply thread, then
-                // funnel the outcome through `register_outcome_to_glue`
-                // so wire bytes match the legacy axum
-                // `register::map_outcome_to_http` output exactly.
+                // Parse + dispatch on the apply thread, then funnel the
+                // outcome through `register_outcome_to_glue` so wire
+                // bytes are identical across HTTP and TCP.
                 let reg_payload: RegisterPayload = match serde_json::from_slice(&payload) {
                     Ok(p) => p,
                     Err(e) => {
@@ -246,20 +206,16 @@ impl ApplyShard {
                     }
                 };
 
-                // ─── Phase 13.4 Plan 06 — D-01 force=true + dry_run=true ──
-                //
-                // After the JSON-prelude shims (12.6-04 / 12.6-06 / 12.7-01 /
-                // 12.8-01) and AFTER strict serde, but BEFORE the legacy
-                // `compute_diff` conflict path: classify the diff under the
-                // D-01 categorized-lists schema. The dry_run branch fires
-                // FIRST (per CONTEXT scope item #6: "returns JSON without
-                // applying"). The force gate is checked second; if
-                // destructive entries exist without `force=true`, return
-                // 409 + force_required. If `force=true` is set on a
-                // destructive payload, eagerly remove the conflicting
-                // descriptors so the subsequent `execute_register_with_wal`
-                // treats the payload as additive (registry_version bumps,
-                // WAL records the change).
+                // After the JSON-prelude shims and strict serde, but BEFORE
+                // the additive-conflict path: classify the diff with the
+                // categorised-lists schema. `dry_run` fires first (returns
+                // the diff JSON without applying). The force gate runs
+                // second: destructive entries without `force=true` return
+                // 409 + `force_required`; with `force=true` we eagerly
+                // remove the conflicting descriptors so
+                // `execute_register_with_wal` treats the payload as
+                // additive (`registry_version` bumps, WAL records the
+                // change).
                 let (force, dry_run) = match serde_json::from_slice::<serde_json::Value>(&payload) {
                     Ok(v) => (
                         v.get("force").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -274,10 +230,9 @@ impl ApplyShard {
                 );
 
                 if dry_run {
-                    // Phase 13.4 Plan 06 Task 6.d: dry_run branch — return 200
-                    // + diff JSON without applying. The branch fires BEFORE
-                    // the force gate so `dry_run=true, force=true` is treated
-                    // as dry_run (matches Phase 13.5 SDK contract).
+                    // `dry_run=true, force=true` is treated as dry_run —
+                    // dry_run wins so `force` never escalates a "what
+                    // would this do?" call into a real mutation.
                     let body = serde_json::json!({
                         "diff": diff,
                         "would_apply": false,
@@ -303,12 +258,11 @@ impl ApplyShard {
                     };
                 }
 
-                // force=true on a destructive payload: pre-remove the
-                // conflicting descriptors so the apply path treats them as
-                // new. Per Plan 06's must_haves: "force=true bumps
-                // registry_version + WAL records the change". The
-                // execute_register_with_wal path emits a RegistryBump
-                // record that captures the new payload's nodes.
+                // `force=true` on a destructive payload: pre-remove the
+                // conflicting descriptors so the apply path treats them
+                // as new. `execute_register_with_wal` then emits a
+                // single `RegistryBump` capturing the new payload's
+                // nodes (and bumps `registry_version`).
                 if force && !diff.destructive.is_empty() {
                     let mut to_remove: Vec<String> = Vec::new();
                     for entry in &diff.destructive {
@@ -317,8 +271,8 @@ impl ApplyShard {
                                 to_remove.push(from.clone());
                             }
                             beava_core::registry_diff::DiffEntry::TypeChange { field, .. } => {
-                                // field is "<descriptor>.<field>"; remove the
-                                // owning descriptor so it can be re-installed.
+                                // `field` is `"<descriptor>.<field>"`; remove
+                                // the owning descriptor so it can re-install.
                                 if let Some((descriptor, _)) = field.split_once('.') {
                                     to_remove.push(descriptor.to_string());
                                 }
@@ -335,8 +289,8 @@ impl ApplyShard {
                                     to_remove.push(descriptor.to_string());
                                 }
                             }
-                            // Additive variants (sentinel-only when destructive list mixed)
-                            // shouldn't appear here; the destructive list is destructive-only.
+                            // Additive variants don't appear in
+                            // `destructive`; the list is destructive-only.
                             _ => {}
                         }
                     }
@@ -348,10 +302,9 @@ impl ApplyShard {
                         .force_remove_descriptors(&to_remove);
                 }
 
-                // Register is a cold path on the mio event loop.
-                // Delegate to the async WAL-backed register function using a
-                // temporary single-threaded tokio runtime (register is never
-                // on the hot path; it's a one-shot admin operation).
+                // Register is cold path: delegate to the async WAL-backed
+                // function on a one-shot single-threaded tokio runtime so
+                // we don't pull tokio into the hot path.
                 let state_clone = Arc::clone(&self.state);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -362,9 +315,9 @@ impl ApplyShard {
                     reg_payload,
                     &state_clone.wal_sink,
                 ));
-                // Plan 18-16 Task 16.2: grow `state_tables` so apply hot path
-                // can index by `desc.agg_id` without bounds issues. Cold path —
-                // register is rare, so the lock + resize is fine here.
+                // Grow `state_tables` so the hot path can index by
+                // `desc.agg_id` without bounds issues. Register is rare,
+                // so the lock + resize is fine here on the cold path.
                 let new_next_agg_id = state_clone.dev_agg.registry.next_agg_id() as usize;
                 if new_next_agg_id > 0 {
                     let mut tables = state_clone.dev_agg.state_tables.lock();
@@ -379,7 +332,6 @@ impl ApplyShard {
                 }
             }
 
-            // ─── TCP push / HTTP push (periodic mode) ─────────────────────────
             WireRequest::TcpPush {
                 event_name,
                 body,
@@ -391,11 +343,10 @@ impl ApplyShard {
                 body_format,
             } => self.dispatch_push_sync(&event_name, body, body_format, pre_parsed_row),
 
-            // ─── HTTP push-sync (per-event / acks=all mode) ───────────────────
-            // For the mio path we still do sync WAL append; the
-            // wait-for-synced blocking call would stall the apply thread.
-            // Per plan D-2 the full per-event path is a future refinement.
-            // For now, treat identically to periodic push.
+            // HTTP push-sync (per-event acks). The full
+            // wait-for-synced blocking call would stall the apply thread,
+            // so today we treat it as periodic push; per-event durability
+            // is future work.
             WireRequest::HttpPushSync {
                 event_name,
                 body,
@@ -407,11 +358,11 @@ impl ApplyShard {
                 body,
                 body_format,
             } => {
-                // Batch push: treat as single push for scaffold correctness.
+                // Treat batch as single push for now; per-event batching
+                // is a future optimisation.
                 self.dispatch_push_sync(&event_name, body, body_format, pre_parsed_row)
             }
 
-            // ─── GET single ───────────────────────────────────────────────────
             WireRequest::HttpGetSingle { feature, key } => {
                 fn trace_apply_enabled() -> bool {
                     use std::sync::OnceLock;
@@ -444,15 +395,14 @@ impl ApplyShard {
                 resp
             }
 
-            // ─── POST /get — Phase 13.4.1 D-01 verb-style single-row GET ──────
-            // Body parses to `{"table": "<name>", "key": "<id>",
-            // "features"?: [...]}`. Three-step ladder per PATTERNS.md
-            // cross-cutting §1: (a) try strict-deserialise the new shape;
-            // (b) on parse failure, attempt legacy-shape detection (`{keys,
-            // features}` 2D-cell or `{feature, key}` single-feature) and
-            // return D-05 `UnsupportedRequestShape`; (c) on no-match, fall
-            // through to `InternalError` so genuinely-malformed JSON still
-            // surfaces clearly.
+            // POST /get — verb-style single-row GET. Body parses to
+            // `{"table", "key", "features"?}`. Three-step ladder:
+            //   (a) try strict-deserialise the new shape;
+            //   (b) on parse failure, look for legacy `{keys, features}`
+            //       (2D cell) or `{feature, key}` (single-feature) and
+            //       return `UnsupportedRequestShape`;
+            //   (c) on no match, surface `InternalError` so genuinely
+            //       malformed JSON still produces a clear error.
             WireRequest::HttpGet { body } => {
                 use beava_core::wire::CT_JSON;
                 #[derive(serde::Deserialize)]
@@ -471,7 +421,6 @@ impl ApplyShard {
                         CT_JSON,
                     ),
                     Err(parse_err) => {
-                        // Plan 13.4.1 D-05 — attempt legacy-shape detection.
                         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
                             let is_legacy_2d =
                                 value.get("keys").map(|v| v.is_array()).unwrap_or(false)
@@ -484,7 +433,6 @@ impl ApplyShard {
                                 return GlueResponse::UnsupportedRequestShape { hint };
                             }
                         }
-                        // Truly malformed JSON — surface the parse error.
                         GlueResponse::InternalError {
                             reason: parse_err.to_string(),
                         }
@@ -492,12 +440,10 @@ impl ApplyShard {
                 }
             }
 
-            // ─── TCP OP_GET — Phase 13.4.1 D-01 verb-style single-row GET ─────
-            // Same body shape as POST /get; codec selected by the frame's
-            // content_type byte (CT_JSON or CT_MSGPACK). Three-step ladder
-            // mirrors the HTTP branch above; legacy-shape detection runs on
-            // CT_JSON only (CT_MSGPACK clients are post-Plan 12-09 and
-            // already verb-style aware).
+            // TCP `OP_GET` — verb-style single-row. Same body shape as
+            // `POST /get`; codec selected by the frame's content-type
+            // byte. Legacy-shape detection runs on `CT_JSON` only —
+            // msgpack clients are already verb-style aware.
             WireRequest::TcpGet { body, body_format } => {
                 use beava_core::wire::{CT_JSON, CT_MSGPACK};
                 #[derive(serde::Deserialize)]
@@ -525,7 +471,6 @@ impl ApplyShard {
                         body_format,
                     ),
                     Err(parse_err) => {
-                        // Plan 13.4.1 D-05 — legacy-shape detection on JSON only.
                         if body_format == CT_JSON {
                             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
                                 let is_legacy_2d = value
@@ -547,13 +492,13 @@ impl ApplyShard {
                 }
             }
 
-            // ─── TCP /mget (single feature, multi key) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ───
-            // Body parses to {"feature": "<name>", "keys": [...]}. Materialise as
-            // a batch with a single-feature list and reuse dispatch_get_batch_sync.
+            // TCP `/mget` (single feature, multi key). Body
+            // `{"feature", "keys"}` is materialised as a batch with a
+            // single-feature list and routed through
+            // `dispatch_get_batch_sync`.
             //
-            // TODO(12-10+): pass keys/features directly into a batch helper to skip
-            // the re-serialise step on this path. The current form mirrors the
-            // Plan 12-07 shape; this is suboptimal but correct.
+            // TODO: pass keys / features directly into a batch helper so
+            // we can skip the re-serialise round-trip.
             WireRequest::TcpMGet { body, body_format } => {
                 use beava_core::wire::{CT_JSON, CT_MSGPACK};
                 #[derive(serde::Deserialize)]
@@ -614,25 +559,19 @@ impl ApplyShard {
                 )
             }
 
-            // ─── TCP /get-multi (multi feature, multi key) — Plan 12-07 Wave 3, Plan 12-09 Wave 4 ──
-            // Body shape mirrors HTTP /get: {"keys": [...], "features": [...]}.
-            // Body_format selects the parse codec inside dispatch_get_batch_sync
-            // — no re-serialize needed here.
+            // TCP `/get-multi` (multi feature, multi key). Body shape
+            // mirrors HTTP `/get`. The codec is selected inside
+            // `dispatch_get_batch_sync` from `body_format`.
             WireRequest::TcpGetMulti { body, body_format } => {
                 crate::runtime_core_glue::dispatch_get_batch_sync(&self.state, &body, body_format)
             }
 
-            // ─── OP_BATCH_GET / POST /batch_get — Plan 13.4-03 ─────────────────
-            // Heterogeneous batched read. Walks the request list, calls per-entity
-            // feature lookup for each (table, entity_id) tuple, aggregates results
-            // with partial-failure semantics (unknown_table becomes a per-tuple
-            // error inside `results` rather than a whole-batch 4xx).
-            //
-            // Per ADR-003, the empty-string entity_id is the global-table sentinel
-            // and forwards as-is to `parse_entity_key`. Plan 13.4-09 wires the
-            // register-time `key_cols: []` acceptance; until then, global-table
-            // pipelines fail at registration (the test gating that case is
-            // `#[ignore]`d in `tests/phase13_4_op_batch_get.rs`).
+            // `OP_BATCH_GET` / `POST /batch_get` — heterogeneous batched
+            // read. Each `(table, entity_id)` is looked up; partial
+            // failures (unknown table, etc.) surface per-tuple inside
+            // `results` rather than as a whole-batch 4xx. Empty-string
+            // `entity_id` is the global-table sentinel and forwards as-
+            // is to `parse_entity_key`.
             WireRequest::TcpBatchGet { body, body_format } => {
                 dispatch_batch_get_sync(&self.state, &body, body_format)
             }
@@ -640,45 +579,41 @@ impl ApplyShard {
                 dispatch_batch_get_sync(&self.state, &body, beava_core::wire::CT_JSON)
             }
 
-            // ─── Plan 13.4-08 (D-03 USER-LOCKED) — OP_RESET / POST /reset ─────
-            // Both transports route through a single dispatch_reset_sync.
-            // The `body` payload is `{}` by spec but is intentionally NOT
-            // parsed — reset is a no-arg operation; any body is tolerated.
+            // `OP_RESET` / `POST /reset` — both transports route through
+            // `dispatch_reset_sync`. The body is intentionally not
+            // parsed; reset is a no-arg operation.
             WireRequest::TcpReset { .. } | WireRequest::HttpReset { .. } => {
                 dispatch_reset_sync(&self.state)
             }
 
-            // Plan 12.6-14: 415 Unsupported Media Type — POST request with
-            // wrong/missing Content-Type. Body matches legacy axum's
-            // register handler `RegisterErrorBody` shape.
+            // 415 Unsupported Media Type — POST without
+            // `Content-Type: application/json`.
             WireRequest::HttpUnsupportedMediaType { received, path } => {
                 GlueResponse::HttpUnsupportedMediaType { received, path }
             }
 
-            // ─── /health (Plan 12-07 Wave 5.5) ────────────────────────────────
-            // Inline shim — no AppState consult, no WAL recovery dependency.
-            // read_bench.py polls /health with a 0.5s timeout per attempt and
-            // a 10s total budget; gating on apply-thread responsiveness would
-            // race against startup recovery on cold replicas. Returning OK
-            // unconditionally matches the Kubernetes liveness contract:
-            // "yes the process is up and accepting connections".
+            // `/health` is an inline shim with no AppState consult or
+            // recovery dependency. Health probes (`read_bench.py`,
+            // Kubernetes liveness) run on a 0.5 s per-attempt budget;
+            // gating on apply-thread responsiveness would race startup
+            // recovery on cold replicas. Returning OK unconditionally
+            // matches the Kubernetes liveness contract: "yes the process
+            // is up and accepting connections".
             WireRequest::HttpHealth => GlueResponse::HealthOk,
 
-            // ─── POST /ping (Plan 13.4-04 — verb-style liveness) ──────────────
-            // HTTP mirror of TCP `OP_PING (0x0000)`. Returns `200 {"status":"ok"}`
-            // (same wire shape as `/health`) so verb-style fixtures can poll
-            // either endpoint. No AppState consult; no apply-thread roundtrip
-            // for the same reason `/health` is inline-shimmed.
+            // `POST /ping` — verb-style liveness mirror of TCP
+            // `OP_PING (0x0000)`. Returns `200 {"status":"ok"}` (same
+            // shape as `/health`) so verb-style fixtures can poll either
+            // endpoint. No AppState consult, no apply-thread round-trip
+            // — same reason `/health` is inline-shimmed.
             WireRequest::HttpPing => GlueResponse::HealthOk,
 
-            // Plan 12.6-01: data-plane /ready and /registry shims for
-            // back-compat with TestServer-using tests. /ready is a
-            // constant-body shim (mirrors admin sidecar's /ready). /registry
-            // serializes the live registry snapshot via
-            // `registry_debug::build_registry_dump`.
+            // Data-plane `/ready` and `/registry` shims for `TestServer`
+            // back-compat. `/ready` mirrors the admin sidecar's body;
+            // `/registry` serialises the live registry via
+            // `build_registry_dump` and is gated on `dev_endpoints`.
             WireRequest::HttpReady => GlueResponse::ReadyOk,
             WireRequest::HttpRegistry => {
-                // Plan 12.6-14: dev_endpoints gating — 404 unless flag set.
                 if !self.state.dev_endpoints_enabled() {
                     GlueResponse::HttpRouteNotFound {
                         path: "/registry".to_owned(),
@@ -692,25 +627,25 @@ impl ApplyShard {
                     }
                 }
             }
-            // Plan 12.6-01: route-level errors (unknown path / wrong method)
-            // surface as 404 / 405 — same shape as the legacy axum
-            // fallback. ParseError (wire-level decode failure) and Unknown
-            // op (TCP) still map to 501 Unsupported below.
+            // Route-level errors (unknown path / wrong method) surface
+            // as 404 / 405. Wire-level decode failures (`ParseError`)
+            // and unknown TCP opcodes route to `Unsupported` / `TcpError`
+            // below.
             WireRequest::HttpNotFound { path } => GlueResponse::HttpRouteNotFound { path },
             WireRequest::HttpMethodNotAllowed { method, path } => {
                 GlueResponse::HttpMethodNotAllowed { method, path }
             }
 
-            // Plan 12.6-15: known-but-deferred opcodes get rich op_not_implemented
-            // error frames; truly unknown ones get unknown_op. Both keep the
-            // connection open (criterion 5).
+            // Known-but-deferred opcodes return a rich
+            // `op_not_implemented` frame; truly unknown opcodes return
+            // `unknown_op`. Both keep the TCP connection open.
             WireRequest::Unknown { op } => {
                 use beava_core::wire::OP_PUSH_SYNC;
                 if op == OP_PUSH_SYNC {
                     GlueResponse::TcpError {
                         code: "op_not_implemented",
                         message: format!(
-                            "opcode {op:#06x} (push_sync) is reserved for Phase 12 and not yet implemented",
+                            "opcode {op:#06x} (push_sync) is not yet implemented",
                         ),
                         extras: serde_json::json!({"op": op}),
                     }
@@ -722,17 +657,12 @@ impl ApplyShard {
                     }
                 }
             }
-            // Plan 12.6-15: ParseError now distinguishes content-type rejections
-            // (carrying the special prefix) from generic parse errors. Anything
-            // matching the unsupported-content-type prefix is surfaced as a
-            // dedicated TcpError so the criterion-bonus_msgpack test passes
-            // (`error.code == "unsupported_content_type"`).
-            //
-            // Plan 13.4-04: verb-style `POST /push` body-parse failures
-            // (`missing_event_name_in_body`, `invalid_json_body`) emitted by
-            // `http_listener::parse_verb_push` surface as `PushError` with the
-            // reason copied verbatim into the static error code so the HTTP
-            // encoder returns 400 + `{"error":{"code":"missing_event_name_in_body"}}`.
+            // `ParseError` distinguishes content-type rejections
+            // (special prefix → dedicated `unsupported_content_type`
+            // TcpError) from verb-style push body-parse failures
+            // (`missing_event_name_in_body`, `invalid_json_body` → 400
+            // `PushError`) and generic decode failures
+            // (`Unsupported`).
             WireRequest::ParseError { reason } => {
                 if reason.starts_with("unsupported content_type") {
                     GlueResponse::TcpError {
@@ -759,19 +689,18 @@ impl ApplyShard {
 
     /// Synchronous push — the hot path.
     ///
-    /// Plan 18-10 D-3: parse body directly into beava_core::row::Row via
-    /// the `Row::Deserialize` impl (Plan 18-09 Task 9.3, rewritten in Plan
-    /// 18-10 to walk MapAccess directly without serde_json::Value intermediate).
-    /// No JsonValue allocation on the hot path.
+    /// Body parses directly into `beava_core::row::Row` via its
+    /// `Deserialize` impl (walks `MapAccess` directly, so no
+    /// `serde_json::Value` intermediate is allocated).
     ///
-    /// 1. Parse body → Row (sonic_rs::from_slice or rmp_serde::from_slice).
+    /// 1. Parse body → `Row`.
     /// 2. Look up event descriptor.
     /// 3. Schema validate.
     /// 4. Dedupe lookup.
-    /// 5. Serialize WAL payload (body bytes pass through unchanged).
-    /// 6. WalBufferRing::append.
-    /// 7. apply_event_to_aggregations.
-    /// 8. Build and return GlueResponse.
+    /// 5. Serialise WAL payload (body bytes pass through unchanged).
+    /// 6. `WalBufferRing::append`.
+    /// 7. `apply_event_to_aggregations`.
+    /// 8. Build and return the `GlueResponse`.
     fn dispatch_push_sync(
         &self,
         event_name: &str,
@@ -785,10 +714,9 @@ impl ApplyShard {
         use std::sync::atomic::Ordering;
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-        // SPIKE: per-stage apply-path timing (env-gated, success-path-only).
-        // OnceLock cache: HashMap-on-env-vars lookup happens once per process,
-        // not once per push. Saves ~200-500 ns per event when trace is OFF
-        // (the common production case).
+        // Per-stage apply-path timing (env-gated). Cache the env lookup
+        // in a `OnceLock` so the env read happens once per process, not
+        // per push — saves ~200–500 ns per event when tracing is off.
         fn trace_apply_enabled() -> bool {
             use std::sync::OnceLock;
             static FLAG: OnceLock<bool> = OnceLock::new();
@@ -802,7 +730,7 @@ impl ApplyShard {
         } else {
             None
         };
-        // SPIKE: inter-event gap (time since previous push completed on this thread).
+        // Inter-event gap (time since previous push completed on this thread).
         thread_local! {
             static LAST_PUSH_END: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
         }
@@ -819,14 +747,12 @@ impl ApplyShard {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // 1. Plan 18-04.8: prefer the pre-parsed Row from the IoPool worker
-        //    when present. Falls back to body→Row inline (parse on apply
-        //    thread) when the IoPool failed to pre-parse OR when the caller
-        //    didn't use the IoPool path (tests, legacy admin).
-        //
-        //    Plan 18-10 D-3: Row::Deserialize walks MapAccess + visit_*
-        //    primitives without allocating an intermediate JsonValue tree.
-        //    Both serde_json and rmp_serde drive the same visitor.
+        // 1. Prefer the pre-parsed `Row` from the IoPool worker when
+        //    present; fall back to inline parse for tests / legacy admin
+        //    callers and for IoPool pre-parse failures. `Row::Deserialize`
+        //    walks `MapAccess` directly (no intermediate `JsonValue`
+        //    allocation), and `serde_json` and `rmp_serde` share the
+        //    same visitor.
         let row: Row = match pre_parsed_row {
             Some(r) => r,
             None => {
@@ -855,8 +781,7 @@ impl ApplyShard {
         };
         let t_parse = t0.map(|t| t.elapsed());
 
-        // 2. Lookup event descriptor.
-        // Plan 18-11 D-6: Arc-backed lookup — refcount bump only, no clone.
+        // 2. Lookup event descriptor (Arc-backed; refcount bump only).
         let descriptor = match self.state.dev_agg.registry.get_event_descriptor(event_name) {
             Some(d) => d,
             None => {
@@ -868,18 +793,16 @@ impl ApplyShard {
         };
         let t_lookup = t0.map(|t| t.elapsed());
 
-        // 3. Plan 12.6-06: strict-deny on legacy `event_time` / `event_time_ms`
-        //    fields in the push body. Per CONTEXT D-03 hard-rip: the wire
-        //    schema permanently does not accept event-time data; clients
-        //    sending the legacy field get a structured 400 with code
-        //    `unknown_field_event_time_v0` rather than silent-ignore.
-        //
-        //    The check runs against the *parsed Row* — Beava's Row is a
-        //    generic key-value map (events have arbitrary user-defined
-        //    schemas), so deny_unknown_fields on Row itself is wrong. The
-        //    correct boundary is the EventDescriptor: any Row field absent
-        //    from descriptor.schema.fields is a stale-fixture / forbidden
-        //    field.
+        // 3. Strict-deny on legacy `event_time` / `event_time_ms` fields
+        //    and any other unknown field. The wire schema is processing-
+        //    time only, so clients sending event-time data get a
+        //    structured 400 (`unknown_field_event_time_v0`) rather than
+        //    a silent-ignore. The check runs against the parsed `Row`;
+        //    `Row` is a generic key-value map (event schemas are
+        //    user-defined), so the correct boundary is the
+        //    `EventDescriptor`: any field absent from
+        //    `descriptor.schema.fields` (and not declared optional) is
+        //    forbidden.
         for (field_name, _) in row.iter() {
             if !descriptor.schema.fields.contains_key(field_name)
                 && !descriptor
@@ -921,11 +844,10 @@ impl ApplyShard {
                 .idem_cache
                 .get_with_ack_lsn(event_name, key_str, now_ms)
             {
-                // Plan 12.6-15: byte-identical replay (HTTP success
-                // criterion #2). HTTP encoder emits `cached_body` verbatim;
-                // TCP encoder uses `ack_lsn` to build a `{ack_lsn,
+                // Byte-identical replay: HTTP returns `cached_body`
+                // verbatim; TCP uses `ack_lsn` to build a `{ack_lsn,
                 // idempotent_replay: true, …}` body (TCP has no replay
-                // header — the body flag IS the discriminator).
+                // header, so the body flag IS the discriminator).
                 return GlueResponse::PushReplay {
                     registry_version,
                     ack_lsn: Some(cached_ack_lsn),
@@ -934,66 +856,49 @@ impl ApplyShard {
             }
         }
 
-        // 5. Plan 12.6-05 Path X: time source = server wall-clock at dispatch.
-        //
-        // Per `project_redis_shaped_no_event_time_ever` and CONTEXT D-03,
-        // the apply path no longer reads `event_time` from the row body.
-        // `now_ms` (computed above as the wall-clock at this dispatch) is
-        // the single time source threaded into the operator surface — both
-        // for windowed bucketing and for `query_time_ms.fetch_max`
-        // below (which Plan 12.6-06 will rename to a now-aligned name once
-        // the `event_time_ms` wire field + EventDescriptor.event_time_field
-        // are deleted).
-        //
-        // Pre-Path-X this read `descriptor.event_time_field.read(row).unwrap_or(now_ms)`.
+        // 5. Time source: server wall-clock at dispatch. The apply path
+        //    never reads event-time from the body — Beava is Redis-shaped
+        //    and processing-time only (`project_redis_shaped_no_event_time_ever`).
+        //    `now_ms` is the single time threaded into the operator
+        //    surface (windowed bucketing) and into the `query_time_ms`
+        //    watermark below.
         let now_ms_i64: i64 = now_ms as i64;
         let t_validate = t0.map(|t| t.elapsed());
 
         // 6. Serialize WAL payload — v=2 binary format.
         //
-        // Record format: [u8 v=2][u8 body_format][u32 rv BE][u64 et_ms BE]
-        //                [u16 event_name_len BE][N bytes name][u32 body_len BE][M bytes body]
+        // `[u8 v=2][u8 body_format][u32 rv BE][u64 et_ms BE]
+        //  [u16 event_name_len BE][N bytes name][u32 body_len BE][M bytes body]`
         //
-        // Plan 18-10: the `body` Bytes is the EXACT raw client bytes passed
-        // through from parse_msgpack_envelope / parse_json_envelope (zero-copy
-        // from wire to disk). No re-serialise on this path.
-        //
-        // Plan 12.6-05 Path X: the `et_ms` byte slot continues to receive an
-        // 8-byte BE u64 timestamp; post-Path-X this is the server arrival-time
-        // `now_ms` rather than a body-derived event_time. Plan 12.6-06 will
-        // formally rename the slot and bump the WAL schema version.
+        // `body` is the exact bytes received from the wire — zero-copy
+        // from parse → WAL → disk, no re-serialise. The `et_ms` slot
+        // carries the server `now_ms` (processing-time, not a
+        // body-derived event-time).
         let name_bytes = event_name.as_bytes();
         let name_len = name_bytes.len() as u16;
         let body_len = body.len() as u32;
-        // Total: 1 + 1 + 4 + 8 + 2 + name_len + 4 + body_len
         let mut payload_bytes =
             Vec::with_capacity(1 + 1 + 4 + 8 + 2 + name_bytes.len() + 4 + body.len());
-        payload_bytes.push(0x02u8); // v = 2
-        payload_bytes.push(body_format); // body_format (CT_JSON=0x01 or CT_MSGPACK=0x02)
-        payload_bytes.extend_from_slice(&registry_version.to_be_bytes()); // u32 rv
-        payload_bytes.extend_from_slice(&now_ms.to_be_bytes()); // u64 et_ms (Path X = server now_ms)
-        payload_bytes.extend_from_slice(&name_len.to_be_bytes()); // u16 name_len
-        payload_bytes.extend_from_slice(name_bytes); // name bytes
-        payload_bytes.extend_from_slice(&body_len.to_be_bytes()); // u32 body_len
-        payload_bytes.extend_from_slice(&body); // body bytes — zero-copy passthrough
+        payload_bytes.push(0x02u8);
+        payload_bytes.push(body_format);
+        payload_bytes.extend_from_slice(&registry_version.to_be_bytes());
+        payload_bytes.extend_from_slice(&now_ms.to_be_bytes());
+        payload_bytes.extend_from_slice(&name_len.to_be_bytes());
+        payload_bytes.extend_from_slice(name_bytes);
+        payload_bytes.extend_from_slice(&body_len.to_be_bytes());
+        payload_bytes.extend_from_slice(&body);
         let t_wal_build = t0.map(|t| t.elapsed());
 
-        // 7. WAL append — lock-free on the hot path (no Mutex, no channel).
+        // 7. WAL append — lock-free, no Mutex, no channel.
         let ack_lsn = self.wal_ring.append(&payload_bytes);
         let t_wal_append = t0.map(|t| t.elapsed());
 
-        // 8. Apply to aggregations under the table lock (uncontended on apply thread).
-        //
-        // Plan 12.6-05 Path X: the i64 time-source threaded into
-        // `apply_event_to_aggregations` is the server `now_ms_i64`, NOT a
-        // body-derived event_time. This is the keystone of the windowed-op
-        // arrival-time semantics swap (no event-time anywhere downstream).
-        //
-        // Plan 12.8-03 D-01/D-04: pass the source's `cold_after_ms` so the
-        // apply path can run the per-event cold-TTL eviction check inline.
-        // `descriptor` is an `Arc<EventDescriptor>` (refcount bump on the
-        // `get_event_descriptor` call above), so this is just a `Copy` of
-        // an `Option<u64>`.
+        // 8. Apply to aggregations under the table lock (uncontended on
+        //    the apply thread). `now_ms_i64` is the only time source
+        //    threaded into `apply_event_to_aggregations` — windowed
+        //    bucketing uses processing-time. `cold_after_ms` is a `Copy`
+        //    of `Option<u64>` from the descriptor and runs the per-event
+        //    cold-TTL eviction check inline.
         {
             let mut tables = self.state.dev_agg.state_tables.lock();
             apply_event_to_aggregations(
@@ -1005,29 +910,20 @@ impl ApplyShard {
                 &mut tables,
                 descriptor.cold_after_ms,
             );
-            // Plan 12.8-06: refresh the process-static
-            // `beava_entity_count_resident` snapshot under the same lock the
-            // apply path is already holding. O(N_tables) sum of three
-            // HashMap.len() values — typically < 30 tables in production
-            // (one per registered aggregation), so well under 100 ns even
-            // with cache misses. Acceptable per CONTEXT D-04
-            // "inline-cheap or amortized" for the apply hot path.
+            // Refresh the process-static `beava_entity_count_resident`
+            // gauge under the lock we already hold. O(N_tables) sum of
+            // three `HashMap.len()` reads; typically < 30 tables (one
+            // per registered aggregation), well under 100 ns even with
+            // cache misses.
             let total_entities: usize = tables.iter().map(|t| t.entity_count()).sum();
             beava_core::agg_state::EntityCountResidentSnapshot::store(total_entities as u64);
         }
         let t_agg = t0.map(|t| t.elapsed());
 
-        // 9. Bump monotonic event counters.
-        //
-        // Plan 12.6-05 Path X: `query_time_ms` is fed `now_ms` (server
-        // wall-clock at apply) rather than a body-derived event_time. The
-        // field name is misleading post-Path-X — Plan 12.6-06 renames it to
-        // a now-aligned identifier once the EventDescriptor.event_time_field
-        // and the WAL schema slot are formally retired. Keeping the write
-        // means the GET path's `compute_query_time_ms` (and the equivalent
-        // logic in `runtime_core_glue.rs`) continues to surface a meaningful
-        // query_time for windowed-op queries; removing it would silently
-        // break ~30 tests that depend on a non-zero query time.
+        // 9. Bump monotonic event counters. `query_time_ms` is fed
+        //    `now_ms` (server wall-clock at apply); the GET path's
+        //    `compute_query_time_ms` reads this watermark to surface a
+        //    meaningful query time for windowed-op queries.
         self.state
             .dev_agg
             .next_event_id
@@ -1040,21 +936,13 @@ impl ApplyShard {
         }
         let t_bk_counters = t0.map(|t| t.elapsed());
 
-        // Plan 12.7-04: step 10 (record event_id_index entry for retract
-        // routing) deleted alongside the table/retract surface. Per
-        // `project_v0_events_only_scope` (locked 2026-04-30) v0 ships
-        // events-only — there is no retract path to populate the side-table.
-        // `t_bk_evid` is fed by the same monotonic clock as the surrounding
-        // stages so the trace stays well-formed; with the work gone the
-        // delta `t_bk_evid - t_bk_counters` is the noise of two `Instant::now`
-        // calls (~5 ns).
+        // `t_bk_evid` keeps the trace shape stable; the per-stage delta
+        // is just two `Instant::now` calls (~5 ns) now that the
+        // event-id side-table bookkeeping is gone (events-only).
         let t_bk_evid = t0.map(|t| t.elapsed());
 
         // 11. Cache on dedupe path.
         if let Some(key_str) = dedupe_str {
-            // Plan 12.6-07: legacy `crate::push::PushAck` deleted along with
-            // the legacy axum router. Inline the wire shape here — same JSON
-            // body as the legacy struct.
             let ack = serde_json::json!({
                 "ack_lsn": ack_lsn,
                 "idempotent_replay": false,
@@ -1078,7 +966,6 @@ impl ApplyShard {
             );
         }
 
-        // SPIKE: per-stage timing eprintln (success path only).
         if let (
             Some(t0_inst),
             Some(parse),
@@ -1101,7 +988,8 @@ impl ApplyShard {
             t_bk_evid,
         ) {
             let total = t0_inst.elapsed();
-            // gap_ns = nanoseconds since previous push completed; "first" for the very first push on this thread.
+            // gap = ns since the previous push on this thread; "first"
+            // for the first push.
             let gap_str = match gap {
                 Some(g) => format!("{}", g.as_nanos()),
                 None => "first".to_string(),
@@ -1133,12 +1021,8 @@ impl ApplyShard {
     }
 }
 
-// ─── Sync helpers (Plan 18-10 D-3: Row-based, no JsonValue) ───────────────────
-
-/// Schema validation against a beava_core::row::Row directly. Replaces the
-/// Plan 18-09 `validate_body_sync` which took `serde_json::Map<String, Value>`.
-///
-/// For each non-optional schema field, the row must contain a typed `Value`
+/// Schema validation against a `beava_core::row::Row` directly. For each
+/// non-optional schema field the row must contain a typed `Value`
 /// compatible with the declared `FieldType`.
 fn validate_row_against_descriptor(
     descriptor: &beava_core::registry::EventDescriptor,
@@ -1159,9 +1043,9 @@ fn validate_row_against_descriptor(
     true
 }
 
-/// FieldType ↔ Value compatibility. Numeric coercion (i64↔f64) is permitted
-/// because the wire data may be either; the apply path consumes the typed
-/// Value as-is.
+/// `FieldType` ↔ `Value` compatibility. Numeric coercion (i64 ↔ f64) is
+/// permitted because the wire data may be either; the apply path
+/// consumes the typed `Value` as-is.
 fn value_type_compatible(val: &beava_core::row::Value, ft: &beava_core::schema::FieldType) -> bool {
     use beava_core::row::Value;
     use beava_core::schema::FieldType;
@@ -1174,8 +1058,8 @@ fn value_type_compatible(val: &beava_core::row::Value, ft: &beava_core::schema::
     }
 }
 
-/// Extract the dedupe key as a string from a Row field. Mirrors the Plan 18-09
-/// behaviour where strings pass through and other types are stringified.
+/// Extract the dedupe key as a string from a `Row` field. Strings pass
+/// through; other types are stringified.
 fn extract_dedupe_str_from_row(row: &beava_core::row::Row, key: &str) -> Option<String> {
     use beava_core::row::Value;
     row.get(key).map(|v| match v {
@@ -1192,33 +1076,28 @@ fn extract_dedupe_str_from_row(row: &beava_core::row::Row, key: &str) -> Option<
     })
 }
 
-// ─── Plan 13.4-03 / Plan 13.4.1 — OP_BATCH_GET (0x0024) dispatch ──────────────
-
-/// Plan 13.4.1 — one entry in the OP_BATCH_GET request payload.
+/// One entry in the `OP_BATCH_GET` request payload.
 ///
-/// Verb-style fields per D-02:
-/// - `table`: aggregation node name (lookup key in `registry.compiled_aggregation`).
-/// - `key`: per-entity scoping value (parsed via `parse_entity_key`).
-/// - `features`: optional per-entry filter; None = return all features
-///   for the entity; Some(vec) = narrow row dict to those names
-///   (omit-on-absent per D-06).
+/// - `table`: aggregation node name.
+/// - `key`: per-entity scoping value; parsed via `parse_entity_key`.
+/// - `features`: optional per-entry filter; `None` returns every
+///   feature, `Some(vec)` narrows to those names (omit-on-absent).
 ///
-/// D-04 — `entity_id` is accepted as a legacy alias of `key` for one
-/// release; alias removal scheduled in v0.0.x cleanup
-/// (.planning/ideas/v0.1-deferrals.md). `from_alias` tracks whether the
-/// source field was the legacy alias so the dispatch loop can emit a
-/// WARN log only on alias use (no false-positive on canonical path).
+/// `entity_id` is accepted as a legacy alias of `key` for one release;
+/// `from_alias` is set by the custom `Deserialize` so the dispatch loop
+/// can emit a WARN once per alias use without false-positives on the
+/// canonical path.
 struct BatchGetReqEntry {
     table: String,
     key: String,
     features: Option<Vec<String>>,
-    /// Internal — NOT serialised; set by custom Deserialize impl.
+    /// Internal — not serialised; set by the custom `Deserialize` impl.
     from_alias: bool,
 }
 
-// Plan 13.4.1 D-04 — custom Deserialize impl that tracks whether the source
-// field was `key` (canonical) or `entity_id` (legacy alias). Emits a serde
-// error on missing-both / both-present.
+// Custom `Deserialize` that tracks whether the source field was `key`
+// (canonical) or `entity_id` (legacy alias). Emits a serde error on
+// missing-both / both-present.
 impl<'de> serde::Deserialize<'de> for BatchGetReqEntry {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1251,8 +1130,6 @@ impl<'de> serde::Deserialize<'de> for BatchGetReqEntry {
                                 return Err(de::Error::duplicate_field("key"));
                             }
                             key = Some(map.next_value()?);
-                            // Canonical path — leave from_alias = false unless
-                            // entity_id was already seen (rejected below).
                         }
                         "entity_id" => {
                             if key.is_some() {
@@ -1270,7 +1147,7 @@ impl<'de> serde::Deserialize<'de> for BatchGetReqEntry {
                             features = Some(map.next_value()?);
                         }
                         _ => {
-                            // Tolerate forward-compat fields by skipping their values.
+                            // Skip unknown fields for forward compatibility.
                             let _ignored: serde::de::IgnoredAny = map.next_value()?;
                         }
                     }
@@ -1288,26 +1165,22 @@ impl<'de> serde::Deserialize<'de> for BatchGetReqEntry {
     }
 }
 
-/// OP_BATCH_GET dispatch — walks `{requests:[{table, entity_id}, ...]}`,
-/// calls per-entity feature lookup for each tuple, aggregates results into
-/// the canonical `{results: [...]}` shape with partial-failure semantics.
+/// `OP_BATCH_GET` dispatch — walks `{requests:[{table, key,
+/// features?}, ...]}`, looks up each tuple, and aggregates into
+/// `{results: [...]}` with partial-failure semantics.
 ///
-/// Per the plan must_haves:
 /// - Per-tuple `{table, entity_id, features: <flat_dict>}` on success.
-/// - Per-tuple `{table, entity_id, error: {code: "unknown_table", reason}}`
-///   on unknown table — the rest of the batch still completes (no whole-frame
-///   4xx).
+/// - Per-tuple `{table, entity_id, error: {code: "unknown_table",
+///   reason}}` on unknown table — the rest of the batch still completes.
 /// - Empty `requests: []` returns `{"results": []}` HTTP 200.
 ///
-/// Per ADR-003 the empty-string `entity_id` is the global-table sentinel and
-/// is forwarded as-is to `parse_entity_key`; Plan 13.4-09 wires the
-/// `key_cols: []` register-time acceptance and ensures the existing hashmap
-/// machinery handles `""` as a regular key segment.
+/// Empty-string `entity_id` is the global-table sentinel (forwarded as-
+/// is to `parse_entity_key`).
 ///
-/// `body_format` is the wire content_type byte (`CT_JSON` or `CT_MSGPACK`).
-/// HTTP path always passes `CT_JSON`; TCP path forwards the frame's
-/// content_type. Response body is always JSON encoded — the response opcode
-/// is `OP_GET_RESPONSE`, whose body shape contract is JSON in v0.
+/// `body_format` is the wire content-type byte (`CT_JSON` or
+/// `CT_MSGPACK`). HTTP always passes `CT_JSON`; TCP forwards the frame's
+/// byte. Response body is always JSON — the response opcode is
+/// `OP_GET_RESPONSE`, whose body shape contract is JSON in v0.
 pub fn dispatch_batch_get_sync(
     app: &std::sync::Arc<crate::AppState>,
     body: &Bytes,
@@ -1320,7 +1193,6 @@ pub fn dispatch_batch_get_sync(
         requests: Vec<BatchGetReqEntry>,
     }
 
-    // 1. Parse the batch body.
     let req: BatchGetBody = match body_format {
         CT_JSON => match serde_json::from_slice(body) {
             Ok(r) => r,
@@ -1345,7 +1217,6 @@ pub fn dispatch_batch_get_sync(
         }
     };
 
-    // 2. Empty batch → `{"results": []}` HTTP 200 (plan must_have).
     if req.requests.is_empty() {
         let body_bytes = serde_json::to_vec(&serde_json::json!({"results": []}))
             .unwrap_or_else(|_| b"{\"results\":[]}".to_vec());
@@ -1355,10 +1226,9 @@ pub fn dispatch_batch_get_sync(
         };
     }
 
-    // Plan 13.4.1 D-04 — emit a tracing::warn! once per entry that used
-    // the legacy `entity_id` alias (no false-positive on canonical `key`
-    // path; STRICT detection per Plan 03 Test 4 requirement). Verbatim
-    // message text per CONTEXT.md D-04 line 76.
+    // Emit a `tracing::warn!` once per entry using the legacy
+    // `entity_id` alias. Detection is strict: false-positives on the
+    // canonical `key` path would defeat the alias-removal warning.
     for entry in &req.requests {
         if entry.from_alias {
             tracing::warn!(
@@ -1369,8 +1239,8 @@ pub fn dispatch_batch_get_sync(
         }
     }
 
-    // 3. Compute query_time_ms once (D-06 — never wall clock; mirrors
-    //    `dispatch_get_batch`'s policy).
+    // Compute `query_time_ms` once for the whole batch (matches
+    // `dispatch_get_batch`'s policy).
     let query_time_ms = {
         let raw = app
             .dev_agg
@@ -1385,18 +1255,11 @@ pub fn dispatch_batch_get_sync(
 
     let registry = &app.dev_agg.registry;
 
-    // Plan 13.4.1 D-06 (first clause) — whole-batch reject on registry-typo.
-    // Mirrors the precedent at runtime_core_glue.rs:382-396 and the
-    // single-row verb-style dispatch (dispatch_get_single_verb_style_sync).
-    //
-    // For each entry whose `features` filter is Some, look up the descriptor
-    // and check every requested feature name. If ANY entry has a feature name
-    // not in its table descriptor, abort the whole batch with InternalError.
-    //
-    // Skipped (still per-tuple, NOT whole-batch):
-    //   - unknown_table → Step 5's per-tuple `{"error":{"code":"unknown_table",...}}`
-    //   - key_parse_failure → Step 6's per-tuple `{"error":{"code":"key_parse_failure",...}}`
-    //   - per-entity sparsity (feature absent on entity) → omit silently in Step 4
+    // Whole-batch reject on registry-typo: if any entry's `features`
+    // filter mentions a name not in that table's descriptor, abort with
+    // `InternalError`. Per-tuple errors (`unknown_table`,
+    // `key_parse_failure`, per-entity sparsity) stay per-tuple in the
+    // dispatch loop below.
     for entry in &req.requests {
         let Some(filter) = entry.features.as_deref() else {
             continue;

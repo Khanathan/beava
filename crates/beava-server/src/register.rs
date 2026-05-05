@@ -21,22 +21,21 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Phase 7 Plan 03: WAL record carrying a registration bump. Persisted in
-/// the WAL before the in-memory registry is mutated.
+/// WAL record carrying a registration bump. Persisted before the in-memory
+/// registry mutates (apply-after-fsync).
 ///
-/// Phase 7.5 Plan 01: encoded with `serde_json` rather than `bincode`.
-/// PayloadNode contains `serde_json::Value` fields (`AggSpec.params`,
-/// `OpNode::Fillna.defaults`) which bincode 1.x cannot deserialize
-/// (`DeserializeAnyNotSupported`). RegistryBump records are emitted only on
-/// `/register` (cold-path), so the JSON-vs-bincode size delta is irrelevant
-/// to the hot path. JSON also gives recovery a self-describing payload that
-/// is forward/backward compatible with descriptor-shape evolution.
+/// Encoded with `serde_json` rather than `bincode`: `PayloadNode` carries
+/// `serde_json::Value` fields (`AggSpec.params`, `OpNode::Fillna.defaults`)
+/// that bincode 1.x cannot round-trip (`DeserializeAnyNotSupported`).
+/// `/register` is cold-path so the size delta is irrelevant; JSON also gives
+/// recovery a self-describing, forward/backward-compatible payload as
+/// descriptor shapes evolve.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RegistryBumpPayload {
-    /// The new version number (post-bump). For replay diagnostics; not used
-    /// to override the registry's monotonic version assignment.
+    /// New version number (post-bump). For replay diagnostics only — does
+    /// not override the registry's monotonic version assignment.
     pub new_version: u64,
-    /// Validated PayloadNodes that produced this bump.
+    /// Validated `PayloadNode`s that produced this bump.
     pub payload_nodes: Vec<PayloadNode>,
 }
 
@@ -95,8 +94,6 @@ impl std::fmt::Display for RegisterWalError {
     }
 }
 
-// ─── Wire types ───────────────────────────────────────────────────────────────
-
 /// Wire shape of `POST /register` request body.
 #[derive(Debug, Deserialize)]
 pub struct RegisterPayload {
@@ -107,9 +104,9 @@ pub struct RegisterPayload {
 #[derive(Clone)]
 pub struct RegisterAppState {
     pub registry: Arc<Registry>,
-    /// Phase 7 Plan 03: when Some, /register writes a RegistryBump WAL record
-    /// before mutating the in-memory registry. None for legacy callers
-    /// (Phase 1/2 tests) where WAL plumbing is not yet wired.
+    /// When `Some`, `/register` writes a `RegistryBump` WAL record before
+    /// mutating the in-memory registry. `None` for legacy tests with no
+    /// WAL plumbing.
     pub wal_sink: Option<WalSink>,
 }
 
@@ -155,13 +152,8 @@ pub struct ResponseDiff {
     pub changed: Vec<ConflictDetail>,
 }
 
-// ─── Transport-agnostic register core (Phase 2.5 Plan 03) ─────────────────────
-
-/// Outcome of executing a registration, independent of transport (HTTP / TCP).
-///
-/// HTTP's `post_register` maps this to `(StatusCode, Json<Value>)`; the TCP
-/// `handle_register` (Phase 2.5 Plan 04) maps the same cases to response frames
-/// with op=OP_REGISTER (success) or op=OP_ERROR_RESPONSE (validation/conflict).
+/// Transport-agnostic register outcome — HTTP's response builder and the TCP
+/// frame encoder both consume it.
 #[derive(Debug)]
 pub enum RegisterOutcome {
     /// Additive install succeeded; version bumped.
@@ -196,14 +188,13 @@ pub enum RegisterOutcome {
         added: Vec<String>,
         changed: Vec<ConflictDetail>,
     },
-    /// Phase 7 Plan 03: WAL append for the RegistryBump record failed. 503.
+    /// WAL append for the `RegistryBump` record failed. 503.
     WalUnavailable { version: u64 },
 }
 
-/// Phase 7 Plan 03: WAL-backed entry point. When `wal_sink` is `Some`, a
-/// `RegistryBump` record is written + fsynced BEFORE the in-memory registry
-/// is mutated (apply-AFTER-fsync invariant for registration). On WAL failure,
-/// returns a `WalUnavailable` outcome so the HTTP layer maps to 503.
+/// WAL-backed entry point. When `wal_sink` is `Some` a `RegistryBump` record
+/// is written and fsynced BEFORE the in-memory registry mutates (apply-after-
+/// fsync). On WAL failure returns `WalUnavailable` so HTTP maps to 503.
 pub(crate) async fn execute_register_with_wal(
     registry: &Arc<Registry>,
     payload: RegisterPayload,
@@ -217,7 +208,6 @@ async fn execute_register_inner(
     payload: RegisterPayload,
     wal_sink: Option<&WalSink>,
 ) -> RegisterOutcome {
-    // 1. Empty-payload fast path (matches HTTP handler §pre-validation)
     if payload.nodes.is_empty() {
         let version = registry.version();
         info!(
@@ -229,10 +219,10 @@ async fn execute_register_inner(
         return RegisterOutcome::EmptyPayload { version };
     }
 
-    // 2. Snapshot for validation + diff
     let current_snapshot = registry.snapshot();
 
-    // 3. Validate (fail-soft: collects all errors)
+    // Validate fail-soft: collects every error before returning so the
+    // operator gets the full diagnostic set.
     let validated = match validate_payload(&current_snapshot, payload.nodes) {
         Ok(v) => v,
         Err(errs) => {
@@ -258,10 +248,8 @@ async fn execute_register_inner(
         validated.into_parts();
     let registered_descriptors: Vec<String> = nodes.iter().map(|n| n.name().to_string()).collect();
 
-    // 4. Diff
     let diff = compute_diff(&current_snapshot, &nodes);
 
-    // 5. Conflict → no mutation
     if !diff.changed.is_empty() {
         warn!(
             kind = "register.conflict",
@@ -276,7 +264,6 @@ async fn execute_register_inner(
         };
     }
 
-    // 6. No-op (only already_present, no added)
     if diff.added.is_empty() {
         info!(
             kind = "register.noop",
@@ -291,9 +278,9 @@ async fn execute_register_inner(
         };
     }
 
-    // 7. Phase 7 Plan 03: WAL-append a RegistryBump record BEFORE applying.
-    //    Apply-AFTER-fsync invariant — recovery sees the descriptors only after
-    //    they are durable on disk.
+    // Apply-after-fsync: append + fsync the `RegistryBump` BEFORE mutating
+    // the live registry, so recovery only sees descriptors that survived
+    // the durability boundary.
     if let Some(sink) = wal_sink {
         let bump = RegistryBumpPayload {
             new_version: current_snapshot.version + 1,
@@ -324,8 +311,6 @@ async fn execute_register_inner(
         }
     }
 
-    // 8. Additive install (Phase 4: compiled chains + propagated schemas;
-    //    Phase 5 Plan 04: compiled aggregations)
     let new_version = registry.apply_registration(
         nodes,
         compiled_chains,
@@ -347,18 +332,12 @@ async fn execute_register_inner(
     }
 }
 
-/// Serialize a response struct to `serde_json::Value`.
-///
-/// All response types (`RegisterSuccess`, `RegisterErrorBody`) contain only
-/// `&'static str`, `u64`, `Vec<String>`, and `bool` fields — serialization of
-/// these types via `#[derive(Serialize)]` is infallible. This helper documents
-/// that invariant and provides an explicit 500-style fallback rather than an
-/// unwrap panic, so a future change that accidentally adds a non-serializable
-/// field fails gracefully instead of killing the Tokio runtime thread.
+/// Serialize a response to `serde_json::Value`. All current response types
+/// are infallible to serialise; the fallback exists only so that a future
+/// non-serialisable field fails gracefully with a 500-shaped sentinel
+/// rather than panicking the runtime.
 fn to_json_value<T: serde::Serialize>(v: T) -> serde_json::Value {
     serde_json::to_value(v).unwrap_or_else(|e| {
-        // This branch is unreachable with the current response types.
-        // If it is ever hit, log at error level and return a safe sentinel.
         tracing::error!(
             kind = "register.serialization_error",
             error = %e,
@@ -389,9 +368,8 @@ pub fn register_outcome_to_glue(outcome: RegisterOutcome) -> (u16, bytes::Bytes,
     (status, body_bytes, tcp_op)
 }
 
-/// Map a `RegisterOutcome` to `(http_status_code_u16, json_body)`. Plan
-/// 12.6-07: replaced legacy `map_outcome_to_http` (which returned axum
-/// `(StatusCode, Json<...>)`) with this transport-agnostic equivalent.
+/// Map a `RegisterOutcome` to a `(http_status_code, json_body)` pair shared
+/// by the HTTP and TCP encoders.
 fn map_outcome_to_response(outcome: RegisterOutcome) -> (u16, serde_json::Value) {
     match outcome {
         RegisterOutcome::Success {
@@ -483,25 +461,15 @@ fn map_outcome_to_response(outcome: RegisterOutcome) -> (u16, serde_json::Value)
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Map an `ErrorCode` to its wire string.
-///
-/// Phase 4 (Plan 04-05): `InvalidExpression`, `UnknownFieldReference`,
-/// `SchemaPropagationFailure`, and `InvalidCastTarget` all surface as
-/// `"invalid_expression"` on the wire (distinct from `"invalid_registration"`
-/// for structural rules 1-9).
-///
-/// Phase 5 Plan 04 (Rule 11): aggregation-specific error codes map to their
-/// own wire strings so clients can distinguish aggregation failures from
-/// general registration/expression failures.
+/// Map an `ErrorCode` to its wire string. Expression-shape errors collapse
+/// to `"invalid_expression"`; aggregation and sketch codes keep their own
+/// strings so clients can distinguish them from structural failures.
 pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::InvalidExpression
         | ErrorCode::UnknownFieldReference
         | ErrorCode::SchemaPropagationFailure
         | ErrorCode::InvalidCastTarget => "invalid_expression",
-        // Rule 11 aggregation codes
         ErrorCode::AggregationOnTableNotSupported => "aggregation_on_table_not_supported",
         ErrorCode::AggregationUnknownField => "aggregation_unknown_field",
         ErrorCode::AggregationInvalidWhere => "aggregation_invalid_where",
@@ -514,7 +482,6 @@ pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
         ErrorCode::AggregationFeatureNameCollisionAcrossAggregations => {
             "aggregation_feature_name_collision_across_aggregations"
         }
-        // Plan 10-05: sketch-op error codes
         ErrorCode::WindowNotSupported => "window_not_supported",
         ErrorCode::InvalidPercentileQ => "invalid_percentile_q",
         ErrorCode::InvalidTopKK => "invalid_top_k_k",
@@ -523,9 +490,9 @@ pub(crate) fn error_code_to_wire_str(code: ErrorCode) -> &'static str {
     }
 }
 
-/// v0: returns `("<body>", err.to_string())`. Richer JSON-pointer paths are
-/// Phase 3+ work. Used by the mio glue layer to produce `error.path` +
-/// `error.reason` pairs for malformed `/register` request bodies.
+/// Returns `("<body>", err.to_string())`. Used by the mio glue layer to
+/// produce `error.path` + `error.reason` pairs for malformed `/register`
+/// request bodies. Richer JSON-pointer paths are deferred work.
 pub fn format_serde_error_public(e: &serde_json::Error) -> (String, String) {
     ("<body>".to_string(), e.to_string())
 }

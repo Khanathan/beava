@@ -1,10 +1,9 @@
 //! beava-server: the server binary's logic crate.
 //!
-//! Plan 12.6-07 sweep: legacy axum data plane deleted (push.rs, http.rs,
-//! push_and_get.rs). The mio data plane (apply_shard + runtime_core_glue +
-//! ServerV18 in server.rs) is now the SOLE data-plane runtime per
-//! `project_phase18_no_dual_runtime`. Tokio admin sidecar lives in
-//! http_admin.rs and binds on a separate port (cfg.admin_addr).
+//! The mio data plane (`apply_shard` + `runtime_core_glue` + `ServerV18`) is
+//! the sole data-plane runtime per the mio-only invariant. The tokio admin
+//! sidecar in `http_admin` binds on a separate port (`cfg.admin_addr`) and
+//! must remain the only home for axum symbols.
 
 pub mod apply_shard;
 pub mod cli;
@@ -32,37 +31,27 @@ use crate::registry_debug::DevAggState;
 use beava_persistence::WalSink;
 use std::sync::Arc;
 
-/// Unified application state introduced in Phase 6 Plan 03. Holds the
-/// `DevAggState` (registry + state_tables + event_id counters) alongside the
-/// WAL sink handle and idempotency cache. Shared by both HTTP and TCP handlers
-/// via an Arc.
+/// Shared per-process state: registry + state tables + event-id counters
+/// (`DevAggState`), WAL sink, and idempotency cache. Cloned by reference
+/// across HTTP and TCP handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub dev_agg: DevAggState,
     pub wal_sink: WalSink,
     pub idem_cache: Arc<IdemCache>,
-    /// Dev endpoints flag — gates `/registry` on the mio data plane
-    /// (404 when false). Stored in an Arc<AtomicBool> so
-    /// TestServer-builder callers can flip it post-spawn (matches the
-    /// `.dev_endpoints(true)` builder method semantics).
+    /// Gates the data-plane `/registry` shim (404 when false). Held in an
+    /// `Arc<AtomicBool>` so `TestServer.dev_endpoints(true)` can flip it
+    /// after spawn.
     pub dev_endpoints: Arc<std::sync::atomic::AtomicBool>,
-    /// Plan 13.4-08 (D-03 USER-LOCKED): effective `test_mode` flag,
-    /// computed at boot time as the OR of `cfg.test_mode` and
-    /// `BEAVA_TEST_MODE=1` env var. When false, `OP_RESET` returns
-    /// `reset_disabled_in_production` (HTTP 403 / wire 0xFFFF). When true,
-    /// `OP_RESET` clears all state + registry and bumps `registry_version`.
-    ///
-    /// Default boot is `false` (production-safe). Env var must be set
-    /// explicitly OR the constructor must take `Config { test_mode: true }`
-    /// to enable. Boot-time-only resolution prevents runtime escalation.
+    /// Effective `test_mode`, resolved at boot as `cfg.test_mode ||
+    /// BEAVA_TEST_MODE=1`. When false, `OP_RESET` is rejected with
+    /// `reset_disabled_in_production` (HTTP 403 / wire 0xFFFF). Boot-time
+    /// resolution prevents runtime escalation.
     pub effective_test_mode: bool,
-    /// Phase 13.5.3 (D-04 mitigate): memory-governance enforcement flag,
-    /// resolved at boot time. Replaces the per-call
-    /// `apply_shard.rs::memory_gov_enforce_enabled` env-read with a struct
-    /// field reader on the cold register path. `true` (default per
-    /// Plan 12.8-06 D-03) gates windowless ops with unbounded lifetime
-    /// memory; explicit `BEAVA_MEMORY_GOV_ENFORCE=0` (production) or
-    /// `.memory_governance_enforce(false)` (tests) sets this to `false`.
+    /// Memory-governance enforcement flag, resolved at boot. `true` by
+    /// default; `BEAVA_MEMORY_GOV_ENFORCE=0` or
+    /// `.memory_governance_enforce(false)` opts out. Read on the cold
+    /// register path (never re-read on the hot path).
     pub memory_governance_enforce: bool,
 }
 
@@ -74,16 +63,13 @@ impl AppState {
             idem_cache,
             dev_endpoints: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             effective_test_mode: false,
-            // Plan 12.8-06 D-03: default ON (memory governance enforced
-            // unless operators / tests explicitly opt out).
             memory_governance_enforce: true,
         }
     }
 
-    /// Return true iff the data-plane `/registry` shim should serve. The
-    /// flag is set only via `TestServer.dev_endpoints(true)`; production
-    /// data-plane `/registry` is permanently 404. Production observability
-    /// flows through the tokio admin sidecar on `cfg.admin_addr`.
+    /// `true` iff the data-plane `/registry` shim should serve. Only set via
+    /// `TestServer.dev_endpoints(true)`; production observability flows
+    /// through the tokio admin sidecar on `cfg.admin_addr`.
     pub fn dev_endpoints_enabled(&self) -> bool {
         self.dev_endpoints
             .load(std::sync::atomic::Ordering::Relaxed)

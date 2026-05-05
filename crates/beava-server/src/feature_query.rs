@@ -1,8 +1,9 @@
-//! Feature query endpoints — Plan 05-06.
+//! Feature query helpers shared by the mio data-plane dispatch path.
 //!
 //! # GET /get/:feature/:key
 //!
-//! Single-feature lookup. Returns `{"value": <JSON>}` per D-02.
+//! Single-feature lookup. Returns `{"value": <JSON>}` per the D-02 envelope
+//! contract.
 //!
 //! - 200 `{"value": <JSON>}` — feature and key found
 //! - 404 `{"error": {"code": "feature_not_found"}}` — unknown feature name
@@ -10,74 +11,38 @@
 //!
 //! # POST /get
 //!
-//! Batch lookup. Body: `{"keys": [...], "features": [...]}`.
-//! Returns the flat per-entity dict `{key: {feature: value}}` per Phase 13.0-15
-//! wire-spec (Plan 13.4-02 dropped the historic `{"result": ...}` envelope
-//! while leaving the single-feature `{"value": ...}` path untouched).
+//! Batch lookup. Body: `{"keys": [...], "features": [...]}`. Returns the flat
+//! per-entity dict `{key: {feature: value}}`.
 //!
-//! - 200 `{key: {feature: value}, ...}` — success (missing keys are omitted, not null)
+//! - 200 `{key: {feature: value}, ...}` — success (missing keys omitted, not null)
 //! - 200 `{}` — cold-start (no entities matched)
-//! - 400 `{"error": {"code": "feature_not_found", "missing": [...]}}` — unknown feature
+//! - 400 `{"error": {"code": "feature_not_found", "missing": [...]}}`
 //! - 400 `{"error": {"code": "batch_too_large"}}` — keys × features > 10_000
 //!
-//! # D-02 compliance
-//!
-//! Response envelope is `{"value": ...}` ONLY. v0 ships no metadata envelope.
-//! Grep guard test asserts the response wrapper key is exactly "value".
-//!
-//! # D-06 compliance
-//!
-//! Query time uses max(event_time_ms observed) or 0 — wall-clock is never read.
-//! Grep guard test asserts clock functions are absent from this file's production code.
-//!
-//! # SDK-AGG-02
+//! Query time uses `max(event_time_ms observed)` or 0 — wall-clock is never
+//! read here; a grep tripwire enforces that.
 
 use beava_core::agg_state_table::EntityKey;
 use beava_core::row::Value;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-//
-// Plan 12.6-07: the legacy axum router + `feature_query_router` /
-// `get_feature_handler` / `post_get_batch_handler` are deleted. The mio
-// dispatch path (`runtime_core_glue::dispatch_get_*_sync`) calls
-// `parse_entity_key` and `value_to_json` directly. The SRV-API-08 batch
-// cap (10_000 cells) is enforced inline in `dispatch_get_batch`.
-
 /// Parse a URL-encoded entity key into an `EntityKey`.
 ///
-/// For multi-key group_by, the key string uses `|` as a separator:
-/// e.g., `"alice|merchant1"` → `[("user_id", "alice"), ("merchant_id", "merchant1")]`.
+/// Multi-key group_bys use `|` as a separator (e.g. `"alice|merchant1"` →
+/// `[("user_id", "alice"), ("merchant_id", "merchant1")]`). Pipe characters
+/// inside key values must be percent-encoded as `%7C`.
 ///
-/// Returns `None` when the number of pipe-separated segments does not match
-/// `group_keys.len()`. Callers should return a `key_parse_failure` error code in
-/// that case so it is distinguishable from `key_not_found` (WR-02).
+/// Returns `None` when the segment count does not match `group_keys.len()`.
+/// Callers must surface that as `key_parse_failure` so it stays
+/// distinguishable from `key_not_found` (per WR-02).
 ///
-/// **Plan 13.4-09 / ADR-003 — global-table sentinel routing.** When
-/// `group_keys.is_empty()` (the wire-level signal for a global table per
-/// ADR-003), an empty `key_str` is the sentinel that addresses the
-/// single-slot global state. `EntityKeyShape::from_row` already produces
-/// `Multi(EntityKey(empty))` on the apply path when `group_keys` is empty
-/// (see `crates/beava-core/src/agg_state_table.rs` lines 283-305 — the
-/// compound-key branch with a zero-length loop body). The query path
-/// must mirror that: return `Some(EntityKey(empty SmallVec))` so the
-/// per-entity hashmap accepts the lookup. Per ADR-003: "the existing
-/// `&str` key path handles `\"\"` natively. No new code path inside
-/// `apply_shard.rs::dispatch_*_sync` — just the absence of a special-case
-/// rejection." Without this branch, `"".split('|').collect::<Vec<_>>()`
-/// produces `[""]` (one segment) which fails the arity check (1 != 0)
-/// and surfaces as `key_parse_failure` at GET / batch_get time.
-///
-/// **Limitation:** pipe characters inside key values must be percent-encoded as `%7C`
-/// because `|` is the multi-key separator. Full URL-decoding of `%7C` → `|` is deferred
-/// to Phase 12 API completion.
+/// Empty `group_keys` + empty `key_str` is the global-table sentinel: it
+/// addresses the single-slot global state so an unkeyed pipeline can be
+/// queried via `GET /get/:feature/`. Without this short-circuit
+/// `"".split('|')` would produce one segment and fail the arity check.
 pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<EntityKey> {
     use beava_core::row::Value;
     use compact_str::CompactString;
     use smallvec::SmallVec;
-    // Plan 13.4-09 / ADR-003 — global-table sentinel routing. Empty
-    // entity_id + empty group_keys → single sentinel slot. The split below
-    // would produce one empty segment (1 != 0 arity mismatch); short-circuit
-    // here.
     if group_keys.is_empty() && key_str.is_empty() {
         return Some(EntityKey(SmallVec::new()));
     }
@@ -85,8 +50,6 @@ pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<E
     if segments.len() != group_keys.len() {
         return None;
     }
-    // Plan 18-11 D-5: build EntityKey via SmallVec of (CompactString, Value::Str)
-    // pairs. URL parameters are always strings — values are stored as Str.
     let pairs: SmallVec<[(CompactString, Value); 2]> = group_keys
         .iter()
         .zip(segments.iter())
@@ -101,11 +64,8 @@ pub(crate) fn parse_entity_key(key_str: &str, group_keys: &[String]) -> Option<E
 
 /// Convert a `beava_core::row::Value` to a `serde_json::Value`.
 ///
-/// Mirror of the helper in `registry_debug.rs` — duplicated here to keep
-/// `feature_query.rs` self-contained (no dep on the debug module).
-///
-/// Phase 11 (D-01): `Value::List` → JSON array; `Value::Map` → JSON object.
-/// Recursive on element values. NaN floats serialise as JSON null.
+/// Mirror of the helper in `registry_debug.rs`; duplicated to keep this
+/// module self-contained. NaN floats serialise as JSON null.
 pub(crate) fn value_to_json(v: Value) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
@@ -127,4 +87,3 @@ pub(crate) fn value_to_json(v: Value) -> serde_json::Value {
     }
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────

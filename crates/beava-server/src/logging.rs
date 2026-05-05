@@ -1,18 +1,10 @@
 //! Structured JSON logging.
 //!
-//! Phase 1 scope:
-//! - Install a process-global JSON subscriber via `tracing_subscriber`
-//! - Level driven by `Config::log_level` (parameter to `init`)
-//! - `RUST_LOG` env var (if set) overrides the programmatic level — standard
-//!   tracing convention; lets operators debug a running binary without a config change
+//! `RUST_LOG` overrides the programmatic level — standard tracing convention,
+//! lets operators debug a running binary without a config change.
 //!
-//! Deferred to Phase 9:
-//! - `trace_id` propagation from `X-Trace-Id` header (OBS-04)
-//! - Metrics-like counters on log levels
-//!
-//! The subscriber is installed exactly once per process. Repeat calls to `init`
-//! return Ok without re-installing (needed so integration tests that spawn multiple
-//! `TestServer` instances in one test process don't double-init).
+//! `init` is idempotent across the process so integration tests that spawn
+//! multiple `TestServer` instances don't double-install the subscriber.
 
 use once_cell::sync::OnceCell;
 use thiserror::Error;
@@ -35,10 +27,8 @@ pub enum InitError {
 /// 1. `RUST_LOG` env var, if set and parseable
 /// 2. The `level` argument passed to this function
 pub fn init(level: &str) -> Result<(), InitError> {
-    // Validate the caller's level string up front so misconfigurations are loud.
     validate_level(level)?;
 
-    // Return Ok(()) if already initialized — idempotent.
     if INIT.get().is_some() {
         return Ok(());
     }
@@ -94,8 +84,8 @@ mod tests {
 
     #[test]
     fn init_is_idempotent() {
-        // First call may succeed or be a no-op depending on test ordering; second
-        // must succeed regardless.
+        // First call may race with other tests in the process; only the
+        // second call's idempotency is what we're asserting.
         let _ = super::init("info");
         super::init("info").expect("second init must be idempotent-Ok");
     }
