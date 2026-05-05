@@ -566,7 +566,9 @@ impl FirstNState {
     }
 
     pub fn query(&self) -> Value {
-        Value::Str(values_to_json_array(&self.values).into())
+        // Phase 13.5.2: return as Value::List (parses to a Python list at the
+        // wire boundary) matching the modern pattern used by ReservoirSample.
+        Value::List(self.values.clone())
     }
 }
 
@@ -622,12 +624,9 @@ impl LastNState {
     }
 
     pub fn query(&self) -> Value {
-        let v: Vec<&Value> = self.values.iter().collect();
-        let mut owned = Vec::with_capacity(v.len());
-        for x in v {
-            owned.push(x.clone());
-        }
-        Value::Str(values_to_json_array(&owned).into())
+        // Phase 13.5.2: return as Value::List (parses to a Python list at the
+        // wire boundary) matching the modern pattern used by ReservoirSample.
+        Value::List(self.values.iter().cloned().collect())
     }
 }
 
