@@ -29,8 +29,31 @@ Plan 13.5.1-04 turns these tests GREEN by inserting an explicit
 Plan-checker contract for Phase 13.5.1: this file uses NO ``MagicMock``
 against the Transport surface (D-05 anti-pattern); the @bv.table decorator
 is a pure Python compile-time helper with no transport dependency.
+
+---
+
+Phase 13.5.1 Plan 07e widens this file with positive declaration-site
+coverage. The original 4 tests pin the *negative* contract (unannotated →
+TypeError); the 4 new tests pin the *positive* declaration-site contract
+documented in ``docs/sdk-api/python.md`` § "Supported @bv.event declaration
+sites":
+
+    1. Module-level (canonical, mypy-friendly) — `fn.__globals__`.
+    2. Function-local (pytest-fixture pattern) — caller-frame `f_locals`.
+    3. Inner-class (in enclosing fn) — closure cells via `fn.__closure__`.
+    4. `@functools.lru_cache`-wrapped factory — closure cells survive.
+
+These 4 positive tests pass at HEAD AND after the Plan 07e refactor of
+``_resolve_upstream_proxies`` from the 8-frame magic walk to the
+documented contract. The pin justification (per CLAUDE.md §TDD Discipline
+item #4 — smoke / acceptance pattern) is to encode the documented contract
+as executable BEFORE swapping the implementation, so the refactor's GREEN
+gate is "tests still pass under the new resolver" rather than "we hope the
+new resolver covers the same ground as the hack."
 """
 from __future__ import annotations
+
+import functools
 
 import pytest
 
@@ -132,6 +155,9 @@ def test_positive_control_annotated_parameter_returns_table_descriptor() -> None
     Sanity check that the strict-TypeError path doesn't regress the happy
     path. Mirrors the canonical fraud-team shape from
     ``python/tests/v0/test_core.py``.
+
+    Declaration-site contract: module-level ``Click`` resolved via
+    ``fn.__globals__`` (priority 1 in the contract).
     """
 
     @bv.table(key="user_id")
@@ -143,3 +169,115 @@ def test_positive_control_annotated_parameter_returns_table_descriptor() -> None
     # Decorator returns a TableDescriptor; opaque to user code, but we can
     # at least assert its type-name to detect a regression in the happy path.
     assert type(UserClicks).__name__ == "TableDescriptor"
+
+
+# ---------------------------------------------------------------------------
+# Plan 07e positive declaration-site coverage (4 NEW tests).
+#
+# These pin the documented contract from ``docs/sdk-api/python.md`` §
+# "Supported @bv.event declaration sites". The implementation refactor
+# in the paired GREEN commit replaces the 8-frame magic walk with a
+# documented single-pass resolver (globals → closure cells → caller
+# f_locals); these tests must stay GREEN through that refactor.
+# ---------------------------------------------------------------------------
+
+
+def test_function_local_upstream_class_resolves() -> None:
+    """Function-local ``@bv.event class`` (pytest-fixture pattern) → resolves.
+
+    Declaration-site contract priority 3: caller-frame ``f_locals`` (one
+    frame back). This is the canonical pytest pattern: the upstream class
+    is defined inside the test fn, never reaches module scope.
+    """
+
+    @bv.event
+    class _LocalClick:
+        user_id: str
+        page: str
+
+    @bv.table(key="user_id")
+    def _LocalUserClicks(c: _LocalClick):
+        return c.group_by("user_id").agg(n=bv.count(window="forever"))
+
+    assert type(_LocalUserClicks).__name__ == "TableDescriptor"
+
+
+def test_inner_class_via_closure_resolves() -> None:
+    """Inner class captured by an enclosing fn → resolved via closure cells.
+
+    Declaration-site contract priority 2: enclosing closure cells via
+    ``fn.__closure__`` + ``fn.__code__.co_freevars``. The factory pattern
+    is common when registering many similar tables programmatically.
+    """
+
+    @bv.event
+    class _InnerClick:
+        user_id: str
+
+    def _make_table_using_inner_click():
+        # _InnerClick is a free var of the inner fn → ends up in the
+        # decorated fn's __closure__ cells.
+        @bv.table(key="user_id")
+        def _InnerUserClicks(c: _InnerClick):
+            return c.group_by("user_id").agg(n=bv.count(window="forever"))
+
+        return _InnerUserClicks
+
+    descriptor = _make_table_using_inner_click()
+    assert type(descriptor).__name__ == "TableDescriptor"
+
+
+def test_lru_cache_wrapped_factory_resolves() -> None:
+    """``@functools.lru_cache`` factory wrapping a ``@bv.table`` def → resolves.
+
+    Declaration-site contract priority 2: closure cells survive
+    ``functools.lru_cache`` wrapping because lru_cache wraps the OUTER
+    factory, not the inner ``@bv.table``-decorated fn. The 8-frame walk
+    happened to work here by luck; the documented contract works
+    deterministically because closure cells are inspected directly on the
+    decorated fn, not by frame-walking up the call stack.
+    """
+
+    @bv.event
+    class _CachedClick:
+        user_id: str
+
+    @functools.lru_cache(maxsize=None)
+    def _make_cached_table():
+        @bv.table(key="user_id")
+        def _CachedUserClicks(c: _CachedClick):
+            return c.group_by("user_id").agg(n=bv.count(window="forever"))
+
+        return _CachedUserClicks
+
+    descriptor = _make_cached_table()
+    assert type(descriptor).__name__ == "TableDescriptor"
+    # Hit the cache the second time; result is the same descriptor object.
+    assert _make_cached_table() is descriptor
+
+
+def test_classmethod_caller_frame_resolves() -> None:
+    """Class-method declaration site (``@bv.event`` + ``@bv.table`` inside method).
+
+    Declaration-site contract priority 3: caller-frame ``f_locals`` (the
+    method body's frame, one frame back from the decorator). Common in
+    ``unittest.TestCase`` style suites; less common in pytest but still
+    valid.
+    """
+
+    class _Suite:
+        def make(self):
+            @bv.event
+            class _MethodClick:
+                user_id: str
+
+            @bv.table(key="user_id")
+            def _MethodUserClicks(c: _MethodClick):
+                return c.group_by("user_id").agg(
+                    n=bv.count(window="forever"),
+                )
+
+            return _MethodUserClicks
+
+    descriptor = _Suite().make()
+    assert type(descriptor).__name__ == "TableDescriptor"

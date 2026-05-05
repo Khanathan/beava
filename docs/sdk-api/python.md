@@ -131,6 +131,17 @@ Calling `register(...)` on an embed-mode `App` outside a `with` block raises
 `RuntimeError`. Explicit-URL `App` instances may use `with` or be closed
 manually via `app.close()`; both are idempotent.
 
+**Embed-mode disk lifecycle (`test_mode=True` and the default
+embed-spawn path):** Each embed spawn allocates a unique tmpdir under
+`$TMPDIR/beava-embed-<pid>-<unix-ms>-<hex>/` holding the binary's
+`./wal` and `./snapshots` sub-dirs. The path is registered with
+`atexit.register(shutil.rmtree, ..., ignore_errors=True)`, so the dir
+is reaped at Python interpreter shutdown — long-running test processes
+(e.g. a pytest session that spawns 100s of embed apps) do not leak
+disk. SIGKILL'd Python processes leave the dir for the OS tmpfs reaper
+to handle (typical `$TMPDIR` aging is days). Users of `App(test_mode=True)`
+do not need to register their own cleanup; the SDK handles it.
+
 ### `app.register(*descriptors, force=False, dry_run=False)`
 
 **Wire opcode:** `OP_REGISTER` (`0x0001`).
@@ -335,6 +346,11 @@ name), and registers it as a derivation node with `output_kind=event`.
 The chain methods supported on event descriptors are documented under
 [Pipeline DSL](#pipeline-dsl-chained-methods-on-eventtable) below.
 
+The function-form parameter annotations are resolved against the same
+declaration-site contract documented under
+[Supported `@bv.event` declaration sites](#supported-bvevent-declaration-sites)
+below — module-level + enclosing closure + caller-frame locals.
+
 ### @bv.table (function form, per ADR-001)
 
 ```python
@@ -379,6 +395,104 @@ The decorator captures the chain, names the result (function name →
 table name), and emits a derivation node with `output_kind=table`.
 
 **Class form is v0.1+** — only function form is supported in v0.
+
+#### Supported `@bv.event` declaration sites
+
+`@bv.event` and `@bv.table` need to resolve their parameter annotations
+back to the actual upstream class objects. This works under PEP 563
+(`from __future__ import annotations`) by following a documented
+resolution order. Any name found by one of the sites below resolves
+correctly; names that don't appear in any of these scopes raise a
+`NameError`-style failure at decoration time.
+
+| # | Site | Mechanism | Example |
+|---|---|---|---|
+| 1 | Module-level (canonical) | `fn.__globals__` | `@bv.event class Click: ...` at module top |
+| 2 | Enclosing closure cells | `fn.__closure__` + `fn.__code__.co_freevars` | Inner-class captured by the decorated fn body |
+| 3 | Caller-frame `f_locals` (user-code) | Walked outward from the decoration site by FILE IDENTITY (any frame outside `python/beava/_table.py` and `python/beava/_events.py`); first-seen wins; depth-bounded to 32 frames | Function-local class declared inside a pytest test fn or class method |
+
+**Module-level (priority 1, canonical):**
+
+```python
+@bv.event
+class Click:
+    user_id: str
+    page: str
+
+@bv.table(key="user_id")
+def UserClicks(c: Click):
+    return c.group_by("user_id").agg(n=bv.count(window="forever"))
+```
+
+This is the mypy-friendly default; prefer it whenever possible.
+
+**Function-local (priority 3, pytest-fixture pattern):**
+
+```python
+def test_user_clicks():
+    @bv.event
+    class Click:                 # local to this fn — never reaches module scope
+        user_id: str
+
+    @bv.table(key="user_id")
+    def UserClicks(c: Click):
+        return c.group_by("user_id").agg(n=bv.count(window="forever"))
+
+    # ... use UserClicks in the test ...
+```
+
+The resolver finds `Click` by walking outward through the call stack
+(skipping its own internal frames) until it lands on the test fn's frame,
+where `Click` is in `f_locals`.
+
+**Inner-class via closure (priority 2, factory pattern):**
+
+```python
+@bv.event
+class Click:
+    user_id: str
+
+def make_user_clicks_table():
+    @bv.table(key="user_id")
+    def UserClicks(c: Click):    # Click captured as a free variable
+        return c.group_by("user_id").agg(n=bv.count(window="forever"))
+
+    return UserClicks
+```
+
+The decorated fn `UserClicks` references `Click` from the enclosing
+scope. Python compiles `Click` into the fn's `__closure__` cells; the
+resolver inspects the cells directly. This pattern is also robust to
+`@functools.lru_cache`-wrapped factories — the cache wraps the OUTER
+factory, not the inner decorated fn, so the closure cells survive.
+
+**Class-method (priority 3, unittest pattern):**
+
+```python
+class TestSuite:
+    def make_table(self):
+        @bv.event
+        class Click:
+            user_id: str
+
+        @bv.table(key="user_id")
+        def UserClicks(c: Click):
+            return c.group_by("user_id").agg(n=bv.count(window="forever"))
+
+        return UserClicks
+```
+
+Same priority-3 mechanism as the function-local pattern; the resolver
+walks back to the method body's frame.
+
+**Not supported:**
+
+- Lambdas: `@bv.table` requires a real `def` body — the upstream-proxy
+  call needs a fn object, and lambdas are limited to a single
+  expression.
+- Names imported via `from x import *` *after* the decorator runs: the
+  resolver runs at decoration time; if the name doesn't exist yet, it
+  can't be found.
 
 ## bv.sum signature (Q1 Path B locked)
 

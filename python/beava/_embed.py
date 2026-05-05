@@ -15,6 +15,7 @@ no shell interpolation; no arbitrary-command execution.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -90,6 +91,15 @@ def spawn_embedded_server(
     After both bind events are received, remaining stderr lines are forwarded
     to the ``beava.embed`` logger at DEBUG level.
 
+    **Disk lifecycle (Phase 13.5.1 Plan 07e formalization):** Each spawn
+    allocates a unique tmpdir at ``$TMPDIR/beava-embed-<pid>-<unix-ms>-<hex>/``
+    holding the WAL (``./wal``) and snapshot (``./snapshots``) sub-dirs.
+    The path is registered with ``atexit.register(shutil.rmtree, ...,
+    ignore_errors=True)`` so the dir is reaped at Python interpreter
+    shutdown. SIGKILL'd Python processes leave the dir for the OS tmpfs
+    reaper to handle (typical reapers handle ``$TMPDIR`` aging within
+    days).
+
     Args:
         startup_timeout: Seconds to wait for both bind log lines.
 
@@ -122,6 +132,15 @@ def spawn_embedded_server(
     snapshot_dir = spawn_root / "snapshots"
     wal_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+    # Phase 13.5.1 Plan 07e (Deviation 2 formalization): register an
+    # atexit cleanup so the per-spawn tmpdir doesn't accumulate disk
+    # over the life of a long-running test process. ``ignore_errors=True``
+    # so a partial-cleanup race (e.g. the binary still holding a file
+    # handle at interpreter shutdown) doesn't crash teardown. The OS
+    # tmpfs reaper is a backstop for the no-cleanup-ran cases (e.g. SIGKILL
+    # of the Python process).
+    atexit.register(shutil.rmtree, str(spawn_root), ignore_errors=True)
 
     env = {
         **os.environ,
