@@ -1693,6 +1693,52 @@ fn validate_expressions(
                 "derivation contains GroupBy ops which are not validated in Phase 4 \
                  (pass-through)"
             );
+            // Phase 13.5.2: still compile the chain prefix
+            // (filter / select / drop / rename / with_columns / cast / fillna)
+            // so the apply path can transform events at runtime BEFORE the
+            // aggregation evaluates. `OpChain::compile` internally skips
+            // `GroupBy` ops; we discard its `final_schema` because the
+            // post-agg table schema (already on `deriv.schema`) is the
+            // canonical propagated schema for downstream consumers.
+            //
+            // Required for the `bv.lit('web')` constant-column flow per
+            // Phase 13.5.2 D-01/D-02 — without this, the runtime apply path
+            // never executes the prefix chain and where-predicates / agg
+            // field-refs that target chain-added columns silently see None.
+            //
+            // Filter out GroupBy ops before passing to OpChain::compile —
+            // `propagate_schema` rejects GroupBy as `UnsupportedOp`, which
+            // would cause `?` propagation to abort the compile entirely. We
+            // want only the chain prefix (the row-transform ops). The agg
+            // semantics are owned by Rule 11 (compile_aggregations_from_nodes).
+            let prefix_ops: Vec<crate::op_node::OpNode> = deriv
+                .ops
+                .iter()
+                .filter(|op| !matches!(op, crate::op_node::OpNode::GroupBy { .. }))
+                .cloned()
+                .collect();
+            if !prefix_ops.is_empty() {
+                match OpChain::compile(&combined_input, &prefix_ops) {
+                    Ok((chain, _)) => {
+                        compiled_chains.push((deriv.name.clone(), Arc::new(chain)));
+                    }
+                    Err(compile_errors) => {
+                        for ce in &compile_errors {
+                            let op_idx = match ce {
+                                PropagationError::InvalidExpr { op_index, .. }
+                                | PropagationError::FieldMissing { op_index, .. }
+                                | PropagationError::TypeMismatch { op_index, .. }
+                                | PropagationError::RenameCollision { op_index, .. }
+                                | PropagationError::UnsupportedOp { op_index, .. } => *op_index,
+                            };
+                            if matches!(ce, PropagationError::UnsupportedOp { .. }) {
+                                continue;
+                            }
+                            errors.push(propagation_error_to_validation(ce, node_idx, op_idx));
+                        }
+                    }
+                }
+            }
             propagated_schemas.push((deriv.name.clone(), deriv.schema.clone()));
             propagated_in_batch.insert(deriv.name.clone(), deriv.schema.clone());
             continue;

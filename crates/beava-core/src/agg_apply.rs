@@ -371,6 +371,24 @@ pub fn apply_event_to_aggregations(
         desc_count += 1;
         let t_a = t0.map(|t| t.elapsed());
 
+        // Phase 13.5.2: apply this derivation's chain ops (with_columns / select
+        // / drop / rename / cast / fillna) to the source row before evaluating
+        // the aggregation. Falls back to the raw source row (zero overhead) when
+        // no chain is registered — the common case for direct event→table aggs.
+        // Required for `bv.lit('web')` constant-column flows where the where
+        // predicate or feature field references a column added upstream by an
+        // `@bv.event def`-decorated derivation (Phase 13.5.2 D-01/D-02 contract).
+        // Chain ops `Filter` may drop a row → skip this desc when that fires.
+        let chain_opt = registry.compiled_chain(&desc.node_name);
+        let chain_row_storage: Option<crate::row::Row> = match chain_opt.as_ref() {
+            Some(c) => match c.apply(row.clone()) {
+                Some(transformed) => Some(transformed),
+                None => continue,
+            },
+            None => None,
+        };
+        let agg_row: &crate::row::Row = chain_row_storage.as_ref().unwrap_or(row);
+
         // Plan 19.2-03 (D-04): build EntityKeyShape once per cluster_id.
         let cluster_idx = desc.cluster_id as usize;
         if shape_cache.len() <= cluster_idx {
@@ -456,23 +474,37 @@ pub fn apply_event_to_aggregations(
                     }
                     _ => {
                         // Mapping absent or sentinel — fall back to per-row
-                        // lookup by name (slow path; reachable only when
-                        // apply_field_names was empty at resolver time, e.g.
-                        // some test paths that don't go through
-                        // apply_registration). update_with_extracted uses
-                        // `field` directly via `row.get(field)` when this is
-                        // the case.
-                        feat.descriptor.field.as_deref().and_then(|n| row.get(n))
+                        // lookup by name (slow path; reachable when
+                        // apply_field_names was empty at resolver time, OR
+                        // when the field was added by chain ops (Phase 13.5.2)
+                        // and isn't in the source-event apply_field_names
+                        // union). Use `agg_row` so chain-added fields are
+                        // visible.
+                        feat.descriptor
+                            .field
+                            .as_deref()
+                            .and_then(|n| agg_row.get(n))
                     }
                 }
             } else {
-                None
+                // Phase 13.5.2: when field_idx is FIELD_IDX_NONE but the agg
+                // does declare a `field` name, the field is likely added by
+                // a chain op (with_columns/cast/rename/fillna) — not in the
+                // source event schema, so the resolver couldn't assign a
+                // field_idx. Fall back to per-row lookup against agg_row so
+                // chain-added fields like `rate` (`with_columns(rate=...)`)
+                // are visible to the agg's value-bearing ops (mean / sum /
+                // first / quantile / etc.).
+                feat.descriptor
+                    .field
+                    .as_deref()
+                    .and_then(|n| agg_row.get(n))
             };
             entity_row[i].update_with_extracted(
                 pre_val,
                 now_ms,
                 feat.descriptor.where_expr.as_ref(),
-                row,
+                agg_row,
                 feat.descriptor.field.as_deref(),
                 feat.descriptor.field_idx,
                 &event_extracted,

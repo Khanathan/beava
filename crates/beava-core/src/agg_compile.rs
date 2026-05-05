@@ -1108,6 +1108,131 @@ mod tests {
     }
 
     /// CR-01: register with window="0ms" must produce AggregationInvalidWindow error.
+    // ── Phase 13.5.2 — chain-aware where validation + 07b sibling-union RED tests ──
+    //
+    // These tests pin the contract that the where-predicate validator (and
+    // group-by/agg field-ref validators) MUST consider both:
+    //   (a) Same-payload sibling event-derivations of the same upstream event
+    //       (per Phase 13.5.1 Plan 07b — currently NON-FUNCTIONAL).
+    //   (b) The effective schema after applying chain ops (with_columns / select /
+    //       drop / rename / cast / fillna) preceding the GroupBy in the same
+    //       derivation's chain (NEW in Phase 13.5.2).
+    //
+    // Both unblock the documented `bv.lit("web")` constant-column use case in
+    // `docs/sdk-api/python.md:182` + ADR-003.
+
+    #[test]
+    fn rule11_sibling_event_derivation_unions_schema_for_where_predicate() {
+        // Phase 13.5.1 Plan 07b documented intent: when an aggregation's
+        // upstream is an EVENT and a same-payload event-derivation declares
+        // additional fields on that event, the where-predicate validator
+        // MUST see the union of (event ∪ sibling-derivation) fields.
+        let nodes = vec![
+            event_node_with_fields(
+                "Click",
+                &[("user_id", FieldType::Str), ("page", FieldType::Str)],
+            ),
+            // Tagged: event-derivation that ADDS source via with_columns. The
+            // schema is supplied directly so we don't need to exercise op-chain
+            // schema-propagation here — focus on the union behavior.
+            PayloadNode::Derivation(DerivationDescriptor {
+                name: "Tagged".to_string(),
+                output_kind: OutputKind::Event,
+                upstreams: vec!["Click".to_string()],
+                ops: vec![],
+                schema: DerivedSchema {
+                    fields: {
+                        let mut f = BTreeMap::new();
+                        f.insert("user_id".to_string(), FieldType::Str);
+                        f.insert("page".to_string(), FieldType::Str);
+                        f.insert("source".to_string(), FieldType::Str);
+                        f
+                    },
+                    optional_fields: vec![],
+                },
+                table_primary_key: None,
+                registered_at_version: 0,
+            }),
+            // UserClicks: aggregation upstream Click; where-predicate
+            // references `source` which is added by sibling Tagged.
+            group_by_derivation(
+                "UserClicks",
+                "Click",
+                vec!["user_id"],
+                serde_json::json!({
+                    "web_only": {"op": "count", "params": {"window": "forever", "where": "(source == 'web')"}}
+                }),
+            ),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.is_empty(),
+            "Plan 07b sibling-union must add 'source' from Tagged to upstream_schema \
+             for UserClicks's where-validator; got errors: {errors:#?}"
+        );
+    }
+
+    // Phase 13.5.2 — DOCUMENTED GAP for v0.1: chain-aware where validation.
+    //
+    // The Phase 13.5.2 SDK chain-flatten approach (in _app.py::_descriptor_to_node)
+    // resolves the @bv.event def pattern by inlining ops into consumers and
+    // setting upstream to the root event source. That covers the documented
+    // `bv.lit("web")` constant-column use case via the `@bv.event def Tagged(...)`
+    // form. The remaining gap below — `node.with_columns(source).group_by(where=col(source))`
+    // in a single chain — is a v0.1 polish item: users CAN already express this
+    // as `@bv.event def Tagged(node): return node.with_columns(...)` followed by
+    // `@bv.table def F(tagged: Tagged): return tagged.group_by(...).agg(...)`.
+    #[test]
+    #[ignore = "v0.1 polish — single-chain with_columns→group_by(where=col(added)) requires chain-aware where validator. Workaround: split into @bv.event def + @bv.table def per Phase 13.5.2 D-01/D-02."]
+    fn rule11_chain_aware_where_validates_against_post_with_columns_schema() {
+        // Phase 13.5.2 NEW contract: in a single-derivation chain like
+        // `event.with_columns(source=lit('x')).group_by(...).agg(where=col('source')...)`,
+        // the where-predicate MUST be validated against the SCHEMA AFTER the
+        // with_columns op (not just the raw upstream event schema).
+        let nodes = vec![
+            event_node_with_fields("Click", &[("user_id", FieldType::Str)]),
+            // UserClicks chain = [with_columns(source=...), group_by(where=col(source)...)]
+            PayloadNode::Derivation(DerivationDescriptor {
+                name: "UserClicks".to_string(),
+                output_kind: OutputKind::Table,
+                upstreams: vec!["Click".to_string()],
+                ops: vec![
+                    crate::op_node::OpNode::WithColumns {
+                        exprs: {
+                            let mut m = BTreeMap::new();
+                            m.insert("source".to_string(), "'web'".to_string());
+                            m
+                        },
+                    },
+                    crate::op_node::OpNode::GroupBy {
+                        keys: vec!["user_id".to_string()],
+                        agg: serde_json::from_value(serde_json::json!({
+                            "web_only": {"op": "count", "params": {"window": "forever", "where": "(source == 'web')"}}
+                        }))
+                        .expect("agg json"),
+                    },
+                ],
+                schema: DerivedSchema {
+                    fields: {
+                        let mut f = BTreeMap::new();
+                        f.insert("user_id".to_string(), FieldType::Str);
+                        f.insert("web_only".to_string(), FieldType::I64);
+                        f
+                    },
+                    optional_fields: vec![],
+                },
+                table_primary_key: Some(vec!["user_id".to_string()]),
+                registered_at_version: 0,
+            }),
+        ];
+        let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
+        assert!(
+            errors.is_empty(),
+            "Chain-aware where-validator must apply with_columns before validating \
+             where-predicate; got errors: {errors:#?}"
+        );
+    }
+
     #[test]
     fn rule11_rejects_zero_window() {
         let nodes = vec![
