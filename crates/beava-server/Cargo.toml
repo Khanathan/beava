@@ -9,7 +9,7 @@ description = "Beava v2 server — single-binary real-time feature server (fraud
 
 [features]
 default = []
-testing = ["dep:reqwest"]
+testing = ["dep:reqwest", "dep:tempfile"]
 
 [[bin]]
 name = "beava"
@@ -287,6 +287,11 @@ crossbeam-channel = "0.5"
 # tests for actual CPU sampling.
 libc = { workspace = true }
 reqwest = { workspace = true, optional = true }
+# Phase 13.5.3: TestServerBuilder uses `tempfile::tempdir()` for default
+# WAL+snapshot dirs (kernel-guaranteed unique mkdtemp + RAII auto-cleanup
+# when the TestServer drops). Gated behind the `testing` feature alongside
+# reqwest because tempfile is only used inside `testing.rs`.
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 beava-runtime-core = { path = "../beava-runtime-core" }

@@ -59,24 +59,43 @@ pub struct TestServerBuilder {
     readiness_timeout: Duration,
     readiness_poll_interval: Duration,
     dev_endpoints: bool,
+    /// Phase 13.5.3: per-server WAL ring buffer override (was env-driven).
+    wal_buffers_override: Option<usize>,
+    /// Phase 13.5.3: per-server WAL ring buffer size override.
+    wal_buffer_size_mb_override: Option<usize>,
+    /// Phase 13.5.3: per-server WAL writer tick interval override.
+    wal_tick_ms_override: Option<u64>,
+    /// Phase 13.5.3: per-server IoPool worker count override.
+    io_threads_override: Option<usize>,
+    /// Phase 13.5.3: per-server test_mode flag — replaces process-global
+    /// BEAVA_TEST_MODE env-set in tests.
+    test_mode_override: bool,
+    /// Phase 13.5.3: per-server memory-governance enforce override —
+    /// replaces process-global BEAVA_MEMORY_GOV_ENFORCE env-set in tests.
+    memory_governance_enforce_override: Option<bool>,
+    /// Phase 13.5.3: tempfile-based WAL/snapshot dir handles. Held until
+    /// the spawned TestServer drops, ensuring auto-cleanup. `None` when
+    /// the caller passed an explicit path via `.wal_dir(custom)` /
+    /// `.snapshot_dir(custom)` (caller manages cleanup).
+    wal_tempdir: Option<tempfile::TempDir>,
+    snap_tempdir: Option<tempfile::TempDir>,
 }
 
 impl Default for TestServerBuilder {
     fn default() -> Self {
-        // TCP: enabled by default (matches production); OS-assigned port so
-        // tests don't collide on 7380. Plan 04 Task 3 wires in the TCP bind.
-        // WAL: each test overrides `.wal_dir(tempdir)` so the default here is
-        // a unique per-process temp path.
-        let default_wal_dir = std::env::temp_dir().join(format!(
-            "beava-test-wal-{}-{}",
-            std::process::id(),
-            uniq_id()
-        ));
-        let default_snapshot_dir = std::env::temp_dir().join(format!(
-            "beava-test-snap-{}-{}",
-            std::process::id(),
-            uniq_id()
-        ));
+        // Phase 13.5.3: WAL+snapshot dirs default to `tempfile::tempdir()`
+        // for kernel-guaranteed unique mkdtemp paths + RAII auto-cleanup
+        // when the TestServer drops. Replaces the legacy `temp_dir +
+        // (pid, atomic_counter)` scheme that produced WAL-EEXIST races
+        // under workspace-test parallelism (per
+        // `.planning/ideas/workspace-test-determinism.md` filesystem-race
+        // section). Callers who want explicit paths use `.wal_dir(...)` /
+        // `.snapshot_dir(...)` builder methods which clear the TempDir
+        // handles below (caller manages cleanup).
+        let wal_tempdir = tempfile::tempdir().expect("tempfile::tempdir for WAL");
+        let snap_tempdir = tempfile::tempdir().expect("tempfile::tempdir for snapshot");
+        let default_wal_dir = wal_tempdir.path().to_path_buf();
+        let default_snapshot_dir = snap_tempdir.path().to_path_buf();
         let cfg = Config {
             listen_addr: "127.0.0.1:0".to_string(), // OS-allocated
             log_level: "info".to_string(),
@@ -106,15 +125,20 @@ impl Default for TestServerBuilder {
             readiness_timeout: Duration::from_secs(5),
             readiness_poll_interval: Duration::from_millis(20),
             dev_endpoints: false,
+            wal_buffers_override: None,
+            wal_buffer_size_mb_override: None,
+            wal_tick_ms_override: None,
+            io_threads_override: None,
+            test_mode_override: false,
+            memory_governance_enforce_override: None,
+            wal_tempdir: Some(wal_tempdir),
+            snap_tempdir: Some(snap_tempdir),
         }
     }
 }
 
-fn uniq_id() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
-}
+// Phase 13.5.3: `uniq_id` helper removed — `Default::default()` now uses
+// `tempfile::tempdir()` for kernel-guaranteed unique WAL+snapshot dirs.
 
 impl TestServerBuilder {
     pub fn new() -> Self {
@@ -179,14 +203,72 @@ impl TestServerBuilder {
 
     /// Phase 6 Plan 03: override the WAL directory. Tests pass a per-test
     /// `tempfile::tempdir()` path to avoid cross-test pollution.
+    ///
+    /// Phase 13.5.3: caller now manages lifetime of the explicit path —
+    /// the builder's default TempDir handle is dropped (so default-path
+    /// auto-cleanup is foregone in favor of the caller's explicit
+    /// management). Most tests should NOT call this method; the
+    /// `Default::default()` `tempfile::tempdir()` paths are race-free
+    /// and auto-cleaned.
     pub fn wal_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.cfg.durability.wal_dir = dir;
+        // Caller manages cleanup of the explicit path; drop our handle.
+        self.wal_tempdir = None;
         self
     }
 
     /// Phase 7 Plan 03: override the snapshot directory.
+    ///
+    /// Phase 13.5.3: same lifetime caveat as `.wal_dir(...)`.
     pub fn snapshot_dir(mut self, dir: std::path::PathBuf) -> Self {
         self.cfg.durability.snapshot_dir = dir;
+        self.snap_tempdir = None;
+        self
+    }
+
+    /// Phase 13.5.3: per-server WAL ring buffer count (was env-driven via
+    /// `BEAVA_WAL_BUFFERS`). Replaces process-global env-set in tests.
+    pub fn wal_buffers(mut self, n: usize) -> Self {
+        self.wal_buffers_override = Some(n);
+        self
+    }
+
+    /// Phase 13.5.3: per-server WAL ring buffer size in MiB (was env-driven
+    /// via `BEAVA_WAL_BUFFER_SIZE_MB`).
+    pub fn wal_buffer_size_mb(mut self, mb: usize) -> Self {
+        self.wal_buffer_size_mb_override = Some(mb);
+        self
+    }
+
+    /// Phase 13.5.3: per-server WAL writer-thread tick interval in ms (was
+    /// env-driven via `BEAVA_WAL_TICK_MS`).
+    pub fn wal_tick_ms(mut self, ms: u64) -> Self {
+        self.wal_tick_ms_override = Some(ms);
+        self
+    }
+
+    /// Phase 13.5.3: per-server IoPool worker thread count (was env-driven
+    /// via `BEAVA_IO_THREADS`).
+    pub fn io_threads(mut self, n: usize) -> Self {
+        self.io_threads_override = Some(n);
+        self
+    }
+
+    /// Phase 13.5.3: enable test_mode for this TestServer (replaces
+    /// `BEAVA_TEST_MODE=1` env-set in tests). Per Phase 13.4 D-03 USER-LOCKED
+    /// the env-var check is exactly `== "1"`; the builder method takes a
+    /// bool directly so tests can set it deterministically without
+    /// stringifying.
+    pub fn test_mode(mut self, enabled: bool) -> Self {
+        self.test_mode_override = enabled;
+        self
+    }
+
+    /// Phase 13.5.3: per-server memory-governance enforcement (was env-driven
+    /// via `BEAVA_MEMORY_GOV_ENFORCE`). `Some(true)` = enforce (default ON
+    /// per Plan 12.8-06 D-03); `Some(false)` = explicit escape hatch.
+    pub fn memory_governance_enforce(mut self, enabled: bool) -> Self {
+        self.memory_governance_enforce_override = Some(enabled);
         self
     }
 
@@ -216,11 +298,19 @@ impl TestServerBuilder {
     /// - Admin endpoints (`/health`, `/ready`, `/metrics`, `/registry`) on
     ///   `cfg.admin_addr` (a separate OS-allocated port). `wait_ready`
     ///   polls the ADMIN port — `/ready` is admin-only on ServerV18.
-    pub async fn spawn(self) -> Result<TestServer, TestServerError> {
+    pub async fn spawn(mut self) -> Result<TestServer, TestServerError> {
         // Plan 12.6-14: dev_endpoints is now a real toggle on the mio
         // data plane (not just the admin sidecar). The flag is applied
         // post-bind via `app_state.dev_endpoints.store(...)` once we
         // have the Arc<AppState> handle below.
+
+        // Phase 13.5.3 RED: take TempDir handles out of self before the
+        // partial moves below; will be transferred to TestServer for RAII
+        // auto-cleanup. (This compiles even before Task 2 GREEN wires the
+        // override fields through bind_with_config, so the RED state is
+        // observable via the test_mode→/reset round-trip below.)
+        let wal_tempdir_for_server = self.wal_tempdir.take();
+        let snap_tempdir_for_server = self.snap_tempdir.take();
 
         // Resolve the configured event-plane HTTP/TCP addresses + admin
         // address, all permitted to be `*:0` (OS-allocated).
@@ -249,6 +339,23 @@ impl TestServerBuilder {
                 format!("{e}"),
             ))
         })?;
+
+        // Phase 13.5.3 RED: still calls `bind_with_state` (which does NOT
+        // take ServerV18Config), so test_mode_override / io_threads_override
+        // / wal_*_override / memory_governance_enforce_override are read
+        // off `self` but DROPPED on the floor — the spawned server boots
+        // with default values regardless of what the test set on the
+        // builder. This is the RED state for Task 2: the unit test
+        // `test_test_mode_builder_method_plumbs_through_to_reset` below
+        // will fail because /reset returns 403 even when `.test_mode(true)`
+        // is on the builder. Task 2 GREEN switches `bind_with_state` →
+        // `bind_with_config` here and the test goes GREEN.
+        let _ = self.test_mode_override; // intentionally unused in RED
+        let _ = self.io_threads_override;
+        let _ = self.wal_buffers_override;
+        let _ = self.wal_buffer_size_mb_override;
+        let _ = self.wal_tick_ms_override;
+        let _ = self.memory_governance_enforce_override;
 
         let sv18 = ServerV18::bind_with_state(
             http_addr,
@@ -305,6 +412,8 @@ impl TestServerBuilder {
             registry,
             snapshot_trigger,
             app_state,
+            _wal_tempdir: wal_tempdir_for_server,
+            _snap_tempdir: snap_tempdir_for_server,
         };
 
         // /ready is on the admin port for ServerV18 (data plane has no
@@ -336,6 +445,12 @@ pub struct TestServer {
     /// Phase 18 Plan 01: shared AppState Arc — used by glue-layer tests that
     /// call `dispatch_wire_request` directly without going through HTTP.
     app_state: Arc<crate::AppState>,
+    /// Phase 13.5.3: WAL directory TempDir handle. Held for RAII auto-cleanup
+    /// when the TestServer drops. `None` when caller passed an explicit path
+    /// via `.wal_dir(custom)` (caller manages cleanup).
+    _wal_tempdir: Option<tempfile::TempDir>,
+    /// Phase 13.5.3: snapshot directory TempDir handle (RAII auto-cleanup).
+    _snap_tempdir: Option<tempfile::TempDir>,
 }
 
 impl TestServer {
@@ -1039,5 +1154,94 @@ mod tests {
             "admin /health must return 200 on the admin port"
         );
         ts.shutdown().await.expect("shutdown");
+    }
+}
+
+/// Phase 13.5.3 — TestServerBuilder per-server config plumb-through tests.
+///
+/// These tests confirm the new builder methods (`.test_mode(b)` /
+/// `.io_threads(n)` / `.memory_governance_enforce(b)` / `.wal_*` family)
+/// actually plumb their values through to the spawned ServerV18 instance.
+/// In Task 2 RED state the builder methods exist but `spawn()` still
+/// uses `bind_with_state` (which doesn't take ServerV18Config), so the
+/// override values are read off `self` and dropped — RED. Task 2 GREEN
+/// switches `spawn()` to `bind_with_config(..., ServerV18Config { ... })`
+/// at which point these tests turn GREEN.
+///
+/// Anchored RED-able test: spawn with `.test_mode(true)`, POST /reset,
+/// expect 200 OK + `body.reset == true`. Without plumb-through /reset
+/// returns 403 + `error.code == "reset_disabled_in_production"`.
+#[cfg(test)]
+mod testserver_builder_phase_13_5_3_tests {
+    use super::*;
+
+    /// Test 1 — RED: spawn TestServer with `.test_mode(true)`, hit
+    /// /reset, assert 200 + `body.reset == true`. Without plumb-through
+    /// /reset returns 403 (the OP_RESET gate consults the
+    /// `app_state.effective_test_mode` field which is false because the
+    /// builder's override didn't reach `bind_with_config`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_test_mode_builder_method_plumbs_through_to_reset() {
+        // Need a registered event before /reset to validate the "after
+        // reset, push fails" semantic; the gate test alone uses just the
+        // 200 ack.
+        let ts = TestServerBuilder::new()
+            .test_mode(true)
+            .spawn()
+            .await
+            .expect("spawn");
+
+        let url = format!("{}/reset", ts.base_url());
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .expect("post /reset");
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        ts.shutdown().await.ok();
+
+        assert_eq!(
+            status, 200,
+            "POST /reset with `.test_mode(true)` MUST return 200 (Task 2 GREEN \
+             plumbs the override through bind_with_config). Got status={status} \
+             body={body}"
+        );
+        assert_eq!(
+            body["reset"], true,
+            "POST /reset response must contain reset=true, got {body}"
+        );
+    }
+
+    /// Test 2 — sanity (parallel-spawn race-free property): four
+    /// concurrent `TestServer::spawn()` calls all succeed without WAL
+    /// EEXIST race. Phase 13.5.3 swapped `Default::default()`'s WAL+snap
+    /// dirs from `temp_dir + (pid, atomic_counter)` to
+    /// `tempfile::tempdir()` (kernel-guaranteed unique mkdtemp), so the
+    /// `phase12_6_join_union_rejection` / `phase12_8_metrics_endpoint`
+    /// EEXIST family of flakes goes away by construction.
+    ///
+    /// This test is GREEN both in Task 2 RED and Task 2 GREEN states —
+    /// the WAL-dir change landed in Task 2 RED's
+    /// `TestServerBuilder::default()` rewrite. Test 1 above is the
+    /// red-able anchor for Task 2.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_parallel_spawn_does_not_race_on_wal_eexist() {
+        let h1 = tokio::spawn(async { TestServer::spawn().await });
+        let h2 = tokio::spawn(async { TestServer::spawn().await });
+        let h3 = tokio::spawn(async { TestServer::spawn().await });
+        let h4 = tokio::spawn(async { TestServer::spawn().await });
+        let (r1, r2, r3, r4) = tokio::join!(h1, h2, h3, h4);
+        let ts1 = r1.expect("join 1").expect("spawn 1");
+        let ts2 = r2.expect("join 2").expect("spawn 2");
+        let ts3 = r3.expect("join 3").expect("spawn 3");
+        let ts4 = r4.expect("join 4").expect("spawn 4");
+        ts1.shutdown().await.ok();
+        ts2.shutdown().await.ok();
+        ts3.shutdown().await.ok();
+        ts4.shutdown().await.ok();
     }
 }
