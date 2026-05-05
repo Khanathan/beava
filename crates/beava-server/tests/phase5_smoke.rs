@@ -188,15 +188,20 @@ async fn sc2_push_then_get_returns_count() {
         .await;
     }
 
-    // GET /get/cnt/alice → {"value": 10}
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4 (lockstep
+    // alignment exemption): post-13.4 POST /get takes verb-style
+    // {table, key, features?} and returns a flat dict (no per-entity envelope).
     let resp = ts
-        .post_json("/get", &json!({"keys": ["alice"], "features": ["cnt"]}))
+        .post_json(
+            "/get",
+            &json!({"table": "TxCount5m", "key": "alice", "features": ["cnt"]}),
+        )
         .await
         .expect("post /get");
     assert_eq!(resp.status().as_u16(), 200, "GET must succeed");
     let body: serde_json::Value = resp.json().await.expect("json");
     assert_eq!(
-        body["alice"]["cnt"], 10,
+        body["cnt"], 10,
         "SC2: 10 pushes must yield count=10: {body:#}"
     );
 
@@ -261,14 +266,18 @@ async fn sc2_push_with_where_filters() {
     }
 
     // GET cnt_ok for alice → 7 (only ok events counted)
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4.
     let get_resp = ts
-        .post_json("/get", &json!({"keys": ["alice"], "features": ["cnt_ok"]}))
+        .post_json(
+            "/get",
+            &json!({"table": "TxCountOk", "key": "alice", "features": ["cnt_ok"]}),
+        )
         .await
         .expect("post /get");
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
     assert_eq!(
-        result["alice"]["cnt_ok"], 7,
+        result["cnt_ok"], 7,
         "SC2 where-filter: only 7 ok events should be counted: {result:#}"
     );
 
@@ -363,16 +372,21 @@ async fn sc3_all_8_operators_e2e() {
     .await;
 
     // Query all features for alice.
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: verb-style
+    // {table, key, features?}; response is a flat dict (no entity envelope).
     let features = vec![
         "cnt", "total", "avg_amt", "min_amt", "max_amt", "var_amt", "std_amt", "ratio_ok",
     ];
     let get_resp = ts
-        .post_json("/get", &json!({"keys": ["alice"], "features": features}))
+        .post_json(
+            "/get",
+            &json!({"table": "AggAll8", "key": "alice", "features": features}),
+        )
         .await
         .expect("post /get");
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
-    let alice = &result["alice"];
+    let alice = &result;
 
     const TOL: f64 = 1e-9;
 
@@ -518,10 +532,17 @@ async fn sc4_replay_determinism() {
         }
 
         // Collect raw response bodies for u0, u1, u2.
+        // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: verb-style
+        // {table, key, features?}. The byte-equality assertion across two
+        // independent server instances still holds — both runs produce the
+        // SAME flat-dict response shape; only the request body changes.
         let mut bodies = Vec::new();
         for key in ["u0", "u1", "u2"] {
             let resp = ts
-                .post_json("/get", &json!({"keys": [key], "features": ["cnt"]}))
+                .post_json(
+                    "/get",
+                    &json!({"table": "TxCount5m", "key": key, "features": ["cnt"]}),
+                )
                 .await
                 .expect("post /get");
             assert_eq!(resp.status().as_u16(), 200);
@@ -611,17 +632,19 @@ async fn sc5_lifetime_count_works() {
         .await;
     }
 
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: verb-style
+    // {table, key, features?}; flat-dict response.
     let get_resp = ts
         .post_json(
             "/get",
-            &json!({"keys": ["alice"], "features": ["cnt_lifetime"]}),
+            &json!({"table": "TxCountLifetime", "key": "alice", "features": ["cnt_lifetime"]}),
         )
         .await
         .expect("post /get");
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
     assert_eq!(
-        result["alice"]["cnt_lifetime"], 100,
+        result["cnt_lifetime"], 100,
         "SC5 lifetime count: expected 100, got: {result:#}"
     );
 
@@ -685,18 +708,18 @@ async fn sc5_lifetime_ratio_works() {
         .await;
     }
 
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: verb-style
+    // {table, key, features?}; flat-dict response.
     let get_resp = ts
         .post_json(
             "/get",
-            &json!({"keys": ["alice"], "features": ["ratio_ok"]}),
+            &json!({"table": "TxRatioLifetime", "key": "alice", "features": ["ratio_ok"]}),
         )
         .await
         .expect("post /get");
     assert_eq!(get_resp.status().as_u16(), 200);
     let result: serde_json::Value = get_resp.json().await.expect("json");
-    let ratio = result["alice"]["ratio_ok"]
-        .as_f64()
-        .expect("ratio must be f64");
+    let ratio = result["ratio_ok"].as_f64().expect("ratio must be f64");
     assert!(
         (ratio - 0.3).abs() < 1e-9,
         "SC5 lifetime ratio: expected 0.3, got {ratio}: {result:#}"
@@ -797,22 +820,50 @@ async fn sc6_aggregation_on_table_rejected() {
     assert_eq!(resp.status().as_u16(), 200);
 
     // Now attempt to aggregate on the Table (should fail).
+    //
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: post-13.4
+    // each REGISTER call REPLACES the prior node set; sending only
+    // BadNestedAgg would drop Transaction + TxTable and trigger 409
+    // force_required (agg_removal) BEFORE the validation pass that yields
+    // `aggregation_on_table_not_supported` runs. Strategy A: include the
+    // prior nodes in the 2nd payload so the diff is purely additive
+    // (BadNestedAgg is the only new node) and validation reaches the agg-on-
+    // table check, which fires `aggregation_on_table_not_supported` regardless
+    // of whether prior nodes are present.
     let bad_body = json!({
-        "nodes": [{
-            "kind": "derivation",
-            "name": "BadNestedAgg",
-            "output_kind": "table",
-            "upstreams": ["TxTable"],
-            "ops": [{
-                "op": "group_by",
-                "keys": ["user_id"],
-                "agg": {
-                    "cnt2": {"op": "count", "params": {"window": "1h"}}
-                }
-            }],
-            "schema": {"fields": {"user_id": "str", "cnt2": "i64"}, "optional_fields": []},
-            "table_primary_key": ["user_id"]
-        }]
+        "nodes": [
+            transaction_schema(),
+            {
+                "kind": "derivation",
+                "name": "TxTable",
+                "output_kind": "table",
+                "upstreams": ["Transaction"],
+                "ops": [{
+                    "op": "group_by",
+                    "keys": ["user_id"],
+                    "agg": {
+                        "cnt": {"op": "count", "params": {"window": "5m"}}
+                    }
+                }],
+                "schema": {"fields": {"user_id": "str", "cnt": "i64"}, "optional_fields": []},
+                "table_primary_key": ["user_id"]
+            },
+            {
+                "kind": "derivation",
+                "name": "BadNestedAgg",
+                "output_kind": "table",
+                "upstreams": ["TxTable"],
+                "ops": [{
+                    "op": "group_by",
+                    "keys": ["user_id"],
+                    "agg": {
+                        "cnt2": {"op": "count", "params": {"window": "1h"}}
+                    }
+                }],
+                "schema": {"fields": {"user_id": "str", "cnt2": "i64"}, "optional_fields": []},
+                "table_primary_key": ["user_id"]
+            }
+        ]
     });
 
     let resp = ts
