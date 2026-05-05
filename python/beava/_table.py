@@ -184,6 +184,23 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
                     closure_cells.get(ann, caller_locals.get(ann, ann)),
                 )
             )
+        # Phase 13.5.2 D-02 (USER-LOCKED): reject raw EventDerivation
+        # instances. Legitimate @bv.event def outputs carry the
+        # `_is_bv_event_function` marker landed in `_make_event_derivation`.
+        if isinstance(ann, EventDerivation) and not getattr(
+            ann, "_is_bv_event_function", False
+        ):
+            raise TypeError(
+                f"@bv.table function {fn.__name__!r} parameter {p.name!r} "
+                f"annotation resolves to an EventDerivation instance (a raw "
+                f"chain). Annotate with an @bv.event-decorated class or function "
+                f"instead — e.g.\n"
+                f"    @bv.event\n"
+                f"    def Tagged(click: Click): return click.with_columns(...)\n"
+                f"    @bv.table(key='user_id')\n"
+                f"    def {fn.__name__}({p.name}: Tagged): "
+                f"return {p.name}.group_by('user_id').agg(...)"
+            )
         proxies.append(ann)
     return proxies
 
