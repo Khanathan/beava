@@ -176,9 +176,14 @@ def test_top_k_per_user_high_volume(app):
         expected_ranking = [page for page, _cnt in c.most_common(3)]
         result = app.get("UserTopPages", entity)
         actual_top_k = result["top_pages"]
-        # Top-K result may be list of strings or list of (value, count) pairs;
-        # extract just the value if pair-shaped.
-        if actual_top_k and isinstance(actual_top_k[0], (list, tuple)):
+        # Top-K result may be:
+        #   - list of strings (e.g. ['page-0', 'page-1', ...])
+        #   - list of (value, count) pairs (legacy tuple shape)
+        #   - list of dicts {'value': ..., 'count': ...} (Phase 13.4+ engine shape)
+        # Extract the value field accordingly.
+        if actual_top_k and isinstance(actual_top_k[0], dict) and "value" in actual_top_k[0]:
+            actual_values = [item["value"] for item in actual_top_k]
+        elif actual_top_k and isinstance(actual_top_k[0], (list, tuple)):
             actual_values = [pair[0] for pair in actual_top_k]
         else:
             actual_values = list(actual_top_k)
