@@ -1833,6 +1833,23 @@ Phase 19.4 was planned 2026-04-28 as the closure phase for the v0 Phase-19 100k 
 
 ---
 
+### Phase 999.1 (backlog): Workspace test determinism — kill `cargo test --workspace` flakes — 💡 BACKLOG
+
+**Captured:** 2026-05-05 (Phase 13.5.2-postclose session)
+**Idea doc:** `.planning/ideas/workspace-test-determinism.md`
+
+**Goal:** `cargo test --workspace --features testing` MUST pass 100% deterministically across 5/5 consecutive runs. Today: 1-2 test crates per workspace run flake from a rotating set (`phase2_5_smoke::criterion_6`, `phase12_6_join_union_rejection`, `phase12_8_metrics_endpoint::test_cold_entity_evictions_starts_at_zero`, `phase13_4_get_row_shape`). All pass deterministically in isolation; fail under workspace parallelism due to **process-global state shared across parallel `TestServer` instances** (`BEAVA_*` env vars, WAL-dir EEXIST race).
+
+**Foundation already landed in Phase 13.5.2-postclose:** `BEAVA_TCP_MAX_FRAME_BYTES` env-var leak killed in commit `acac4254` (template for the rest). 5 commits total (`4e4e9e81`..`acac4254`) clear ground.
+
+**Sequencing:** (1) stopgap process-global mutex in `TestServerBuilder::spawn` (~30min, kills 80% of flakes); (2) `tempfile::tempdir()` swap in `TestServerBuilder::default()` (~30min, kills WAL EEXIST); (3) architectural — plumb every `BEAVA_*` env-var through `ServerV18Config` + add architectural-test tripwire forbidding `std::env::set_var` in `crates/beava-server/tests/` (1-2 days; defer to v0.0.x or pre-13.8 hardening week). Sequence (1)+(2) is mergeable in <1hr to unblock workspace as a deterministic gate; (3) is the structural fix.
+
+**Acceptance:** 5/5 consecutive `cargo test --workspace --features testing` runs all-green; no `std::env::set_var` in test files; tripwire test enforces.
+
+**NOT v0 ship-blocker** — production code is healthy (deterministic lib + Python v0 + clippy + fmt all green). This is test-infra hardening; the v0 critical path (13.5.1 → 13.7.5 → 13.7.6 → 13.8) takes priority.
+
+---
+
 ## Traceability (preview)
 
 Populated in `REQUIREMENTS.md` traceability section. Summary: every REQ-ID maps to exactly one phase; Phase 1 ships zero scope-shipping REQ-IDs (infrastructure).
