@@ -1,12 +1,9 @@
 // Adtech demo: impression event type; campaign aggregations
 // (impressions per campaign, sum of bid amounts, mean bid).
 //
-// Phase 13.0 runs against an inlined mockApp helper struct (Option A
-// per WARNING 8 -- _mock.go carries //go:build exclude and is reference
-// code only, so each demo is a self-contained `go run` target).
-//
-// Phase 13.6 swaps the inline mockApp for the real `beava-go` client
-// (see docs/sdk-api/go.md for the v0-target Go SDK shape).
+// Each demo inlines its own mockApp helper struct so it stays a
+// self-contained `go run` target. Swap the inline mockApp for the real
+// `beava-go` client (see docs/sdk-api/go.md) once published.
 
 package main
 
@@ -18,8 +15,8 @@ import (
 	"strings"
 )
 
-// --- Inline mockApp (~30 LOC, duplicated across demos per Option A).
-// Computes count/sum/mean/min/max via push -- no pre-seeding (BLOCKER 4 fix).
+// Inline mockApp -- ~30 LOC duplicated across demos so each one is a
+// self-contained `go run` target. Computes count/sum/mean/min/max via push.
 
 type aggSpec struct{ op, field string }
 type descriptor struct {
@@ -87,7 +84,7 @@ func (a *mockApp) get(table, key string) map[string]float64 {
 	return map[string]float64{}
 }
 
-// --- Demo body.
+// Demo body.
 
 func main() {
 	_ = context.Background()
@@ -107,7 +104,10 @@ func main() {
 	app.register(Impression, CampaignStats)
 	fmt.Printf("Registered %d descriptors\n", len(app.regs))
 
-	type evt struct{ camp, creative string; bid float64 }
+	type evt struct {
+		camp, creative string
+		bid            float64
+	}
 	events := []evt{
 		{"c1", "cr1", 0.50},
 		{"c1", "cr1", 0.75},
@@ -127,7 +127,6 @@ func main() {
 	fmt.Printf("Campaign c1: %v\n", c1)
 	fmt.Printf("Campaign c2: %v\n", c2)
 
-	// Assertions on COMPUTED values.
 	check := func(name string, got, want, tol float64) {
 		if math.Abs(got-want) > tol {
 			fmt.Fprintf(os.Stderr, "FAIL %s: got %v want %v\n", name, got, want)

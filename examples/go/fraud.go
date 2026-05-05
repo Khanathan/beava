@@ -2,13 +2,12 @@
 // (transaction velocity, unique merchants, geo velocity for impossible-travel).
 //
 // Mirrors crates/beava-bench/configs/fraud-team.json shape -- 5 event types,
-// 5 group-by axes. Uses Polars-renamed op names per ADR-002 (mean / n_unique
+// 5 group-by axes -- using Polars-renamed op names per ADR-002 (mean / n_unique
 // / quantile).
 //
-// Phase 13.0 mock supports count/sum/mean/min/max. Sketches (n_unique,
-// quantile, top_k), decays, and geo ops are no-ops in the mock --
-// demonstrated below for shape but assertions only check the
-// mock-supported ops.
+// The mock supports count/sum/mean/min/max. Sketches (n_unique, quantile,
+// top_k), decays, and geo ops are no-ops here; they're shown for shape so
+// the registered surface mirrors the real benchmark.
 
 package main
 
@@ -20,7 +19,7 @@ import (
 	"strings"
 )
 
-// --- Inline mockApp (Option A per WARNING 8).
+// Inline mockApp.
 
 type aggSpec struct{ op, field string }
 type descriptor struct {
@@ -88,22 +87,22 @@ func (a *mockApp) get(table, key string) map[string]float64 {
 	return map[string]float64{}
 }
 
-// --- Demo body.
+// Demo body.
 
 func main() {
 	_ = context.Background()
 	app := newMockApp()
 
-	// 5 event types (mirrors fraud-team.json)
+	// 5 event types mirror fraud-team.json.
 	Txn := descriptor{name: "Txn", kind: "event"}
 	Login := descriptor{name: "Login", kind: "event"}
 	Signup := descriptor{name: "Signup", kind: "event"}
 	CardAdd := descriptor{name: "CardAdd", kind: "event"}
 	Refund := descriptor{name: "Refund", kind: "event"}
 
-	// User-axis aggregation table.
+	// The user-axis aggregation table is the busiest in fraud detection.
 	// n_unique / quantile / geo_velocity are real-engine ops shown for
-	// shape; mock no-ops them. Assertions check count/sum/mean/min/max.
+	// shape; the mock no-ops them.
 	UserFraudStats := descriptor{
 		name: "UserFraudStats", kind: "table", source: "Txn",
 		keyCols: []string{"user_id"},
@@ -113,14 +112,14 @@ func main() {
 			"tx_mean_1h":             {"mean", "amount"},
 			"tx_min_1h":              {"min", "amount"},
 			"tx_max_1h":              {"max", "amount"},
-			"tx_unique_merchants_1h": {"n_unique", "merchant_id"},  // mock no-op
-			"tx_p99_1h":              {"quantile", "amount"},        // mock no-op
-			"tx_geo_velocity_1h":     {"geo_velocity", ""},          // mock no-op
+			"tx_unique_merchants_1h": {"n_unique", "merchant_id"}, // mock no-op
+			"tx_p99_1h":              {"quantile", "amount"},      // mock no-op
+			"tx_geo_velocity_1h":     {"geo_velocity", ""},        // mock no-op
 		},
 	}
 	app.register(Txn, Login, Signup, CardAdd, Refund, UserFraudStats)
 
-	// Push 10 transactions for 'alice'.
+	// 10 transactions for 'alice'.
 	type txn struct {
 		amount   float64
 		merchant string
@@ -153,7 +152,6 @@ func main() {
 	result := app.get("UserFraudStats", "alice")
 	fmt.Printf("alice fraud stats: %v\n", result)
 
-	// Assertions on mock-supported ops (computed values).
 	check := func(name string, got, want, tol float64) {
 		if math.Abs(got-want) > tol {
 			fmt.Fprintf(os.Stderr, "FAIL %s: got %v want %v\n", name, got, want)
@@ -169,7 +167,7 @@ func main() {
 	check("tx_mean", result["tx_mean_1h"], expectedSum/10, 1e-3)
 	check("tx_min", result["tx_min_1h"], 5.00, 1e-6)
 	check("tx_max", result["tx_max_1h"], 1500.00, 1e-6)
-	// n_unique + quantile + geo_velocity are no-ops in mock; not asserted here.
+	// n_unique / quantile / geo_velocity: not asserted (mock no-ops).
 
 	fmt.Println("OK -- fraud.go")
 }

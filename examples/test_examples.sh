@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Phase 13.0 examples smoke test.
+# Examples smoke test.
 # Runs all 9 vertical demo files (3 langs x 3 verticals) against
 # language-local mock backends.
 #
-# WARNING 7 fix: missing toolchains are HARD FAILURES (exit 2), not silent
-# skips. Reason: silent skips would weaken D-03 integration-regression
-# coverage; CI/dev environments must have all 3 toolchains installed
-# to verify Phase 13.0 closure. The closure plan (13.0-15) re-runs
-# this script as the final D-03 gate.
+# Missing toolchains are HARD FAILURES (exit 2), not silent skips.
+# Reason: silent skips would weaken integration-regression coverage;
+# CI/dev environments must have all 3 toolchains installed to verify
+# all 9 demos.
 #
 # Exit codes:
 #   0 -- all 9 demos passed
@@ -18,7 +17,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Pre-flight: assert all toolchains are present (HARD FAIL on missing).
+# Pre-flight: assert all toolchains are present (hard-fail on missing).
 missing_tools=()
 command -v python3 >/dev/null 2>&1 || missing_tools+=("python3")
 command -v npx     >/dev/null 2>&1 || missing_tools+=("npx (Node.js)")
@@ -31,7 +30,7 @@ if [ ${#missing_tools[@]} -gt 0 ]; then
     done
     echo "" >&2
     echo "Install missing toolchains or run on CI environment with all 3 toolchains." >&2
-    echo "Cannot verify D-03 (9 vertical demos) without all 3 languages -- aborting." >&2
+    echo "Cannot verify the 9 vertical demos without all 3 languages -- aborting." >&2
     exit 2
 fi
 

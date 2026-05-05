@@ -2,30 +2,29 @@
  * Fraud demo: high-cardinality velocity + sketch + geo aggregations
  * (transaction velocity, unique merchants, geo velocity for impossible-travel).
  *
- * Mirrors crates/beava-bench/configs/fraud-team.json shape -- 5 event types,
- * 5 group-by axes. Uses Polars-renamed op names per ADR-002 (mean / nUnique
+ * Mirrors `crates/beava-bench/configs/fraud-team.json` shape -- 5 event types,
+ * 5 group-by axes -- using Polars-renamed op names per ADR-002 (mean / nUnique
  * / quantile).
  *
- * Phase 13.0 mock supports count/sum/mean/min/max. Sketches (nUnique,
- * quantile, topK), decays, and geo ops are no-ops in the mock --
- * demonstrated below for shape but assertions only check the
- * mock-supported ops. Phase 13.6 re-verifies with real engines.
+ * The mock supports count/sum/mean/min/max. Sketches (nUnique, quantile,
+ * topK), decays, and geo ops are no-ops here; they're shown for shape so
+ * the registered surface mirrors the real benchmark.
  */
 import { BeavaApp, event, table } from "./_mock.ts";
 
 async function main(): Promise<number> {
   const app = new BeavaApp();
   try {
-    // 5 event types (mirrors fraud-team.json)
+    // 5 event types mirror fraud-team.json.
     const Txn = event("Txn");
     const Login = event("Login");
     const Signup = event("Signup");
     const CardAdd = event("CardAdd");
     const Refund = event("Refund");
 
-    // User-axis aggregation table.
+    // The user-axis aggregation table is the busiest in fraud detection.
     // n_unique / quantile / geo_velocity are real-engine ops shown for
-    // shape; the mock no-ops them. Assertions check count/sum/mean/min/max.
+    // shape; the mock no-ops them.
     const UserFraudStats = table({
       name: "UserFraudStats",
       source: "Txn",
@@ -71,7 +70,6 @@ async function main(): Promise<number> {
     const result = await app.get("UserFraudStats", "alice");
     console.log(`alice fraud stats: ${JSON.stringify(result)}`);
 
-    // Assertions on mock-supported ops (computed values).
     if (result.tx_count_1h !== 10) throw new Error("tx_count");
     const expectedSum = txns.reduce((acc, [a]) => acc + a, 0);
     if (Math.abs((result.tx_sum_1h as number) - expectedSum) > 1e-3) {
@@ -86,7 +84,7 @@ async function main(): Promise<number> {
     if (Math.abs((result.tx_max_1h as number) - 1500.0) > 1e-6) {
       throw new Error("tx_max");
     }
-    // nUnique + quantile + geo_velocity are no-ops in mock; not asserted.
+    // nUnique / quantile / geo_velocity: not asserted (mock no-ops).
   } finally {
     await app.close();
   }

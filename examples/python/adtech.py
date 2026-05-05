@@ -2,15 +2,14 @@
 Adtech demo: impression event type; campaign aggregations
 (impressions per campaign, sum of bid amounts, mean bid).
 
-Phase 13.0 runs against examples/python/_mock.py (computes via push).
-Phase 13.5 swaps the import to `from beava import App, event, table` (real bv.App).
+Runs against the in-process mock (`_mock.py`); swap the import to
+`from beava import App, event, table` for the real SDK.
 """
 from _mock import App, event, table
 
 
 def main() -> int:
     with App() as app:
-        # Register an event source + a table aggregation.
         Impression = event("Impression")
         CampaignStats = table(
             name="CampaignStats",
@@ -28,7 +27,6 @@ def main() -> int:
         assert result["status"] == "ok"
         print(f"Registered {result['registry_version']} descriptors")
 
-        # Push events. Each push goes through MockApp's update logic.
         events = [
             ("c1", "cr1", 0.50),
             ("c1", "cr1", 0.75),
@@ -42,14 +40,12 @@ def main() -> int:
                 {"campaign_id": camp_id, "creative_id": creative_id, "bid": bid},
             )
 
-        # Query -- computed values, not pre-seeded.
         c1 = app.get("CampaignStats", "c1")
         c2 = app.get("CampaignStats", "c2")
 
         print(f"Campaign c1: {c1}")
         print(f"Campaign c2: {c2}")
 
-        # Assertions check the COMPUTED values.
         assert c1["impressions_1h"] == 3
         assert abs(c1["bid_sum_1h"] - 2.25) < 1e-6
         assert abs(c1["bid_mean_1h"] - 0.75) < 1e-6

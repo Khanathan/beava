@@ -1,9 +1,9 @@
 // E-commerce demo: purchase event type; basket aggregations
 // (items per user, mean basket size, total spend).
 //
-// Phase 13.0 runs against an inlined mockApp helper struct (Option A
-// per WARNING 8). Phase 13.6 swaps the inline mockApp for the real
-// `beava-go` client (see docs/sdk-api/go.md).
+// Each demo inlines its own mockApp helper struct (see _mock.go for the
+// canonical reference) so it stays a self-contained `go run` target.
+// Swap the inline mockApp for the real `beava-go` client once published.
 
 package main
 
@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// --- Inline mockApp.
+// Inline mockApp.
 
 type aggSpec struct{ op, field string }
 type descriptor struct {
@@ -83,7 +83,7 @@ func (a *mockApp) get(table, key string) map[string]float64 {
 	return map[string]float64{}
 }
 
-// --- Demo body.
+// Demo body.
 
 func main() {
 	_ = context.Background()

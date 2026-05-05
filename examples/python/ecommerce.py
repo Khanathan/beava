@@ -2,8 +2,8 @@
 E-commerce demo: purchase event type; basket aggregations
 (items per user, mean basket size, total spend).
 
-Phase 13.0 runs against examples/python/_mock.py.
-Phase 13.5 swaps the import to `from beava import App, event, table`.
+Runs against the in-process mock (`_mock.py`); swap the import to
+`from beava import App, event, table` for the real SDK.
 """
 from _mock import App, event, table
 
@@ -40,7 +40,6 @@ def main() -> int:
         bob = app.get("UserBasket", "bob")
         print(f"bob basket: {bob}")
 
-        # Assertions on COMPUTED values.
         assert bob["purchase_count_1h"] == 4
         assert bob["items_purchased_1h"] == 7  # 1 + 2 + 1 + 3
         expected_total = 10.0 + 5.0 + 10.0 + 7.5

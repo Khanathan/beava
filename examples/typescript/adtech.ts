@@ -2,8 +2,8 @@
  * Adtech demo: impression event type; campaign aggregations
  * (impressions per campaign, sum of bid amounts, mean bid).
  *
- * Phase 13.0 runs against examples/typescript/_mock.ts (computes via push).
- * Phase 13.6 swaps the import to `@beava/sdk` (real BeavaApp).
+ * Runs against the in-process mock (`_mock.ts`); swap the import to
+ * `@beava/sdk` for the real BeavaApp.
  */
 import { BeavaApp, event, table } from "./_mock.ts";
 
@@ -49,7 +49,6 @@ async function main(): Promise<number> {
     console.log(`Campaign c1: ${JSON.stringify(c1)}`);
     console.log(`Campaign c2: ${JSON.stringify(c2)}`);
 
-    // Assertions on COMPUTED values.
     if (c1.impressions_1h !== 3) throw new Error("c1 impressions");
     if (Math.abs((c1.bid_sum_1h as number) - 2.25) > 1e-6) {
       throw new Error("c1 bid_sum");

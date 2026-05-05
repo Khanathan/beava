@@ -1,48 +1,32 @@
 """
-Phase 13.0 mock backend for runnable demos.
+Mock backend for runnable demos.
 
-In-memory App shim with MINIMAL AGGREGATION LOGIC. Drop-in for bv.App()
-during Phase 13.0 verification. Replaced by real bv.App() once Phase 13.5
-lands (single-line edit per demo).
+In-memory App shim that computes minimal aggregations on push so demos go
+through the full register -> push -> query flow. Drop-in for `bv.App()`;
+swap to the real SDK by replacing the import in each demo.
 
-Per Q2 locked answer + BLOCKER 4 checker fix: this mock COMPUTES features
-by applying registered descriptors on push. Demos go through the full
-register -> push -> query flow (no _seed pre-population) so contract drift
-between specs and the real engine surfaces immediately at the
-13.5/13.6 re-verification step.
-
-Supported ops in this mock (minimum for the 9 vertical demos):
-- count: increment per matching event
-- sum: accumulate field value
-- mean: running sum / count
-- min, max: comparison
+Supported ops (the minimum needed by the 9 vertical demos):
+    count, sum, mean, min, max
 
 Sketches (n_unique, quantile, top_k), decays (ewma, ewvar, ew_zscore,
-decayed_*), velocity (rate_of_change, trend, etc.), and geo
-(geo_velocity, geo_distance, etc.) are NOT computed here -- demo files
-that use these ops document the no-op fallback inline. The real engine
-in 13.4 + 13.5 + 13.6 fills the gap; demos must pick ops covered here
-for the assertions, then add the more-complex ops as additional
-register-target features (their values are surfaced as None or absent
-from the row).
+decayed_*), velocity (rate_of_change, trend, ...), and geo
+(geo_velocity, geo_distance, ...) are NOT computed here -- demos that
+reference these ops surface them as no-ops, with the real engine
+filling the gap.
 """
 from typing import Any
 
 
 class _AggSpec:
-    """Minimal in-memory record of a registered aggregation op."""
-
     __slots__ = ("op", "field", "where")
 
     def __init__(self, op: str, field: str | None, where: dict | None = None):
         self.op = op
         self.field = field
-        self.where = where  # not used in this minimal mock
+        self.where = where
 
 
 class _Descriptor:
-    """A registered event source or table aggregation."""
-
     __slots__ = ("name", "kind", "source", "key_cols", "ops")
 
     def __init__(
@@ -54,24 +38,22 @@ class _Descriptor:
         ops: dict[str, _AggSpec],
     ):
         self.name = name
-        self.kind = kind  # "event" | "table"
-        self.source = source  # source event name (None for kind="event")
+        self.kind = kind
+        self.source = source
         self.key_cols = key_cols
-        self.ops = ops  # feature_name -> _AggSpec
+        self.ops = ops
 
 
 class MockApp:
-    """Phase 13.0 stub. Replaced by real bv.App() in Phase 13.5.
+    """In-memory drop-in for `bv.App()`.
 
-    Computes aggregations via push (count, sum, mean, min, max).
-    Other ops (sketches, decays, geo) are no-ops -- demos pick coverage-
-    aware features for assertions.
+    Computes count / sum / mean / min / max on push. Other ops are no-ops;
+    demos pick coverage-aware features for assertions.
     """
 
     def __init__(self):
         self._registered: list[_Descriptor] = []
         self._tables: dict[str, dict[str, dict[str, Any]]] = {}
-        # _agg_state[(table, key, feature)] = {sum, count, min, max} for streaming compute
         self._agg_state: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._registry_version = 0
 
@@ -89,7 +71,8 @@ class MockApp:
             if isinstance(desc, _Descriptor):
                 self._registered.append(desc)
             else:
-                # Demo helpers may pass a class or dict; tolerate it.
+                # Tolerate alternate descriptor shapes a real SDK may produce
+                # (decorated classes, dicts) so the mock stays drop-in.
                 name = (
                     getattr(desc, "_name", None)
                     or getattr(desc, "name", None)
@@ -110,7 +93,6 @@ class MockApp:
         }
 
     def push(self, source: str, event: dict) -> dict:
-        """Apply each registered table descriptor whose source matches the pushed event."""
         for desc in self._registered:
             if desc.kind != "table":
                 continue
@@ -159,8 +141,7 @@ class MockApp:
                 state["max"] = max(state["max"], value)
             self._set_value(table, key, feature, state["max"])
         else:
-            # Unsupported in mock (sketches, decays, geo, etc.): no-op.
-            # Real engine in 13.4 + 13.5 + 13.6 fills the gap.
+            # Sketches, decays, geo, etc.: no-op in the mock; real engine fills.
             pass
 
     def _set_value(self, table: str, key: str, feature: str, value: Any) -> None:
@@ -175,7 +156,7 @@ class MockApp:
         for r in requests:
             if isinstance(r, dict):
                 out.append(self.get(r["table"], r["key"]))
-            else:  # tuple-like
+            else:
                 out.append(self.get(r[0], r[1]))
         return out
 
@@ -200,12 +181,12 @@ class MockApp:
 
 
 def App(*args, **kwargs):
-    """Phase 13.0 stub. Replaced by `from beava import App` in Phase 13.5."""
+    """Drop-in for `bv.App()`; swap to `from beava import App` for the real SDK."""
     return MockApp()
 
 
-# --- Demo helpers -- describe descriptors as plain Python objects.
-# In real bv.App, these would be @bv.event / @bv.table decorators.
+# Demo helpers -- describe descriptors as plain Python objects.
+# In real bv.App these would be `@bv.event` / `@bv.table` decorators.
 
 
 def event(name: str) -> _Descriptor:
@@ -221,8 +202,8 @@ def table(
 ) -> _Descriptor:
     """Build a table descriptor.
 
-    ops: dict feature_name -> (op_name, field) -- e.g.
-         {"tx_count_1h": ("count", None), "tx_sum_1h": ("sum", "amount")}
+    `ops` maps feature name to `(op_name, field)` -- e.g.
+    `{"tx_count_1h": ("count", None), "tx_sum_1h": ("sum", "amount")}`.
     """
     key_cols = [key] if isinstance(key, str) else list(key)
     op_specs = {

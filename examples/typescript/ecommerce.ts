@@ -2,8 +2,8 @@
  * E-commerce demo: purchase event type; basket aggregations
  * (items per user, mean basket size, total spend).
  *
- * Phase 13.0 runs against examples/typescript/_mock.ts.
- * Phase 13.6 swaps the import to `@beava/sdk`.
+ * Runs against the in-process mock (`_mock.ts`); swap the import to
+ * `@beava/sdk` for the real BeavaApp.
  */
 import { BeavaApp, event, table } from "./_mock.ts";
 
@@ -44,7 +44,6 @@ async function main(): Promise<number> {
     const bob = await app.get("UserBasket", "bob");
     console.log(`bob basket: ${JSON.stringify(bob)}`);
 
-    // Assertions on COMPUTED values.
     if (bob.purchase_count_1h !== 4) throw new Error("purchase_count");
     if (bob.items_purchased_1h !== 7) throw new Error("items_purchased");
     const expectedTotal = 10.0 + 5.0 + 10.0 + 7.5;

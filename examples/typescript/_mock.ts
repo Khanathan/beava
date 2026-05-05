@@ -1,28 +1,19 @@
 /**
- * Phase 13.0 mock backend for runnable TypeScript demos.
+ * Mock backend for runnable TypeScript demos.
  *
- * In-memory App shim with MINIMAL AGGREGATION LOGIC. Drop-in for the
- * real `BeavaApp` during Phase 13.0 verification. Replaced by the real
- * `@beava/sdk` BeavaApp once Phase 13.6 lands (single-line edit per demo).
+ * In-memory App shim that computes minimal aggregations on push so demos
+ * go through the full register -> push -> query flow. Drop-in for the
+ * real `BeavaApp`; swap to `@beava/sdk` by replacing the import.
  *
- * Per Q2 locked answer + BLOCKER 4 checker fix: this mock COMPUTES
- * features by applying registered descriptors on push. Demos go through
- * the full register -> push -> query flow (no pre-seeding) so contract
- * drift between specs and the real engine surfaces immediately at
- * 13.6 re-verification.
- *
- * Supported ops in this mock (minimum for the 9 vertical demos):
- * - count: increment per matching event
- * - sum: accumulate field value
- * - mean: running sum / count
- * - min, max: comparison
+ * Supported ops (the minimum needed by the 9 vertical demos):
+ *   count, sum, mean, min, max
  *
  * Sketches (nUnique, quantile, topK), decays, velocity, and geo ops
- * are NOT computed -- demo files document the no-op fallback inline.
+ * are NOT computed here; demos document the no-op fallback inline.
  */
 
-// camelCase API per docs/sdk-api/shared.md
-// (Wire JSON keys are snake_case; the SDK transport layer would translate.)
+// camelCase API per docs/sdk-api/shared.md.
+// Wire JSON keys are snake_case; the SDK transport layer translates.
 
 type AggSpec = { op: string; field: string | null };
 
@@ -114,9 +105,7 @@ export class MockBeavaApp {
     };
   }
 
-  async close(): Promise<void> {
-    // no-op
-  }
+  async close(): Promise<void> {}
 
   private keyFromEvent(
     keyCols: string[],
@@ -157,7 +146,7 @@ export class MockBeavaApp {
       state.max = state.max === undefined ? v : Math.max(state.max, v);
       this.setValue(table, key, feature, state.max);
     }
-    // Unsupported ops in mock (sketches, decays, geo, etc.): no-op.
+    // Sketches / decays / geo: no-op in the mock.
     this.aggState.set(stateKey, state);
   }
 
@@ -174,11 +163,10 @@ export class MockBeavaApp {
   }
 }
 
-// Drop-in factory: `const app = new BeavaApp();` -> swap to real `@beava/sdk`
-// in Phase 13.6 by replacing this import.
+/** Drop-in factory: `new BeavaApp()` -- swap to the real `@beava/sdk` by replacing this import. */
 export class BeavaApp extends MockBeavaApp {}
 
-// Demo helpers -- describe descriptors inline, in real Beava these would
+// Demo helpers -- describe descriptors inline. In real Beava these would
 // be `bv.event({...})` / `bv.table({...})` builder calls.
 
 export function event(name: string): Descriptor {

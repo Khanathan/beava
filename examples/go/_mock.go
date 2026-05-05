@@ -1,30 +1,19 @@
 //go:build exclude
 
-// Phase 13.0 reference mock backend for Go SDK porters (Phase 13.6 build target).
-// Carries //go:build exclude -- this file does NOT participate in any binary
-// build during 13.0. Demo files (adtech.go, fraud.go, ecommerce.go) inline
-// their own mockApp struct so each demo is a self-contained `go run` target.
+// Reference mock backend for Go SDK porters.
 //
-// Per WARNING 8 fix (Option A) -- all 4 Go files declare package main; this
-// _mock.go carries the build-exclude directive so it stays as reference code
-// only. Trade-off: ~30 LOC duplication across the 3 demos; gain: zero-config
-// `go run examples/go/<demo>.go`.
+// Carries `//go:build exclude` so it does not participate in any binary
+// build. Each demo file (adtech.go / ecommerce.go / fraud.go) inlines its
+// own mockApp struct so it stays a self-contained `go run` target -- the
+// trade-off (~30 LOC duplication across 3 demos) buys zero-config running.
 //
-// Replaced by real beava-go client in Phase 13.6.
+// Replaced by the real beava-go client once published.
 //
-// Per Q2 locked answer + BLOCKER 4 checker fix: this mock COMPUTES features
-// by applying registered descriptors on push. Demos go through the full
-// register -> push -> query flow (no pre-seeding) so contract drift between
-// specs and the real engine surfaces immediately at 13.6 re-verification.
-//
-// Supported ops in this mock (minimum for the 9 vertical demos):
-//   - count: increment per matching event
-//   - sum: accumulate field value
-//   - mean: running sum / count
-//   - min, max: comparison
+// Supported ops (the minimum needed by the 9 vertical demos):
+//   - count, sum, mean, min, max
 //
 // Sketches (NUnique, Quantile, TopK), decays, velocity, and geo ops are
-// NOT computed -- demo files document the no-op fallback inline.
+// no-ops; demos document the fallback inline.
 
 package main
 
@@ -49,9 +38,8 @@ type Descriptor struct {
 	Ops     map[string]AggSpec
 }
 
-// MockApp is the reference Phase 13.0 in-memory shim.
-// Demo files inline an equivalent mockApp; this struct exists only as
-// the canonical reference for Phase 13.6 SDK porters.
+// MockApp is the canonical reference shim for SDK porters.
+// Demo files inline an equivalent mockApp.
 type MockApp struct {
 	registered      []Descriptor
 	tables          map[string]map[string]map[string]any
@@ -185,7 +173,7 @@ func (a *MockApp) update(table, key, feature string, agg AggSpec, event map[stri
 		}
 		a.setValue(table, key, feature, state["max"])
 	default:
-		// Unsupported in mock (sketches, decays, geo): no-op.
+		// Sketches / decays / geo: no-op in the mock.
 	}
 }
 
