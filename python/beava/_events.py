@@ -140,6 +140,13 @@ class EventDerivation(_ChainMixin):
         self._schema: dict[str, type] | None = None  # propagated at register-time
         self._kind = "event_derivation"
         self._key_cols: list[str] | None = None
+        # Phase 13.5.2 D-02 marker: True iff this EventDerivation is the output
+        # of an `@bv.event def F(...)` decoration. Raw chain expressions
+        # (e.g. `Click.with_columns(...).named("X")`) leave this False; the
+        # `_make_event_derivation` decorator function flips it to True before
+        # returning. `App.register` and `_resolve_upstream_proxies` use this
+        # marker to distinguish legitimate decorated outputs from raw chains.
+        self._is_bv_event_function: bool = False
 
 
 def _make_derivation(parent: Any, step: dict[str, Any]) -> EventDerivation:
@@ -238,6 +245,57 @@ def _make_event_source(cls: type, kwargs: dict[str, Any]) -> type:
     return cls
 
 
+_EVENTS_MODULE_FILE = __file__
+
+
+def _collect_closure_cells_for_events(fn: Callable[..., Any]) -> dict[str, Any]:
+    """Return a {name: value} map of ``fn``'s lexical closure cells.
+
+    Mirror of `_table._collect_closure_cells` — Phase 13.5.2 D-02 + function-
+    local resolution parity. See `_table.py` for rationale.
+    """
+    cells: dict[str, Any] = {}
+    code = getattr(fn, "__code__", None)
+    closure = getattr(fn, "__closure__", None)
+    if code is None or closure is None:
+        return cells
+    freevars = getattr(code, "co_freevars", ())
+    for name, cell in zip(freevars, closure):
+        try:
+            cells[name] = cell.cell_contents
+        except ValueError:
+            continue
+    return cells
+
+
+def _collect_caller_frame_locals_for_events() -> dict[str, Any]:
+    """Return merged ``f_locals`` from user-code frames above ``_events.py``.
+
+    Mirror of `_table._collect_caller_frame_locals` — boundary detection by
+    file identity (``_EVENTS_MODULE_FILE``) so the resolver stays robust under
+    decorator-stack wrappers. Captures the function-local ``@bv.event class
+    Foo: ...`` pattern (e.g. inside a pytest test function body).
+    """
+    merged: dict[str, Any] = {}
+    frame = inspect.currentframe()
+    try:
+        if frame is None:
+            return merged
+        frame = frame.f_back  # skip this helper
+        depth = 0
+        while frame is not None and depth < 32:
+            code = frame.f_code
+            if getattr(code, "co_filename", None) != _EVENTS_MODULE_FILE:
+                for name, val in frame.f_locals.items():
+                    if name not in merged:
+                        merged[name] = val
+            frame = frame.f_back
+            depth += 1
+        return merged
+    finally:
+        del frame
+
+
 def _make_event_derivation(fn: Callable[..., Any]) -> EventDerivation:
     sig = inspect.signature(fn)
     params = list(sig.parameters.values())
@@ -245,19 +303,49 @@ def _make_event_derivation(fn: Callable[..., Any]) -> EventDerivation:
         raise TypeError(
             f"@bv.event function {fn.__name__!r} must take at least one parameter"
         )
-    # With ``from __future__ import annotations`` (PEP 563), ``p.annotation``
-    # may be a string. Resolve via ``get_type_hints`` against the function's
-    # globals + locals so the annotation is the actual upstream class.
+    # Phase 13.5.2: mirror `_table._resolve_upstream_proxies` resolution
+    # protocol so function-local @bv.event class definitions (e.g. inside a
+    # pytest test fn) resolve correctly. Without this, `def Tagged(click:
+    # Click)` where `Click` is function-local resolves to the string
+    # `'Click'` and fn() crashes with `AttributeError: 'str' object has no
+    # attribute 'with_columns'`. Same closure-cell + caller-frame protocol
+    # as documented in `docs/sdk-api/python.md` § "Supported @bv.event
+    # declaration sites".
+    closure_cells = _collect_closure_cells_for_events(fn)
+    caller_locals = _collect_caller_frame_locals_for_events()
+    localns: dict[str, Any] = dict(caller_locals)
+    localns.update(closure_cells)  # closure cells take priority
     try:
-        resolved = get_type_hints(fn)
+        resolved = get_type_hints(fn, globalns=fn.__globals__, localns=localns)
     except Exception:
         resolved = {}
     upstream_proxies: list[Any] = []
     for p in params:
         ann = resolved.get(p.name, p.annotation)
         if isinstance(ann, str):
-            # Last-ditch: try fn.__globals__ for the bare name.
-            ann = fn.__globals__.get(ann, ann)
+            # Try sources in documented contract order: globals, then
+            # closure cells, then caller f_locals.
+            ann = fn.__globals__.get(
+                ann,
+                closure_cells.get(ann, caller_locals.get(ann, ann)),
+            )
+        # Phase 13.5.2 D-02 (USER-LOCKED): reject raw EventDerivation
+        # instances. Legitimate @bv.event def outputs carry the
+        # `_is_bv_event_function` marker set below at the bottom of this
+        # function.
+        if isinstance(ann, EventDerivation) and not getattr(
+            ann, "_is_bv_event_function", False
+        ):
+            raise TypeError(
+                f"@bv.event function {fn.__name__!r} parameter {p.name!r} "
+                f"annotation resolves to an EventDerivation instance (a raw "
+                f"chain). Annotate with an @bv.event-decorated class or function "
+                f"instead — e.g.\n"
+                f"    @bv.event\n"
+                f"    def Tagged(click: Click): return click.with_columns(...)\n"
+                f"    @bv.event\n"
+                f"    def {fn.__name__}({p.name}: Tagged): return {p.name}.<chain>"
+            )
         upstream_proxies.append(ann)
     result = fn(*upstream_proxies)
     if not isinstance(result, EventDerivation):
@@ -266,6 +354,12 @@ def _make_event_derivation(fn: Callable[..., Any]) -> EventDerivation:
             f"(filter/select/group_by/agg/...); got {type(result).__name__}"
         )
     result._name = fn.__name__
+    # Phase 13.5.2 D-02 marker handshake: tag this EventDerivation as a
+    # legitimate @bv.event def output so `App.register` (Plan 03) and
+    # downstream decorator resolvers skip the chain-rejection check for it.
+    # Raw chain expressions (e.g. `Click.with_columns(...).named("X")`) lack
+    # this marker → REJECTED.
+    result._is_bv_event_function = True
     return result
 
 
