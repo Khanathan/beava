@@ -1,40 +1,124 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-05T11:54:41Z",
-  "phase": "13.5.2-postclose",
-  "phase_name": "Post-13.5.2 v0 high-volume test fix sweep + workspace determinism foundation",
-  "phase_dir": ".planning/phases/13.5.2-decorator-only-derivations",
+  "timestamp": "2026-05-05T16:45:00Z",
+  "phase": "between-phases",
+  "phase_name": "Phase 13.5.4 closed — pivot to 13.7.5 (code polish + test coverage) + 13.7.6 (repo polish)",
+  "phase_dir": null,
   "plan": null,
   "task": null,
   "total_tasks": null,
   "status": "paused",
+  "user_directive": "focus on repo and code polish + test coverage checker (Phase 13.7.5 + 13.7.6). DEFER Phase 13.8 (packaging/GA tag) until 13.7.5 + 13.7.6 are clean.",
   "completed_tasks": [
-    {"id": 1, "name": "fix reservoir_sample (samples→k fallback)", "status": "done", "commit": "74832eb4"},
-    {"id": 2, "name": "fix FirstN/LastN query → Value::List", "status": "done", "commit": "ec54a1d3"},
-    {"id": 3, "name": "fix hour_of_day_histogram → Value::List", "status": "done", "commit": "cbf873fa"},
-    {"id": 4, "name": "fix value_change_count → generic Value (string/bool/numeric)", "status": "done", "commit": "e746347f"},
-    {"id": 5, "name": "fix query_time_ms = max(watermark, wall_clock_now)", "status": "done", "commit": "ed439c5b"},
-    {"id": 6, "name": "fix geo_velocity (lat_field/lon_field were always defaulting to 'lat'/'lon')", "status": "done", "commit": "4e4e9e81"},
-    {"id": 7, "name": "cargo fmt drift cleanup from 13.5.2-postclose fix commits", "status": "done", "commit": "4e57f31f"},
-    {"id": 8, "name": "align FirstN/LastN/HourOfDayHistogram unit tests with new List shape", "status": "done", "commit": "1a8da88d"},
-    {"id": 9, "name": "drop dead values_to_json_array + unused Instant import (clippy -D warnings)", "status": "done", "commit": "4d483f8a"},
-    {"id": 10, "name": "plumb tcp_max_frame_bytes via WorkerConfig (kill BEAVA_TCP_MAX_FRAME_BYTES env-var leak)", "status": "done", "commit": "acac4254"},
-    {"id": 11, "name": "capture workspace test determinism work as Phase 999.1 backlog idea doc + ROADMAP entry", "status": "done", "commit": "97c98b8a"}
+    {"id": "260505-bn7", "name": "Phase 13.5.3 — workspace test determinism (env-var class)", "status": "done", "commit": "c386c8a0"},
+    {"id": "260505-j2n", "name": "Phase 13.5.4 — workspace test alignment + trend flake fix + bench_v18 retirement", "status": "done", "commit": "9f4dc588"},
+    {"id": "13.8-prep", "name": "Phase 13.8 prep: tap repo + deploy key + secret + bump workflow + Plans 13.8-04a/04b + D-09/D-10", "status": "done", "commits": ["ceed4299", "0e23c428", "6e2240c8"]}
   ],
-  "remaining_tasks": [
-    {"id": 12, "name": "Phase 999.1 — kill remaining workspace-parallelism flakes (env-var leakage + WAL EEXIST race)", "status": "not_started", "captured_in": ".planning/ideas/workspace-test-determinism.md"}
+  "remaining_phases_in_v0_critical_path": [
+    {
+      "phase": "13.7.5",
+      "name": "Pre-OSS code polish — comment audit + test coverage matrix",
+      "status": "PLANNED — 12 plans authored, NOT executed",
+      "plan_dir": ".planning/phases/13.7.5-pre-oss-code-polish/",
+      "estimate": "1-2 days",
+      "depends_on": "13.5.4 (done)",
+      "blocks": "13.7.6 (lint sweep runs cleaner after comment audit)",
+      "scope": [
+        "Workstream A: per-component comment audit applying CLAUDE.md heuristic (drop AI-slop paraphrasing, keep WHY-non-obvious comments). 7 components: Rust crates + Python SDK + examples.",
+        "Workstream B: test-coverage matrix audit — 53 ops × 8 dimensions; wire endpoints; register flags; architectural invariants. Gap-fill MUST-FIX classifications.",
+        "OUT OF SCOPE per 13.7.5 D-03: cross-SDK conformance, WAL replay edge cases beyond happy path, snapshot upgrade-path testing — DEFER to v0.0.x.",
+        "Authored plans: 13.7.5-01 (KEEP/DELETE checklist), 13.7.5-02..08 (per-component audits), 13.7.5-09 (coverage matrix CSV), 13.7.5-10 (gap-fill), 13.7.5-11 (closure), 13.7.5-13 (audit-uat). Plan numbering has gap (no 12) — investigate at execute time."
+      ]
+    },
+    {
+      "phase": "13.7.6",
+      "name": "Pre-OSS repo polish",
+      "status": "PLANNED — 23 plans authored, NOT executed",
+      "plan_dir": ".planning/phases/13.7.6-pre-oss-repo-polish/",
+      "estimate": "2-3 days",
+      "depends_on": "13.7.5 (clean code surface for the public history)",
+      "scope": [
+        "git filter-repo strip .planning/ + CLAUDE.md + .claude/ from public history (D-01 USER-LOCKED).",
+        "Trailer-only surgical commit-message scrub (no rewriting bodies — D-02).",
+        "Repo rename tally → beava under beava-dev org (D-03 USER-LOCKED — rename happens BEFORE 13.8 tag).",
+        "Author email rewrite to hoang@beava.dev across history (D-04 USER-LOCKED).",
+        "Workstream-C: clippy + cargo audit + cargo deny + OWASP scan all GREEN before publish.",
+        "23 plans authored — see 13.7.6-CONTEXT.md for full Workstream A/B/C decomposition."
+      ]
+    },
+    {
+      "phase": "13.8",
+      "name": "Packaging + GA tag (SHIP)",
+      "status": "PLANNED — 12 plans authored (incl. NEW 04a curl|sh + 04b brew tap from this session); NOT executed",
+      "plan_dir": ".planning/phases/13.8-packaging-and-ga-tag/",
+      "estimate": "5-7 days",
+      "depends_on": "13.7.6 (clean public-ready repo)",
+      "scope": [
+        "Plan 01: PyPI multi-arch wheels (4 platforms; cibuildwheel + maturin)",
+        "Plan 02: npm @beava/sdk publish",
+        "Plan 03: Go module verify",
+        "Plan 04: Docker Hub + ghcr.io multi-arch (BuildKit)",
+        "Plan 04a (NEW): curl|sh installer at github.com/beava-dev/beava/releases/latest/download/install.sh",
+        "Plan 04b (NEW): Homebrew tap — bump workflow + tap repo (PREP DONE this session)",
+        "Plan 05: release.yml multi-channel orchestrator (must additionally upload install.sh + .sha256 sidecars per 04a/04b)",
+        "Plan 06: Cargo.toml version bump 0.1.0 → 0.0.0",
+        "Plan 07: README.md hero rewrite",
+        "Plan 08: marketing drafts (HN + Twitter + dev.to)",
+        "Plan 09: SOAK-LOG.md (post-tag soak window)",
+        "Plan 10: closure — tag v0.0.0 on main"
+      ]
+    }
   ],
   "blockers": [],
   "human_actions_pending": [
-    {"action": "User direction on whether to pursue Phase 999.1 determinism work as a stopgap (~1hr) or full architectural fix (1-2 days), and when (now vs deferred to v0.0.x / pre-13.8 hardening)", "context": "Production code is healthy — deterministic lib + Python v0 acceptance + clippy + fmt all green; only cargo test --workspace flakes 1-2 crates per run", "blocking": false}
+    {
+      "action": "Claim Docker Hub `beava` namespace (organization)",
+      "where": "https://hub.docker.com/orgs",
+      "why": "Plan 13.8-04 pushes beava/beava:v0.0.0 to Docker Hub primary registry",
+      "blocking": "Phase 13.8 only (NOT blocking 13.7.5 / 13.7.6)"
+    },
+    {
+      "action": "Generate Docker Hub access token (read+write+delete on beava namespace)",
+      "where": "https://hub.docker.com/settings/security",
+      "secret_to_set": "DOCKERHUB_USERNAME + DOCKERHUB_TOKEN in github.com/beava-dev/beava Settings → Secrets",
+      "blocking": "Phase 13.8 only"
+    },
+    {
+      "action": "Claim npm org `beava` (https://www.npmjs.com/org/create)",
+      "why": "Plan 13.8-02 publishes @beava/sdk",
+      "blocking": "Phase 13.8 only"
+    },
+    {
+      "action": "Generate npm token OR set up Trusted Publishers (preferred)",
+      "where": "https://www.npmjs.com/settings/<user>/tokens — automation token, scoped to @beava/sdk",
+      "secret_to_set": "NPM_TOKEN in github.com/beava-dev/beava (skip if Trusted Publishers used per Plan 13.8-02 D-05)",
+      "blocking": "Phase 13.8 only"
+    },
+    {
+      "action": "(Optional) DNS for beava.dev — only if you want vanity URLs (e.g. beava.dev/install.sh redirect)",
+      "why": "13.8-04a switched to GH Release asset hosting per D-09 revision; vanity URL is post-v0",
+      "blocking": false
+    }
   ],
-  "decisions": [
-    {"decision": "Geo ops parser reads canonical lat_field/lon_field with legacy lat/lon as fallback alias", "rationale": "SDK sends lat_field/lon_field per python/beava/_agg.py; server was reading lat/lon and silently defaulting. Same root-cause pattern as 74832eb4 reservoir_sample (samples vs k). Read canonical first, fall back to legacy alias for hand-rolled JSON callers.", "phase": "13.5.2-postclose"},
-    {"decision": "tcp_max_frame_bytes plumbed via WorkerConfig field instead of BEAVA_TCP_MAX_FRAME_BYTES env-var per-frame read", "rationale": "Process-global env-var leaked across parallel TestServers — criterion_7 set it to 1024 and never restored, so criterion_6's pipelined registers got frame_too_large rejected as OP_ERROR_RESPONSE. Plumbed through ServerV18Config → bind_with_state → ServerV18State → run_serve_loop → run_mio_event_loop → WorkerConfig. Production main.rs config-load-time env-var read in config.rs:267 preserved.", "phase": "13.5.2-postclose"},
-    {"decision": "Workspace determinism gap captured as Phase 999.1 backlog, NOT v0 ship-blocker", "rationale": "Production code is healthy; remaining flakes are test-infra hardening (process-global env vars + WAL-dir EEXIST race across parallel TestServers). v0 critical path (13.5.1 → 13.7.5 → 13.7.6 → 13.8) takes priority. Idea doc captures full diagnostic context + two-path remediation plan (30min stopgap mutex + 1-2 day architectural fix).", "phase": "13.5.2-postclose"},
-    {"decision": "FirstN/LastN/HourOfDayHistogram unit tests aligned with new Value::List contract via single test: commit", "rationale": "Phase 13.5.2-postclose's 5 prior fix commits changed return shapes but left unit tests asserting old shape. cargo test --workspace caught all 6 stale assertions. Single test: commit brings tests into alignment with already-shipped semantics; not a paired red→green pattern because the contract change shipped earlier.", "phase": "13.5.2-postclose"}
+  "decisions_carried_forward": [
+    {"decision": "13.5.4 closure: zero crates/beava-*/src/ changes; engine FROZEN; test-only work", "rationale": "Wave 1 was lockstep test alignment (CLAUDE.md §TDD §item #4); Wave 2 was test-side relax to engine-correct None contract; bench_v18 retired (internal-only)"},
+    {"decision": "13.8-04a: drop Cloudflare Pages mirror; serve install.sh from GH Releases (D-09 revised 2026-05-05 PM)", "rationale": "beava.dev not hosted via Cloudflare Pages; GH Release asset is zero-infra-dependency"},
+    {"decision": "13.8-04b: Homebrew tap at beava-dev/homebrew-beava (D-10 USER-LOCKED)", "rationale": "Homebrew convention requires separate homebrew-<name> repo; auto-bump on tag-push via SSH deploy key"}
   ],
-  "uncommitted_files": [],
-  "next_action": "User decides direction. Three natural paths: (A) /gsd-add-phase 13.5.4 (or similar) to formalize Phase 999.1 determinism work as a near-term phase if we want it before v0 ship — start with 1hr stopgap from .planning/ideas/workspace-test-determinism.md (process-global mutex in TestServerBuilder::spawn + tempfile::tempdir() swap in default()). (B) /gsd-discuss-phase 13.5.1 to start the next v0 critical-path phase (transport fix-up — 0/68 v0 acceptance tests are dependent on this). (C) draft brew tap + curl|sh installer idea doc for Phase 13.8 packaging scope (per user's earlier 'brew install beava' question). Inspect .planning/ideas/workspace-test-determinism.md for full determinism context if pursuing (A); .planning/HANDOFF.consumed-2026-05-04-pm.json for the prior session's 13.5.1/13.7.5/13.7.6/13.8 sequencing context if pursuing (B).",
-  "context_notes": "Phase 13.5.2 was officially closed at commit 95e5b129 earlier. User then said 'fix all the tests if tests' — meaning dig into the 8 v0 acceptance failures. All 6 distinct bugs landed atomically (74832eb4..ed439c5b for the first 5; 4e4e9e81 for geo_velocity). 5 follow-up commits cleared workspace gates: fmt drift (4e57f31f), unit-test contract alignment (1a8da88d), dead code + clippy (4d483f8a), env-var plumbing (acac4254), backlog capture (97c98b8a). Then user pushed for full workspace determinism — investigation revealed the env-var fix wasn't enough; multiple BEAVA_* env vars leak across parallel TestServers (BEAVA_WAL_BUFFERS set to 99999 by wal_env_var_tunables, BEAVA_IO_THREADS by phase12_08_*, BEAVA_TEST_MODE by phase13_4_reset_gated_env_var, BEAVA_MEMORY_GOV_ENFORCE by phase12_8_*). Plus a WAL-dir EEXIST race that surfaces despite (pid, atomic-counter) uniqueness. Captured as Phase 999.1 idea doc with 2-path plan: stopgap (30min process-global TestServer-spawn mutex + tempfile::tempdir() in default — kills 80%) → architectural (1-2 day plumb-everything-through-config + tripwire test). Laptop got shutdown mid-investigation; clean state reached on resume. Status of test gates at handoff: cargo test -p beava-core --lib = 618/618 GREEN; pytest python/tests/v0/ = 89/89 GREEN; cargo clippy --workspace -D warnings = clean; cargo fmt --all --check = clean; cargo test --workspace --features testing = 65 crates green / 1 flake (rotating: phase12_6_join_union_rejection today, phase12_8_metrics_endpoint last time, phase2_5_smoke before that)."
+  "uncommitted_files": [
+    {
+      "scope": "beava-design-system/",
+      "count": "~50",
+      "nature": "User WIP — design system updates (modified + a few deletions); UNRELATED to v0 critical path; PRESERVED across all session work",
+      "action": "leave alone"
+    },
+    {
+      "scope": "beava-website/",
+      "count": "~400",
+      "nature": "User WIP — website redesign (mostly _pagefind/ deletions + new assets); UNRELATED to v0 critical path; PRESERVED across all session work",
+      "action": "leave alone"
+    }
+  ],
+  "next_action": "Resume next session: /clear → /gsd-execute-phase 13.7.5 (start with Workstream A comment audit + Workstream B test coverage matrix in parallel waves per existing plan structure). 13.7.5 → 13.7.6 → 13.8 is the sequence; 13.8 deferred until 13.7.5 + 13.7.6 are clean per user directive 2026-05-05 PM. Manual prereqs (Docker Hub / npm claims) can happen anytime before 13.8 tag-push — not blocking 13.7.5 / 13.7.6.",
+  "context_notes": "Session-end state at HEAD 9f4dc588 on v2/greenfield. Today's work: closed Phase 13.5.3 (env-var workspace determinism, 5 commits); closed Phase 13.5.4 (5 stale-test files aligned to post-Phase-13.4 contract + trend test None acceptance + bench_v18 retirement, 8 commits); landed Phase 13.8 prep work (3 commits — scope amend + curl|sh strategy revision + homebrew-bump workflow); inline gh-CLI setup of homebrew-beava tap repo (created public repo + seeded Formula/beava.rb with placeholder SHAs + README + LICENSE + SSH deploy key with write access + HOMEBREW_TAP_DEPLOY_KEY secret in main repo). One side-effect: org-level deploy_keys_enabled_for_repositories=true was flipped on beava-dev org (was disabled by default; required for tap repo's deploy key registration). That's reversible if desired post-13.8. Phase 13.5.3 (env-var class) + Phase 13.5.4 (stale-test class) together close the workspace test pollution problem; remaining failures (phase18_05_continuous_workers_test maybe; pytest cold-start fixture race in Run 1) are NOT in 13.5.4 scope and may be 13.7.5 Workstream-B coverage-matrix candidates. v0 critical path: 13.7.5 (12 plans) → 13.7.6 (23 plans) → 13.8 (12 plans incl. new 04a + 04b). User-WIP in beava-design-system/ + beava-website/ (~452 dirty files) is intact; UNRELATED to v0 path; do not touch."
 }

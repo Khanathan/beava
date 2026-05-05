@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-05-05T11:54:41Z",
+  "phase": "13.5.2-postclose",
+  "phase_name": "Post-13.5.2 v0 high-volume test fix sweep + workspace determinism foundation",
+  "phase_dir": ".planning/phases/13.5.2-decorator-only-derivations",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": 1, "name": "fix reservoir_sample (samples→k fallback)", "status": "done", "commit": "74832eb4"},
+    {"id": 2, "name": "fix FirstN/LastN query → Value::List", "status": "done", "commit": "ec54a1d3"},
+    {"id": 3, "name": "fix hour_of_day_histogram → Value::List", "status": "done", "commit": "cbf873fa"},
+    {"id": 4, "name": "fix value_change_count → generic Value (string/bool/numeric)", "status": "done", "commit": "e746347f"},
+    {"id": 5, "name": "fix query_time_ms = max(watermark, wall_clock_now)", "status": "done", "commit": "ed439c5b"},
+    {"id": 6, "name": "fix geo_velocity (lat_field/lon_field were always defaulting to 'lat'/'lon')", "status": "done", "commit": "4e4e9e81"},
+    {"id": 7, "name": "cargo fmt drift cleanup from 13.5.2-postclose fix commits", "status": "done", "commit": "4e57f31f"},
+    {"id": 8, "name": "align FirstN/LastN/HourOfDayHistogram unit tests with new List shape", "status": "done", "commit": "1a8da88d"},
+    {"id": 9, "name": "drop dead values_to_json_array + unused Instant import (clippy -D warnings)", "status": "done", "commit": "4d483f8a"},
+    {"id": 10, "name": "plumb tcp_max_frame_bytes via WorkerConfig (kill BEAVA_TCP_MAX_FRAME_BYTES env-var leak)", "status": "done", "commit": "acac4254"},
+    {"id": 11, "name": "capture workspace test determinism work as Phase 999.1 backlog idea doc + ROADMAP entry", "status": "done", "commit": "97c98b8a"}
+  ],
+  "remaining_tasks": [
+    {"id": 12, "name": "Phase 999.1 — kill remaining workspace-parallelism flakes (env-var leakage + WAL EEXIST race)", "status": "not_started", "captured_in": ".planning/ideas/workspace-test-determinism.md"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [
+    {"action": "User direction on whether to pursue Phase 999.1 determinism work as a stopgap (~1hr) or full architectural fix (1-2 days), and when (now vs deferred to v0.0.x / pre-13.8 hardening)", "context": "Production code is healthy — deterministic lib + Python v0 acceptance + clippy + fmt all green; only cargo test --workspace flakes 1-2 crates per run", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "Geo ops parser reads canonical lat_field/lon_field with legacy lat/lon as fallback alias", "rationale": "SDK sends lat_field/lon_field per python/beava/_agg.py; server was reading lat/lon and silently defaulting. Same root-cause pattern as 74832eb4 reservoir_sample (samples vs k). Read canonical first, fall back to legacy alias for hand-rolled JSON callers.", "phase": "13.5.2-postclose"},
+    {"decision": "tcp_max_frame_bytes plumbed via WorkerConfig field instead of BEAVA_TCP_MAX_FRAME_BYTES env-var per-frame read", "rationale": "Process-global env-var leaked across parallel TestServers — criterion_7 set it to 1024 and never restored, so criterion_6's pipelined registers got frame_too_large rejected as OP_ERROR_RESPONSE. Plumbed through ServerV18Config → bind_with_state → ServerV18State → run_serve_loop → run_mio_event_loop → WorkerConfig. Production main.rs config-load-time env-var read in config.rs:267 preserved.", "phase": "13.5.2-postclose"},
+    {"decision": "Workspace determinism gap captured as Phase 999.1 backlog, NOT v0 ship-blocker", "rationale": "Production code is healthy; remaining flakes are test-infra hardening (process-global env vars + WAL-dir EEXIST race across parallel TestServers). v0 critical path (13.5.1 → 13.7.5 → 13.7.6 → 13.8) takes priority. Idea doc captures full diagnostic context + two-path remediation plan (30min stopgap mutex + 1-2 day architectural fix).", "phase": "13.5.2-postclose"},
+    {"decision": "FirstN/LastN/HourOfDayHistogram unit tests aligned with new Value::List contract via single test: commit", "rationale": "Phase 13.5.2-postclose's 5 prior fix commits changed return shapes but left unit tests asserting old shape. cargo test --workspace caught all 6 stale assertions. Single test: commit brings tests into alignment with already-shipped semantics; not a paired red→green pattern because the contract change shipped earlier.", "phase": "13.5.2-postclose"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "User decides direction. Three natural paths: (A) /gsd-add-phase 13.5.4 (or similar) to formalize Phase 999.1 determinism work as a near-term phase if we want it before v0 ship — start with 1hr stopgap from .planning/ideas/workspace-test-determinism.md (process-global mutex in TestServerBuilder::spawn + tempfile::tempdir() swap in default()). (B) /gsd-discuss-phase 13.5.1 to start the next v0 critical-path phase (transport fix-up — 0/68 v0 acceptance tests are dependent on this). (C) draft brew tap + curl|sh installer idea doc for Phase 13.8 packaging scope (per user's earlier 'brew install beava' question). Inspect .planning/ideas/workspace-test-determinism.md for full determinism context if pursuing (A); .planning/HANDOFF.consumed-2026-05-04-pm.json for the prior session's 13.5.1/13.7.5/13.7.6/13.8 sequencing context if pursuing (B).",
+  "context_notes": "Phase 13.5.2 was officially closed at commit 95e5b129 earlier. User then said 'fix all the tests if tests' — meaning dig into the 8 v0 acceptance failures. All 6 distinct bugs landed atomically (74832eb4..ed439c5b for the first 5; 4e4e9e81 for geo_velocity). 5 follow-up commits cleared workspace gates: fmt drift (4e57f31f), unit-test contract alignment (1a8da88d), dead code + clippy (4d483f8a), env-var plumbing (acac4254), backlog capture (97c98b8a). Then user pushed for full workspace determinism — investigation revealed the env-var fix wasn't enough; multiple BEAVA_* env vars leak across parallel TestServers (BEAVA_WAL_BUFFERS set to 99999 by wal_env_var_tunables, BEAVA_IO_THREADS by phase12_08_*, BEAVA_TEST_MODE by phase13_4_reset_gated_env_var, BEAVA_MEMORY_GOV_ENFORCE by phase12_8_*). Plus a WAL-dir EEXIST race that surfaces despite (pid, atomic-counter) uniqueness. Captured as Phase 999.1 idea doc with 2-path plan: stopgap (30min process-global TestServer-spawn mutex + tempfile::tempdir() in default — kills 80%) → architectural (1-2 day plumb-everything-through-config + tripwire test). Laptop got shutdown mid-investigation; clean state reached on resume. Status of test gates at handoff: cargo test -p beava-core --lib = 618/618 GREEN; pytest python/tests/v0/ = 89/89 GREEN; cargo clippy --workspace -D warnings = clean; cargo fmt --all --check = clean; cargo test --workspace --features testing = 65 crates green / 1 flake (rotating: phase12_6_join_union_rejection today, phase12_8_metrics_endpoint last time, phase2_5_smoke before that)."
+}
