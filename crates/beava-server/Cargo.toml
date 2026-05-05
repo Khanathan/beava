@@ -202,6 +202,11 @@ path = "tests/phase12_6_legacy_axum_killed.rs"
 name = "phase12_6_mio_only_dataplane"
 path = "tests/phase12_6_mio_only_dataplane.rs"
 
+# ─── Phase 13.5.3 — no-set_var-in-beava-server/tests/ tripwire ──────────────
+[[test]]
+name = "phase13_5_3_no_env_var_pokes_in_tests"
+path = "tests/phase13_5_3_no_env_var_pokes_in_tests.rs"
+
 # ─── Plan 13.4-08 — OP_RESET test_mode gate (D-03) ───────────────────────────
 [[test]]
 name = "phase13_4_reset_gated_env_var"
