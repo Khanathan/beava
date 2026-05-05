@@ -975,11 +975,34 @@ fn resolve_upstream_schema_for_agg(
     nodes: &[PayloadNode],
     registry: &RegistryInner,
 ) -> Option<Schema> {
-    // Payload first (topological order ensures upstreams appear before dependents).
+    // Phase 13.5.1 Plan 07b — Sibling-derivation schema union.
+    //
+    // When the upstream is an EVENT (either in the same payload or registered),
+    // additionally union in the schemas of any same-payload event-derivations
+    // (kind=derivation, output_kind=event) whose only upstream is that same
+    // event name. Rationale: the user pattern is
+    //   Tagged = Click.with_columns(source=...)
+    //   @bv.table def UserClicks(tagged: Click): ... where bv.col('source') ...
+    // The SDK records UserClicks.upstreams = ["Click"] (correctly — the param
+    // is annotated `: Click`). At register time, the where-predicate
+    // validator must see the union of Click ∪ Tagged-shape-additions to
+    // resolve `where source == 'web'`. Same-payload-only — registry-side
+    // derivations are NOT unioned, since downstream callers reference them
+    // by name.
+    //
+    // Field-name collisions: derivation additions take precedence over base
+    // event fields, mirroring runtime apply order (with_columns / rename
+    // / cast last-write-wins downstream).
+
+    // Step 1: try to resolve upstream_name directly (event/table/derivation).
+    let mut base_schema: Option<Schema> = None;
+    let mut upstream_is_event = false;
     for node in nodes {
         match node {
             PayloadNode::Event(e) if e.name == upstream_name => {
-                return Some(Schema::from_event(&e.schema));
+                base_schema = Some(Schema::from_event(&e.schema));
+                upstream_is_event = true;
+                break;
             }
             PayloadNode::Table(t) if t.name == upstream_name => {
                 return Some(Schema::from_table(&t.schema));
@@ -990,17 +1013,40 @@ fn resolve_upstream_schema_for_agg(
             _ => {}
         }
     }
-    // Registry.
-    if let Some(e) = registry.events.get(upstream_name) {
-        return Some(Schema::from_event(&e.schema));
+    if base_schema.is_none() {
+        if let Some(e) = registry.events.get(upstream_name) {
+            base_schema = Some(Schema::from_event(&e.schema));
+            upstream_is_event = true;
+        } else if let Some(t) = registry.tables.get(upstream_name) {
+            return Some(Schema::from_table(&t.schema));
+        } else if let Some(d) = registry.derivations.get(upstream_name) {
+            return Some(Schema::from_derived(&d.schema));
+        }
     }
-    if let Some(t) = registry.tables.get(upstream_name) {
-        return Some(Schema::from_table(&t.schema));
+
+    let mut schema = base_schema?;
+
+    // Step 2: if the upstream is an event, union in same-payload sibling
+    // event-derivations of the same event.
+    if upstream_is_event {
+        for node in nodes {
+            if let PayloadNode::Derivation(d) = node {
+                if d.output_kind != crate::registry::OutputKind::Event {
+                    continue;
+                }
+                // Only union derivations whose sole upstream is the same event.
+                if d.upstreams.len() != 1 || d.upstreams[0] != upstream_name {
+                    continue;
+                }
+                // Union sibling fields — last-write-wins on collision.
+                for (fname, ftype) in d.schema.fields.iter() {
+                    schema.fields.insert(fname.clone(), *ftype);
+                }
+            }
+        }
     }
-    if let Some(d) = registry.derivations.get(upstream_name) {
-        return Some(Schema::from_derived(&d.schema));
-    }
-    None
+
+    Some(schema)
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
