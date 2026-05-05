@@ -310,18 +310,30 @@ def last(field: Any) -> AggDescriptor:
     return AggDescriptor(op="last", field=field)
 
 
-def first_n(field: Any, *, n: int) -> AggDescriptor:
+def first_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
+    """First N matching values (insertion order) per docs/operators/point-ordinal/first_n.md."""
     _enforce_field_str(field, "first_n")
     if n < 1:
         raise ValueError(f"first_n n must be >= 1; got {n}")
-    return AggDescriptor(op="first_n", field=field, extras={"n": n})
+    return AggDescriptor(
+        op="first_n",
+        field=field,
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
-def last_n(field: Any, *, n: int) -> AggDescriptor:
+def last_n(field: Any, *, n: int, where: Any = None) -> AggDescriptor:
+    """Last N matching values (oldest-to-newest) per docs/operators/point-ordinal/last_n.md."""
     _enforce_field_str(field, "last_n")
     if n < 1:
         raise ValueError(f"last_n n must be >= 1; got {n}")
-    return AggDescriptor(op="last_n", field=field, extras={"n": n})
+    return AggDescriptor(
+        op="last_n",
+        field=field,
+        extras={"n": n},
+        where=_serialize_where(where),
+    )
 
 
 def lag(field: Any, *, n: int = 1) -> AggDescriptor:
