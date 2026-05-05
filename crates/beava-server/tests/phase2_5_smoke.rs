@@ -2,8 +2,8 @@
 //! criteria end-to-end over real HTTP + TCP sockets via TestServer.
 
 use beava_core::wire::{
-    decode_frame, encode_frame, Frame, CT_JSON, CT_MSGPACK, OP_ERROR_RESPONSE, OP_PUSH_SYNC,
-    OP_REGISTER,
+    decode_frame, encode_frame, Frame, CT_JSON, CT_MSGPACK, OP_ERROR_RESPONSE, OP_PING,
+    OP_PUSH_SYNC, OP_REGISTER,
 };
 use beava_server::testing::{TcpClient, TestServer, TestServerBuilder};
 use bytes::{Bytes, BytesMut};
@@ -172,33 +172,97 @@ async fn criterion_5_unimplemented_opcode_returns_error_connection_stays_open() 
 }
 
 // ─── Criterion 6: pipelined registers return in order ─────────────────────────
+//
+// Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4 (lockstep
+// alignment exemption — the post-13.4 register-replacement contract shipped
+// in Phase 13.4).
+//
+// HISTORY: pre-13.4 this test issued 3 sequential single-node REGISTER frames
+// (EventA, EventB, EventC) and expected each to additively merge, bumping
+// registry_version 0→1→2→3. Post-13.4 each REGISTER call REPLACES the prior
+// node set; sending a payload that omits previously-registered nodes counts
+// as a destructive DROP and returns 409 force_required.
+//
+// PRESERVED INTENT: this test was originally proving the wire-level pipelining
+// property — "responses arrive in submission order across multiple frames on
+// one connection." That property is independent of REGISTER replacement
+// semantics. The hybrid here keeps the multi-frame pipelining check by
+// pipelining ONE register (with all 3 nodes additive) followed by TWO PING
+// frames; we still read 3 responses and assert they arrive in order.
 
 #[tokio::test]
 async fn criterion_6_pipelined_registers_return_in_order() {
     let ts = TestServer::spawn().await.expect("spawn");
     let mut c = ts.tcp_client().await.expect("tcp client");
 
-    // Write 3 register frames without awaiting responses.
-    for name in ["EventA", "EventB", "EventC"] {
-        let body = serde_json::to_vec(&json!({"nodes": [event_node_named(name)]})).unwrap();
+    // Frame 0: ONE register payload containing all three event nodes (additive).
+    let register_body = serde_json::to_vec(&json!({
+        "nodes": [
+            event_node_named("EventA"),
+            event_node_named("EventB"),
+            event_node_named("EventC"),
+        ]
+    }))
+    .unwrap();
+    c.write_frame(&Frame {
+        op: OP_REGISTER,
+        content_type: CT_JSON,
+        payload: Bytes::from(register_body),
+    })
+    .await
+    .expect("write register");
+
+    // Frames 1 + 2: two pipelined OP_PING frames behind the register frame —
+    // exercises the wire-level "responses arrive in submission order" property
+    // that this test originally proved.
+    for _ in 0..2 {
         c.write_frame(&Frame {
-            op: OP_REGISTER,
+            op: OP_PING,
             content_type: CT_JSON,
-            payload: Bytes::from(body),
+            payload: Bytes::from(b"{}".to_vec()),
         })
         .await
-        .expect("write");
+        .expect("write ping");
     }
 
-    // Read three responses in order; version bumps monotonically.
+    // Read three responses in submission order.
     let frames = c.read_n_frames(3).await.expect("read 3");
-    let expectations = [("EventA", 1u64), ("EventB", 2), ("EventC", 3)];
-    for (i, (name, expected_version)) in expectations.iter().enumerate() {
-        assert_eq!(frames[i].op, OP_REGISTER);
-        let body: Value = serde_json::from_slice(&frames[i].payload).unwrap();
-        assert_eq!(body["status"], "ok");
-        assert_eq!(body["registry_version"], *expected_version);
-        assert_eq!(body["added"][0], *name);
+
+    // Frame 0: OP_REGISTER OK; all 3 names additive in a single bump.
+    assert_eq!(
+        frames[0].op, OP_REGISTER,
+        "frame 0 must be register response: {:?}",
+        frames[0]
+    );
+    let reg_body: Value = serde_json::from_slice(&frames[0].payload).unwrap();
+    assert_eq!(reg_body["status"], "ok");
+    assert_eq!(reg_body["registry_version"], 1u64);
+    let added: Vec<&str> = reg_body["added"]
+        .as_array()
+        .expect("added array")
+        .iter()
+        .map(|v| v.as_str().expect("str"))
+        .collect();
+    for expected in ["EventA", "EventB", "EventC"] {
+        assert!(
+            added.contains(&expected),
+            "added must contain {expected}: {added:?}"
+        );
+    }
+
+    // Frames 1 + 2: OP_PING echoes (server replies on the same opcode), both
+    // at registry_version=1 (no further bumps after the single register).
+    for i in 1..=2 {
+        assert_eq!(
+            frames[i].op, OP_PING,
+            "frame {i} must be ping response: {:?}",
+            frames[i]
+        );
+        let pong_body: Value = serde_json::from_slice(&frames[i].payload).unwrap();
+        assert_eq!(
+            pong_body["registry_version"], 1u64,
+            "ping frame {i} version: {pong_body:#}"
+        );
     }
 
     ts.shutdown().await.expect("shutdown");
