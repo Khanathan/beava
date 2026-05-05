@@ -45,6 +45,72 @@ class TableDescriptor:
         self._kind = "table"
 
 
+def _collect_closure_cells(fn: Callable[..., Any]) -> dict[str, Any]:
+    """Return a {name: value} map of ``fn``'s lexical closure cells.
+
+    Pairs ``fn.__code__.co_freevars`` (the names) with ``fn.__closure__``
+    (the cell objects). A cell with an empty / unset value is skipped.
+    """
+    cells: dict[str, Any] = {}
+    code = getattr(fn, "__code__", None)
+    closure = getattr(fn, "__closure__", None)
+    if code is None or closure is None:
+        return cells
+    freevars = getattr(code, "co_freevars", ())
+    for name, cell in zip(freevars, closure):
+        try:
+            cells[name] = cell.cell_contents
+        except ValueError:
+            # Cell exists but has no contents yet (rare); skip silently.
+            continue
+    return cells
+
+
+_TABLE_MODULE_FILE = __file__
+
+
+def _collect_caller_frame_locals() -> dict[str, Any]:
+    """Return merged ``f_locals`` from user-code frames above ``_table.py``.
+
+    Walks back through the call stack and merges ``f_locals`` from every
+    frame that is NOT inside ``_table.py`` (this module). User-code
+    frames are walked outward; first-seen wins, so a name in the closest
+    user-code frame (e.g. an inner factory fn) shadows a same-name
+    binding in an outer frame (e.g. the pytest test fn).
+
+    The Plan 07e documented contract pins this behavior:
+      - Boundary detection is by FILE IDENTITY (not by frame-depth count),
+        so the resolver stays robust under decorator-stack wrappers
+        (``functools.lru_cache``, etc.) that change the count.
+      - User-code frames are merged in proximity order — closest wins.
+      - The walk terminates at a depth bound (32 frames) to avoid
+        runaway in pathological recursive setups.
+
+    See ``docs/sdk-api/python.md`` § "Supported @bv.event declaration
+    sites" for the user-facing contract.
+    """
+    merged: dict[str, Any] = {}
+    frame = inspect.currentframe()
+    try:
+        if frame is None:
+            return merged
+        frame = frame.f_back  # skip this helper
+        depth = 0
+        while frame is not None and depth < 32:
+            code = frame.f_code
+            if getattr(code, "co_filename", None) != _TABLE_MODULE_FILE:
+                # User-code frame — merge first-seen-wins (closer frames
+                # take priority over outer frames).
+                for name, val in frame.f_locals.items():
+                    if name not in merged:
+                        merged[name] = val
+            frame = frame.f_back
+            depth += 1
+        return merged
+    finally:
+        del frame  # break the CPython reference cycle
+
+
 def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
     """Resolve PEP-563 string annotations to their actual classes.
 
@@ -57,13 +123,23 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
     ``inspect.Parameter.empty`` (which surfaced as ``AttributeError`` in
     user code) is forbidden.
 
-    Phase 13.5.1 Plan 05 deviation (Rule 3 — blocking issue auto-fix): when
-    the upstream class is defined in a function-local scope (typical pytest
-    pattern: ``@bv.event class Txn:`` inside a test fn), ``get_type_hints``
-    cannot resolve it from ``fn.__globals__`` alone. Walk the calling
-    frame's ``f_locals`` to find the class — this is the same trick the
-    typing module uses when ``localns=None``. Fallback to ``fn.__globals__``
-    last-ditch lookup matches ``_make_event_derivation``.
+    **Phase 13.5.1 Plan 07e — documented declaration-site contract.** The
+    resolver tries name-resolution sources in this fixed order and stops at
+    the first hit:
+
+      1. ``fn.__globals__`` (canonical, mypy-friendly module-level
+         declarations).
+      2. Enclosing closure cells (``fn.__closure__`` paired with
+         ``fn.__code__.co_freevars``) — captures inner-class / lru_cache
+         factory patterns.
+      3. Caller-frame ``f_locals`` (one frame back, bounded) — captures
+         the pytest-fixture pattern (``@bv.event class Foo: ...`` inside
+         a test fn body).
+
+    See ``docs/sdk-api/python.md`` § "Supported @bv.event declaration sites"
+    for the user-facing contract; see ``13.5.1-07e-PLAN.md`` for the
+    rationale (this replaces the Plan 05 8-frame magic walk, which broke
+    on decorator-stack wrappers because frame depth shifted).
     """
     sig = inspect.signature(fn)
     params = list(sig.parameters.values())
@@ -71,28 +147,23 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
         raise TypeError(
             f"@bv.table function {fn.__name__!r} must take at least one parameter"
         )
-    # Walk the call stack to collect candidate localns from enclosing frames.
-    # This lets @bv.table resolve upstream classes defined inside the same
-    # function (e.g. inside a pytest test fn).
-    caller_locals: dict[str, Any] = {}
+    # Combine localns sources in priority order: closure cells, then a
+    # single caller-frame snapshot. fn.__globals__ is passed separately to
+    # get_type_hints. First-seen wins on key collisions inside `localns`
+    # (closure cells take priority over caller f_locals — closure cells
+    # are tied to the decorator-fn definition, caller f_locals is the
+    # invocation site; the former is more specific).
+    closure_cells = _collect_closure_cells(fn)
+    # Walk back to the first non-_table.py frame: that's the user-code
+    # frame that invoked @bv.table (whether directly via the bare form or
+    # via the inner _decorate_keyed / _decorate_global closure). The
+    # boundary detection is by file identity, not by depth count, so it
+    # stays robust under decorator-stack wrappers.
+    caller_locals = _collect_caller_frame_locals()
+    localns: dict[str, Any] = dict(caller_locals)  # lower priority
+    localns.update(closure_cells)  # higher priority overlays
     try:
-        # _resolve_upstream_proxies → _make_table → @bv.table closure → user code.
-        # Walk back up to ~6 frames to be safe across the decorator wrappers.
-        frame = inspect.currentframe()
-        for _ in range(8):
-            if frame is None:
-                break
-            frame = frame.f_back
-            if frame is None:
-                break
-            for name, val in frame.f_locals.items():
-                # First-seen wins (closer to the decorator call site).
-                if name not in caller_locals:
-                    caller_locals[name] = val
-    finally:
-        del frame  # break the reference cycle (CPython hygiene)
-    try:
-        resolved = get_type_hints(fn, globalns=fn.__globals__, localns=caller_locals)
+        resolved = get_type_hints(fn, globalns=fn.__globals__, localns=localns)
     except Exception:
         resolved = {}
     proxies: list[Any] = []
@@ -105,8 +176,14 @@ def _resolve_upstream_proxies(fn: Callable[..., Any]) -> list[Any]:
                 f"e.g. def {fn.__name__}({p.name}: Click): ..."
             )
         if isinstance(ann, str):
-            # Try caller-frame locals first, then fn.__globals__ as last-ditch.
-            ann = caller_locals.get(ann, fn.__globals__.get(ann, ann))
+            # Try sources in documented contract order: globals, then
+            # closure cells, then caller f_locals.
+            ann = (
+                fn.__globals__.get(
+                    ann,
+                    closure_cells.get(ann, caller_locals.get(ann, ann)),
+                )
+            )
         proxies.append(ann)
     return proxies
 
