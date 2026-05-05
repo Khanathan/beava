@@ -102,16 +102,22 @@ async fn push_event(
     );
 }
 
+/// Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4 (lockstep
+/// alignment exemption): post-13.4 POST /get takes verb-style
+/// {table, key, features?} and returns a flat dict. The verb shape is
+/// single-row (one (table, key) per call); multi-feature multi-table queries
+/// must split into separate calls per (table, key) pair.
 async fn get_feature(
     ts: &beava_server::testing::TestServer,
-    keys: &[&str],
+    table: &str,
+    key: &str,
     features: &[&str],
 ) -> serde_json::Value {
     let url = format!("{}/get", ts.base_url());
     let r = reqwest::Client::new()
         .post(&url)
         .header("Content-Type", "application/json")
-        .body(json!({"keys": keys, "features": features}).to_string())
+        .body(json!({"table": table, "key": key, "features": features}).to_string())
         .send()
         .await
         .expect("post /get");
@@ -162,11 +168,8 @@ async fn sc1_snapshot_then_restart_reproduces_state() {
             )
             .await;
         }
-        let v = get_feature(&ts, &["alice"], &["cnt"]).await;
-        assert_eq!(
-            v["alice"]["cnt"], 1250,
-            "pre-restart cnt expected 1250, got {v}"
-        );
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(v["cnt"], 1250, "pre-restart cnt expected 1250, got {v}");
         ts.shutdown().await.expect("shutdown 1st");
     }
 
@@ -192,9 +195,9 @@ async fn sc1_snapshot_then_restart_reproduces_state() {
             .await
             .expect("spawn 2nd");
 
-        let v = get_feature(&ts, &["alice"], &["cnt"]).await;
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
         assert_eq!(
-            v["alice"]["cnt"], 1250,
+            v["cnt"], 1250,
             "post-restart cnt expected 1250 (snapshot + WAL-past-LSN), got {v}"
         );
         ts.shutdown().await.expect("shutdown 2nd");
@@ -233,7 +236,22 @@ async fn sc4_schema_evolution_survives_restart() {
         }
 
         // Schema evolution: ADD Click + ClickAgg in a second /register call.
-        register(&ts, json!([click_descriptor(), click_agg_descriptor()])).await;
+        // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4: post-
+        // 13.4 each register REPLACES the prior set; sending only Click +
+        // ClickAgg drops Txn + TxnAgg → 409 force_required (rename diff).
+        // Strategy A: include all 4 descriptors so the diff is purely
+        // additive (Click + ClickAgg are the only new nodes), preserving the
+        // test's "additive schema-evolution" intent.
+        register(
+            &ts,
+            json!([
+                txn_descriptor(),
+                txn_agg_descriptor(),
+                click_descriptor(),
+                click_agg_descriptor()
+            ]),
+        )
+        .await;
         for i in 0..3_i64 {
             push_event(
                 &ts,
@@ -243,9 +261,12 @@ async fn sc4_schema_evolution_survives_restart() {
             .await;
         }
 
-        let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
-        assert_eq!(v["alice"]["cnt"], 7);
-        assert_eq!(v["alice"]["click_cnt"], 3);
+        // Verb-style is single-row per (table, key); split multi-table query
+        // into 2 calls.
+        let v_cnt = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(v_cnt["cnt"], 7);
+        let v_click = get_feature(&ts, "ClickAgg", "alice", &["click_cnt"]).await;
+        assert_eq!(v_click["click_cnt"], 3);
 
         ts.shutdown().await.expect("shutdown 1st");
     }
@@ -261,14 +282,15 @@ async fn sc4_schema_evolution_survives_restart() {
             .expect("spawn 2nd");
 
         // Both aggregations must come back, both keys must resolve.
-        let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
+        let v_cnt = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
         assert_eq!(
-            v["alice"]["cnt"], 7,
-            "post-restart cnt expected 7 (recovered v1 schema + replayed events), got {v}"
+            v_cnt["cnt"], 7,
+            "post-restart cnt expected 7 (recovered v1 schema + replayed events), got {v_cnt}"
         );
+        let v_click = get_feature(&ts, "ClickAgg", "alice", &["click_cnt"]).await;
         assert_eq!(
-            v["alice"]["click_cnt"], 3,
-            "post-restart click_cnt expected 3 (recovered v2 schema + replayed events), got {v}"
+            v_click["click_cnt"], 3,
+            "post-restart click_cnt expected 3 (recovered v2 schema + replayed events), got {v_click}"
         );
 
         ts.shutdown().await.expect("shutdown 2nd");
@@ -309,7 +331,19 @@ async fn snapshot_then_schema_evolution_then_restart() {
         ts.force_snapshot_now().await.expect("force snapshot");
 
         // Now bump the schema (RegistryBump record lands AFTER snapshot LSN).
-        register(&ts, json!([click_descriptor(), click_agg_descriptor()])).await;
+        // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4:
+        // additive payload includes all 4 descriptors so the post-13.4
+        // register-replacement contract treats this as a pure additive diff.
+        register(
+            &ts,
+            json!([
+                txn_descriptor(),
+                txn_agg_descriptor(),
+                click_descriptor(),
+                click_agg_descriptor()
+            ]),
+        )
+        .await;
         for i in 0..2_i64 {
             push_event(
                 &ts,
@@ -327,9 +361,10 @@ async fn snapshot_then_schema_evolution_then_restart() {
             .await;
         }
 
-        let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
-        assert_eq!(v["alice"]["cnt"], 8);
-        assert_eq!(v["alice"]["click_cnt"], 2);
+        let v_cnt = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(v_cnt["cnt"], 8);
+        let v_click = get_feature(&ts, "ClickAgg", "alice", &["click_cnt"]).await;
+        assert_eq!(v_click["click_cnt"], 2);
 
         ts.shutdown().await.expect("shutdown 1st");
     }
@@ -344,14 +379,15 @@ async fn snapshot_then_schema_evolution_then_restart() {
             .await
             .expect("spawn 2nd");
 
-        let v = get_feature(&ts, &["alice"], &["cnt", "click_cnt"]).await;
+        let v_cnt = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
         assert_eq!(
-            v["alice"]["cnt"], 8,
-            "post-restart cnt expected 8 (5 from snapshot + 3 from WAL tail), got {v}"
+            v_cnt["cnt"], 8,
+            "post-restart cnt expected 8 (5 from snapshot + 3 from WAL tail), got {v_cnt}"
         );
+        let v_click = get_feature(&ts, "ClickAgg", "alice", &["click_cnt"]).await;
         assert_eq!(
-            v["alice"]["click_cnt"], 2,
-            "post-restart click_cnt expected 2 (RegistryBump + 2 events all from WAL tail), got {v}"
+            v_click["click_cnt"], 2,
+            "post-restart click_cnt expected 2 (RegistryBump + 2 events all from WAL tail), got {v_click}"
         );
 
         ts.shutdown().await.expect("shutdown 2nd");
