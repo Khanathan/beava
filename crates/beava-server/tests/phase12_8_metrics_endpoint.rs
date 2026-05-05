@@ -34,28 +34,18 @@
 
 #![cfg(feature = "testing")]
 
-use beava_server::testing::TestServer;
+use beava_server::testing::{TestServer, TestServerBuilder};
 use serde_json::json;
 use std::time::Duration;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-const ENV_KEY: &str = "BEAVA_MEMORY_GOV_ENFORCE";
-
-/// Process-global env mutex. Mirrors the pattern in
-/// `phase12_8_unbounded_op_in_lifetime_mode.rs`. Required because Plan 06
-/// reads the env per-call (no OnceLock cache) and tests in this file run in
-/// the same process; without the mutex, set/remove from one test races
-/// arbitrary other tests' register paths.
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn enforce_off() {
-    std::env::remove_var(ENV_KEY);
-}
-
-fn enforce_zero() {
-    std::env::set_var(ENV_KEY, "0");
-}
+//
+// Phase 13.5.3: ENV_KEY / ENV_LOCK / enforce_off() / enforce_zero() helpers
+// removed. The `BEAVA_MEMORY_GOV_ENFORCE` env-var read site moved off the
+// hot path into `ServerV18Config::from_env()` (production boot only); tests
+// now plumb the value through the per-server `TestServerBuilder.memory_governance_enforce(b)`
+// builder method (no process-env mutation, no race window across parallel
+// TestServers within the same test binary).
 
 /// GET /metrics on the admin sidecar; return the response body.
 async fn fetch_metrics(ts: &TestServer) -> String {
@@ -179,9 +169,6 @@ async fn push_user(ts: &TestServer, user_id: &str, amount: f64) {
 /// 1. The 5 new HELP lines must appear on `/metrics` once Plan 06 lands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_metrics_endpoint_includes_5_new_help_lines() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     let body = fetch_metrics(&ts).await;
@@ -213,9 +200,6 @@ async fn test_metrics_endpoint_includes_5_new_help_lines() {
 ///    can fire on a never-touched entity).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cold_entity_evictions_starts_at_zero() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     // Register a source that COULD evict (cold_after = 1d) but no events pushed
@@ -249,9 +233,6 @@ async fn test_cold_entity_evictions_starts_at_zero() {
 ///    after `cold_after_ms` has passed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cold_entity_evictions_increments_on_eviction() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     // 100ms TTL — short enough that one tokio::time::sleep(150ms) crosses it.
@@ -293,9 +274,6 @@ async fn test_cold_entity_evictions_increments_on_eviction() {
 /// 4. `entity_count_resident` reports total resident entity count after pushes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_entity_count_resident_reports_active_entities() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     let payload = register_payload_count(None);
@@ -322,9 +300,6 @@ async fn test_entity_count_resident_reports_active_entities() {
 ///    fires (the 64-bucket cap is hit after >64 distinct-epoch pushes).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bucket_reclaim_total_increments_on_eviction() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     let payload = register_payload_windowed_count();
@@ -373,9 +348,6 @@ async fn test_bucket_reclaim_total_increments_on_eviction() {
 /// default-1024 cap regardless of the JSON `params.max_categories`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_lifetime_op_cap_hit_total_includes_entropy_capped() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     let before = scrape_metric_value(&fetch_metrics(&ts).await, "beava_lifetime_op_cap_hit_total")
@@ -417,9 +389,6 @@ async fn test_lifetime_op_cap_hit_total_includes_entropy_capped() {
 ///    PROJECT.md memory-budget line).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bytes_per_entity_p99_reports_static_v0_estimate() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
     let ts = TestServer::spawn().await.expect("spawn");
 
     let body = fetch_metrics(&ts).await;
@@ -443,23 +412,33 @@ async fn test_bytes_per_entity_p99_reports_static_v0_estimate() {
 // ─── Plan 04 test 21 (moved here per Plan 06 frontmatter) ───────────────────
 
 /// 8 (test 21 from Plan 04). After the Plan 06 default-OFF→ON env-gate flip,
-/// users who explicitly set `BEAVA_MEMORY_GOV_ENFORCE=0` opt back into the
-/// original "no enforcement" behavior. This is the documented escape hatch
-/// per Plan 06 frontmatter `must_haves.truths[0]`.
+/// callers who explicitly opt OUT of enforcement (production:
+/// `BEAVA_MEMORY_GOV_ENFORCE=0`; tests:
+/// `.memory_governance_enforce(false)` builder method) get the original
+/// "no enforcement" behavior. This is the documented escape hatch per
+/// Plan 06 frontmatter `must_haves.truths[0]`.
 ///
-/// Test: with `BEAVA_MEMORY_GOV_ENFORCE=0` set explicitly, registering a
-/// windowless op that WOULD be rejected under the default-ON gate (e.g.
-/// `histogram` without `buckets` per Plan 04 classification) must succeed.
+/// Phase 13.5.3 rewrite: env-var-set replaced by per-server builder
+/// method. No more process-global env mutation; the override plumbs
+/// through `ServerV18Config.memory_governance_enforce` →
+/// `AppState.memory_governance_enforce` and the apply-shard register
+/// path reads from struct field, not env.
+///
+/// Test: with `.memory_governance_enforce(false)`, registering a
+/// windowless op that WOULD be rejected under the default-ON gate
+/// (e.g. `histogram` without `buckets` per Plan 04 classification)
+/// must succeed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_env_var_zero_disables_enforcement() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_zero();
-
-    let ts = TestServer::spawn().await.expect("spawn");
+async fn test_memory_governance_enforce_false_disables_enforcement() {
+    let ts = TestServerBuilder::new()
+        .memory_governance_enforce(false)
+        .spawn()
+        .await
+        .expect("spawn");
 
     // Histogram without `buckets` — under default-ON enforcement this would
     // be rejected with `unbounded_op_in_lifetime_mode`. With the explicit
-    // "0" escape hatch the shim must short-circuit and accept.
+    // builder-override escape hatch the shim must short-circuit and accept.
     let payload = json!({
         "nodes": [
             {
@@ -496,12 +475,11 @@ async fn test_env_var_zero_disables_enforcement() {
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
 
-    enforce_off();
     ts.shutdown().await.ok();
 
     assert!(
         (200..300).contains(&status),
-        "with BEAVA_MEMORY_GOV_ENFORCE=0, the 4th shim must short-circuit \
+        "with .memory_governance_enforce(false), the 4th shim must short-circuit \
          (escape hatch) and accept registration of histogram-without-buckets \
          that would otherwise be rejected with unbounded_op_in_lifetime_mode; \
          got status={status}, body={body_text}"

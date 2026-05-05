@@ -340,24 +340,32 @@ impl TestServerBuilder {
             ))
         })?;
 
-        // Phase 13.5.3 RED: still calls `bind_with_state` (which does NOT
-        // take ServerV18Config), so test_mode_override / io_threads_override
-        // / wal_*_override / memory_governance_enforce_override are read
-        // off `self` but DROPPED on the floor — the spawned server boots
-        // with default values regardless of what the test set on the
-        // builder. This is the RED state for Task 2: the unit test
-        // `test_test_mode_builder_method_plumbs_through_to_reset` below
-        // will fail because /reset returns 403 even when `.test_mode(true)`
-        // is on the builder. Task 2 GREEN switches `bind_with_state` →
-        // `bind_with_config` here and the test goes GREEN.
-        let _ = self.test_mode_override; // intentionally unused in RED
-        let _ = self.io_threads_override;
-        let _ = self.wal_buffers_override;
-        let _ = self.wal_buffer_size_mb_override;
-        let _ = self.wal_tick_ms_override;
-        let _ = self.memory_governance_enforce_override;
-
-        let sv18 = ServerV18::bind_with_state(
+        // Phase 13.5.3 GREEN: bind_with_state_and_overrides carries the
+        // override values through ServerV18Config struct fields —
+        // `build_runtime_state_with_persistence` plumbs the WAL overrides
+        // into `WalConfig::resolve(...)`, the io_threads override into
+        // ServerV18State.io_threads_override (read by run_mio_event_loop),
+        // and the test_mode + memory_governance_enforce values onto
+        // AppState. NO process-env reads on this hot path; the override
+        // pattern from `tcp_max_frame_bytes` (commit acac4254) is now
+        // applied to all five remaining env-var families.
+        //
+        // We call `bind_with_state_and_overrides` rather than
+        // `bind_with_config` because TestServer needs control of
+        // snapshot_interval_ms + wal_fsync_interval_ms (most tests ship
+        // `1` to keep macOS F_FULLSYNC latency out of the wall-clock);
+        // bind_with_config hardcodes 60_000 / 2.
+        let sv18_cfg = crate::server::ServerV18Config {
+            persistence: beava_persistence::Persistence::default(),
+            test_mode: self.test_mode_override,
+            tcp_max_frame_bytes: self.cfg.tcp.max_frame_bytes,
+            wal_buffers: self.wal_buffers_override,
+            wal_buffer_size_mb: self.wal_buffer_size_mb_override,
+            wal_tick_ms: self.wal_tick_ms_override,
+            io_threads: self.io_threads_override,
+            memory_governance_enforce: self.memory_governance_enforce_override,
+        };
+        let sv18 = ServerV18::bind_with_state_and_overrides(
             http_addr,
             tcp_addr_socket,
             admin_addr,
@@ -365,7 +373,7 @@ impl TestServerBuilder {
             self.cfg.durability.snapshot_dir.clone(),
             self.cfg.durability.snapshot_interval_ms.max(1),
             self.cfg.durability.wal_fsync_interval_ms.max(1),
-            self.cfg.tcp.max_frame_bytes,
+            sv18_cfg,
         )
         .await?;
 

@@ -136,9 +136,10 @@ path = "tests/phase18_11_hot_path_test.rs"
 name = "phase18_05_continuous_workers_test"
 path = "tests/phase18_05_continuous_workers_test.rs"
 
-[[test]]
-name = "wal_env_var_tunables"
-path = "tests/wal_env_var_tunables.rs"
+# Phase 13.5.3: `wal_env_var_tunables` test target deleted; assertions
+# moved to `crates/beava-server/src/server.rs::env_var_plumbing_tests`
+# (unit tests inside src/, where the architectural tripwire
+# `phase13_5_3_no_env_var_pokes_in_tests.rs` does not walk).
 
 # ─── Plan 12-07 — read path on mio (HTTP + TCP) ─────────────────────────────
 [[test]]

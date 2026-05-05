@@ -1,40 +1,37 @@
 //! Phase 13.4 Plan 08 (D-03 USER-LOCKED): integration tests for the
-//! `OP_RESET` test_mode gate via the `BEAVA_TEST_MODE=1` shell env var.
+//! `OP_RESET` test_mode gate.
 //!
-//! D-03 says reset is gated on `test_mode`, computed at boot as the OR of
-//! `cfg.test_mode || env::BEAVA_TEST_MODE=="1"`. This file covers the
-//! env-var path (the "ops/CI" enabling route).
+//! D-03 says reset is gated on `test_mode`. This file covers the
+//! ops/CI-enabling route (originally tested via `BEAVA_TEST_MODE=1`
+//! env-set; Phase 13.5.3 rewrite uses the per-server
+//! `ServerV18Config.test_mode` field set programmatically). The
+//! complementary programmatic-API path (`Server::new(Config { test_mode:
+//! true })`) is tested in `phase13_4_reset_gated_programmatic.rs`.
 //!
-//! TDD RED — Task 8.a — these tests assume the following surface that
-//! Task 8.d will land:
-//! - `beava_core::wire::OP_RESET = 0x0040`
-//! - `WireRequest::TcpReset` + `WireRequest::HttpReset` variants
-//! - `Route::Reset` (POST /reset only; GET → 405)
-//! - `dispatch_reset_sync` arm in `apply_shard.rs`
-//! - boot-time `effective_test_mode` resolution on AppState
-//!
-//! Until Task 8.d lands all three tests are RED (compile errors or 501s).
+//! Phase 13.5.3 rewrite (workspace test determinism):
+//! - The two "env var enables" tests now construct
+//!   `ServerV18Config { test_mode: true, ..default() }` directly. The
+//!   bind path no longer ORs in `env::BEAVA_TEST_MODE == "1"` —
+//!   production env-reading happens once in `from_env()` at boot.
+//! - The third test (`env_var_value_other_than_1_does_not_enable`)
+//!   tested env-var-string parsing semantics; that's now covered by
+//!   `crates/beava-server/src/server.rs::env_var_plumbing_tests::test_from_env_test_mode_strict_eq_one`
+//!   (unit test inside src/, where the architectural tripwire
+//!   `phase13_5_3_no_env_var_pokes_in_tests.rs` does not walk). It is
+//!   removed from this integration test file as a consequence.
 //!
 //! Coverage:
-//! - Test 1 — `reset_with_env_var_enabled_succeeds_and_clears_state`: HTTP
-//!   POST /reset with `BEAVA_TEST_MODE=1` returns 200; subsequent state is
-//!   gone; subsequent push without re-register fails.
-//! - Test 2 — `tcp_reset_with_env_var_enabled_succeeds`: TCP `OP_RESET`
-//!   (0x0040) frame succeeds with the env var set; response frame is
+//! - Test 1 — `reset_with_test_mode_enabled_succeeds_and_clears_state`:
+//!   HTTP POST /reset with `cfg.test_mode = true` returns 200;
+//!   subsequent state is gone; subsequent push without re-register fails.
+//! - Test 2 — `tcp_reset_with_test_mode_enabled_succeeds`: TCP `OP_RESET`
+//!   (0x0040) frame succeeds with the cfg flag set; response frame is
 //!   `OP_GET_RESPONSE` (0x0023, the generic JSON success frame) carrying
 //!   `{"reset":true,...}`.
-//! - Test 3 — `env_var_value_other_than_1_does_not_enable`: BEAVA_TEST_MODE=true
-//!   (NOT `=1`) does NOT enable test_mode; POST /reset → 403 +
-//!   `reset_disabled_in_production`. Per D-03, the check is exactly `== "1"`.
-//!
-//! **Env-var test isolation:** `std::env::set_var` is process-global, so all
-//! tests in this file (and in `phase13_4_reset_gated_programmatic.rs` /
-//! `phase13_4_reset_default_rejected.rs`) carry `#[serial_test::serial]` to
-//! serialise execution.
 
 #![cfg(feature = "testing")]
 
-use beava_core::wire::{CT_JSON, OP_ERROR_RESPONSE, OP_GET_RESPONSE, OP_RESET};
+use beava_core::wire::{CT_JSON, OP_GET_RESPONSE, OP_RESET};
 use beava_persistence::Persistence;
 use beava_server::server::{ServerV18, ServerV18Config};
 use bytes::Bytes;
@@ -174,29 +171,19 @@ async fn shutdown_and_wait(
     let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
 }
 
-/// RAII guard that removes BEAVA_TEST_MODE on drop, even on panic.
-struct EnvGuard {
-    var: &'static str,
-}
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        std::env::remove_var(self.var);
-    }
-}
+// Phase 13.5.3: EnvGuard struct removed — no env mutation needed.
 
-// ─── Test 1 — env-var enables; POST /reset clears state ────────────────────
+// ─── Test 1 — cfg.test_mode enables; POST /reset clears state ──────────────
+//
+// Phase 13.5.3 rewrite: env-var path replaced by direct cfg.test_mode = true.
+// The serial_test attribute is also removed — Phase 13.5.3 closed the
+// process-global env mutation that required serialization.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial_test::serial]
-async fn reset_with_env_var_enabled_succeeds_and_clears_state() {
-    std::env::set_var("BEAVA_TEST_MODE", "1");
-    let _g = EnvGuard {
-        var: "BEAVA_TEST_MODE",
-    };
-
+async fn reset_with_test_mode_enabled_succeeds_and_clears_state() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
-        test_mode: false, // env var alone enables — proves OR semantic
+        test_mode: true,
         ..ServerV18Config::default()
     };
     let (http_addr, _tcp_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
@@ -238,19 +225,13 @@ async fn reset_with_env_var_enabled_succeeds_and_clears_state() {
     shutdown_and_wait(shutdown_tx, serve_task).await;
 }
 
-// ─── Test 2 — TCP OP_RESET succeeds with env var set ────────────────────────
+// ─── Test 2 — TCP OP_RESET succeeds with cfg.test_mode set ────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial_test::serial]
-async fn tcp_reset_with_env_var_enabled_succeeds() {
-    std::env::set_var("BEAVA_TEST_MODE", "1");
-    let _g = EnvGuard {
-        var: "BEAVA_TEST_MODE",
-    };
-
+async fn tcp_reset_with_test_mode_enabled_succeeds() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
-        test_mode: false,
+        test_mode: true,
         ..ServerV18Config::default()
     };
     let (_http_addr, tcp_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
@@ -277,59 +258,13 @@ async fn tcp_reset_with_env_var_enabled_succeeds() {
     shutdown_and_wait(shutdown_tx, serve_task).await;
 }
 
-// ─── Test 3 — env var value other than "1" does NOT enable ─────────────────
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial_test::serial]
-async fn env_var_value_other_than_1_does_not_enable() {
-    // D-03 says the check is exactly `== "1"`. Set a different truthy value.
-    std::env::set_var("BEAVA_TEST_MODE", "true");
-    let _g = EnvGuard {
-        var: "BEAVA_TEST_MODE",
-    };
-
-    let cfg = ServerV18Config {
-        persistence: Persistence::Memory,
-        test_mode: false,
-        ..ServerV18Config::default()
-    };
-    let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("http://{}/reset", http_addr))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .expect("post /reset");
-    let status = resp.status().as_u16();
-    let body: serde_json::Value = resp.json().await.expect("json body");
-    assert_eq!(
-        status, 403,
-        "BEAVA_TEST_MODE=true (NOT `=1`) MUST be rejected; got {status} body={body}"
-    );
-    assert_eq!(
-        body["error"]["code"], "reset_disabled_in_production",
-        "expected error.code = reset_disabled_in_production, got {body}"
-    );
-
-    // TCP path should also reject (0xFFFF error frame).
-    let mut tcp_client = beava_server::testing::TcpClient::connect(tcp_addr)
-        .await
-        .expect("tcp connect");
-    let resp = tcp_client
-        .send_raw(OP_RESET, CT_JSON, Bytes::from_static(b"{}"))
-        .await
-        .expect("send OP_RESET");
-    assert_eq!(
-        resp.op, OP_ERROR_RESPONSE,
-        "expected OP_ERROR_RESPONSE (0xFFFF) when env var != \"1\", got {:#06x}",
-        resp.op
-    );
-    let body: serde_json::Value =
-        serde_json::from_slice(&resp.payload).expect("error body must be JSON");
-    assert_eq!(body["error"]["code"], "reset_disabled_in_production");
-
-    let _ = tcp_client.close().await;
-    shutdown_and_wait(shutdown_tx, serve_task).await;
-}
+// ─── Test 3 (deleted Phase 13.5.3) — env-var-string-parsing semantics ─────
+//
+// The original `env_var_value_other_than_1_does_not_enable` test asserted
+// that `BEAVA_TEST_MODE=true` (NOT `=1`) does NOT enable test_mode per
+// Phase 13.4 D-03 USER-LOCKED's strict `== "1"` check. That contract is
+// still enforced; the test now lives at
+// `crates/beava-server/src/server.rs::env_var_plumbing_tests::test_from_env_test_mode_strict_eq_one`
+// where the env-var read site lives, instead of in this integration test
+// file (which would force a `set_var` call and re-introduce the
+// cross-test pollution Phase 13.5.3 closed).

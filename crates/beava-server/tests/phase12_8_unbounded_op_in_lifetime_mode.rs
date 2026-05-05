@@ -29,43 +29,26 @@
 //! (forward-looking — "requires explicit memory bound in v0"), NOT a
 //! retrospective `feature_removed_*` code. v0 is the FIRST public release.
 //!
-//! Test-process env model
-//! ----------------------
-//! Rust integration tests in a single `tests/foo.rs` file run in the SAME
-//! process. `std::env::*` is process-global. `apply_shard.rs::memory_gov_enforce_enabled`
-//! does a per-call `std::env::var` read on the cold register path (NOT a
-//! OnceLock cache — that would memoize the first read and break per-test
-//! flips). Each test below acquires `ENV_LOCK`, sets/clears the env var, runs
-//! its TestServer through one /register call, and then clears the env var.
+//! Per-server config model (Phase 13.5.3 rewrite)
+//! -----------------------------------------------
+//! Phase 13.5.3 closed the cross-test env-var pollution smell that
+//! motivated the original ENV_LOCK pattern. The
+//! `apply_shard.rs::memory_gov_enforce_enabled` per-call env-read is gone;
+//! the value lives on `AppState.memory_governance_enforce` (struct field,
+//! resolved at boot from `ServerV18Config.memory_governance_enforce`).
+//! Tests now plumb the value via the per-server
+//! `TestServerBuilder.memory_governance_enforce(b)` builder method —
+//! parallel TestServers within the same test binary no longer share state
+//! through process env.
 
 #![cfg(feature = "testing")]
 
 use beava_server::testing::TestServer;
 use serde_json::json;
 
-const ENV_KEY: &str = "BEAVA_MEMORY_GOV_ENFORCE";
-
-/// Process-global env mutex. Mirrors the pattern in
-/// `tests/wal_env_var_tunables.rs` (which uses `std::sync::Mutex` because its
-/// tests are `#[test]` — sync). This file uses `#[tokio::test]` and the lock
-/// MUST be held across `.await` points (TestServer spawn + post_json), so we
-/// use `tokio::sync::Mutex` to satisfy clippy's `await_holding_lock` lint.
-/// Tokio's mutex is async-aware and designed for this pattern.
-static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-fn enforce_on() {
-    std::env::set_var(ENV_KEY, "1");
-}
-
-fn enforce_off() {
-    std::env::remove_var(ENV_KEY);
-}
-
 #[tokio::test]
 async fn test_unbounded_op_rejected_when_enforcement_enabled() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_on();
-
+    // Phase 13.5.3: memory governance defaults to ON; no override needed.
     let ts = TestServer::spawn().await.expect("spawn");
 
     // Tx event + a derivation that group_by user_id and runs a windowless
@@ -110,7 +93,6 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
 
-    enforce_off();
     ts.shutdown().await.ok();
 
     assert_eq!(
@@ -139,9 +121,7 @@ async fn test_unbounded_op_rejected_when_enforcement_enabled() {
 
 #[tokio::test]
 async fn test_windowed_op_passes_when_enforcement_enabled() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_on();
-
+    // Phase 13.5.3: memory governance defaults to ON; no override needed.
     let ts = TestServer::spawn().await.expect("spawn");
 
     // Same shape as above BUT the count carries `params.window = "60s"`.
@@ -183,7 +163,6 @@ async fn test_windowed_op_passes_when_enforcement_enabled() {
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
 
-    enforce_off();
     ts.shutdown().await.ok();
 
     assert!(
@@ -203,9 +182,8 @@ async fn test_windowed_op_passes_when_enforcement_enabled() {
 /// shift) covers the explicit `BEAVA_MEMORY_GOV_ENFORCE=0` escape hatch.
 #[tokio::test]
 async fn test_default_enforcement_on_when_env_unset() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_off();
-
+    // Phase 13.5.3: memory governance defaults to ON; this test asserts
+    // unset / default-ON behavior, so spawn with default builder.
     let ts = TestServer::spawn().await.expect("spawn");
 
     // SAME windowless-histogram-without-buckets payload as test 1.
@@ -264,9 +242,7 @@ async fn test_default_enforcement_on_when_env_unset() {
 
 #[tokio::test]
 async fn test_unbounded_op_path_includes_node_and_op_index() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_on();
-
+    // Phase 13.5.3: memory governance defaults to ON; no override needed.
     let ts = TestServer::spawn().await.expect("spawn");
 
     // 2 derivations: derivation 1 has a windowed count (fine), derivation 2 has
@@ -328,7 +304,6 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
 
-    enforce_off();
     ts.shutdown().await.ok();
 
     assert_eq!(
@@ -351,9 +326,7 @@ async fn test_unbounded_op_path_includes_node_and_op_index() {
 
 #[tokio::test]
 async fn test_message_suggests_windowed_kwarg() {
-    let _guard = ENV_LOCK.lock().await;
-    enforce_on();
-
+    // Phase 13.5.3: memory governance defaults to ON; no override needed.
     let ts = TestServer::spawn().await.expect("spawn");
 
     // Windowless histogram WITHOUT `buckets` — the rejection reason text must
@@ -396,7 +369,6 @@ async fn test_message_suggests_windowed_kwarg() {
     let status = resp.status().as_u16();
     let body_text = resp.text().await.expect("body text");
 
-    enforce_off();
     ts.shutdown().await.ok();
 
     assert_eq!(

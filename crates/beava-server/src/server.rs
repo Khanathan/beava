@@ -522,6 +522,61 @@ impl ServerV18 {
         Ok(sv18)
     }
 
+    /// Phase 13.5.3: variant of `bind_with_state` that ALSO accepts
+    /// `ServerV18Config` overrides for the per-server tunables
+    /// (`test_mode`, `wal_buffers`, `wal_buffer_size_mb`, `wal_tick_ms`,
+    /// `io_threads`, `memory_governance_enforce`). Used by
+    /// `TestServerBuilder::spawn()` so the override values from
+    /// `.test_mode(true)` / `.io_threads(n)` / etc. plumb through to
+    /// the spawned ServerV18 without process-env reads.
+    ///
+    /// Preserves `snapshot_interval_ms` + `wal_fsync_interval_ms` knobs
+    /// (TestServer-only, not on the production env interface) — those are
+    /// hard-coded inside `bind_with_config` to 60_000 / 2 respectively
+    /// and tests need finer control (most TestServers ship `1` to keep
+    /// macOS F_FULLSYNC latency from blocking the test wall-clock).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn bind_with_state_and_overrides(
+        http_addr: std::net::SocketAddr,
+        tcp_addr: std::net::SocketAddr,
+        admin_addr: std::net::SocketAddr,
+        wal_dir: std::path::PathBuf,
+        snapshot_dir: std::path::PathBuf,
+        snapshot_interval_ms: u64,
+        wal_fsync_interval_ms: u64,
+        cfg: ServerV18Config,
+    ) -> Result<Self, ServerError> {
+        let mut sv18 = Self::bind(http_addr, tcp_addr, admin_addr).await?;
+        // Note: cfg.persistence is IGNORED here — wal_dir / snapshot_dir
+        // arguments take precedence (Disk mode is forced for TestServer
+        // bootstrap because `bind_with_state` callers always want disk
+        // persistence with explicit dirs). Future work could collapse
+        // bind_with_state* into bind_with_config by exposing the
+        // snapshot/fsync intervals on ServerV18Config; out of scope for
+        // Phase 13.5.3.
+        let state = build_runtime_state_with_persistence(
+            Persistence::Disk {
+                wal_dir,
+                snapshot_dir,
+                sync_mode: SyncMode::Periodic,
+            },
+            snapshot_interval_ms,
+            wal_fsync_interval_ms,
+            cfg.test_mode,
+            cfg.tcp_max_frame_bytes,
+            crate::wal_config::WalConfigOverrides {
+                buffers: cfg.wal_buffers,
+                buffer_size_mb: cfg.wal_buffer_size_mb,
+                tick_ms: cfg.wal_tick_ms,
+            },
+            cfg.io_threads,
+            cfg.memory_governance_enforce,
+        )
+        .await?;
+        sv18.prebuilt_state = Some(state);
+        Ok(sv18)
+    }
+
     /// Plan 12.6-01: clone of the shared `Arc<AppState>` populated by
     /// `bind_with_state`.  Panics if called on a server bound via
     /// plain `bind()` (no pre-built state).

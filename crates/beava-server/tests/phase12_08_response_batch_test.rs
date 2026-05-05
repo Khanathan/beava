@@ -33,11 +33,9 @@ async fn boot_v18_with_workers(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), beava_server::ServerError>>,
 ) {
-    std::env::set_var("BEAVA_IO_THREADS", n_workers.to_string());
+    // Phase 13.5.3: was `BEAVA_IO_THREADS=n` env-set; now per-server
+    // `cfg.io_threads` plumbed via `bind_with_state_and_overrides`.
     let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let sv18 = ServerV18::bind(any, any, any).await.expect("bind");
-    let http_addr = sv18.http_addr();
-    let tcp_addr = sv18.tcp_addr();
     let wal_dir = tempfile::tempdir().expect("wal dir");
     let snap_dir = tempfile::tempdir().expect("snap dir");
     let wp = wal_dir.path().to_path_buf();
@@ -45,15 +43,22 @@ async fn boot_v18_with_workers(
     std::mem::forget(wal_dir);
     std::mem::forget(snap_dir);
 
+    let cfg = beava_server::server::ServerV18Config {
+        persistence: beava_persistence::Persistence::default(),
+        io_threads: Some(n_workers),
+        ..beava_server::server::ServerV18Config::default()
+    };
+    let sv18 = ServerV18::bind_with_state_and_overrides(any, any, any, wp, sp, 60_000, 1, cfg)
+        .await
+        .expect("bind");
+    let http_addr = sv18.http_addr();
+    let tcp_addr = sv18.tcp_addr();
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let serve_task = tokio::spawn(async move {
-        sv18.serve_with_dirs(
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            wp,
-            sp,
-        )
+        sv18.serve(async move {
+            let _ = shutdown_rx.await;
+        })
         .await
     });
 
@@ -225,7 +230,6 @@ async fn test_response_batch_amortizes_worker_wakes_at_16x() {
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
-    std::env::remove_var("BEAVA_IO_THREADS");
 
     assert_eq!(acked, N_PUSHES, "expected {N_PUSHES} acks, got {acked}");
     eprintln!("64-push wake count: {wakes} (Wave-1+2 changes already amortize via per-drain-pass bitmask; Wave 3.b adds size-16 batch flush as a finer-grained latency floor).");
@@ -301,7 +305,6 @@ async fn test_response_batch_low_load_latency_under_5ms() {
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
-    std::env::remove_var("BEAVA_IO_THREADS");
 
     let elapsed = elapsed.expect("connection closed before ack");
     assert!(

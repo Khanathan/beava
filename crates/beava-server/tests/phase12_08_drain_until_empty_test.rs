@@ -20,8 +20,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static SERVER_SERIALIZER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Boot ServerV18 with `BEAVA_IO_THREADS=8` so 4096 events spread across many
-/// parser workers and arrive at apply quickly.
+/// Boot ServerV18 with `n_workers` IO threads (Phase 13.5.3: was
+/// `BEAVA_IO_THREADS=n` env-set; now the per-server `cfg.io_threads`
+/// override plumbed via `bind_with_state_and_overrides`).
 async fn boot_v18_with_workers(
     n_workers: usize,
 ) -> (
@@ -30,27 +31,34 @@ async fn boot_v18_with_workers(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), beava_server::ServerError>>,
 ) {
-    std::env::set_var("BEAVA_IO_THREADS", n_workers.to_string());
     let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let sv18 = ServerV18::bind(any, any, any).await.expect("bind");
-    let http_addr = sv18.http_addr();
-    let tcp_addr = sv18.tcp_addr();
     let wal_dir = tempfile::tempdir().expect("wal dir");
     let snap_dir = tempfile::tempdir().expect("snap dir");
     let wp = wal_dir.path().to_path_buf();
     let sp = snap_dir.path().to_path_buf();
+    // tempdirs leak on purpose: the apply thread + WAL writer keep
+    // file handles open until shutdown_rx fires; the OS reclaims the
+    // dirs via `tempfile::TempDir`'s Drop, which is dropped here. We
+    // forget them so dir cleanup happens at process exit, NOT mid-run.
     std::mem::forget(wal_dir);
     std::mem::forget(snap_dir);
 
+    let cfg = beava_server::server::ServerV18Config {
+        persistence: beava_persistence::Persistence::default(),
+        io_threads: Some(n_workers),
+        ..beava_server::server::ServerV18Config::default()
+    };
+    let sv18 = ServerV18::bind_with_state_and_overrides(any, any, any, wp, sp, 60_000, 1, cfg)
+        .await
+        .expect("bind");
+    let http_addr = sv18.http_addr();
+    let tcp_addr = sv18.tcp_addr();
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let serve_task = tokio::spawn(async move {
-        sv18.serve_with_dirs(
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            wp,
-            sp,
-        )
+        sv18.serve(async move {
+            let _ = shutdown_rx.await;
+        })
         .await
     });
 
@@ -216,7 +224,6 @@ async fn test_apply_drains_more_than_1024_items_per_iteration() {
 
     let _ = shutdown_tx.send(());
     let _ = tokio::time::timeout(Duration::from_secs(3), serve_task).await;
-    std::env::remove_var("BEAVA_IO_THREADS");
 
     assert_eq!(acked, N_PUSHES, "expected {N_PUSHES} acks, got {acked}");
     assert!(
