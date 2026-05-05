@@ -188,22 +188,17 @@ impl ApplyShard {
                     // Now defaults to ENABLED — every `/register` validates
                     // declarations against the per-op classification table from
                     // Plan 12.8-04. Explicit escape hatch:
-                    // `BEAVA_MEMORY_GOV_ENFORCE=0` disables enforcement
-                    // (operator override; valid use cases include legacy
-                    // fixtures during migration, dev-only experiments).
-                    // Anything else (including unset) is treated as enabled.
-                    fn memory_gov_enforce_enabled() -> bool {
-                        // Per-call env read. Register-time validation is a COLD
-                        // path (called once per /register request), so the cost
-                        // of `std::env::var` per call is irrelevant. A cached
-                        // OnceLock variant would memoize the FIRST process-wide
-                        // read and break the integration tests that flip the
-                        // env between cases inside the same test binary
-                        // (Plan 12.8-06 frontmatter `must_haves.truths[0]`,
-                        // B-02 fix).
-                        std::env::var("BEAVA_MEMORY_GOV_ENFORCE").ok().as_deref() != Some("0")
-                    }
-                    if memory_gov_enforce_enabled() {
+                    // `BEAVA_MEMORY_GOV_ENFORCE=0` (production env) or
+                    // `.memory_governance_enforce(false)` (test builder)
+                    // disables enforcement.
+                    //
+                    // Phase 13.5.3 (D-04 mitigate): the per-call env-var read
+                    // moved to a struct field on AppState resolved at boot
+                    // (`ServerV18Config::from_env() -> AppState.memory_governance_enforce`).
+                    // Removes a process-global env read from the cold register
+                    // path that leaked enforcement state across parallel
+                    // TestServers.
+                    if self.state.memory_governance_enforce {
                         if let Some(removed) =
                             beava_core::register_validate::pre_check_unbounded_op_in_lifetime_mode(
                                 &json_value,

@@ -150,13 +150,7 @@ fn clamp_usize_with_warn(
     }
 }
 
-fn clamp_u64_with_warn(
-    override_: Option<u64>,
-    name: &str,
-    default: u64,
-    lo: u64,
-    hi: u64,
-) -> u64 {
+fn clamp_u64_with_warn(override_: Option<u64>, name: &str, default: u64, lo: u64, hi: u64) -> u64 {
     match override_ {
         Some(v) => {
             let clamped = v.clamp(lo, hi);

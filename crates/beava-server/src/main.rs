@@ -15,6 +15,8 @@
 //! 6. serve_with_dirs with SIGTERM/SIGINT graceful shutdown
 
 use anyhow::{Context, Result};
+use beava_persistence::{Persistence, SyncMode};
+use beava_server::server::ServerV18Config;
 use beava_server::{banner, cli::Cli, logging, shutdown::shutdown_signal, ServerV18};
 use clap::Parser;
 
@@ -68,15 +70,27 @@ fn main() -> Result<()> {
             "booting ServerV18 (Plan 12-07)"
         );
 
-        let server = ServerV18::bind(http_addr, tcp_addr, admin_addr)
+        // Phase 13.5.3: production binary now constructs ServerV18Config
+        // via `from_env()` (which reads BEAVA_* env vars at boot) and calls
+        // `bind_with_config(...)`, replacing the legacy `bind() +
+        // serve_with_dirs(...)` path. The old path read BEAVA_TEST_MODE /
+        // BEAVA_MEMORY_GOV_ENFORCE / BEAVA_IO_THREADS / BEAVA_WAL_*
+        // process-globally on the hot path; the new path consolidates
+        // env-reading into a single boot-time site (preserving the operator
+        // env interface) and plumbs the resolved values through struct
+        // fields. See .planning/quick/260505-bn7-workspace-test-determinism-phase-13-5-3/.
+        let mut sv18_cfg = ServerV18Config::from_env();
+        sv18_cfg.persistence = Persistence::Disk {
+            wal_dir: cfg.durability.wal_dir.clone(),
+            snapshot_dir: cfg.durability.snapshot_dir.clone(),
+            sync_mode: SyncMode::Periodic,
+        };
+        sv18_cfg.tcp_max_frame_bytes = cfg.tcp.max_frame_bytes;
+        let server = ServerV18::bind_with_config(http_addr, Some(tcp_addr), admin_addr, sv18_cfg)
             .await
             .context("bind ServerV18 listeners")?;
         server
-            .serve_with_dirs(
-                shutdown_signal(),
-                cfg.durability.wal_dir.clone(),
-                cfg.durability.snapshot_dir.clone(),
-            )
+            .serve(shutdown_signal())
             .await
             .context("serve ServerV18")?;
         Ok::<(), anyhow::Error>(())

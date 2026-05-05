@@ -104,13 +104,140 @@ impl ServerV18Config {
     ///
     /// The architectural tripwire `phase13_5_3_no_env_var_pokes_in_tests.rs`
     /// enforces test-side env hygiene.
+    ///
+    /// Env-var contract preserved verbatim from pre-13.5.3 hot-path reads:
+    /// - `BEAVA_WAL_BUFFERS` (usize, range [2, 32], default 4 — clamps with WARN)
+    /// - `BEAVA_WAL_BUFFER_SIZE_MB` (usize, range [4, 256], default 32)
+    /// - `BEAVA_WAL_TICK_MS` (u64, range [1, 1000], default 20)
+    /// - `BEAVA_IO_THREADS` (usize, max(1) clamp, default heuristic)
+    /// - `BEAVA_TEST_MODE` (strict `== "1"` per Phase 13.4 D-03)
+    /// - `BEAVA_MEMORY_GOV_ENFORCE` ("0" → Some(false) escape hatch; unset
+    ///   → None = default ON per Plan 12.8-06; any other value → Some(true))
     pub fn from_env() -> Self {
-        // Phase 13.5.3 RED stub — `unimplemented!()` so the unit tests panic
-        // at runtime and the suite is observably RED before the GREEN commit.
-        unimplemented!(
-            "Phase 13.5.3 — ServerV18Config::from_env() will land in the GREEN commit; \
-             see .planning/quick/260505-bn7-workspace-test-determinism-phase-13-5-3/260505-bn7-PLAN.md"
-        )
+        let wal_buffers = parse_clamp_usize_with_warn(
+            "BEAVA_WAL_BUFFERS",
+            crate::wal_config::WalConfig::BUFFERS_MIN,
+            crate::wal_config::WalConfig::BUFFERS_MAX,
+        );
+        let wal_buffer_size_mb = parse_clamp_usize_with_warn(
+            "BEAVA_WAL_BUFFER_SIZE_MB",
+            crate::wal_config::WalConfig::BUFFER_SIZE_MB_MIN,
+            crate::wal_config::WalConfig::BUFFER_SIZE_MB_MAX,
+        );
+        let wal_tick_ms = parse_clamp_u64_with_warn(
+            "BEAVA_WAL_TICK_MS",
+            crate::wal_config::WalConfig::TICK_MS_MIN,
+            crate::wal_config::WalConfig::TICK_MS_MAX,
+        );
+        // BEAVA_IO_THREADS: parse usize, clamp to >= 1; None when unset.
+        let io_threads = match std::env::var("BEAVA_IO_THREADS") {
+            Ok(s) => match s.parse::<usize>() {
+                Ok(n) => Some(n.max(1)),
+                Err(_) => None, // parse failure → silently fall through to default heuristic
+            },
+            Err(_) => None,
+        };
+        // BEAVA_TEST_MODE: strict `== "1"` per Phase 13.4 D-03 USER-LOCKED.
+        let test_mode = std::env::var("BEAVA_TEST_MODE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        // BEAVA_MEMORY_GOV_ENFORCE: "0" → Some(false); unset → None;
+        // anything else → Some(true). Default-ON semantic preserved per
+        // Plan 12.8-06 D-03 (the legacy `apply_shard.rs::memory_gov_enforce_enabled`
+        // returned `var != Some("0")`; we encode the same logic but split
+        // explicit-off / default / explicit-on so an absent env var stays
+        // visibly None on the config and the AppState reader applies the
+        // default).
+        let memory_governance_enforce = match std::env::var("BEAVA_MEMORY_GOV_ENFORCE") {
+            Ok(v) if v == "0" => Some(false),
+            Ok(_) => Some(true),
+            Err(_) => None,
+        };
+
+        Self {
+            persistence: Persistence::default(),
+            test_mode,
+            tcp_max_frame_bytes: 4 * 1024 * 1024,
+            wal_buffers,
+            wal_buffer_size_mb,
+            wal_tick_ms,
+            io_threads,
+            memory_governance_enforce,
+        }
+    }
+}
+
+/// Phase 13.5.3 helper: parse a usize env var; on parse failure or unset
+/// returns None. On parse success clamps to `[lo, hi]` with a WARN log
+/// (preserves legacy `wal_config.rs::parse_clamp_usize` operator-visibility
+/// behavior).
+fn parse_clamp_usize_with_warn(name: &str, lo: usize, hi: usize) -> Option<usize> {
+    match std::env::var(name) {
+        Ok(s) => match s.parse::<usize>() {
+            Ok(v) => {
+                let clamped = v.clamp(lo, hi);
+                if clamped != v {
+                    tracing::warn!(
+                        target: "beava.wal",
+                        kind = "wal.config.clamp",
+                        env_var = %name,
+                        requested = v,
+                        clamped = clamped,
+                        range_lo = lo,
+                        range_hi = hi,
+                        "WAL env var clamped to safe range"
+                    );
+                }
+                Some(clamped)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "beava.wal",
+                    kind = "wal.config.parse_error",
+                    env_var = %name,
+                    value = %s,
+                    error = %e,
+                    "WAL env var parse failed; falling back to default"
+                );
+                None
+            }
+        },
+        Err(_) => None,
+    }
+}
+
+fn parse_clamp_u64_with_warn(name: &str, lo: u64, hi: u64) -> Option<u64> {
+    match std::env::var(name) {
+        Ok(s) => match s.parse::<u64>() {
+            Ok(v) => {
+                let clamped = v.clamp(lo, hi);
+                if clamped != v {
+                    tracing::warn!(
+                        target: "beava.wal",
+                        kind = "wal.config.clamp",
+                        env_var = %name,
+                        requested = v,
+                        clamped = clamped,
+                        range_lo = lo,
+                        range_hi = hi,
+                        "WAL env var clamped to safe range"
+                    );
+                }
+                Some(clamped)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "beava.wal",
+                    kind = "wal.config.parse_error",
+                    env_var = %name,
+                    value = %s,
+                    error = %e,
+                    "WAL env var parse failed; falling back to default"
+                );
+                None
+            }
+        },
+        Err(_) => None,
     }
 }
 
@@ -198,6 +325,11 @@ struct ServerV18State {
     /// instead of read from `BEAVA_TCP_MAX_FRAME_BYTES` env at parse time.
     /// Was process-global env, leaked across parallel TestServers.
     tcp_max_frame_bytes: u32,
+    /// Phase 13.5.3: per-server IoPool worker thread count override.
+    /// `None` = use the documented default heuristic; `Some(n)` overrides
+    /// without consulting `BEAVA_IO_THREADS` env. Read by `run_mio_event_loop`
+    /// instead of the legacy `default_io_threads()` env-read.
+    io_threads_override: Option<usize>,
     /// Plan 12.6-15: shutdown flag for the WalWriter loop. Set on server
     /// shutdown to trigger the writer's final seal+drain+fsync block.
     wal_writer_shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -326,18 +458,12 @@ impl ServerV18 {
         // verb-style HTTP migration is in place.
         let resolved_tcp_addr = tcp_addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
         let mut sv18 = Self::bind(http_addr, resolved_tcp_addr, admin_addr).await?;
-        // Plan 13.4-08 (D-03 USER-LOCKED): boot-time test_mode resolution.
-        // Effective test_mode is the OR of `cfg.test_mode` (programmatic
-        // path: `Server::new(Config { test_mode: true, .. })` per A-10 in
-        // SCRATCH-PLANNER-NOTES) and `BEAVA_TEST_MODE=1` env var (ops/CI
-        // path). Either gate alone enables reset. Per D-03 the env-var
-        // check is exactly `== "1"` — no `=true`, no truthy-coercion.
-        // Boot-time-only resolution prevents runtime escalation: an
-        // operator who controls env at boot is already trusted.
-        let effective_test_mode = cfg.test_mode
-            || std::env::var("BEAVA_TEST_MODE")
-                .map(|v| v == "1")
-                .unwrap_or(false);
+        // Phase 13.5.3: env-var resolution moved to `ServerV18Config::from_env()`.
+        // The struct field `cfg.test_mode` already carries the resolved value
+        // (production main.rs calls `from_env()` at boot; tests pass explicit
+        // `.test_mode(true)` via TestServerBuilder). Reading env again here
+        // would re-introduce the cross-test pollution Phase 13.5.3 closes.
+        let effective_test_mode = cfg.test_mode;
         // 60s default snapshot interval mirrors the production tuning;
         // memory mode ignores it (snapshot task not spawned).
         let state = build_runtime_state_with_persistence(
@@ -346,6 +472,13 @@ impl ServerV18 {
             2,
             effective_test_mode,
             cfg.tcp_max_frame_bytes,
+            crate::wal_config::WalConfigOverrides {
+                buffers: cfg.wal_buffers,
+                buffer_size_mb: cfg.wal_buffer_size_mb,
+                tick_ms: cfg.wal_tick_ms,
+            },
+            cfg.io_threads,
+            cfg.memory_governance_enforce,
         )
         .await?;
         sv18.prebuilt_state = Some(state);
@@ -365,6 +498,7 @@ impl ServerV18 {
     /// Arguments mirror `serve_with_dirs` (which `serve_with_dirs` will
     /// consume after this method returns) plus snapshot/fsync intervals
     /// that were previously hard-coded inside `serve_with_dirs`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn bind_with_state(
         http_addr: std::net::SocketAddr,
         tcp_addr: std::net::SocketAddr,
@@ -513,9 +647,7 @@ impl ServerV18 {
         // run-loop body.
         let state = match self.prebuilt_state {
             Some(state) => state,
-            None => {
-                build_runtime_state(wal_dir, snapshot_dir, 60_000, 2, 4 * 1024 * 1024).await?
-            }
+            None => build_runtime_state(wal_dir, snapshot_dir, 60_000, 2, 4 * 1024 * 1024).await?,
         };
 
         run_serve_loop(
@@ -549,19 +681,11 @@ async fn build_runtime_state(
     wal_fsync_interval_ms: u64,
     tcp_max_frame_bytes: u32,
 ) -> Result<ServerV18State, ServerError> {
-    // Phase 13.5.1 Plan 05 (Rule 2 — missing critical functionality):
-    // honor the `BEAVA_TEST_MODE=1` env var in legacy `bind()` /
-    // `bind_with_state()` callers (i.e. the production `main.rs`). Per
-    // Phase 13.4 D-03 (USER-LOCKED) the env var is documented as one of
-    // the two opt-in paths to enable OP_RESET / test-only opcodes; the
-    // pre-existing comment ("paired with bind_with_config in main.rs")
-    // documented an intent that was never wired — `main.rs` calls
-    // `bind()`, so without this resolution the env var was a dead knob in
-    // production. The env-var check is exactly `== "1"` (no truthy
-    // coercion, matches `bind_with_config` at line 263).
-    let effective_test_mode = std::env::var("BEAVA_TEST_MODE")
-        .map(|v| v == "1")
-        .unwrap_or(false);
+    // Phase 13.5.3: env-reading moved to `ServerV18Config::from_env()`.
+    // The legacy `bind()` path (used by tests that don't go through
+    // bind_with_config) defaults all fields to None / false (production
+    // main.rs no longer takes this path — it calls bind_with_config with
+    // the from_env() result).
     build_runtime_state_with_persistence(
         Persistence::Disk {
             wal_dir,
@@ -570,8 +694,11 @@ async fn build_runtime_state(
         },
         snapshot_interval_ms,
         wal_fsync_interval_ms,
-        effective_test_mode,
+        false, // test_mode default
         tcp_max_frame_bytes,
+        crate::wal_config::WalConfigOverrides::default(),
+        None, // io_threads default
+        None, // memory_governance_enforce default = ON
     )
     .await
 }
@@ -594,12 +721,16 @@ async fn build_runtime_state(
 /// `wal_fsync_interval_ms` is honored in Disk mode and ignored in Memory mode
 /// (Memory mode uses the env-resolved `wal_cfg.tick_ms` for the no-op
 /// writer's drain cadence).
+#[allow(clippy::too_many_arguments)]
 async fn build_runtime_state_with_persistence(
     persistence: Persistence,
     snapshot_interval_ms: u64,
     wal_fsync_interval_ms: u64,
     effective_test_mode: bool,
     tcp_max_frame_bytes: u32,
+    wal_overrides: crate::wal_config::WalConfigOverrides,
+    io_threads_override: Option<usize>,
+    memory_governance_enforce: Option<bool>,
 ) -> Result<ServerV18State, ServerError> {
     use beava_runtime_core::wal_buffer::WalBufferRing;
     use beava_runtime_core::wal_lsn::WalLsn;
@@ -729,6 +860,12 @@ async fn build_runtime_state_with_persistence(
     // site (cfg.test_mode || env::BEAVA_TEST_MODE=="1"); this struct field is
     // read-only after bind so reset cannot be re-enabled at runtime.
     app_state_inner.effective_test_mode = effective_test_mode;
+    // Phase 13.5.3 (D-04 mitigate): stamp memory-governance enforcement at
+    // boot time. Default-ON (Plan 12.8-06 D-03) when override is None;
+    // explicit Some(false) (escape hatch — `BEAVA_MEMORY_GOV_ENFORCE=0` /
+    // `.memory_governance_enforce(false)`) disables enforcement. Replaces
+    // the per-call `apply_shard.rs::memory_gov_enforce_enabled` env-read.
+    app_state_inner.memory_governance_enforce = memory_governance_enforce.unwrap_or(true);
     let app_state = Arc::new(app_state_inner);
     if effective_test_mode {
         tracing::warn!(
@@ -746,20 +883,26 @@ async fn build_runtime_state_with_persistence(
 
     // ── Hand-rolled WAL stack ────────────────────────────────────────────
     let wal_lsn = Arc::new(WalLsn::new());
-    // WAL ring config from env (default 4 × 32 MiB tick=20ms; tunable via
-    // BEAVA_WAL_BUFFERS / BEAVA_WAL_BUFFER_SIZE_MB / BEAVA_WAL_TICK_MS).
+    // WAL ring config — Phase 13.5.3: resolved from explicit overrides
+    // (default 4 × 32 MiB tick=20ms; production reads BEAVA_WAL_BUFFERS /
+    // BEAVA_WAL_BUFFER_SIZE_MB / BEAVA_WAL_TICK_MS at boot via
+    // ServerV18Config::from_env(); tests pass explicit values via
+    // TestServerBuilder builder methods. NO process-env reads on this hot
+    // path — the per-server override pattern from `tcp_max_frame_bytes`
+    // (commit acac4254) is replicated here.
+    //
     // Phase 18 invariants UNCHANGED: lock-free apply, single writer+fsync,
     // O_APPEND, four-watermark discipline. Only buffer count, size, and
     // tick interval are tuned (Phase 19.1-03 D-01..D-04).
-    let wal_cfg = crate::wal_config::WalConfig::resolve_from_env();
+    let wal_cfg = crate::wal_config::WalConfig::resolve(wal_overrides);
     tracing::info!(
         target: "beava.wal",
         kind = "wal.config.resolved",
         buffers = wal_cfg.buffers,
         buffer_size_mb = wal_cfg.buffer_size_mb,
         tick_ms = wal_cfg.tick_ms,
-        "WAL config resolved (env-tunable: BEAVA_WAL_BUFFERS default=4 range [2,32] / \
-         BEAVA_WAL_BUFFER_SIZE_MB default=32 range [4,256] / BEAVA_WAL_TICK_MS default=20 range [1,1000])"
+        "WAL config resolved (per-server overrides; env reading lives in \
+         ServerV18Config::from_env() at production boot)"
     );
     let buf_bytes = wal_cfg.buffer_size_mb * 1024 * 1024;
     let wal_ring = Arc::new(WalBufferRing::new(
@@ -844,6 +987,7 @@ async fn build_runtime_state_with_persistence(
         wal_dir,
         snapshot_dir,
         tcp_max_frame_bytes,
+        io_threads_override,
     })
 }
 
@@ -941,6 +1085,7 @@ where
         wal_dir: _wal_dir,
         snapshot_dir: _snapshot_dir,
         tcp_max_frame_bytes,
+        io_threads_override,
     } = state;
 
     // Snapshot trigger lifecycle: drop our copy.  Any clones held externally
@@ -972,6 +1117,7 @@ where
                 apply_shard,
                 shutdown_flag_apply,
                 tcp_max_frame_bytes,
+                io_threads_override,
             );
         })
         .map_err(ServerError::Serve)?;
@@ -1241,17 +1387,18 @@ pub fn apply_pthread_id() -> Option<libc::pthread_t> {
     }
 }
 
-/// Resolve the IoPool thread count from the BEAVA_IO_THREADS env var.
+/// Phase 13.5.3 — IoPool thread count default heuristic.
 ///
 /// Default = `max(2, available_parallelism / 4)` — Redis-style ratio that
 /// keeps IoPool threads conservative (they spin briefly between ticks and
 /// don't burn full cores).
+///
+/// Pre-13.5.3 this also read `BEAVA_IO_THREADS` env directly. The env-read
+/// is now consolidated into `ServerV18Config::from_env()` (production boot)
+/// and plumbed via `ServerV18State.io_threads_override`. Tests pass the
+/// override explicitly via `TestServerBuilder.io_threads(n)` to avoid
+/// process-global env contamination.
 fn default_io_threads() -> usize {
-    if let Ok(s) = std::env::var("BEAVA_IO_THREADS") {
-        if let Ok(n) = s.parse::<usize>() {
-            return n.max(1);
-        }
-    }
     let p = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
@@ -1442,6 +1589,7 @@ fn run_mio_event_loop(
     apply_shard: crate::apply_shard::ApplyShard,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     tcp_max_frame_bytes: u32,
+    io_threads_override: Option<usize>,
 ) {
     // Plan 18-05/18-06 wiring: replaces the prior IoPool + per-tick join_all
     // architecture with the per-worker continuous-loop (Valkey 8) model.
@@ -1500,7 +1648,13 @@ fn run_mio_event_loop(
     };
 
     // ── Spin up N per-worker continuous loops (Plan 18-05) ───────────────────
-    let n_workers = default_io_threads();
+    // Phase 13.5.3: explicit override (from `ServerV18Config.io_threads`)
+    // wins. Falls back to `default_io_threads()` heuristic when None.
+    // `default_io_threads()` itself no longer reads BEAVA_IO_THREADS — the
+    // env-read lives in ServerV18Config::from_env() at production boot.
+    let n_workers = io_threads_override
+        .map(|n| n.max(1))
+        .unwrap_or_else(default_io_threads);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Single MPSC for parsed RingItems: every worker clones the sender; apply
@@ -2888,10 +3042,7 @@ mod env_var_plumbing_tests {
         std::env::set_var("BEAVA_TEST_MODE", "1");
         let cfg_one = ServerV18Config::from_env();
         clear_env();
-        assert!(
-            cfg_one.test_mode,
-            "BEAVA_TEST_MODE=1 MUST enable test_mode"
-        );
+        assert!(cfg_one.test_mode, "BEAVA_TEST_MODE=1 MUST enable test_mode");
     }
 
     /// Test 5: `BEAVA_MEMORY_GOV_ENFORCE` truthy semantics — "0" → Some(false)

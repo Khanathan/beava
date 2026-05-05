@@ -56,6 +56,14 @@ pub struct AppState {
     /// explicitly OR the constructor must take `Config { test_mode: true }`
     /// to enable. Boot-time-only resolution prevents runtime escalation.
     pub effective_test_mode: bool,
+    /// Phase 13.5.3 (D-04 mitigate): memory-governance enforcement flag,
+    /// resolved at boot time. Replaces the per-call
+    /// `apply_shard.rs::memory_gov_enforce_enabled` env-read with a struct
+    /// field reader on the cold register path. `true` (default per
+    /// Plan 12.8-06 D-03) gates windowless ops with unbounded lifetime
+    /// memory; explicit `BEAVA_MEMORY_GOV_ENFORCE=0` (production) or
+    /// `.memory_governance_enforce(false)` (tests) sets this to `false`.
+    pub memory_governance_enforce: bool,
 }
 
 impl AppState {
@@ -66,6 +74,9 @@ impl AppState {
             idem_cache,
             dev_endpoints: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             effective_test_mode: false,
+            // Plan 12.8-06 D-03: default ON (memory governance enforced
+            // unless operators / tests explicitly opt out).
+            memory_governance_enforce: true,
         }
     }
 
