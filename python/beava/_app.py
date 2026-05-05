@@ -180,16 +180,109 @@ def _python_type_to_wire(t: Any) -> str:
     return "str"
 
 
-# Phase 13.5.1 Plan 07b (Deviation 3 FORMALIZE-V0): Plan 05's
-# `_FIXED_OP_OUTPUT_TYPE` mirror of Rust `output_type_for` is removed.
-# Server's `DerivationDescriptor.schema` is now `serde(default)`-able
-# (registry.rs) and `validate_expressions` infers schema.fields from the
-# chain at register-time via the existing `OpChain::compile` ->
-# `propagated_schemas` pipeline. The server is the single source of truth.
+# Agg-op output type mapping — mirrors Rust `output_type_for` in
+# `crates/beava-core/src/agg_op.rs::output_type_for`. Used by
+# `_infer_derivation_schema` to populate the `schema.fields` map of a
+# `kind: derivation` node so the server-side `DerivationDescriptor`
+# deserializer (which requires `schema`) accepts the payload.
 #
-# `_infer_derivation_schema` now returns an empty dict; the server fills
-# it in. We keep the function so existing callers in `_descriptor_to_node`
-# don't break, but it's a no-op shim.
+# Phase 13.5.1 Plan 05 (Rule 3 — blocking issue auto-fix). Plan 13.5-11 left
+# `_descriptor_to_node` emitting derivation nodes without a `schema` field;
+# server rejected with `invalid_registration: missing field schema`. The fix
+# infers the schema Python-side from the chain.
+
+# Ops whose output type is fixed (independent of field).
+_FIXED_OP_OUTPUT_TYPE: dict[str, str] = {
+    # Core scalar ops
+    "count": "i64",
+    "sum": "f64",
+    "mean": "f64",
+    "avg": "f64",  # legacy alias
+    "var": "f64",
+    "variance": "f64",  # legacy alias
+    "std": "f64",
+    "stddev": "f64",  # legacy alias
+    "ratio": "f64",
+    # Sketch family
+    "n_unique": "i64",
+    "count_distinct": "i64",  # legacy alias
+    "quantile": "f64",
+    "percentile": "f64",  # legacy alias
+    "top_k": "str",  # JSON-array-as-string per Rust schema propagation
+    "bloom_member": "bool",
+    "entropy": "f64",
+    # Recency / streak
+    "first_seen": "i64",  # Datetime → i64 epoch ms on the wire
+    "last_seen": "i64",
+    "age": "i64",
+    "time_since": "i64",
+    "time_since_last_n": "i64",
+    "has_seen": "bool",
+    "first_seen_in_window": "bool",
+    "streak": "i64",
+    "max_streak": "i64",
+    "negative_streak": "i64",
+    # Decay / velocity / z
+    "ewma": "f64",
+    "ema": "f64",
+    "ewvar": "f64",
+    "ew_zscore": "f64",
+    "decayed_sum": "f64",
+    "decayed_count": "f64",
+    "twa": "f64",
+    "rate_of_change": "f64",
+    "inter_arrival_stats": "f64",
+    "trend": "f64",
+    "trend_residual": "f64",
+    "z_score": "f64",
+    "burst_count": "i64",
+    "outlier_count": "i64",
+    "value_change_count": "i64",
+    # Phase 8 point ops returning JSON-array-as-string
+    "first_n": "str",
+    "last_n": "str",
+    # Phase 11 buffer / histogram / mix → str (Json placeholder)
+    "histogram": "str",
+    "hour_of_day_histogram": "str",
+    "dow_hour_histogram": "str",
+    "event_type_mix": "str",
+    "most_recent_n": "str",
+    "reservoir_sample": "str",
+    # Phase 11 scalar geo + seasonal
+    "seasonal_deviation": "f64",
+    "geo_velocity": "f64",
+    "geo_distance": "f64",
+    "geo_spread": "f64",
+    "distance_from_home": "f64",
+}
+
+# Ops whose output type inherits from the named upstream field.
+_FIELD_INHERITING_OPS: frozenset[str] = frozenset(
+    {"min", "max", "first", "last", "lag", "delta_from_prev"}
+)
+
+
+def _agg_output_type(
+    op_name: str, field_name: str | None, upstream_schema: dict[str, str]
+) -> str:
+    """Return the wire-type string for an agg op's output column.
+
+    Mirrors Rust ``crates/beava-core/src/agg_op.rs::output_type_for``.
+    Falls back to ``str`` for unknown ops (server will validate at
+    register time and reject if the inferred type is wrong; the goal here
+    is to populate the schema field shape so the deserializer accepts the
+    payload — incorrect inferred types surface as ``invalid_registration``
+    with a helpful server-side message).
+    """
+    if op_name in _FIXED_OP_OUTPUT_TYPE:
+        return _FIXED_OP_OUTPUT_TYPE[op_name]
+    if op_name in _FIELD_INHERITING_OPS:
+        if field_name is not None and field_name in upstream_schema:
+            return upstream_schema[field_name]
+        # Fallback when field can't be resolved.
+        return "str"
+    # Unknown op — defer to the server's validate pass.
+    return "str"
 
 
 def _infer_derivation_schema(
@@ -197,18 +290,45 @@ def _infer_derivation_schema(
     parent_schema_wire: dict[str, str],
     key_cols: list[str],
 ) -> dict[str, str]:
-    """No-op shim post-Plan 07b — server infers schema at register-time.
+    """Compute a derivation node's ``schema.fields`` map from its chain.
 
-    Pre-07b this mirrored Rust ``output_type_for`` to populate the
-    derivation's ``schema.fields`` map (server's deserializer used to
-    require it). Post-07b ``DerivationDescriptor.schema`` is
-    ``serde(default)`` and ``validate_expressions`` writes the inferred
-    schema back via ``propagated_schemas``. We return an empty dict;
-    server fills it. Function retained as a stable extension point in
-    case future v0.0.x work needs Python-side previewing.
+    Walks the chain looking for the (single) ``agg`` step (always present
+    as the terminal step in a v0 ``@bv.table`` function). Combines key
+    columns (typed via ``parent_schema_wire`` lookup; ``str`` fallback)
+    with each agg's output column type via ``_agg_output_type``.
+
+    Args:
+        chain: The list of chain steps (raw, pre-``_chain_to_ops`` form).
+        parent_schema_wire: Wire-format ``{field: type-str}`` map of the
+            upstream event source's schema.
+        key_cols: Table key columns (post-``@bv.table(key=...)``).
+
+    Returns:
+        ``{column-name: wire-type-str}`` ordered with key cols first, then
+        agg output columns. Used as the ``fields`` value of the emitted
+        ``schema`` JSON object.
     """
-    del chain, parent_schema_wire, key_cols  # unused
-    return {}
+    fields: dict[str, str] = {}
+    # 1. Key columns — type from parent schema, fallback to str.
+    for k in key_cols:
+        fields[k] = parent_schema_wire.get(k, "str")
+    # 2. Agg output columns — walk the chain to find the agg step.
+    for step in chain:
+        if step.get("op") != "agg":
+            continue
+        # Per `_chain_to_ops`, agg step shape: {"op":"agg", "keys":[...], "aggs":{name: spec}}
+        aggs = step.get("aggs", {})
+        for out_name, spec in aggs.items():
+            if isinstance(spec, dict):
+                op_name = spec.get("op", "count")
+                field_name = spec.get("field")
+            else:
+                op_name = "count"
+                field_name = None
+            fields[out_name] = _agg_output_type(
+                op_name, field_name, parent_schema_wire
+            )
+    return fields
 
 
 def _parent_wire_schema(d: Any) -> dict[str, str]:
