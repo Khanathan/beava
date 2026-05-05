@@ -1,0 +1,173 @@
+name: Homebrew tap bump
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to bump formula to (e.g. 0.0.1) — without leading v'
+        required: true
+        type: string
+
+jobs:
+  bump-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "error: empty version" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumping homebrew-beava formula to v$VERSION"
+
+      - name: Wait for GH Release assets (up to 5min)
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL -o /dev/null \
+              "https://github.com/beava-dev/beava/releases/download/v${VERSION}/beava-macos-arm64.tar.gz"; then
+              echo "✓ Release assets available"
+              exit 0
+            fi
+            echo "Release assets not yet available, retry $i/10..."
+            sleep 30
+          done
+          echo "error: GH Release assets for v$VERSION not available after 5min" >&2
+          exit 1
+
+      - name: Compute SHA256 for each platform
+        id: sha
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for PLATFORM in macos-arm64 macos-x86_64 linux-arm64 linux-x86_64; do
+            URL="https://github.com/beava-dev/beava/releases/download/v${VERSION}/beava-${PLATFORM}.tar.gz"
+            # Prefer the .sha256 sidecar published by release.yml; fall back to computing locally
+            SHA=""
+            if SHA="$(curl -fsSL "${URL}.sha256" 2>/dev/null | awk '{print $1}')" && [ -n "$SHA" ]; then
+              echo "${PLATFORM}=${SHA}" >> "$GITHUB_OUTPUT"
+              echo "✓ ${PLATFORM}: ${SHA} (from sidecar)"
+              continue
+            fi
+            # Fallback: download and hash locally
+            curl -fsSL "$URL" -o "/tmp/${PLATFORM}.tar.gz"
+            SHA="$(sha256sum "/tmp/${PLATFORM}.tar.gz" | awk '{print $1}')"
+            echo "${PLATFORM}=${SHA}" >> "$GITHUB_OUTPUT"
+            echo "✓ ${PLATFORM}: ${SHA} (computed locally)"
+            rm -f "/tmp/${PLATFORM}.tar.gz"
+          done
+
+      - name: Setup SSH for tap repo
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Add github.com to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Checkout tap repo
+        run: |
+          git clone git@github.com:beava-dev/homebrew-beava.git tap
+          cd tap
+          git config user.name 'beava-bot'
+          git config user.email 'hoang@beava.dev'
+
+      - name: Update Formula/beava.rb
+        env:
+          MAC_ARM_SHA: ${{ steps.sha.outputs.macos-arm64 }}
+          MAC_INTEL_SHA: ${{ steps.sha.outputs.macos-x86_64 }}
+          LINUX_ARM_SHA: ${{ steps.sha.outputs.linux-arm64 }}
+          LINUX_INTEL_SHA: ${{ steps.sha.outputs.linux-x86_64 }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd tap
+          python3 - <<'PYEOF'
+          import os, re, sys
+
+          version       = os.environ["VERSION"]
+          platforms = {
+              "macos-arm64":  os.environ["MAC_ARM_SHA"],
+              "macos-x86_64": os.environ["MAC_INTEL_SHA"],
+              "linux-arm64":  os.environ["LINUX_ARM_SHA"],
+              "linux-x86_64": os.environ["LINUX_INTEL_SHA"],
+          }
+
+          path = "Formula/beava.rb"
+          with open(path) as f:
+              content = f.read()
+
+          # Update version (handles both placeholder and real prior version)
+          new_content, n = re.subn(
+              r'(^ *version *)"[^"]+"',
+              rf'\g<1>"{version}"',
+              content,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if n != 1:
+              print(f"error: expected 1 version match, got {n}", file=sys.stderr)
+              sys.exit(1)
+          content = new_content
+
+          # Update each sha256 stanza by platform-keyed URL
+          for platform, sha in platforms.items():
+              pattern = re.compile(
+                  r'(url "https://github\.com/beava-dev/beava/releases/download/v#\{version\}/beava-'
+                  + re.escape(platform)
+                  + r'\.tar\.gz"\s*\n\s*sha256 ")[^"]*(")',
+                  re.MULTILINE,
+              )
+              new_content, n = pattern.subn(rf'\g<1>{sha}\g<2>', content)
+              if n != 1:
+                  print(f"error: expected 1 match for {platform}, got {n}", file=sys.stderr)
+                  sys.exit(1)
+              content = new_content
+              print(f"✓ updated {platform} sha256")
+
+          with open(path, "w") as f:
+              f.write(content)
+
+          # Verify no placeholders remain
+          if "PLACEHOLDER" in content:
+              print("error: PLACEHOLDER strings still present after bump", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"✓ formula bumped to v{version}")
+          PYEOF
+
+          # Show diff
+          git diff Formula/beava.rb || true
+
+      - name: Commit + push
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cd tap
+          git add Formula/beava.rb
+          if git diff --cached --quiet; then
+            echo "no changes to commit (formula already at v${VERSION})"
+            exit 0
+          fi
+          git commit -m "beava ${VERSION}"
+          git push origin main
+          echo "✓ pushed to beava-dev/homebrew-beava"
+
+      - name: Job summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Homebrew tap bumped
+
+          \`Formula/beava.rb\` updated to v\`${VERSION}\` in https://github.com/beava-dev/homebrew-beava
+
+          Users can now: \`brew tap beava-dev/beava && brew install beava\`
+          EOF
