@@ -157,7 +157,14 @@ def test_age_per_user_high_volume(app):
         result = app.get("UserAge", entity)
         actual = result["age_ms"]
         # Age must be at least (query_start - first_ts) and reasonably bounded.
-        min_expected = max(0, query_start_ms - first_ms - 50)  # 50ms slack for clock skew
+        # 300ms slack absorbs push-burst skew: client `first_ts` is recorded BEFORE
+        # the push call (wall-clock); engine records first_processed_ts AFTER push
+        # arrives at the embed-mode subprocess. A 500-event push loop can take
+        # >150ms across all entities, so any individual entity's first_ts may be
+        # >150ms ahead of when the engine actually saw it. 300ms is 6× the prior
+        # 50ms slack but bounded by the push-burst's wall-clock duration; it stays
+        # well below the conftest 30s per-test timeout.
+        min_expected = max(0, query_start_ms - first_ms - 300)
         assert actual >= min_expected, (
             f"{entity}: age={actual} < expected_min={min_expected}"
         )

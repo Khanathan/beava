@@ -176,9 +176,14 @@ def test_top_k_per_user_high_volume(app):
         expected_ranking = [page for page, _cnt in c.most_common(3)]
         result = app.get("UserTopPages", entity)
         actual_top_k = result["top_pages"]
-        # Top-K result may be list of strings or list of (value, count) pairs;
-        # extract just the value if pair-shaped.
-        if actual_top_k and isinstance(actual_top_k[0], (list, tuple)):
+        # Top-K result may be:
+        #   - list of strings (e.g. ['page-0', 'page-1', ...])
+        #   - list of (value, count) pairs (legacy tuple shape)
+        #   - list of dicts {'value': ..., 'count': ...} (Phase 13.4+ engine shape)
+        # Extract the value field accordingly.
+        if actual_top_k and isinstance(actual_top_k[0], dict) and "value" in actual_top_k[0]:
+            actual_values = [item["value"] for item in actual_top_k]
+        elif actual_top_k and isinstance(actual_top_k[0], (list, tuple)):
             actual_values = [pair[0] for pair in actual_top_k]
         else:
             actual_values = list(actual_top_k)
@@ -207,8 +212,14 @@ def test_bloom_member_per_user_high_volume(app):
 
     @bv.table(key="user_id")
     def UserDeviceBloom(logins: Login):
+        # NOTE: capacity= and fpr= are NOT part of the v0 helper signature
+        # (python/beava/_agg.py::bloom_member accepts only field, *, window,
+        # where). If a future Plan 13.5.1-07a (Category 1 helper-drift cluster)
+        # determines they SHOULD be exposed, that plan will re-add them to
+        # both helper and test. For 13.5.1-07c (test-only surface), call the
+        # helper with the actually-supported signature.
         return logins.group_by("user_id").agg(
-            device_seen=bv.bloom_member("device_id", capacity=2048, fpr=0.01),
+            device_seen=bv.bloom_member("device_id"),
         )
 
     app.register(Login, UserDeviceBloom)
