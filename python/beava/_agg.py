@@ -561,16 +561,17 @@ def outlier_count(
     field: Any,
     *,
     window: str,
-    threshold: float = 3.0,
+    sigma: float = 3.0,
     where: Any = None,
 ) -> AggDescriptor:
+    """Count of events outside ±sigma·stddev band per docs/operators/velocity/outlier_count.md."""
     _enforce_field_str(field, "outlier_count")
     _validate_window(window, "outlier_count", required=True)
     return AggDescriptor(
         op="outlier_count",
         field=field,
         window=window,
-        extras={"threshold": threshold},
+        extras={"sigma": sigma},
         where=_serialize_where(where),
     )
 
