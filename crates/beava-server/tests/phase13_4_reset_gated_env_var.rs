@@ -197,6 +197,7 @@ async fn reset_with_env_var_enabled_succeeds_and_clears_state() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false, // env var alone enables — proves OR semantic
+        ..ServerV18Config::default()
     };
     let (http_addr, _tcp_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 
@@ -250,6 +251,7 @@ async fn tcp_reset_with_env_var_enabled_succeeds() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (_http_addr, tcp_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 
@@ -289,6 +291,7 @@ async fn env_var_value_other_than_1_does_not_enable() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr, tcp_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 

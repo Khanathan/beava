@@ -120,6 +120,13 @@ pub struct WorkerConfig {
     /// while the worker has fresh items in `read_rx`. `None` keeps the
     /// pre-Plan-18-06 behavior (apply polls on its own cadence).
     pub apply_waker: Option<Arc<mio::Waker>>,
+    /// Maximum TCP frame size (bytes) accepted by the wire decoder. Replaces
+    /// the prior process-global `BEAVA_TCP_MAX_FRAME_BYTES` env-var read
+    /// (which leaked across parallel TestServers — Plan 13.5.2-postclose
+    /// determinism fix). Production callers populate from
+    /// `cfg.tcp.max_frame_bytes` (which itself honors the env-var at config
+    /// load time). Default in `WorkerConfig`-construction sites: 4 MiB.
+    pub tcp_max_frame_bytes: u32,
 }
 
 /// Handle to a running worker thread. Returned by `start_worker`.
@@ -254,6 +261,7 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
         new_client_rx,
         stop,
         apply_waker,
+        tcp_max_frame_bytes,
     } = cfg;
 
     // Idle poll timeout: 1 second. Waker interrupts this for hot paths.
@@ -337,7 +345,7 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
                         continue;
                     }
                     // Parse frames and push to read_tx.
-                    if parse_and_push(slot, client, &read_tx) > 0 {
+                    if parse_and_push(slot, client, &read_tx, tcp_max_frame_bytes) > 0 {
                         sent_to_apply = true;
                     }
                 }
@@ -429,7 +437,12 @@ fn inline_encode_frame_too_large(write_buf: &mut bytes::BytesMut, declared: u32,
 /// Parse frames from a client's `read_buf` and push `RingItem`s to `read_tx`.
 /// Returns the number of `RingItem`s sent so callers can wake apply if any
 /// were pushed.
-fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingItem>) -> usize {
+fn parse_and_push(
+    slot: u64,
+    client: &mut WorkerClient,
+    read_tx: &Sender<RingItem>,
+    tcp_max_frame_bytes: u32,
+) -> usize {
     use crate::http_listener::parse_http_request;
     use crate::tcp_listener::parse_wire_request;
     use beava_core::row::Row;
@@ -467,15 +480,13 @@ fn parse_and_push(slot: u64, client: &mut WorkerClient, read_tx: &Sender<RingIte
     let slot_u32 = slot as u32;
     let mut sent: usize = 0;
 
-    // Plan 12.6-15: max_frame_bytes for TCP frame decode. Driven by
-    // BEAVA_TCP_MAX_FRAME_BYTES env var (`TestServer.tcp_max_frame_bytes`
-    // builder maps to this) so tests can pin a 1024-byte limit and
-    // exercise the `frame_too_large` path. Default 4 MiB matches the
-    // legacy axum bound.
-    let tcp_max_frame_bytes: u32 = std::env::var("BEAVA_TCP_MAX_FRAME_BYTES")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4 * 1024 * 1024);
+    // Plan 13.5.2-postclose: max_frame_bytes is now plumbed via WorkerConfig
+    // (was process-global BEAVA_TCP_MAX_FRAME_BYTES env-var read, which
+    // leaked across parallel TestServers and made criterion_7's 1024-byte
+    // limit reject criterion_6's pipelined registers — non-deterministic
+    // workspace test failures). Production main.rs populates the field from
+    // `cfg.tcp.max_frame_bytes`, which still honors the env-var at
+    // config-load time (`config.rs:267`).
 
     match client.proto {
         WorkerProto::Tcp => loop {

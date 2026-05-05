@@ -225,6 +225,7 @@ async fn memory_mode_boot_push_get_returns_state() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 
@@ -251,6 +252,7 @@ async fn memory_mode_restart_returns_cold_start_no_replay() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
     register(http_addr).await;
@@ -264,6 +266,7 @@ async fn memory_mode_restart_returns_cold_start_no_replay() {
     let cfg2 = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr2, shutdown_tx2, serve_task2) = boot_with_config(cfg2).await;
     register(http_addr2).await;
@@ -347,6 +350,7 @@ async fn disk_mode_regression_check() {
             sync_mode: SyncMode::Periodic,
         },
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
     register(http_addr).await;
@@ -369,6 +373,7 @@ async fn disk_mode_regression_check() {
             sync_mode: SyncMode::Periodic,
         },
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr2, shutdown_tx2, serve_task2) = boot_with_config(cfg2).await;
     let cnt_after_restart = get_cnt(http_addr2, "alice").await;
@@ -394,6 +399,7 @@ async fn memory_mode_get_on_unknown_entity_returns_default() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
     register(http_addr).await;

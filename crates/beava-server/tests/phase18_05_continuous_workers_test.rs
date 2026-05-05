@@ -43,6 +43,7 @@ fn spawn_n_workers_with_write(
                 new_client_rx,
                 stop: Arc::clone(&stop),
                 apply_waker: None,
+                tcp_max_frame_bytes: 4 * 1024 * 1024,
             };
             start_worker::<MioBackend>(cfg, new_client_tx, write_tx)
         })

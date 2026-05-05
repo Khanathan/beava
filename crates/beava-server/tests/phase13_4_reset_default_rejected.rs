@@ -79,6 +79,7 @@ async fn boot_default() -> (
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false,
+        ..ServerV18Config::default()
     };
     let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let sv18 = ServerV18::bind_with_config(any, Some(any), any, cfg)

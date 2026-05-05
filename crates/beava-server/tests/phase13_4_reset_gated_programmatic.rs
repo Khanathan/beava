@@ -176,6 +176,7 @@ async fn reset_with_config_test_mode_true_succeeds_and_clears_state() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: true, // programmatic gate
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 
@@ -221,6 +222,7 @@ async fn reset_with_config_test_mode_false_and_no_env_var_returns_403() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: false, // production-by-default
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 
@@ -257,6 +259,7 @@ async fn reset_with_config_test_mode_true_overrides_env_var_unset() {
     let cfg = ServerV18Config {
         persistence: Persistence::Memory,
         test_mode: true,
+        ..ServerV18Config::default()
     };
     let (http_addr, shutdown_tx, serve_task) = boot_with_config(cfg).await;
 

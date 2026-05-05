@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 ///
 /// Named `ServerV18Config` (rather than `Config`) to avoid collision with
 /// the existing `beava_core::config::Config` re-export at the crate root.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ServerV18Config {
     /// Persistence mode. `Persistence::Disk { .. }` is the production
     /// default (via `Default::default()`); `Persistence::Memory` is opt-in
@@ -41,6 +41,21 @@ pub struct ServerV18Config {
     /// default) blocks reset; `true` permits it. Plan 07 lands the field
     /// shape; Plan 08 wires the actual reset dispatch.
     pub test_mode: bool,
+    /// Plan 13.5.2-postclose: TCP wire-decoder frame cap. Plumbed through to
+    /// `WorkerConfig.tcp_max_frame_bytes` instead of read from the
+    /// `BEAVA_TCP_MAX_FRAME_BYTES` env-var per-frame (which leaked across
+    /// parallel TestServers and broke pipelined-register determinism).
+    pub tcp_max_frame_bytes: u32,
+}
+
+impl Default for ServerV18Config {
+    fn default() -> Self {
+        Self {
+            persistence: Persistence::default(),
+            test_mode: false,
+            tcp_max_frame_bytes: 4 * 1024 * 1024,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -123,6 +138,10 @@ struct ServerV18State {
     wal_ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
     wal_lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
     wal_writer_handle: std::thread::JoinHandle<()>,
+    /// Plan 13.5.2-postclose: TCP frame size cap plumbed into `WorkerConfig`
+    /// instead of read from `BEAVA_TCP_MAX_FRAME_BYTES` env at parse time.
+    /// Was process-global env, leaked across parallel TestServers.
+    tcp_max_frame_bytes: u32,
     /// Plan 12.6-15: shutdown flag for the WalWriter loop. Set on server
     /// shutdown to trigger the writer's final seal+drain+fsync block.
     wal_writer_shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -265,9 +284,14 @@ impl ServerV18 {
                 .unwrap_or(false);
         // 60s default snapshot interval mirrors the production tuning;
         // memory mode ignores it (snapshot task not spawned).
-        let state =
-            build_runtime_state_with_persistence(cfg.persistence, 60_000, 2, effective_test_mode)
-                .await?;
+        let state = build_runtime_state_with_persistence(
+            cfg.persistence,
+            60_000,
+            2,
+            effective_test_mode,
+            cfg.tcp_max_frame_bytes,
+        )
+        .await?;
         sv18.prebuilt_state = Some(state);
         Ok(sv18)
     }
@@ -293,6 +317,7 @@ impl ServerV18 {
         snapshot_dir: std::path::PathBuf,
         snapshot_interval_ms: u64,
         wal_fsync_interval_ms: u64,
+        tcp_max_frame_bytes: u32,
     ) -> Result<Self, ServerError> {
         let mut sv18 = Self::bind(http_addr, tcp_addr, admin_addr).await?;
         let state = build_runtime_state(
@@ -300,6 +325,7 @@ impl ServerV18 {
             snapshot_dir,
             snapshot_interval_ms,
             wal_fsync_interval_ms,
+            tcp_max_frame_bytes,
         )
         .await?;
         sv18.prebuilt_state = Some(state);
@@ -431,7 +457,9 @@ impl ServerV18 {
         // run-loop body.
         let state = match self.prebuilt_state {
             Some(state) => state,
-            None => build_runtime_state(wal_dir, snapshot_dir, 60_000, 2).await?,
+            None => {
+                build_runtime_state(wal_dir, snapshot_dir, 60_000, 2, 4 * 1024 * 1024).await?
+            }
         };
 
         run_serve_loop(
@@ -463,6 +491,7 @@ async fn build_runtime_state(
     snapshot_dir: std::path::PathBuf,
     snapshot_interval_ms: u64,
     wal_fsync_interval_ms: u64,
+    tcp_max_frame_bytes: u32,
 ) -> Result<ServerV18State, ServerError> {
     // Phase 13.5.1 Plan 05 (Rule 2 — missing critical functionality):
     // honor the `BEAVA_TEST_MODE=1` env var in legacy `bind()` /
@@ -486,6 +515,7 @@ async fn build_runtime_state(
         snapshot_interval_ms,
         wal_fsync_interval_ms,
         effective_test_mode,
+        tcp_max_frame_bytes,
     )
     .await
 }
@@ -513,6 +543,7 @@ async fn build_runtime_state_with_persistence(
     snapshot_interval_ms: u64,
     wal_fsync_interval_ms: u64,
     effective_test_mode: bool,
+    tcp_max_frame_bytes: u32,
 ) -> Result<ServerV18State, ServerError> {
     use beava_runtime_core::wal_buffer::WalBufferRing;
     use beava_runtime_core::wal_lsn::WalLsn;
@@ -756,6 +787,7 @@ async fn build_runtime_state_with_persistence(
         snapshot_trigger,
         wal_dir,
         snapshot_dir,
+        tcp_max_frame_bytes,
     })
 }
 
@@ -852,6 +884,7 @@ where
         snapshot_trigger,
         wal_dir: _wal_dir,
         snapshot_dir: _snapshot_dir,
+        tcp_max_frame_bytes,
     } = state;
 
     // Snapshot trigger lifecycle: drop our copy.  Any clones held externally
@@ -882,6 +915,7 @@ where
                 tcp_listener,
                 apply_shard,
                 shutdown_flag_apply,
+                tcp_max_frame_bytes,
             );
         })
         .map_err(ServerError::Serve)?;
@@ -1351,6 +1385,7 @@ fn run_mio_event_loop(
     tcp_listener_std: std::net::TcpListener,
     apply_shard: crate::apply_shard::ApplyShard,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
+    tcp_max_frame_bytes: u32,
 ) {
     // Plan 18-05/18-06 wiring: replaces the prior IoPool + per-tick join_all
     // architecture with the per-worker continuous-loop (Valkey 8) model.
@@ -1438,6 +1473,7 @@ fn run_mio_event_loop(
             new_client_rx,
             stop: Arc::clone(&stop),
             apply_waker: Some(Arc::clone(&apply_waker)),
+            tcp_max_frame_bytes,
         };
         let handle = start_worker::<MioBackend>(cfg, new_client_tx, write_tx.clone());
         worker_wakers.push(handle.waker());
