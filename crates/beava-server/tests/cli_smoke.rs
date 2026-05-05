@@ -141,6 +141,9 @@ fn env_var_overrides_listen_addr() {
         .env("BEAVA_LISTEN_ADDR", format!("127.0.0.1:{override_port}"))
         // Disable TCP wire listener — avoids port conflicts across parallel tests.
         .env("BEAVA_TCP_ENABLED", "0")
+        // Phase 13.5.1 Plan 07b: pin admin sidecar to ephemeral port so
+        // parallel cli_smoke / pytest spawns don't fight over default 8090.
+        .env("BEAVA_ADMIN_ADDR", "127.0.0.1:0")
         .env("BEAVA_WAL_DIR", &wal_dir)
         .env("BEAVA_SNAPSHOT_DIR", &snap_dir)
         .arg("--config")
