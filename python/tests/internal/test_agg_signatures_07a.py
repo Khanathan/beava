@@ -131,3 +131,31 @@ def test_geo_family() -> None:
     h = bv.distance_from_home(lat="lat", lon="lon")
     d = h.to_dict()
     assert d["samples"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Family C — Point/ordinal (where= parity)
+# ---------------------------------------------------------------------------
+
+
+def test_point_ordinal_family() -> None:
+    """first_n / last_n: signature already matches; add where= per docs parity."""
+
+    # Existing call shape — regression guard
+    h = bv.first_n("target", n=5)
+    d = h.to_dict()
+    assert d["op"] == "first_n"
+    assert d["field"] == "target"
+    assert d["n"] == 5
+
+    h = bv.last_n("action", n=5)
+    d = h.to_dict()
+    assert d["op"] == "last_n"
+    assert d["n"] == 5
+
+    # New: where= parity
+    h = bv.first_n("target", n=5, where=bv.col("kind") == "click")
+    assert h.where is not None
+
+    h = bv.last_n("action", n=5, where=bv.col("kind") == "click")
+    assert h.where is not None
