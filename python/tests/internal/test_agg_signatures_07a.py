@@ -84,3 +84,50 @@ def test_buffer_family() -> None:
     # bv.reservoir_sample — accepts where= per docs parity
     h = bv.reservoir_sample("amount", samples=100, where=bv.col("kind") == "p2p")
     assert h.where is not None
+
+
+# ---------------------------------------------------------------------------
+# Family B — Geo
+# ---------------------------------------------------------------------------
+
+
+def test_geo_family() -> None:
+    """4 geo ops match docs/operators/buffer-geo/geo_*.md signature blocks."""
+
+    # bv.geo_velocity — kw-only lat=/lon=, no window=
+    h = bv.geo_velocity(lat="latitude", lon="longitude")
+    d = h.to_dict()
+    assert d["op"] == "geo_velocity"
+    assert d["lat_field"] == "latitude"
+    assert d["lon_field"] == "longitude"
+    assert "window" not in d
+
+    # bv.geo_distance — kw-only lat=/lon=, no window=
+    h = bv.geo_distance(lat="lat", lon="lon")
+    d = h.to_dict()
+    assert d["op"] == "geo_distance"
+    assert d["lat_field"] == "lat"
+    assert d["lon_field"] == "lon"
+    assert "window" not in d
+
+    # bv.geo_spread — kw-only lat=/lon=, no window=
+    h = bv.geo_spread(lat="lat", lon="lon")
+    d = h.to_dict()
+    assert d["op"] == "geo_spread"
+    assert d["lat_field"] == "lat"
+    assert d["lon_field"] == "lon"
+    assert "window" not in d
+
+    # bv.distance_from_home — kw-only lat=/lon=/samples=, no window=
+    h = bv.distance_from_home(lat="lat", lon="lon", samples=50)
+    d = h.to_dict()
+    assert d["op"] == "distance_from_home"
+    assert d["lat_field"] == "lat"
+    assert d["lon_field"] == "lon"
+    assert d["samples"] == 50
+    assert "window" not in d
+
+    # bv.distance_from_home — samples defaults to 100
+    h = bv.distance_from_home(lat="lat", lon="lon")
+    d = h.to_dict()
+    assert d["samples"] == 100
