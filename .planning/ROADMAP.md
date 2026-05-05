@@ -919,6 +919,29 @@ Plans:
 
 ---
 
+### Phase 13.5.2: Decorator-only derivation surface (kill chain registration) — 📋 PLANNED 2026-05-04
+
+**Status:** Inserted 2026-05-04. Closes the architectural blocker named in `.planning/RESUME-2026-05-04-PM.md` ("sibling-event-derivation routing") that surfaces as 5 `python/tests/v0/test_lit.py` failures at the Phase 13.5.1 close (74/89 v0 acceptance GREEN).
+
+**Goal:** Lock the public derivation-declaration surface to exactly two decorator forms (`@bv.event class | @bv.event def | @bv.table[(key=)] def`); reject the chained `EventDerivation.named("X")` + register-as-sibling pattern at register-time AND at `@bv.table`/`@bv.event` annotation-resolution time with a sharp `RegistrationError` / `TypeError` whose message points at the canonical `@bv.event def X(...)` rewrite.
+
+**Depends on:** Phase 13.5.1 CLOSED (transport impls live; the test_lit failures only fire when the real engine is bound).
+
+**Detail capture:** `.planning/phases/13.5.2-decorator-only-derivations/13.5.2-CONTEXT.md` (4 user-locked decisions: D-01 hard-error at register / `.named()` callable internally; D-02 decorator-only public surface + rejection at annotation-resolution; D-03 multi-sibling N/A by construction; D-04 minimum-scope rewrite — 5 test_lit tests + `docs/sdk-api/python.md:177-183` + ADR-003:177-183).
+
+**Success criteria:**
+1. All 5 `python/tests/v0/test_lit.py` failures GREEN under the rewritten `@bv.event def Tagged(click: Click): return click.with_columns(...)` form.
+2. New paired RED→GREEN unit tests cover (i) `app.register()` rejecting an `EventDerivation` instance with the documented hint, (ii) `@bv.table` / `@bv.event def` parameter annotation resolving to an `EventDerivation` instance raising `TypeError` with the documented hint.
+3. `docs/sdk-api/python.md` lines 177-183 + `.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md` lines 177-183 rewritten to use the canonical `@bv.event def` form for the three `bv.lit` examples.
+4. `cargo test --workspace --features testing` + `cargo clippy --workspace --all-targets --all-features -- -D warnings` + `cargo fmt --all --check` + `pytest python/tests` + `mypy --strict python/beava` GREEN.
+5. v0 acceptance count: ≥ 79/89 GREEN (pre-13.5.2: 74/89; +5 test_lit; the other 10 high-volume + reset failures stay deferred).
+
+**Estimated wall-clock:** ~1 day (single engineer; Wave 1 RED + Wave 2 GREEN + closure).
+
+**Blocks:** OSS launch sequence (13.7.5 / 13.7.6 / 13.8) per `RESUME-2026-05-04-PM.md` — `bv.lit` is a documented public surface and the homepage demo / docs examples need the rewritten form before publish.
+
+---
+
 ### Phase 13.6: TypeScript + Go SDKs (communicate-only) — 📋 PLANNED 2026-05-03
 
 **Status:** Inserted 2026-05-03. **RESCOPED 2026-05-03** to communicate-only per user directive: pipeline authoring is Python-only; TS+Go ship wire-thin clients (~600 LOC each, down from ~1800). Parallel with 13.4/13.5/13.7.
