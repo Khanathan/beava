@@ -97,11 +97,11 @@ def test_lit_explicit_filter_literal(app):
 
     @bv.table(key="user_id")
     def CountImplicit(big: Tx):
-        return big.group_by("user_id").agg(n=bv.count(window="forever"))
+        return big.group_by("user_id").agg(nI=bv.count(window="forever"))
 
     @bv.table(key="user_id")
     def CountExplicit(big: Tx):
-        return big.group_by("user_id").agg(n=bv.count(window="forever"))
+        return big.group_by("user_id").agg(nE=bv.count(window="forever"))
 
     # Bind upstream-by-name — both derivations independently feed their own table.
     # We re-decorate with the right upstream below by relying on @bv.event
@@ -137,8 +137,13 @@ def test_lit_explicit_filter_literal(app):
     for entity, exp in big_counts.items():
         r_impl = app.get("CountImplicit", entity)
         r_expl = app.get("CountExplicit", entity)
-        assert r_impl == r_expl, (
+        # Distinct feature names per Plan 07b sub-task 4 (global feature
+        # uniqueness); compare counts rather than dict-identity.
+        assert r_impl.get("nI", 0) == r_expl.get("nE", 0), (
             f"{entity}: implicit lit result {r_impl!r} != explicit {r_expl!r}"
+        )
+        assert r_impl.get("nI", 0) == exp, (
+            f"{entity}: implicit count {r_impl.get('nI', 0)} != expected {exp}"
         )
 
     assert cold_start_equivalent(app.get("CountImplicit", "unknown_litf"))
@@ -293,11 +298,11 @@ def test_lit_immutability(app):
 
     @bv.table(key="user_id")
     def CountA(filt: M):
-        return filt.group_by("user_id").agg(n=bv.count(window="forever"))
+        return filt.group_by("user_id").agg(nA=bv.count(window="forever"))
 
     @bv.table(key="user_id")
     def CountB(filt: M):
-        return filt.group_by("user_id").agg(n=bv.count(window="forever"))
+        return filt.group_by("user_id").agg(nB=bv.count(window="forever"))
 
     app.register(M, UseA, UseB, CountA, CountB)
 
@@ -313,7 +318,13 @@ def test_lit_immutability(app):
     for entity, exp in expected_filtered.items():
         ra = app.get("CountA", entity)
         rb = app.get("CountB", entity)
-        assert ra == rb, f"{entity}: bv.lit calls produce different results: {ra!r} != {rb!r}"
-        assert ra.get("n", 0) == exp, f"{entity}: expected n={exp}, got {ra.get('n', 0)}"
+        # Distinct feature names per Plan 07b sub-task 4 (global feature
+        # uniqueness); compare counts directly.
+        assert ra.get("nA", 0) == rb.get("nB", 0), (
+            f"{entity}: bv.lit calls produce different results: {ra!r} != {rb!r}"
+        )
+        assert ra.get("nA", 0) == exp, (
+            f"{entity}: expected nA={exp}, got {ra.get('nA', 0)}"
+        )
 
     assert cold_start_equivalent(app.get("CountA", "unknown_imm"))
