@@ -369,7 +369,10 @@ def time_since(*, where: Any = None) -> AggDescriptor:
 
 
 def time_since_last_n(*, n: int, where: Any = None) -> AggDescriptor:
-    """Silence relative to nth-most-recent matching event per docs/operators/recency/time_since_last_n.md."""
+    """Silence relative to nth-most-recent match.
+
+    See docs/operators/recency/time_since_last_n.md.
+    """
     if n < 1:
         raise ValueError(f"time_since_last_n n must be >= 1; got {n}")
     return AggDescriptor(
@@ -390,12 +393,18 @@ def max_streak(*, where: Any = None) -> AggDescriptor:
 
 
 def negative_streak(*, where: Any = None) -> AggDescriptor:
-    """Current consecutive non-matching count per docs/operators/recency/negative_streak.md (no field arg)."""
+    """Consecutive non-matching count (no field arg).
+
+    See docs/operators/recency/negative_streak.md.
+    """
     return AggDescriptor(op="negative_streak", where=_serialize_where(where))
 
 
 def first_seen_in_window(*, window: str, where: Any = None) -> AggDescriptor:
-    """Was the entity active within the past ``window``? per docs/operators/recency/first_seen_in_window.md."""
+    """Was the entity active within the past ``window``?
+
+    See docs/operators/recency/first_seen_in_window.md.
+    """
     _validate_window(window, "first_seen_in_window", required=True)
     return AggDescriptor(
         op="first_seen_in_window",
@@ -641,7 +650,10 @@ def histogram(
 
 
 def hour_of_day_histogram(*, where: Any = None) -> AggDescriptor:
-    """Lifetime-only 24-bucket per-hour count per docs/operators/buffer-geo/hour_of_day_histogram.md."""
+    """Lifetime-only 24-bucket per-hour count.
+
+    See docs/operators/buffer-geo/hour_of_day_histogram.md.
+    """
     return AggDescriptor(
         op="hour_of_day_histogram",
         where=_serialize_where(where),
@@ -649,7 +661,10 @@ def hour_of_day_histogram(*, where: Any = None) -> AggDescriptor:
 
 
 def dow_hour_histogram(*, where: Any = None) -> AggDescriptor:
-    """Lifetime-only 168-bucket per-(dow, hour) count per docs/operators/buffer-geo/dow_hour_histogram.md."""
+    """Lifetime-only 168-bucket per-(dow, hour) count.
+
+    See docs/operators/buffer-geo/dow_hour_histogram.md.
+    """
     return AggDescriptor(
         op="dow_hour_histogram",
         where=_serialize_where(where),
@@ -659,7 +674,10 @@ def dow_hour_histogram(*, where: Any = None) -> AggDescriptor:
 def seasonal_deviation(
     field: Any, *, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only z-score vs hour-of-day baseline per docs/operators/buffer-geo/seasonal_deviation.md."""
+    """Lifetime-only z-score vs hour-of-day baseline.
+
+    See docs/operators/buffer-geo/seasonal_deviation.md.
+    """
     _enforce_field_str(field, "seasonal_deviation")
     return AggDescriptor(
         op="seasonal_deviation",
@@ -739,7 +757,10 @@ def reservoir_sample(
 def geo_velocity(
     *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only max km/h between consecutive matching events per docs/operators/buffer-geo/geo_velocity.md."""
+    """Lifetime-only max km/h between consecutive matching events.
+
+    See docs/operators/buffer-geo/geo_velocity.md.
+    """
     return AggDescriptor(
         op="geo_velocity",
         extras={"lat_field": lat, "lon_field": lon},
@@ -750,7 +771,10 @@ def geo_velocity(
 def geo_distance(
     *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only cumulative haversine path length per docs/operators/buffer-geo/geo_distance.md."""
+    """Lifetime-only cumulative haversine path length.
+
+    See docs/operators/buffer-geo/geo_distance.md.
+    """
     return AggDescriptor(
         op="geo_distance",
         extras={"lat_field": lat, "lon_field": lon},
@@ -761,7 +785,10 @@ def geo_distance(
 def geo_spread(
     *, lat: str, lon: str, where: Any = None
 ) -> AggDescriptor:
-    """Lifetime-only RMS dispersion around running centroid per docs/operators/buffer-geo/geo_spread.md."""
+    """Lifetime-only RMS dispersion around running centroid.
+
+    See docs/operators/buffer-geo/geo_spread.md.
+    """
     return AggDescriptor(
         op="geo_spread",
         extras={"lat_field": lat, "lon_field": lon},
