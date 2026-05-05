@@ -88,16 +88,35 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
         # @bv.table descriptor.
         chain = getattr(d, "_chain", []) or []
         key_cols = getattr(d, "_key_cols", []) or []
-        # Walk back through parents to find the root upstream (an
-        # EventSource OR a named EventDerivation registered separately).
-        # For ``@bv.table def F(x: SomeEvent)`` the parent IS already the
-        # named upstream — just use it. For chained derivations the root
-        # is the original event source.
         parent = getattr(d, "_parent", None)
-        # If parent is a derivation that was given a stable name via
-        # .named(...), prefer that as the upstream (it'll be registered
-        # as a separate node). Otherwise walk to the root.
-        if parent is not None:
+        # Phase 13.5.2 D-02 SDK chain-flatten: when this @bv.table's parent
+        # chain contains an @bv.event def output (carrying
+        # `_is_bv_event_function=True`), set the upstream to the ROOT
+        # EventSource. This is required because the server's apply-time
+        # routing index `aggregations_by_source` keys aggregations by their
+        # direct upstream NAME — events arriving at the root EventSource
+        # only trigger aggregations whose declared upstream IS that root,
+        # not aggregations whose upstream is an intermediate derivation.
+        # Tagged's ops are already in `chain` via the standard
+        # `_make_derivation` chain-prepend behavior, so the wire payload
+        # for UserClicks correctly carries the full
+        # `[Tagged.ops..., UserClicks.ops...]` op sequence with upstream=Click.
+        has_bv_event_def_ancestor = False
+        ancestor: Any = parent
+        while ancestor is not None:
+            if getattr(ancestor, "_is_bv_event_function", False):
+                has_bv_event_def_ancestor = True
+                break
+            ancestor = getattr(ancestor, "_parent", None)
+        if has_bv_event_def_ancestor and parent is not None:
+            root: Any = parent
+            while True:
+                p = getattr(root, "_parent", None)
+                if p is None:
+                    break
+                root = p
+            upstreams = [getattr(root, "_name", "")]
+        elif parent is not None:
             parent_kind = getattr(parent, "_kind", None)
             parent_name = getattr(parent, "_name", "")
             # Named-derivation upstreams (from .named(...)) keep their
@@ -106,13 +125,13 @@ def _descriptor_to_node(d: Any) -> dict[str, Any] | None:
             if parent_kind == "event_source" or "__derived_" not in parent_name:
                 upstreams = [parent_name] if parent_name else []
             else:
-                root: Any = parent
+                root2: Any = parent
                 while True:
-                    p = getattr(root, "_parent", None)
+                    p = getattr(root2, "_parent", None)
                     if p is None:
                         break
-                    root = p
-                upstreams = [getattr(root, "_name", "")]
+                    root2 = p
+                upstreams = [getattr(root2, "_name", "")]
         else:
             upstreams = []
         ops = _chain_to_ops(chain)

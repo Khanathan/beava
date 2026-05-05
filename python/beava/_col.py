@@ -76,17 +76,22 @@ class _Expr:
         return _BinOp("!=", self, _coerce(other))
 
     # Boolean ────────────────────────────────────────────────────────────────
+    # Phase 13.5.2: serialize Python `&` / `|` to the server's expr-grammar
+    # `and` / `or` keywords (per `crates/beava-core/src/expr.rs` token table).
+    # The Python operators `&` / `|` are bitwise — we overload them as boolean
+    # combinators because Python forbids overloading `and` / `or`. The wire
+    # form must match the expr-parser's keyword tokens.
     def __and__(self, other: Any) -> "_Expr":
-        return _BinOp("&", self, _coerce(other))
+        return _BinOp("and", self, _coerce(other))
 
     def __rand__(self, other: Any) -> "_Expr":
-        return _BinOp("&", _coerce(other), self)
+        return _BinOp("and", _coerce(other), self)
 
     def __or__(self, other: Any) -> "_Expr":
-        return _BinOp("|", self, _coerce(other))
+        return _BinOp("or", self, _coerce(other))
 
     def __ror__(self, other: Any) -> "_Expr":
-        return _BinOp("|", _coerce(other), self)
+        return _BinOp("or", _coerce(other), self)
 
     def __invert__(self) -> "_Expr":
         return _UnaryOp("~", self)
