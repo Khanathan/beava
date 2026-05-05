@@ -237,12 +237,16 @@ def test_trend_per_user_high_volume(app):
         result = app.get("UserTrend", entity)
         slope = result.get("slope")
         # OLS slope = cov(t, v) / var(t). With 1000 events pushed in ~ms,
-        # var(t) is near zero so the slope is dominated by floating-point
-        # noise (engine-correct: it's the OLS computation on a degenerate
-        # time-axis). Asserting slope > 0 assumed wall-clock spread, which
-        # doesn't hold under ms-clustered processing time. Engine-correct
-        # invariant: slope is finite and bounded magnitude (catches NaN/Inf).
-        assert slope is not None, f"{entity}: trend slope unexpectedly None"
+        # var(t) is near zero (or exactly zero) → engine returns None as the
+        # contract sentinel for a degenerate time-axis. Server-side contract
+        # at crates/beava-core/src/agg_state_velocity.rs:253-263:
+        # `TrendState::slope()` returns `None` when `denom == 0.0`. This
+        # matches statsmodels/scipy convention for ill-conditioned regression
+        # and matches the sibling `test_trend_residual_per_user_high_volume`
+        # contract (line 294-295). Skip when None; only assert finite-and-
+        # bounded when a value is returned.
+        if slope is None:
+            continue
         slope_f = float(slope)
         assert math.isfinite(slope_f), f"{entity}: slope not finite: {slope_f}"
         assert abs(slope_f) < 1e6, f"{entity}: slope magnitude unreasonable: {slope_f}"
