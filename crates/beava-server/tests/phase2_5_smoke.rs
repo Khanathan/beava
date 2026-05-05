@@ -252,13 +252,12 @@ async fn criterion_6_pipelined_registers_return_in_order() {
 
     // Frames 1 + 2: OP_PING echoes (server replies on the same opcode), both
     // at registry_version=1 (no further bumps after the single register).
-    for i in 1..=2 {
+    for (i, frame) in frames.iter().enumerate().skip(1).take(2) {
         assert_eq!(
-            frames[i].op, OP_PING,
-            "frame {i} must be ping response: {:?}",
-            frames[i]
+            frame.op, OP_PING,
+            "frame {i} must be ping response: {frame:?}"
         );
-        let pong_body: Value = serde_json::from_slice(&frames[i].payload).unwrap();
+        let pong_body: Value = serde_json::from_slice(&frame.payload).unwrap();
         assert_eq!(
             pong_body["registry_version"], 1u64,
             "ping frame {i} version: {pong_body:#}"
