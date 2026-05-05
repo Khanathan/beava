@@ -1,14 +1,10 @@
-//! Phase 6.1 Plan 05 — periodic-mode WAL append microbench.
+//! Periodic-mode WAL append microbench.
 //!
-//! Measures the per-append cost of `WalSink::append_event_with_mode(…,
-//! SyncMode::Periodic)` — the new default `/push` semantics. Unlike
-//! `wal/append_fsync_default_coalesce` (Phase 6) this benchmark does NOT
-//! wait for fsync, so the headline number is dominated by serialize +
-//! channel send + in-memory BufWriter write + LSN ACK round-trip.
-//!
-//! The Phase 13 throughput target (≥3M EPS/core) is what this benchmark
-//! enables — fsync stays on the timer regardless of push activity, so
-//! per-push latency is ~µs not ms.
+//! Measures per-append cost of `WalSink::append_event_with_mode(…,
+//! SyncMode::Periodic)` — the default `/push` semantics. Unlike
+//! `wal/append_fsync_default_coalesce` this benchmark does NOT wait for
+//! fsync, so the headline is dominated by serialize + channel send +
+//! in-memory BufWriter write + LSN ACK round-trip.
 
 use beava_persistence::{SyncMode, WalSink, WalSinkConfig};
 use criterion::{criterion_group, criterion_main, Criterion};

@@ -67,8 +67,7 @@ impl WalReader {
     }
 
     /// Read every record across every segment in `dir` in ascending LSN order.
-    /// Convenience for tests; production recovery (Phase 7) streams segment by
-    /// segment.
+    /// Convenience for tests; production recovery streams segment by segment.
     pub fn read_all(dir_or_file: &Path) -> Result<Vec<WalRecord>, PersistError> {
         if dir_or_file.is_file() {
             let reader = Self::open(dir_or_file)?;
@@ -109,11 +108,8 @@ impl Iterator for WalReader {
         let record_offset = self.pos;
         match decode_record(&mut self.file, record_offset) {
             Ok(Some(rec)) => {
-                // Advance pos: length(4) + length_value
-                // We don't have direct access to the bytes read here; reuse
-                // encoded length. Fortunately the encoded record size is
-                // deterministic from (payload.len()).
-                // length field is u32 that equals 4 (crc) + 8 (lsn) + 1 (type) + payload.len()
+                // Encoded record size is deterministic from payload length:
+                // length(4) + crc(4) + lsn(8) + type(1) + payload.
                 let encoded_len = 4 + 4 + 8 + 1 + rec.payload.len() as u64;
                 self.pos += encoded_len;
                 Some(Ok(rec))

@@ -1,6 +1,4 @@
-//! Snapshot format round-trip + corruption probes (Phase 7 Plan 01 RED).
-//!
-//! Target symbols that don't exist yet — compilation failure IS the red signal.
+//! Snapshot format round-trip + corruption probes.
 
 use beava_persistence::{
     list_snapshots, prune_old_snapshots, PersistError, SnapshotError, SnapshotHeader,

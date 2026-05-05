@@ -1,4 +1,4 @@
-//! Snapshot writer + reader + retention helpers (Phase 7 Plan 01).
+//! Snapshot writer + reader + retention helpers.
 //!
 //! Atomic write protocol:
 //! 1. Open `snapshot-{lsn:016x}.tmp` (truncate-create).
@@ -7,10 +7,10 @@
 //! 4. `fs::rename(tmp, final)` where final = `snapshot-{lsn:016x}.bvs`.
 //! 5. (unix) Open parent dir + `sync_all()` for rename durability.
 //!
-//! Crash between 1-3 leaves the prior snapshot intact (tmp will be
-//! overwritten on next attempt). Crash between 4-5 may leave the rename
-//! unflushed in the directory entry on some filesystems; recovery tolerates
-//! a missing-but-partially-renamed entry.
+//! Crash between 1-3 leaves the prior snapshot intact (tmp is overwritten
+//! on next attempt). Crash between 4-5 may leave the rename unflushed in
+//! the directory entry on some filesystems; recovery tolerates a
+//! missing-but-partially-renamed entry.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -25,33 +25,23 @@ use crate::Lsn;
 
 /// Atomic snapshot writer.
 ///
-/// Phase 13.4 Plan 07 (D-02 USER-LOCKED): this type also exposes a no-op
-/// constructor [`SnapshotWriter::no_op`] for `Persistence::Memory` mode.
-/// The no-op variant carries no state; its [`SnapshotWriter::commit_no_op`]
-/// method returns `Ok(())` immediately without any file I/O. The snapshot
-/// scheduler in memory mode is not spawned at all (`server.rs::build_runtime_state`
-/// branches on `Persistence`), so this method exists primarily as a
-/// programmatic affordance for tests and for any embed-mode caller that
-/// wants to reach a writer handle.
+/// `SnapshotWriter::write` is the production path. The unit-struct shape
+/// also supports memory-mode callers via [`SnapshotWriter::no_op`] +
+/// [`SnapshotWriter::commit_no_op`], which round-trip `Ok(())` without any
+/// file I/O. In memory mode the snapshot scheduler is not spawned at all
+/// (see the persistence branch in `ServerV18::bind_with_config`); these
+/// methods exist as an explicit affordance for tests and embed callers
+/// that still hold a writer handle.
 pub struct SnapshotWriter;
 
 impl SnapshotWriter {
-    /// Phase 13.4 Plan 07 (D-02) — construct a no-op snapshot writer for
-    /// `Persistence::Memory` mode. The returned value is identical to
-    /// `SnapshotWriter` itself (the type is a unit struct), but the calling
-    /// convention `SnapshotWriter::no_op().commit_no_op()` documents intent
-    /// and round-trips Ok(()) without touching disk.
+    /// Construct a no-op snapshot writer for `Persistence::Memory` mode.
     pub fn no_op() -> Self {
         SnapshotWriter
     }
 
-    /// Phase 13.4 Plan 07 (D-02) — no-op commit for memory-mode callers.
-    ///
-    /// Returns `Ok(())` immediately, performs ZERO file I/O. The on-disk
-    /// `write` constructor remains the production path; memory mode skips
-    /// scheduling the snapshot task entirely (see `server.rs`), so this
-    /// method exists as the explicit "I checked the writer; it's a no-op"
-    /// affordance for tests and for direct programmatic use.
+    /// No-op commit for memory-mode callers — returns `Ok(())` immediately,
+    /// performs zero file I/O.
     pub fn commit_no_op(&self) -> Result<(), PersistError> {
         Ok(())
     }
@@ -85,7 +75,6 @@ impl SnapshotWriter {
         };
         let header_bytes = header.encode();
 
-        // Step 1+2: open tmp + write header + body.
         let mut f = OpenOptions::new()
             .read(true)
             .write(true)
@@ -96,14 +85,13 @@ impl SnapshotWriter {
         f.write_all(&header_bytes).map_err(PersistError::Io)?;
         f.write_all(body).map_err(PersistError::Io)?;
 
-        // Step 3: fsync.
         f.sync_all().map_err(PersistError::Io)?;
         drop(f);
 
-        // Step 4: rename.
         std::fs::rename(&tmp_path, &final_path).map_err(PersistError::Io)?;
 
-        // Step 5: directory fsync (unix). Best-effort.
+        // Best-effort parent-directory fsync makes the rename durable on
+        // filesystems that don't journal directory entries with the file.
         #[cfg(unix)]
         {
             if let Ok(d) = File::open(dir) {
@@ -123,12 +111,13 @@ impl SnapshotReader {
     pub fn open(path: &Path) -> Result<(SnapshotHeader, Vec<u8>), PersistError> {
         let mut f = File::open(path).map_err(PersistError::Io)?;
 
-        // Read header.
         let mut header_bytes = [0u8; SNAPSHOT_HEADER_SIZE];
         f.read_exact(&mut header_bytes).map_err(PersistError::Io)?;
         let header = SnapshotHeader::decode(&header_bytes)?;
 
-        // Read body — exactly header.body_len bytes; short read => Truncated.
+        // Hand-rolled read loop so a short read surfaces as `Truncated`
+        // (with the actual got vs expected counts) rather than a generic
+        // `UnexpectedEof`.
         let mut body = vec![0u8; header.body_len as usize];
         let mut read_total = 0usize;
         while read_total < body.len() {
@@ -145,7 +134,6 @@ impl SnapshotReader {
             }
         }
 
-        // Verify body CRC.
         let computed = crc32c::crc32c(&body);
         if computed != header.body_crc32c {
             return Err(PersistError::Snapshot(SnapshotError::BodyCrcMismatch {
@@ -179,7 +167,6 @@ pub fn list_snapshots(dir: &Path) -> Result<Vec<(Lsn, PathBuf)>, PersistError> {
         if ext != SNAPSHOT_EXT {
             continue;
         }
-        // stem looks like "snapshot-00000000000003e8"
         let Some(hex) = stem.strip_prefix("snapshot-") else {
             continue;
         };

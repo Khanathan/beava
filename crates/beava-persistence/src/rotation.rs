@@ -51,19 +51,14 @@ pub fn truncate_up_to(
     for i in 0..segs.len() {
         let (start_lsn, path) = &segs[i];
         if *start_lsn == current_start_lsn {
-            // Current open segment — skip.
             continue;
         }
-        // next_start_lsn = start_lsn of the next segment (by ascending order),
-        // or current_start_lsn if this is the last closed segment before the
-        // current one. If this segment has no successor, treat it as uncovered
-        // (it's the current segment — but we already filtered that above).
         let next_start_lsn = if i + 1 < segs.len() {
             segs[i + 1].0
         } else {
-            // Should not happen: current segment always exists at the end,
-            // so a segment with no successor must BE the current one and
-            // was skipped above. If we're here with no successor, bail out.
+            // Unreachable in practice: the current open segment always sits
+            // at the tail, so a segment without a successor would be the
+            // current one — which we already skipped above.
             continue;
         };
         if next_start_lsn <= covered_lsn {
@@ -84,13 +79,11 @@ pub fn rotate(
     // Flush + sync_data the current segment before rotating.
     writer.sync_data()?;
 
-    // Open new segment. `WalWriter::open` uses create_new — if the file
-    // already exists (shouldn't, since next_start_lsn is the next free LSN),
-    // this errors loudly.
+    // `WalWriter::open` uses create_new; if the file already exists
+    // (shouldn't, since next_start_lsn is the next free LSN) it errors
+    // loudly rather than overwriting committed segments.
     let new_writer = WalWriter::open(dir, next_start_lsn, registry_version)?;
-    // Swap in the new writer. We drop the old one — its Drop impl flushes,
-    // but we already synced above, so data is durable.
     *writer = new_writer;
-    let _ = segment::HEADER_SIZE; // silence "unused import" warnings in this module
+    let _ = segment::HEADER_SIZE; // keep the `segment` import live; const access has no runtime cost.
     Ok(())
 }

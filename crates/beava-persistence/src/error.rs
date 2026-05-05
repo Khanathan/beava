@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Snapshot-format-specific errors (Phase 7 Plan 01).
+/// Snapshot-format-specific errors.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
     #[error("io: {0}")]

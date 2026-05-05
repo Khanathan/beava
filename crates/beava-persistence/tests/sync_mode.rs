@@ -1,11 +1,11 @@
-//! Phase 6.1 Plan 01: SyncMode dispatch on `WalSink`.
+//! `SyncMode` dispatch on `WalSink`.
 //!
 //! Periodic mode: `append_event_with_mode(payload, SyncMode::Periodic)`
 //! returns the assigned LSN as soon as the in-memory append is done — it
 //! does NOT wait for fsync. The background timer eventually fsyncs.
 //!
 //! PerEvent mode: `append_event_with_mode(payload, SyncMode::PerEvent)`
-//! preserves the Phase 6 D-12 invariant — resolves only after fsync.
+//! resolves only after fsync — the strict ACK-after-fsync invariant.
 
 use beava_persistence::{SyncMode, WalReader, WalSink, WalSinkConfig};
 use std::time::{Duration, Instant};

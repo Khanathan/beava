@@ -1,7 +1,7 @@
 //! WAL writer/reader round-trip + CRC corruption + tail-truncation tests.
 //!
-//! Per CONTEXT.md D-02: frame is `[u32 length][u32 crc32c][u64 lsn][u8 type][payload]`.
-//! CRC32C covers `[lsn || type || payload]`. Segment header: magic `BEAVAWAL` +
+//! Frame: `[u32 length][u32 crc32c][u64 lsn][u8 type][payload]`. CRC32C
+//! covers `[lsn || type || payload]`. Segment header: magic `BEAVAWAL` +
 //! u32 format_version=1 + u64 start_lsn + u32 registry_version.
 
 use beava_persistence::{PersistError, RecordType, WalReader, WalRecord, WalWriter};
@@ -84,15 +84,14 @@ fn segment_header_magic_mismatch() {
 
 #[test]
 fn segment_header_bad_version() {
-    // Plan 12.7-05 D-01 hard rip RESET: FORMAT_VERSION reset 2 → 1. v=2
-    // (and any other non-1 value) is now the "wrong version" path; pre-12.7
-    // dev WALs that carried v=2 are operator-clear-then-boot artifacts per
-    // CONTEXT D-01 ("no migration shim").
+    // FORMAT_VERSION = 1 in this build; v=2 (and any other non-1 byte)
+    // surfaces `UnsupportedVersion`. Pre-v0 dev WALs that carried v=2
+    // require operators to clear `.beava/wal` before boot.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("wal-feedface.log");
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(b"BEAVAWAL").unwrap();
-    f.write_all(&2u32.to_le_bytes()).unwrap(); // pre-12.7 v=2 (now unsupported)
+    f.write_all(&2u32.to_le_bytes()).unwrap();
     f.write_all(&42u64.to_le_bytes()).unwrap();
     f.write_all(&7u32.to_le_bytes()).unwrap();
     drop(f);
@@ -119,9 +118,9 @@ fn crc_mismatch_mid_stream() {
     }
 
     let path = dir.path().join(format!("wal-{:016x}.log", 100u64));
-    // Flip one byte inside the middle record's payload.
-    // Header = 24 bytes. First record: len(4) + crc(4) + lsn(8) + type(1) + payload "payload-100"(11) = 28 body + 4 length prefix = 32 bytes total.
-    // Middle record starts at 24 + 32 = 56. Inside its payload (past len/crc/lsn/type = 17 bytes into the record).
+    // Header = 24 bytes. First record: len(4) + crc(4) + lsn(8) + type(1)
+    // + payload "payload-100"(11) = 32 bytes. Middle record starts at
+    // 24 + 32 = 56; flipping a byte 17 bytes in lands inside its payload.
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -191,18 +190,14 @@ fn torn_last_record_is_eof() {
 
 #[test]
 fn unknown_record_type_errors() {
-    // Plan 12.7-05 D-01 hard rip RESET: hand-written header uses
-    // post-12.7-05 FORMAT_VERSION=1 so the reader proceeds past the header
-    // and surfaces the bad record_type byte (0xFF here, but the same path
-    // covers the now-deleted 0x03 / 0x04 / 0x05 bytes that pre-12.7 carried
-    // table/retract records).
+    // 0xFF stands in for any unknown record_type byte; the same path also
+    // catches the deleted 0x03 / 0x04 / 0x05 (former table / retract types).
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(format!("wal-{:016x}.log", 100u64));
 
-    // Hand-write a valid header + a record with record_type=0xFF
     let mut buf: Vec<u8> = Vec::new();
     buf.extend_from_slice(b"BEAVAWAL");
-    buf.extend_from_slice(&1u32.to_le_bytes()); // post-12.7-05 FORMAT_VERSION
+    buf.extend_from_slice(&1u32.to_le_bytes());
     buf.extend_from_slice(&100u64.to_le_bytes());
     buf.extend_from_slice(&1u32.to_le_bytes());
 

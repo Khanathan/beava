@@ -1,19 +1,19 @@
-//! Phase 6 WAL hot-path microbench (CLAUDE.md §Performance Discipline, mandatory for Phase 6+).
+//! WAL hot-path microbench (CLAUDE.md §Performance Discipline tripwire).
 //!
 //! Three benchmarks:
-//! - `wal/append_nofsync`: raw WAL frame encode + write + CRC, no fsync. Measures
+//! - `wal/append_nofsync`: raw WAL frame encode + write + CRC, no fsync;
 //!   serialization cost in isolation.
-//! - `wal/append_fsync_default_coalesce`: single-writer append awaited through
-//!   the default WalSink (2ms coalesce / 1 MiB). Headline P50 fsync overhead —
-//!   the success-criterion-#3 check (<2ms target).
-//! - `wal/append_fsync_burst_1k`: amortized fsync cost per push under load. 1000
-//!   concurrent appends awaited together; criterion time / 1000 = per-push cost.
+//! - `wal/append_fsync_default_coalesce`: single-writer append awaited
+//!   through the default `WalSink` (2 ms coalesce / 1 MiB). Headline P50
+//!   fsync overhead.
+//! - `wal/append_fsync_burst_1k`: amortized fsync cost per push under
+//!   load. 1000 concurrent appends awaited together; criterion time / 1000
+//!   = per-push cost.
 
 use beava_persistence::{RecordType, WalRecord, WalSink, WalSinkConfig, WalWriter};
 use criterion::{criterion_group, criterion_main, Criterion};
 
 fn sample_payload() -> Vec<u8> {
-    // ~256 bytes, matches the CONTEXT.md default bench payload size.
     let mut v = Vec::with_capacity(256);
     for i in 0..256 {
         v.push((i % 256) as u8);
@@ -39,7 +39,6 @@ fn bench_append_nofsync(c: &mut Criterion) {
         })
     });
 
-    // Keep dir alive until end of bench.
     drop(w);
     drop(dir);
 }

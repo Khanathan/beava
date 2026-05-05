@@ -1,6 +1,7 @@
-//! Group-commit fsync worker — satisfies SRV-DUR-01 (1–5ms OR 1MB coalesce)
-//! and SRV-DUR-02 (ACK after fsync) by owning a single `WalWriter` and
-//! broadcasting a `durable_lsn` watermark every time a batch is fsynced.
+//! Group-commit fsync worker — owns a single `WalWriter` and broadcasts a
+//! `durable_lsn` watermark every time a batch is fsynced. Coalesces appends
+//! on a 1–5 ms timer or a 1 MiB byte threshold (whichever fires first); ACKs
+//! `SyncMode::PerEvent` callers only after their LSN's batch has fsynced.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,9 +26,9 @@ pub struct WalSinkConfig {
     pub fsync_bytes: u64,
     /// Segment size before rotating to a new segment. Default 128 MiB.
     pub segment_bytes: u64,
-    /// Phase 6.1: default sync semantics for `append_event`. `Periodic`
-    /// (default) ACKs after in-memory append and lets the timer fsync;
-    /// `PerEvent` blocks each append on fsync.
+    /// Default sync semantics for `append_event`. `Periodic` (default) ACKs
+    /// after the in-memory append and defers fsync to the timer; `PerEvent`
+    /// blocks each append on fsync.
     pub sync_mode: SyncMode,
 }
 
@@ -45,17 +46,16 @@ impl Default for WalSinkConfig {
     }
 }
 
-/// Phase 6.1: per-append fsync semantics.
+/// Per-append fsync semantics.
 ///
 /// `Periodic` (default) — `append_event_with_mode` resolves as soon as the
 /// payload has been encoded + written to the in-memory `BufWriter` and an
 /// LSN assigned. The background timer fsyncs on its own cadence
-/// (`fsync_interval_ms`). On crash within that window, the ACK'd event MAY
-/// be lost (documented; matches Kafka acks=1).
+/// (`fsync_interval_ms`). On crash within that window the ACK'd event MAY
+/// be lost — semantics match Kafka `acks=1`.
 ///
-/// `PerEvent` — `append_event_with_mode` resolves only after the assigned
-/// LSN has been fsynced to disk (Phase 6 D-12 / SRV-DUR-02 invariant).
-/// Used by the strict-callers `/push-sync` endpoint.
+/// `PerEvent` — resolves only after the assigned LSN has been fsynced to
+/// disk. Used by the strict `/push-sync` endpoint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SyncMode {
@@ -92,17 +92,16 @@ pub struct WalSink {
 }
 
 impl WalSink {
-    /// Phase 13.4 Plan 07 (D-02 USER-LOCKED) — spawn a **no-op** WAL sink for
-    /// `Persistence::Memory` mode. The returned worker drains append requests
-    /// without writing to disk: every `append_event` / `append_record` call
-    /// resolves with a fake monotonically-increasing LSN, and `truncate_up_to`
-    /// / `shutdown` succeed without touching the filesystem. `durable_lsn()`
-    /// reflects the latest assigned LSN so callers that watch the durable
-    /// watermark continue to make progress.
+    /// Spawn a **no-op** WAL sink for `Persistence::Memory` mode. The returned
+    /// worker drains append requests without writing to disk: every
+    /// `append_event` / `append_record` call resolves with a fake
+    /// monotonically-increasing LSN; `truncate_up_to` / `shutdown` succeed
+    /// without touching the filesystem; `durable_lsn()` reflects the latest
+    /// assigned LSN so watchers continue to make progress.
     ///
-    /// Used by `ServerV18::bind_with_config` in memory mode to avoid the
-    /// `WalSink::spawn`-driven file IO (which writes a `.log` segment) while
-    /// preserving the `AppState { wal_sink: WalSink, .. }` shape unchanged.
+    /// Used by `ServerV18::bind_with_config` in memory mode to keep the
+    /// `AppState { wal_sink: WalSink, .. }` shape unchanged while skipping
+    /// all file I/O.
     pub fn spawn_no_op() -> (Self, JoinHandle<()>) {
         let (append_tx, mut append_rx) = mpsc::channel::<AppendRequest>(1024);
         let (control_tx, mut control_rx) = mpsc::channel::<ControlMsg>(16);
@@ -185,28 +184,24 @@ impl WalSink {
         ))
     }
 
-    /// Enqueue a payload for durable append as a typed WAL record. Resolves
-    /// only after the assigned LSN has been fsynced to disk.
-    ///
-    /// Phase 7 Plan 03: callers may now choose `RecordType::RegistryBump` to
-    /// persist a registry version bump alongside event payloads. Internal
-    /// callers continue to use `append_event` for `RecordType::Event`.
+    /// Enqueue a typed WAL record for durable append. Resolves only after
+    /// the assigned LSN has been fsynced to disk — registry-version
+    /// transitions must be durable before any future event can reference
+    /// them, so this entry point is always strict regardless of the sink's
+    /// default sync mode.
     pub async fn append_record(
         &self,
         record_type: RecordType,
         payload: Vec<u8>,
     ) -> Result<Lsn, PersistError> {
-        // append_record (used by RegistryBump and other internal callers) is
-        // always strict — registry-version transitions must be durable before
-        // future events reference them.
         self.append_record_with_mode(record_type, payload, SyncMode::PerEvent)
             .await
     }
 
-    /// Phase 6.1: explicit-mode variant of `append_record`. `Periodic` mode
-    /// resolves as soon as the in-memory append + LSN assignment has happened
-    /// (the background timer fsyncs on its own schedule). `PerEvent` mode
-    /// blocks until the assigned LSN has been fsynced.
+    /// Explicit-mode variant of `append_record`. `Periodic` resolves as soon
+    /// as the in-memory append + LSN assignment has happened (the background
+    /// timer fsyncs on its own schedule); `PerEvent` blocks until the
+    /// assigned LSN has been fsynced.
     pub async fn append_record_with_mode(
         &self,
         record_type: RecordType,
@@ -237,16 +232,17 @@ impl WalSink {
     }
 
     /// Enqueue an event payload for durable append using the sink's
-    /// configured `default_mode` (set at `spawn` time from `WalSinkConfig
-    /// .sync_mode`). For Phase 6.1 the default is `Periodic` (Kafka acks=1
-    /// semantics). Strict callers should use `append_event_with_mode(…,
-    /// SyncMode::PerEvent)` or the `/push-sync` endpoint.
+    /// configured `default_mode` (set at `spawn` time from
+    /// `WalSinkConfig.sync_mode`). The default is `Periodic` (Kafka
+    /// `acks=1` semantics). Strict callers should use
+    /// `append_event_with_mode(…, SyncMode::PerEvent)` or the `/push-sync`
+    /// endpoint.
     pub async fn append_event(&self, payload: Vec<u8>) -> Result<Lsn, PersistError> {
         self.append_event_with_mode(payload, self.default_mode)
             .await
     }
 
-    /// Phase 6.1: explicit-mode variant of `append_event`.
+    /// Explicit-mode variant of `append_event`.
     pub async fn append_event_with_mode(
         &self,
         payload: Vec<u8>,
@@ -328,11 +324,10 @@ async fn worker_loop(
     let mut next_lsn: Lsn = cfg.initial_start_lsn;
     let mut current_start_lsn: Lsn = cfg.initial_start_lsn;
     let fsync_interval = Duration::from_millis(cfg.fsync_interval_ms);
-    // Phase 6.1: timer fires regardless of pending — when there are no
-    // un-fsynced bytes the wake is a cheap no-op.
     let mut timer = tokio::time::interval(fsync_interval);
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Drop the immediate first tick that `interval` emits.
+    // Drop the immediate first tick that `interval` emits so the first
+    // real tick lands one `fsync_interval_ms` after spawn, not on entry.
     timer.tick().await;
 
     loop {
@@ -341,7 +336,6 @@ async fn worker_loop(
         let flush_now = tokio::select! {
             biased;
 
-            // Control messages (truncate / shutdown) — handle inline.
             ctrl = control_rx.recv() => {
                 match ctrl {
                     Some(ControlMsg::TruncateUpTo { covered_lsn, ack }) => {
@@ -359,7 +353,8 @@ async fn worker_loop(
                             &mut current_start_lsn,
                             &durable_tx,
                         ).await;
-                        // Final close fsync also off-runtime.
+                        // Final close fsync also runs off-runtime so
+                        // shutdown doesn't stall other tasks.
                         let close = blocking_sync_data(&mut writer).await;
                         let combined = res.and_then(|_| close.map_err(PersistError::Io));
                         let _ = ack.send(combined);
@@ -381,7 +376,6 @@ async fn worker_loop(
                 }
             }
 
-            // New append request — stage immediately.
             req = append_rx.recv() => {
                 match req {
                     Some(req) => {
@@ -394,7 +388,9 @@ async fn worker_loop(
                         if let Some(pf) = pending_fsync_opt {
                             pending.push(pf);
                         }
-                        // Force fsync if we exceeded the byte threshold.
+                        // Force a fsync now if the staged-byte threshold
+                        // is hit, regardless of where we are in the timer
+                        // cadence.
                         staged_bytes >= cfg.fsync_bytes
                     }
                     None => {
@@ -413,9 +409,9 @@ async fn worker_loop(
                 }
             }
 
-            // Coalesce timer fires unconditionally; we only fsync if
-            // there's something staged.
             _ = timer.tick() => {
+                // Timer ticks unconditionally; only flush when there is
+                // something staged so an idle sink doesn't burn syscalls.
                 staged_bytes > 0
             }
         };
@@ -435,23 +431,21 @@ async fn worker_loop(
     }
 }
 
-/// Phase 13.1: helper that flushes the in-memory buffer on the runtime
-/// thread (cheap memcpy + write syscall to kernel page cache) then issues
-/// the blocking `sync_data()` syscall on a `spawn_blocking` thread via a
-/// cloned file descriptor. The cloned fd shares the same kernel file
-/// description so the fsync durably persists previously-flushed bytes.
+/// Flush the in-memory buffer on the runtime thread (cheap memcpy + write
+/// to the kernel page cache) then issue the blocking `sync_data()` syscall
+/// on a `spawn_blocking` thread via a cloned fd. The clone shares the same
+/// kernel file description, so the fsync durably persists bytes flushed
+/// from the original handle. Running fsync off-runtime is required because
+/// macOS `F_FULLSYNC` blocks ~7 ms — long enough to stall every other task
+/// on a `current_thread` tokio runtime if executed inline.
 ///
 /// Falls back to inline fsync if the file handle can't be cloned (rare —
-/// would only happen on FD exhaustion). Falling back is correct, just
-/// returns to the pre-fix blocking behavior for that one call.
+/// only on FD exhaustion); the fallback is correct, just temporarily blocks.
 async fn blocking_sync_data(writer: &mut crate::writer::WalWriter) -> std::io::Result<()> {
     writer.flush_buffer()?;
     let cloned = match writer.try_clone_file() {
         Ok(f) => f,
-        Err(_) => {
-            // Best-effort fallback — keep correctness even if cloning fails.
-            return writer.sync_data();
-        }
+        Err(_) => return writer.sync_data(),
     };
     tokio::task::spawn_blocking(move || cloned.sync_data())
         .await
@@ -501,9 +495,8 @@ fn stage_request(
 }
 
 /// fsync the BufWriter, bump the durable watermark, resolve any PerEvent
-/// waiters, and rotate if the segment has filled. Phase 6.1: this is now
-/// the "second phase" of the staged-then-fsynced pipeline; staging
-/// happens in `stage_request` on the recv path.
+/// waiters, and rotate if the segment has filled. The matching staging
+/// step lives in `stage_request` on the recv path.
 async fn fsync_batch(
     cfg: &WalSinkConfig,
     writer_ref: &mut WalWriter,
@@ -522,14 +515,6 @@ async fn fsync_batch(
     // the watermark to `next_lsn - 1`.
     let highest = next_lsn.saturating_sub(1);
 
-    // Phase 13.1: fsync off the runtime thread via spawn_blocking. The
-    // BufWriter flush still happens on-thread (cheap memcpy + kernel
-    // write), but the macOS F_FULLSYNC syscall (~7ms) runs on the blocking
-    // pool so other tokio tasks on the current_thread runtime — including
-    // the HTTP push handler racing to ACK the next request — can keep
-    // making progress. Replaces the inline writer_ref.sync_data() call
-    // that was the documented Phase 6.1 deviation and the root cause of
-    // the Phase 13.1 throughput regression.
     let sync_result = blocking_sync_data(writer_ref)
         .await
         .map_err(PersistError::Io);
@@ -550,7 +535,6 @@ async fn fsync_batch(
 
     *staged_bytes = 0;
 
-    // Rotate if we've outgrown the segment.
     if writer_ref.bytes_written() >= cfg.segment_bytes {
         let new_start = *next_lsn;
         rotation::rotate(

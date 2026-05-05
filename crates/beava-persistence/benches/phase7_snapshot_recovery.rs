@@ -1,18 +1,13 @@
-//! Phase 7.5 Plan 03 (folded from Phase 7 deferral): snapshot + recovery
-//! microbenches.
+//! Snapshot + recovery microbenches.
 //!
-//! Three benchmarks that satisfy CLAUDE.md §Performance Discipline for the
-//! Phase 7 perf gate that Phase 7's plan 04 deferred:
-//!
-//! - `snapshot/serialize_state_1k_features`: SnapshotBody::encode with a
-//!   thousand-entity state table. Measures bincode encode cost in isolation
-//!   (no I/O).
-//! - `snapshot/atomic_write_default_fsync`: full SnapshotWriter::write
+//! - `snapshot/serialize_state_1k_features`: `SnapshotBody::encode` with a
+//!   thousand-entity state table; bincode encode cost in isolation (no I/O).
+//! - `snapshot/atomic_write_default_fsync`: full `SnapshotWriter::write`
 //!   round-trip — open tmp + write header+body + fsync + atomic rename.
-//!   Hardware-class-limited on macOS (~7 ms F_FULLSYNC).
-//! - `recovery/replay_wal_10k_records`: replay 10k Event records past LSN 0
-//!   with a representative aggregation already installed. Measures the
-//!   replay throughput (events/sec) past a snapshot LSN.
+//!   Hardware-class-limited on macOS (~7 ms `F_FULLSYNC`).
+//! - `recovery/replay_wal_10k_records`: replay 10k Event records with a
+//!   representative aggregation installed; measures the WAL-read +
+//!   per-record decode baseline that recovery layers `apply` on top of.
 
 use beava_core::agg_op::{AggKind, AggOp, AggOpDescriptor};
 use beava_core::agg_state_table::{AggStateTable, EntityKey, StateTables};
@@ -66,10 +61,9 @@ fn build_registry_inner_with_one_count_agg() -> RegistryInner {
             registered_at_version: 1,
         },
     );
-    // Plan 18-16 Task 16.2: register the TxnAgg aggregation in
-    // compiled_aggregations with agg_id=0 so SnapshotBody::from_live (which
-    // iterates compiled_aggregations to assemble the serialized table list)
-    // finds it.
+    // Register the TxnAgg aggregation in `compiled_aggregations` with
+    // agg_id=0 so `SnapshotBody::from_live` (which iterates
+    // `compiled_aggregations` to build the serialized table list) finds it.
     use beava_core::agg_descriptor::AggregationDescriptor;
     let mut compiled_aggregations: BTreeMap<String, Arc<AggregationDescriptor>> = BTreeMap::new();
     compiled_aggregations.insert(
@@ -142,8 +136,8 @@ fn build_state_table_with_n_entities(n: usize) -> AggStateTable {
 
 fn bench_serialize_state_1k_features(c: &mut Criterion) {
     let registry = build_registry_inner_with_one_count_agg();
-    // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by agg_id.
-    // The TxnAgg fixture is at agg_id=0 (see build_registry_inner_with_one_count_agg).
+    // `state_tables` is `Vec<AggStateTable>` indexed by `agg_id`; the
+    // TxnAgg fixture sits at agg_id=0.
     let tables: StateTables = vec![build_state_table_with_n_entities(1000)];
 
     let body = SnapshotBody::from_live(&registry, &tables, 1000, 1_000_000);
@@ -157,7 +151,6 @@ fn bench_serialize_state_1k_features(c: &mut Criterion) {
 
 fn bench_atomic_write_default_fsync(c: &mut Criterion) {
     let registry = build_registry_inner_with_one_count_agg();
-    // Plan 18-16 Task 16.2: state_tables is Vec<AggStateTable> indexed by agg_id.
     let tables: StateTables = vec![build_state_table_with_n_entities(1000)];
     let body = SnapshotBody::from_live(&registry, &tables, 1000, 1_000_000);
     let encoded = Arc::new(body.encode().expect("encode"));

@@ -15,19 +15,12 @@ use crate::{Lsn, RecordType, WalRecord};
 
 /// Format version emitted by this implementation.
 ///
-/// **Plan 12.7-05 (D-01 hard rip RESET):** RESET 2 → 1 alongside the deletion
-/// of the Phase 11.5 table-write and stream-retract record-type variants
-/// (entire table surface removed per `project_v0_events_only_scope`). v0
-/// launches at version=1 across WAL/snapshot/wire — not a forward bump
-/// because v0 isn't released; nothing to be backward-compatible with.
-/// Pre-12.7 dev WALs (which carried `v=2`) fail with the existing
-/// `SchemaVersionMismatch` path on recovery — per CONTEXT D-01 there is no
-/// migration shim; operators clear `.beava/wal` + `.beava/snapshots` before
-/// booting the new binary.
-///
-/// History: Plan 12.6-06 bumped 1 → 2 alongside the `event_time` byte-slot
-/// deletion; Plan 12.7-05 walks back to 1 because v0 is unreleased and the
-/// record-type strip changes the v=1 surface incompatibly anyway.
+/// v0 ships at version=1 across WAL/snapshot/wire (events-only invariant —
+/// see CLAUDE.md §"Events-Only Invariant"). Bumping this constant is a
+/// breaking change for any on-disk segment. Operators upgrading from
+/// pre-v0 dev binaries that carried `v=2` must clear `.beava/wal` +
+/// `.beava/snapshots` before boot — there is no migration shim; readers
+/// of an unrecognized version surface `PersistError::UnsupportedVersion`.
 pub const FORMAT_VERSION: u32 = 1;
 
 /// Magic bytes at the head of every WAL segment file.
@@ -38,14 +31,10 @@ impl RecordType {
         match b {
             0x01 => Ok(RecordType::Event),
             0x02 => Ok(RecordType::RegistryBump),
-            // Bytes 0x03 / 0x04 / 0x05 (formerly the Phase 11.5 table-write
-            // and stream-retract record types) fall through to the
-            // existing `UnknownRecordType` arm per Plan 12.7-05 (CONTEXT
-            // D-02): v0 ships events-only and there is no table-specific
-            // error code in persistence — the generic variant naturally
-            // covers the deleted discriminants. Pre-12.7 dev WALs that
-            // carried these bytes surface the standard "unknown
-            // record_type" error on recovery.
+            // Bytes 0x03 / 0x04 / 0x05 (formerly table / retract record
+            // types, removed per the events-only invariant) surface as
+            // `UnknownRecordType` — the generic variant intentionally
+            // covers any deleted discriminant.
             other => Err(PersistError::UnknownRecordType(other)),
         }
     }
@@ -57,7 +46,7 @@ impl RecordType {
 
 /// Encode a record into `out` (append).
 pub fn encode_record(rec: &WalRecord, out: &mut Vec<u8>) {
-    // Build the body (lsn || type || payload) first so we can CRC it.
+    // CRC covers `[lsn || record_type || payload]`; build that span first.
     let body_len = 8 + 1 + rec.payload.len();
     let mut body = Vec::with_capacity(body_len);
     body.extend_from_slice(&rec.lsn.to_le_bytes());
@@ -65,7 +54,7 @@ pub fn encode_record(rec: &WalRecord, out: &mut Vec<u8>) {
     body.extend_from_slice(&rec.payload);
 
     let crc = crc32c::crc32c(&body);
-    let length: u32 = (4 + body_len) as u32; // crc(4) + body
+    let length: u32 = (4 + body_len) as u32;
 
     out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
@@ -85,16 +74,18 @@ pub fn decode_record<R: Read>(
     r: &mut R,
     current_offset: u64,
 ) -> Result<Option<WalRecord>, PersistError> {
-    // Read length prefix. Partial reads (0..4 bytes) → clean EOF / torn tail.
+    // A partial length-prefix read (0..4 bytes) is a torn tail, not corruption —
+    // the writer was interrupted between buffer flushes. Treat as clean EOF.
     let mut len_buf = [0u8; 4];
     match read_exact_or_eof(r, &mut len_buf)? {
         ReadResult::Eof => return Ok(None),
-        ReadResult::Partial => return Ok(None), // torn
+        ReadResult::Partial => return Ok(None),
         ReadResult::Full => {}
     }
     let length = u32::from_le_bytes(len_buf) as usize;
 
-    // Read the body. We need at least 4 (crc) + 8 (lsn) + 1 (type) = 13 bytes.
+    // Minimum body = crc(4) + lsn(8) + type(1) = 13 bytes; anything shorter
+    // is structural corruption, not a torn tail.
     if length < 13 {
         return Err(PersistError::TornRecord {
             offset: current_offset,
@@ -104,7 +95,8 @@ pub fn decode_record<R: Read>(
 
     let mut body = vec![0u8; length];
     match read_exact_or_eof(r, &mut body)? {
-        ReadResult::Eof | ReadResult::Partial => return Ok(None), // torn tail
+        // Short body after a valid length prefix is also a torn tail.
+        ReadResult::Eof | ReadResult::Partial => return Ok(None),
         ReadResult::Full => {}
     }
 
@@ -119,7 +111,6 @@ pub fn decode_record<R: Read>(
         });
     }
 
-    // Parse body: lsn(8) + type(1) + payload
     let lsn = u64::from_le_bytes(crc_payload[0..8].try_into().expect("8 bytes from slice"));
     let record_type = RecordType::from_u8(crc_payload[8])?;
     let payload = crc_payload[9..].to_vec();
@@ -161,14 +152,6 @@ mod tests {
     use super::*;
     use crate::{RecordType, WalRecord};
 
-    /// Plan 12.7-05 — round-trip the v0 events-only record types through
-    /// the WAL codec. Verifies that `Event` (0x01) and `RegistryBump` (0x02)
-    /// — the two surviving discriminants after the record-type strip —
-    /// encode → decode losslessly, and that previously-valid (pre-12.7)
-    /// bytes 0x03 / 0x04 / 0x05 (which carried the Phase 11.5 table-write
-    /// and stream-retract record types) now surface as `UnknownRecordType`
-    /// per CONTEXT D-02. (No new table-specific error code; existing
-    /// generic variant suffices.)
     #[test]
     fn surviving_record_types_round_trip_through_codec() {
         for (byte, rt) in [
@@ -191,10 +174,9 @@ mod tests {
             assert_eq!(back.payload, b"hello");
         }
 
-        // Plan 12.7-05 (CONTEXT D-02): bytes 0x03 / 0x04 / 0x05 (formerly
-        // the Phase 11.5 table-write and stream-retract record types) and
-        // any other unknown discriminant surface cleanly as the existing
-        // UnknownRecordType variant.
+        // Bytes 0x03 / 0x04 / 0x05 (formerly table / retract record types)
+        // and any other unknown discriminant must surface as
+        // `UnknownRecordType` — the events-only invariant.
         for b in [0x03u8, 0x04, 0x05, 0x06, 0xff] {
             assert!(matches!(
                 RecordType::from_u8(b),

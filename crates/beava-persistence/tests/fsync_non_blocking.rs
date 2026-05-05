@@ -1,21 +1,16 @@
-//! Phase 13.1: Regression test for the inline-fsync runtime-stall bug.
+//! Regression test for the inline-fsync runtime-stall bug.
 //!
-//! Background: the Phase 6.1 `Periodic` durability mode is supposed to ACK an
-//! `append_event_with_mode` call as soon as the in-memory append + LSN
-//! assignment has happened, with the actual `sync_data()` syscall happening
-//! lazily on the background timer. On the production `current_thread` tokio
-//! runtime, however, the worker_loop's `fsync_batch` was calling
-//! `writer.sync_data()` inline. macOS `F_FULLSYNC` blocks for ~7 ms and the
-//! single-threaded tokio runtime can't make progress on any OTHER task while
-//! that syscall is in-flight — including the HTTP push handler that's about
-//! to ACK the next request.
+//! Contract: while the fsync worker is mid-fsync, other tasks on the same
+//! `current_thread` runtime MUST continue to make progress. The bug being
+//! guarded was an inline `writer.sync_data()` inside `fsync_batch`; on
+//! macOS, `F_FULLSYNC` blocks ~7 ms, which on a single-threaded runtime
+//! prevented the HTTP push handler from ACKing the next request. The fix
+//! moved the syscall onto a `spawn_blocking` thread.
 //!
-//! Contract enforced by this test: while the fsync worker is mid-fsync, other
-//! tasks on the same `current_thread` runtime MUST continue to make
-//! progress. We measure this by spawning a "ticker" task that increments a
-//! counter every millisecond, then triggering many fsyncs over a short window
-//! and asserting the counter advanced approximately as often as wall-clock
-//! milliseconds elapsed.
+//! The test spawns a "ticker" that increments a counter every millisecond,
+//! triggers many fsyncs over a short window, and asserts the counter
+//! advanced roughly as often as wall-clock milliseconds elapsed — if the
+//! runtime stalls, the ticker can't tick.
 
 use beava_persistence::{SyncMode, WalSink, WalSinkConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
