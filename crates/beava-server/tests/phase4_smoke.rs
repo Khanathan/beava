@@ -302,8 +302,34 @@ async fn sc2_with_columns_adds_derived_field_visible_downstream() {
     );
 
     // Register downstream OnlyBig that filters on is_big — proves field-ref resolution.
+    //
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4 (lockstep
+    // alignment exemption): post-13.4 the REGISTER call REPLACES the prior
+    // node set; sending a payload that lists ONLY OnlyBig would drop
+    // Transaction + TaggedTx and trigger 409 force_required. The test's
+    // intent is "additive add OnlyBig downstream" — which the post-13.4
+    // contract supports cleanly when all prior nodes are re-listed.
     let downstream = json!({
         "nodes": [
+            {
+                "kind": "event",
+                "name": "Transaction",
+                "schema": {
+                    "fields": {"event_time": "i64", "amount": "f64"},
+                    "optional_fields": []
+                },
+            },
+            {
+                "kind": "derivation",
+                "name": "TaggedTx",
+                "output_kind": "event",
+                "upstreams": ["Transaction"],
+                "ops": [{"op": "with_columns", "exprs": {"is_big": "(amount > 500)"}}],
+                "schema": {
+                    "fields": {"event_time": "i64", "amount": "f64", "is_big": "bool"},
+                    "optional_fields": []
+                }
+            },
             {
                 "kind": "derivation",
                 "name": "OnlyBig",
@@ -526,18 +552,37 @@ async fn sc5_malformed_predicate_returns_error_frame_tcp() {
     assert_eq!(op, OP_REGISTER);
 
     // Register derivation with bad filter expression.
+    //
+    // Phase 13.5.4 alignment per CLAUDE.md §TDD Discipline item #4 (lockstep
+    // alignment exemption): post-13.4 each REGISTER call REPLACES the prior
+    // node set; sending only the Bad node would drop Transaction and trigger
+    // a destructive `agg_removal` diff (force_required) BEFORE the expression
+    // compiler runs. The test's intent is "malformed expression returns
+    // invalid_expression" — preserved by including Transaction in the second
+    // payload so the diff is purely additive (Bad is the only new node) and
+    // expression compilation runs and fires the expected error.
     let bad_deriv = json!({
-        "nodes": [{
-            "kind": "derivation",
-            "name": "Bad",
-            "output_kind": "event",
-            "upstreams": ["Transaction"],
-            "ops": [{"op": "filter", "expr": "(amount > "}],
-            "schema": {
-                "fields": {"event_time": "i64", "amount": "f64"},
-                "optional_fields": []
+        "nodes": [
+            {
+                "kind": "event",
+                "name": "Transaction",
+                "schema": {
+                    "fields": {"event_time": "i64", "amount": "f64"},
+                    "optional_fields": []
+                },
+            },
+            {
+                "kind": "derivation",
+                "name": "Bad",
+                "output_kind": "event",
+                "upstreams": ["Transaction"],
+                "ops": [{"op": "filter", "expr": "(amount > "}],
+                "schema": {
+                    "fields": {"event_time": "i64", "amount": "f64"},
+                    "optional_fields": []
+                }
             }
-        }]
+        ]
     });
     let (op, tcp_body) = c.register_json(bad_deriv).await.expect("register bad");
     assert_eq!(
