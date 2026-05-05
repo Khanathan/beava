@@ -46,6 +46,33 @@ pub struct ServerV18Config {
     /// `BEAVA_TCP_MAX_FRAME_BYTES` env-var per-frame (which leaked across
     /// parallel TestServers and broke pipelined-register determinism).
     pub tcp_max_frame_bytes: u32,
+    /// Phase 13.5.3: per-server WAL ring buffer count override. `None` = use
+    /// `WalConfig::DEFAULT_BUFFERS` (4); `Some(n)` clamps to `[BUFFERS_MIN,
+    /// BUFFERS_MAX]`. Production reads `BEAVA_WAL_BUFFERS` env at boot via
+    /// `from_env()`; tests pass explicit values via `TestServerBuilder` to
+    /// avoid process-global env contamination.
+    pub wal_buffers: Option<usize>,
+    /// Phase 13.5.3: per-server WAL ring buffer size (MiB) override. `None` =
+    /// use `WalConfig::DEFAULT_BUFFER_SIZE_MB` (32); `Some(mb)` clamps to
+    /// `[BUFFER_SIZE_MB_MIN, BUFFER_SIZE_MB_MAX]`. Production reads
+    /// `BEAVA_WAL_BUFFER_SIZE_MB` env at boot via `from_env()`.
+    pub wal_buffer_size_mb: Option<usize>,
+    /// Phase 13.5.3: per-server WAL writer-thread tick interval (ms)
+    /// override. `None` = use `WalConfig::DEFAULT_TICK_MS` (20); `Some(ms)`
+    /// clamps to `[TICK_MS_MIN, TICK_MS_MAX]`. Production reads
+    /// `BEAVA_WAL_TICK_MS` env at boot via `from_env()`.
+    pub wal_tick_ms: Option<u64>,
+    /// Phase 13.5.3: per-server IoPool worker thread count override.
+    /// `None` = use `default_io_threads()` heuristic (max(2,
+    /// available_parallelism / 4)); `Some(n)` clamps to `n.max(1)`.
+    /// Production reads `BEAVA_IO_THREADS` env at boot via `from_env()`.
+    pub io_threads: Option<usize>,
+    /// Phase 13.5.3: per-server memory-governance enforcement override.
+    /// `None` = default ON (Plan 12.8-06 D-03); `Some(false)` = explicit
+    /// escape hatch (the `BEAVA_MEMORY_GOV_ENFORCE=0` legacy semantic);
+    /// `Some(true)` = explicit ON. Production reads `BEAVA_MEMORY_GOV_ENFORCE`
+    /// env at boot via `from_env()`.
+    pub memory_governance_enforce: Option<bool>,
 }
 
 impl Default for ServerV18Config {
@@ -54,7 +81,36 @@ impl Default for ServerV18Config {
             persistence: Persistence::default(),
             test_mode: false,
             tcp_max_frame_bytes: 4 * 1024 * 1024,
+            wal_buffers: None,
+            wal_buffer_size_mb: None,
+            wal_tick_ms: None,
+            io_threads: None,
+            memory_governance_enforce: None,
         }
+    }
+}
+
+impl ServerV18Config {
+    /// Phase 13.5.3 (D-04 mitigate): production env-var resolution — reads
+    /// `BEAVA_*` env vars at config-load time and stamps them into the
+    /// config struct. This is the SOLE legitimate env-read site for the five
+    /// per-server tunables (wal_buffers / wal_buffer_size_mb / wal_tick_ms /
+    /// io_threads / test_mode / memory_governance_enforce); hot-path code
+    /// reads from struct fields, never from process env.
+    ///
+    /// Tests must NOT call this — use `TestServerBuilder` builder methods to
+    /// pass explicit values, mirroring the `tcp_max_frame_bytes` plumbing
+    /// pattern from commit `acac4254`.
+    ///
+    /// The architectural tripwire `phase13_5_3_no_env_var_pokes_in_tests.rs`
+    /// enforces test-side env hygiene.
+    pub fn from_env() -> Self {
+        // Phase 13.5.3 RED stub — `unimplemented!()` so the unit tests panic
+        // at runtime and the suite is observably RED before the GREEN commit.
+        unimplemented!(
+            "Phase 13.5.3 — ServerV18Config::from_env() will land in the GREEN commit; \
+             see .planning/quick/260505-bn7-workspace-test-determinism-phase-13-5-3/260505-bn7-PLAN.md"
+        )
     }
 }
 
@@ -2693,5 +2749,273 @@ mod tests {
             payload_str.contains("key_not_found"),
             "payload must carry error code, got: {payload_str}"
         );
+    }
+}
+
+/// Phase 13.5.3 — env-var plumbing unit tests.
+///
+/// These tests cover `ServerV18Config::from_env()` + `WalConfig::resolve()`
+/// — the production env-read site + the override-driven WAL config resolver.
+/// Lives in `src/` (not `tests/`) so the architectural tripwire
+/// `phase13_5_3_no_env_var_pokes_in_tests.rs` doesn't false-positive on the
+/// legitimate env mutation these tests need to exercise.
+///
+/// Tests inherit the env-mutex pattern from the original
+/// `crates/beava-server/tests/wal_env_var_tunables.rs` (deleted in the
+/// GREEN commit) — `std::env::*` is process-global, so we serialize via a
+/// std::sync::Mutex. `#[test]` (sync) is used; the from_env() / resolve()
+/// surface is sync.
+#[cfg(test)]
+mod env_var_plumbing_tests {
+    use super::*;
+    use crate::wal_config::{WalConfig, WalConfigOverrides};
+
+    /// Process-global env mutex. Required because `std::env::*` is
+    /// process-global; tests in this module set/clear env vars and would
+    /// race each other (and any other tests in this binary that read the
+    /// same env vars during cargo's --test-threads N parallelism) without
+    /// it.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    const ALL_VARS: &[&str] = &[
+        "BEAVA_WAL_BUFFERS",
+        "BEAVA_WAL_BUFFER_SIZE_MB",
+        "BEAVA_WAL_TICK_MS",
+        "BEAVA_IO_THREADS",
+        "BEAVA_TEST_MODE",
+        "BEAVA_MEMORY_GOV_ENFORCE",
+    ];
+
+    fn clear_env() {
+        for v in ALL_VARS {
+            std::env::remove_var(v);
+        }
+    }
+
+    /// Test 1: `Default::default()` returns all None / false for the new
+    /// override fields + existing tcp_max_frame_bytes default.
+    #[test]
+    fn test_default_returns_all_none_overrides() {
+        let cfg = ServerV18Config::default();
+        assert_eq!(cfg.wal_buffers, None, "default wal_buffers must be None");
+        assert_eq!(
+            cfg.wal_buffer_size_mb, None,
+            "default wal_buffer_size_mb must be None"
+        );
+        assert_eq!(cfg.wal_tick_ms, None, "default wal_tick_ms must be None");
+        assert_eq!(cfg.io_threads, None, "default io_threads must be None");
+        assert!(!cfg.test_mode, "default test_mode must be false");
+        assert_eq!(
+            cfg.memory_governance_enforce, None,
+            "default memory_governance_enforce must be None"
+        );
+    }
+
+    /// Test 2: `from_env()` with no env vars set returns None / false for
+    /// the new fields.
+    #[test]
+    fn test_from_env_unset_returns_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let cfg = ServerV18Config::from_env();
+        assert_eq!(cfg.wal_buffers, None);
+        assert_eq!(cfg.wal_buffer_size_mb, None);
+        assert_eq!(cfg.wal_tick_ms, None);
+        assert_eq!(cfg.io_threads, None);
+        assert!(!cfg.test_mode);
+        assert_eq!(cfg.memory_governance_enforce, None);
+    }
+
+    /// Test 3: `from_env()` reads all five env-var families and populates
+    /// fields. Test 4 below covers the BEAVA_TEST_MODE strict `== "1"`
+    /// semantic.
+    #[test]
+    fn test_from_env_populates_all_fields() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        std::env::set_var("BEAVA_WAL_BUFFERS", "8");
+        std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "64");
+        std::env::set_var("BEAVA_WAL_TICK_MS", "100");
+        std::env::set_var("BEAVA_IO_THREADS", "4");
+        std::env::set_var("BEAVA_TEST_MODE", "1");
+        std::env::set_var("BEAVA_MEMORY_GOV_ENFORCE", "0");
+
+        let cfg = ServerV18Config::from_env();
+        clear_env();
+
+        assert_eq!(cfg.wal_buffers, Some(8));
+        assert_eq!(cfg.wal_buffer_size_mb, Some(64));
+        assert_eq!(cfg.wal_tick_ms, Some(100));
+        assert_eq!(cfg.io_threads, Some(4));
+        assert!(cfg.test_mode, "BEAVA_TEST_MODE=1 must enable test_mode");
+        assert_eq!(
+            cfg.memory_governance_enforce,
+            Some(false),
+            "BEAVA_MEMORY_GOV_ENFORCE=0 must produce Some(false) (escape hatch)"
+        );
+    }
+
+    /// Test 4: `BEAVA_TEST_MODE` strict `== "1"` semantic per Phase 13.4
+    /// D-03 USER-LOCKED. Truthy strings like "true" do NOT enable.
+    #[test]
+    fn test_from_env_test_mode_strict_eq_one() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        std::env::set_var("BEAVA_TEST_MODE", "true");
+        let cfg_true = ServerV18Config::from_env();
+        clear_env();
+        assert!(
+            !cfg_true.test_mode,
+            "BEAVA_TEST_MODE=true (NOT `=1`) MUST NOT enable test_mode (D-03 strict check)"
+        );
+
+        std::env::set_var("BEAVA_TEST_MODE", "yes");
+        let cfg_yes = ServerV18Config::from_env();
+        clear_env();
+        assert!(
+            !cfg_yes.test_mode,
+            "BEAVA_TEST_MODE=yes (NOT `=1`) MUST NOT enable test_mode"
+        );
+
+        std::env::set_var("BEAVA_TEST_MODE", "0");
+        let cfg_zero = ServerV18Config::from_env();
+        clear_env();
+        assert!(
+            !cfg_zero.test_mode,
+            "BEAVA_TEST_MODE=0 MUST NOT enable test_mode"
+        );
+
+        std::env::set_var("BEAVA_TEST_MODE", "1");
+        let cfg_one = ServerV18Config::from_env();
+        clear_env();
+        assert!(
+            cfg_one.test_mode,
+            "BEAVA_TEST_MODE=1 MUST enable test_mode"
+        );
+    }
+
+    /// Test 5: `BEAVA_MEMORY_GOV_ENFORCE` truthy semantics — "0" → Some(false)
+    /// (escape hatch), unset → None (= default ON per Plan 12.8-06 D-03),
+    /// any other value → Some(true).
+    #[test]
+    fn test_from_env_memory_governance_enforce_semantics() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        let cfg_unset = ServerV18Config::from_env();
+        assert_eq!(
+            cfg_unset.memory_governance_enforce, None,
+            "unset BEAVA_MEMORY_GOV_ENFORCE must be None (default ON)"
+        );
+
+        std::env::set_var("BEAVA_MEMORY_GOV_ENFORCE", "0");
+        let cfg_zero = ServerV18Config::from_env();
+        clear_env();
+        assert_eq!(cfg_zero.memory_governance_enforce, Some(false));
+
+        std::env::set_var("BEAVA_MEMORY_GOV_ENFORCE", "1");
+        let cfg_one = ServerV18Config::from_env();
+        clear_env();
+        assert_eq!(cfg_one.memory_governance_enforce, Some(true));
+
+        std::env::set_var("BEAVA_MEMORY_GOV_ENFORCE", "anything");
+        let cfg_other = ServerV18Config::from_env();
+        clear_env();
+        assert_eq!(
+            cfg_other.memory_governance_enforce,
+            Some(true),
+            "any non-\"0\" value should produce Some(true) (preserves Plan 12.8-06 default-ON)"
+        );
+    }
+
+    /// Test 6: `from_env()` clamps WAL fields to their documented ranges.
+    /// Mirrors the legacy `wal_env_var_tunables::test_clamp_ranges_reject_oom_typos`.
+    #[test]
+    fn test_from_env_clamp_ranges_reject_oom_typos() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // High side
+        clear_env();
+        std::env::set_var("BEAVA_WAL_BUFFERS", "99999");
+        std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "10000");
+        std::env::set_var("BEAVA_WAL_TICK_MS", "99999");
+        let cfg = ServerV18Config::from_env();
+        clear_env();
+        assert_eq!(
+            cfg.wal_buffers,
+            Some(WalConfig::BUFFERS_MAX),
+            "buffers must clamp to <= {} (got {:?})",
+            WalConfig::BUFFERS_MAX,
+            cfg.wal_buffers
+        );
+        assert_eq!(
+            cfg.wal_buffer_size_mb,
+            Some(WalConfig::BUFFER_SIZE_MB_MAX),
+            "buffer_size_mb must clamp to <= {} (got {:?})",
+            WalConfig::BUFFER_SIZE_MB_MAX,
+            cfg.wal_buffer_size_mb
+        );
+        assert_eq!(
+            cfg.wal_tick_ms,
+            Some(WalConfig::TICK_MS_MAX),
+            "tick_ms must clamp to <= {} (got {:?})",
+            WalConfig::TICK_MS_MAX,
+            cfg.wal_tick_ms
+        );
+
+        // Low side
+        clear_env();
+        std::env::set_var("BEAVA_WAL_BUFFERS", "0");
+        std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "0");
+        std::env::set_var("BEAVA_WAL_TICK_MS", "0");
+        let cfg = ServerV18Config::from_env();
+        clear_env();
+        assert_eq!(cfg.wal_buffers, Some(WalConfig::BUFFERS_MIN));
+        assert_eq!(cfg.wal_buffer_size_mb, Some(WalConfig::BUFFER_SIZE_MB_MIN));
+        assert_eq!(cfg.wal_tick_ms, Some(WalConfig::TICK_MS_MIN));
+    }
+
+    /// Test 7: `WalConfig::resolve(WalConfigOverrides)` honors explicit
+    /// values WITHOUT consulting any env var. Sets a poisonous env in the
+    /// process, calls resolve with overrides, asserts the override wins.
+    #[test]
+    fn test_wal_config_resolve_overrides_win_over_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        std::env::set_var("BEAVA_WAL_BUFFERS", "99999");
+        std::env::set_var("BEAVA_WAL_BUFFER_SIZE_MB", "99999");
+        std::env::set_var("BEAVA_WAL_TICK_MS", "99999");
+
+        let cfg = WalConfig::resolve(WalConfigOverrides {
+            buffers: Some(8),
+            buffer_size_mb: Some(64),
+            tick_ms: Some(100),
+        });
+        clear_env();
+
+        assert_eq!(
+            cfg.buffers, 8,
+            "explicit override must win — env=99999 ignored"
+        );
+        assert_eq!(cfg.buffer_size_mb, 64);
+        assert_eq!(cfg.tick_ms, 100);
+    }
+
+    /// Test 8: `WalConfig::resolve(WalConfigOverrides::default())` returns
+    /// the documented defaults (4 × 32 MiB tick=20ms) WITHOUT consulting env.
+    #[test]
+    fn test_wal_config_resolve_none_returns_defaults_no_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        clear_env();
+        std::env::set_var("BEAVA_WAL_BUFFERS", "99999");
+
+        let cfg = WalConfig::resolve(WalConfigOverrides::default());
+        clear_env();
+
+        assert_eq!(
+            cfg.buffers,
+            WalConfig::DEFAULT_BUFFERS,
+            "None override must return DEFAULT_BUFFERS, env IGNORED"
+        );
+        assert_eq!(cfg.buffer_size_mb, WalConfig::DEFAULT_BUFFER_SIZE_MB);
+        assert_eq!(cfg.tick_ms, WalConfig::DEFAULT_TICK_MS);
     }
 }

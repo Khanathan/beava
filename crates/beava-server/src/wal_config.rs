@@ -75,6 +75,107 @@ impl WalConfig {
             tick_ms,
         }
     }
+
+    /// Phase 13.5.3: resolve a `WalConfig` from explicit overrides + defaults
+    /// — no env-var consultation. `None` fields fall back to the documented
+    /// `DEFAULT_*` constants; `Some(v)` is clamped to the documented
+    /// `[*_MIN, *_MAX]` ranges (with WARN log on clamp). Replaces the
+    /// `resolve_from_env()` env-read on the hot path; `from_env()` resolution
+    /// happens once in `ServerV18Config::from_env()` at production boot.
+    pub fn resolve(overrides: WalConfigOverrides) -> Self {
+        let buffers = clamp_usize_with_warn(
+            overrides.buffers,
+            "wal_buffers",
+            Self::DEFAULT_BUFFERS,
+            Self::BUFFERS_MIN,
+            Self::BUFFERS_MAX,
+        );
+        let buffer_size_mb = clamp_usize_with_warn(
+            overrides.buffer_size_mb,
+            "wal_buffer_size_mb",
+            Self::DEFAULT_BUFFER_SIZE_MB,
+            Self::BUFFER_SIZE_MB_MIN,
+            Self::BUFFER_SIZE_MB_MAX,
+        );
+        let tick_ms = clamp_u64_with_warn(
+            overrides.tick_ms,
+            "wal_tick_ms",
+            Self::DEFAULT_TICK_MS,
+            Self::TICK_MS_MIN,
+            Self::TICK_MS_MAX,
+        );
+        WalConfig {
+            buffers,
+            buffer_size_mb,
+            tick_ms,
+        }
+    }
+}
+
+/// Phase 13.5.3: explicit override carrier passed by `ServerV18Config::from_env()`
+/// (production) or `TestServerBuilder` (tests). All fields `Option`: `None`
+/// = use `WalConfig::DEFAULT_*`, `Some(v)` = clamp into safe range.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WalConfigOverrides {
+    pub buffers: Option<usize>,
+    pub buffer_size_mb: Option<usize>,
+    pub tick_ms: Option<u64>,
+}
+
+fn clamp_usize_with_warn(
+    override_: Option<usize>,
+    name: &str,
+    default: usize,
+    lo: usize,
+    hi: usize,
+) -> usize {
+    match override_ {
+        Some(v) => {
+            let clamped = v.clamp(lo, hi);
+            if clamped != v {
+                tracing::warn!(
+                    target: "beava.wal",
+                    kind = "wal.config.clamp",
+                    field = %name,
+                    requested = v,
+                    clamped = clamped,
+                    range_lo = lo,
+                    range_hi = hi,
+                    "WAL config override clamped to safe range"
+                );
+            }
+            clamped
+        }
+        None => default,
+    }
+}
+
+fn clamp_u64_with_warn(
+    override_: Option<u64>,
+    name: &str,
+    default: u64,
+    lo: u64,
+    hi: u64,
+) -> u64 {
+    match override_ {
+        Some(v) => {
+            let clamped = v.clamp(lo, hi);
+            if clamped != v {
+                tracing::warn!(
+                    target: "beava.wal",
+                    kind = "wal.config.clamp",
+                    field = %name,
+                    requested = v,
+                    clamped = clamped,
+                    range_lo = lo,
+                    range_hi = hi,
+                    "WAL config override clamped to safe range"
+                );
+            }
+            clamped
+        }
+        None => default,
+    }
 }
 
 fn parse_clamp_usize(name: &str, default: usize, lo: usize, hi: usize) -> usize {
