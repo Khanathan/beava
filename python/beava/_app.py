@@ -579,7 +579,37 @@ class App:
             dry_run: If True, server validates and returns a categorized
                 diff payload but does not commit. Implies dry_run=True
                 response shape per docs/error-codes.md.
+
+        Raises:
+            RegistrationError: If any descriptor is an ``EventDerivation``
+                instance (a raw chain expression). Per Phase 13.5.2 D-01,
+                chain expressions must be wrapped in ``@bv.event def F(...)``
+                before being registered.
         """
+        # Phase 13.5.2 D-01 (USER-LOCKED): reject raw EventDerivation instances
+        # at register-time with a sharp client-side error pointing at the
+        # canonical @bv.event def rewrite. Local imports to avoid a circular
+        # import at module load (_app ← _events ← _col).
+        from beava._errors import RegistrationError
+        from beava._events import EventDerivation
+
+        for i, d in enumerate(descriptors):
+            if isinstance(d, EventDerivation) and not getattr(
+                d, "_is_bv_event_function", False
+            ):
+                raise RegistrationError(
+                    code="invalid_descriptor",
+                    path=f"descriptors[{i}]",
+                    message=(
+                        f"argument {i} is an EventDerivation instance (a raw chain). "
+                        f"Wrap the chain in @bv.event:\n"
+                        f"    @bv.event\n"
+                        f"    def Foo(click: Click):\n"
+                        f"        return click.with_columns(...)"
+                    ),
+                    errors=[],
+                )
+
         t = self._require_transport()
         payload = _to_register_json(descriptors, force=force, dry_run=dry_run)
         result: dict[str, Any] = t.send_register(payload)
