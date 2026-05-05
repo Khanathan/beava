@@ -1,18 +1,14 @@
-//! Hand-rolled mio-based event loop (Phase 18 Plan 01).
+//! Hand-rolled mio-based event loop.
 //!
-//! Mirrors Redis's `aeMain` / `aeProcessEvents` pattern (see 18-redis-research.md §1).
-//! Translation table entry #1 (18-rust-translation.md).
+//! Mirrors Redis's `aeMain` / `aeProcessEvents` pattern.
 //!
 //! # Architecture
 //!
 //! The `EventLoop` wraps `mio::Poll` and a `mio::Events` buffer. Callers:
 //!   1. Create the loop with `EventLoop::new()`.
-//!   2. Register listener sources (TCP + HTTP) via `register_listener()`.
+//!   2. Register listener sources (TCP + HTTP) via `register()`.
 //!   3. Drive the loop with `tick()` — one iteration of poll + event dispatch.
 //!      The server's main thread calls `tick()` in a `loop {}`.
-//!
-//! All per-tick work (WAL flush, I/O thread dispatch) will be added in
-//! subsequent tasks and plans. This file intentionally stays small.
 
 use std::time::Duration;
 use thiserror::Error;
@@ -33,9 +29,6 @@ pub enum EventLoopError {
 /// Owns a `mio::Poll` instance and an `Events` buffer. Each call to `tick()`
 /// blocks until at least one I/O event is ready (or the timeout expires), then
 /// returns the count of events fired.
-///
-/// Phase 18-01: basic scaffold only. I/O thread dispatch + before_sleep hooks
-/// added in 18-03/18-04.
 pub struct EventLoop {
     poll: mio::Poll,
     events: mio::Events,

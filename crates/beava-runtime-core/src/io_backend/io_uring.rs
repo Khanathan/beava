@@ -1,4 +1,4 @@
-//! IoUringBackend — Linux io_uring-based per-worker backend (Plan 18-05 Task 5.4).
+//! IoUringBackend — Linux io_uring-based per-worker backend.
 //!
 //! Linux only; compiled only when `--features io-uring` is passed.
 //! Uses the `io-uring` crate (pinned to `=0.6.4`) for submission/completion

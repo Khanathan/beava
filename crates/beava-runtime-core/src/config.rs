@@ -1,4 +1,4 @@
-//! Runtime I/O configuration (Plan 18-03).
+//! Runtime I/O configuration.
 //!
 //! `IoConfig` controls how many I/O threads the `IoPool` spawns. Setting
 //! `io_threads = 0` means reads are done inline on the apply thread (no pool).

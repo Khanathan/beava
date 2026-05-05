@@ -1,4 +1,4 @@
-//! 3-buffer state machine for lock-free WAL append — Phase 18-02 Task 2.2.
+//! 3-buffer state machine for lock-free WAL append.
 //!
 //! # Architecture
 //!
@@ -45,8 +45,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-// ─── Buffer state constants ───────────────────────────────────────────────────
-
 /// Apply thread is the sole writer.
 pub const BUF_STATE_ACTIVE: u8 = 0;
 /// Handed off to writer thread; apply must not touch.
@@ -55,8 +53,6 @@ pub const BUF_STATE_SEALED: u8 = 1;
 pub const BUF_STATE_FLUSHING: u8 = 2;
 /// Safe to reuse as the next active buffer.
 pub const BUF_STATE_FREE: u8 = 3;
-
-// ─── WalBuffer ───────────────────────────────────────────────────────────────
 
 /// A fixed-size byte buffer used for WAL records.
 ///
@@ -166,8 +162,6 @@ impl WalBuffer {
         self.state.store(BUF_STATE_FREE, Ordering::Release);
     }
 
-    // ─── Accessors ────────────────────────────────────────────────────────────
-
     /// Current write position (bytes used). Read-only after SEALED.
     #[inline]
     pub fn pos(&self) -> usize {
@@ -228,8 +222,6 @@ impl std::fmt::Debug for WalBuffer {
     }
 }
 
-// ─── WalBufferRing ────────────────────────────────────────────────────────────
-
 /// 3-buffer (or N-buffer) state machine for lock-free WAL append.
 ///
 /// Owns N `Arc<WalBuffer>` slots. The `active_idx` atomic identifies which
@@ -258,8 +250,8 @@ pub struct WalBufferRing {
     /// Shared LSN tracking.
     lsn: Arc<WalLsn>,
     /// Fraction of buffer capacity at which auto-seal triggers (default 0.80).
-    /// Used by the writer thread's tick logic (Task 2.3) to decide when to
-    /// force-seal an active buffer that is past the high-water mark.
+    /// Used by the writer thread's tick logic to decide when to force-seal
+    /// an active buffer that is past the high-water mark.
     #[allow(dead_code)]
     seal_threshold: f32,
 }
@@ -291,8 +283,6 @@ impl WalBufferRing {
             seal_threshold: 0.80,
         }
     }
-
-    // ─── Apply-thread API ─────────────────────────────────────────────────────
 
     /// Append `data` to the active buffer.
     ///
@@ -384,8 +374,6 @@ impl WalBufferRing {
         }
     }
 
-    // ─── Writer-thread API ────────────────────────────────────────────────────
-
     /// Pop the next sealed buffer from the queue, or `None` if empty.
     ///
     /// Called by the writer thread to get the next buffer to flush.
@@ -407,8 +395,6 @@ impl WalBufferRing {
         self.free_condvar.notify_all();
     }
 
-    // ─── Diagnostics ─────────────────────────────────────────────────────────
-
     /// Count buffers in each state. Returns `(active, free, sealed+flushing)`.
     ///
     /// Not atomic across all buffers — for diagnostics and tests only.
@@ -426,8 +412,6 @@ impl WalBufferRing {
         }
         (active, free, sealed)
     }
-
-    // ─── Private helpers ──────────────────────────────────────────────────────
 
     /// Seal the current active buffer and swap in a free one. Blocks on
     /// `free_condvar` if no free buffer is available (backpressure).

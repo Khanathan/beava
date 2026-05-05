@@ -1,15 +1,13 @@
-//! Plan 18-13: Cross-thread ring item type for the IoPool worker → apply
-//! thread channel.
+//! Cross-thread ring item type for the IoPool worker → apply thread channel.
 //!
-//! Replaces the per-tick `MioClient.parsed_requests` + `parsed_rows` Vec batch
-//! publish — events flow continuously through a `crossbeam_channel::bounded`
-//! channel rather than being collected into per-client Vecs and drained after
-//! a `join_all` spin barrier.
+//! Events flow continuously through a `crossbeam_channel::bounded` channel
+//! rather than being collected into per-client Vecs and drained after a
+//! `join_all` spin barrier.
 //!
 //! The channel primitive is `crossbeam-channel` (rather than `rtrb`) because
 //! `Sender` is `Send + Sync + Clone` — multiple IoPool workers can share one
 //! sender via `clone()` without thread-local hacks. ~80 ns send/recv overhead;
-//! adequate at our 1M EPS target (~1 µs/event budget).
+//! adequate at the 1M EPS target (~1 µs/event budget).
 
 use crate::wire_request::WireRequest;
 use beava_core::row::Row;
@@ -57,17 +55,15 @@ pub enum RingItem {
 pub enum ParseErrorKind {
     /// Wire-protocol framing error on the TCP path (generic).
     TcpFrame,
-    /// Plan 12.6-15: declared frame length exceeded the
-    /// `tcp_max_frame_bytes` limit. Carries `(declared, limit)` so the
-    /// apply path can frame `frame_too_large` with the precise limit
-    /// (criterion 7).
+    /// Declared frame length exceeded the `tcp_max_frame_bytes` limit.
+    /// Carries `(declared, limit)` so the apply path can frame
+    /// `frame_too_large` with the precise limit.
     TcpFrameTooLarge { declared: u32, limit: u32 },
     /// HTTP/1.1 protocol violation.
     HttpProtocol,
 }
 
-/// Plan 12-08 (D-B): batch-send extension for the apply → IO worker
-/// `write_rx` channel.
+/// Batch-send extension for the apply → IO worker `write_rx` channel.
 ///
 /// crossbeam_channel doesn't have a native `send_many`; we just send each
 /// item individually. The amortization comes from the CALLER firing the

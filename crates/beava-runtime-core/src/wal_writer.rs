@@ -1,4 +1,4 @@
-//! Dedicated writer + fsync thread — Phase 18-02 Task 2.3.
+//! Dedicated writer + fsync thread.
 //!
 //! # Role
 //!
@@ -17,8 +17,8 @@
 //!    `fdatasync(fd)` → `mark_synced` + Condvar notify → `return_to_free`.
 //!
 //! Sequential write+fsync per buffer (no pipelining in v0). If perf gates
-//! show fsync latency hides write throughput, split to two threads in Plan
-//! 18-05/18-06.
+//! show fsync latency hides write throughput, split to two threads in a
+//! follow-up.
 //!
 //! # WAL file
 //!
@@ -162,8 +162,6 @@ impl WalWriter {
     }
 }
 
-// ─── Writer loop ──────────────────────────────────────────────────────────────
-
 fn run_writer_loop(
     file: &mut File,
     ring: &WalBufferRing,
@@ -202,8 +200,8 @@ fn flush_sealed_buffers(file: &mut File, ring: &WalBufferRing, lsn: &WalLsn) {
 
         // write() to kernel page cache.
         if let Err(e) = file.write_all(bytes) {
-            // Log and continue — apply thread will detect WAL broken via
-            // synced watermark stalling (Plan 18-05 adds the WAL_BROKEN flag).
+            // Log and continue — apply thread detects a broken WAL via a
+            // stalled synced watermark.
             tracing::error!("WAL write error: {e}");
             ring.return_to_free(buf);
             continue;
@@ -226,8 +224,6 @@ fn flush_sealed_buffers(file: &mut File, ring: &WalBufferRing, lsn: &WalLsn) {
         ring.return_to_free(buf);
     }
 }
-
-// ─── Platform helpers ─────────────────────────────────────────────────────────
 
 /// Sync the file to durable storage.
 ///

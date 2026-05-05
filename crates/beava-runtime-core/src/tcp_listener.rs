@@ -1,15 +1,15 @@
-//! Framed TCP listener for Phase 18's hand-rolled event loop.
+//! Framed TCP listener for the hand-rolled event loop.
 //!
 //! Wraps `mio::net::TcpListener` and provides accept + frame-parse helpers.
-//! Wire format: `[u32 length BE][u16 op BE][u8 content_type][payload]`
-//! (Phase 2.5 framing, re-uses `beava_core::wire` codec).
+//! Wire format: `[u32 length BE][u16 op BE][u8 content_type][payload]`,
+//! delegating to the `beava_core::wire` codec.
 //!
 //! # Frame parser
 //!
-//! `parse_wire_request` re-uses the battle-tested `beava_core::wire::decode_frame`
-//! codec (Phase 2.5) and lifts the raw `Frame` into a typed `WireRequest`.
-//! A single recv() can deliver 0, 1, or many frames — the caller loops until
-//! `Ok(None)` (need more bytes) is returned.
+//! `parse_wire_request` calls `beava_core::wire::decode_frame` and lifts the
+//! raw `Frame` into a typed `WireRequest`. A single recv() can deliver 0, 1,
+//! or many frames — the caller loops until `Ok(None)` (need more bytes) is
+//! returned.
 
 use beava_core::wire::{
     decode_frame, CT_JSON, CT_MSGPACK, OP_BATCH_GET, OP_GET, OP_GET_MULTI, OP_MGET, OP_PING,
@@ -20,11 +20,11 @@ use std::net::SocketAddr;
 
 use crate::wire_request::WireRequest;
 
-/// A mio-backed TCP listener for the framed Phase 2.5 wire protocol.
+/// A mio-backed TCP listener for the framed wire protocol.
 ///
-/// Phase 18-01 scaffold: binds the listener, exposes `accept()` for the
-/// event loop to call when the listener token fires. Full client dispatch
-/// added in Task 1.2.
+/// Binds the listener and exposes `accept()` for the event loop to call
+/// when the listener token fires. Per-connection dispatch lives in the
+/// per-worker loop (`io_thread_worker.rs`).
 pub struct TcpListener {
     inner: mio::net::TcpListener,
     local_addr: SocketAddr,
@@ -70,13 +70,11 @@ impl TcpListener {
     }
 }
 
-// ─── Plan 18-10: Hand-rolled msgpack envelope scanner ────────────────────────
+// Hand-rolled msgpack envelope scanner.
 //
-// Skips the rmp_serde + serde_json::Value indirection used in Plan 18-09. The
-// envelope is a fixed `{event: str, body: any}` 2-key fixmap; we walk it
+// The envelope is a fixed `{event: str, body: any}` 2-key fixmap; we walk it
 // byte-by-byte with rmp::decode primitives and return zero-copy slices.
-//
-// Target (Apple M4): ≤80 ns/op. Plan 18-09's serde-driven path was 1,928 ns.
+// Target on M4: ≤80 ns/op (vs ~2 µs for a serde-driven path).
 
 /// Errors from `parse_msgpack_envelope`. Owned strings only on the cold error
 /// path — the happy path returns borrowed slices.
@@ -400,9 +398,6 @@ fn read_msgpack_str(payload: &[u8], pos: usize) -> Result<(&[u8], usize), Msgpac
 
 /// Parse a msgpack push envelope `{event: str, body: any}` into borrowed
 /// `(event_name, body_bytes)`. Zero-copy: both slices alias `payload`.
-///
-/// Plan 18-10 D-1 — replaces the rmp_serde::from_slice::<JsonValue> +
-/// rmp_serde::to_vec_named round-trip from Plan 18-09.
 pub fn parse_msgpack_envelope(payload: &[u8]) -> Result<(&str, &[u8]), MsgpackEnvelopeError> {
     if payload.is_empty() {
         return Err(MsgpackEnvelopeError::Truncated);
@@ -465,15 +460,14 @@ pub fn parse_msgpack_envelope(payload: &[u8]) -> Result<(&str, &[u8]), MsgpackEn
     ))
 }
 
-// ─── Plan 18-10: Hand-rolled JSON envelope scanner ────────────────────────────
+// Hand-rolled JSON envelope scanner.
 //
-// Plan 18-09's CT_JSON path used `serde_json::from_slice::<PushEnvelope>` to
-// decode the envelope into `PushEnvelope { event: String, body: JsonValue }`,
-// then re-serialised the body to canonical bytes. That was 583 ns/op.
-//
-// Plan 18-10 D-2 swaps to sonic-rs LazyValue: the envelope deserialise produces
-// borrowed `(&str, raw &str)` pointing into the payload; the body bytes are
-// already canonical (the original wire bytes, modulo whitespace). Target ≤150 ns.
+// A serde-driven path that decodes the envelope into `PushEnvelope { event,
+// body: JsonValue }` and then re-serialises the body costs ~580 ns/op. The
+// hand-rolled scanner walks key/value pairs and tracks string state + brace
+// depth for the body value range; body bytes are returned as a borrowed slice
+// of the original payload (already canonical modulo whitespace).
+// Target ≤150 ns/op.
 
 /// Errors from `parse_json_envelope`. Cold path only.
 #[derive(Debug)]
@@ -502,14 +496,11 @@ impl std::error::Error for JsonEnvelopeError {}
 /// `body` value — guaranteed to be a self-contained JSON value
 /// (object/array/string/number/bool/null) suitable for `sonic_rs::from_slice`.
 ///
-/// Plan 18-10 D-2 — replaces the serde_json::from_slice::<PushEnvelope> +
-/// serde_json::to_vec round-trip from Plan 18-09.
-///
 /// Implementation: hand-rolled brace-counting scanner over the byte stream.
-/// sonic-rs LazyValue with derive Deserialize was measured at ~380 ns/op on
-/// M4, well over the 150 ns target — driven by sonic-rs's full SIMD scan +
-/// LazyValue setup cost. The hand-rolled scanner walks key/value pairs and
-/// tracks string state + brace depth for the body value range.
+/// sonic-rs LazyValue with `#[derive(Deserialize)]` measured at ~380 ns/op on
+/// M4 — over the 150 ns target due to LazyValue setup + full SIMD scan. The
+/// hand-rolled scanner walks key/value pairs and tracks string state + brace
+/// depth for the body value range.
 #[inline]
 pub fn parse_json_envelope(payload: &[u8]) -> Result<(&str, &[u8]), JsonEnvelopeError> {
     // Skip optional leading whitespace, then the opening brace.
@@ -723,8 +714,6 @@ fn scan_balanced(
     ))
 }
 
-// ─── Frame parser ─────────────────────────────────────────────────────────────
-
 /// Attempt to parse one `WireRequest` from `buf`.
 ///
 /// Returns:
@@ -733,9 +722,9 @@ fn scan_balanced(
 /// - `Err(e)` — protocol violation (too-large / underflow); caller closes
 ///   the connection after sending an error response.
 ///
-/// Wraps `beava_core::wire::decode_frame` (Phase 2.5 codec) and lifts the
-/// raw `Frame` into a typed `WireRequest`. TCP wire envelope for OP_PUSH:
-/// payload = JSON `{"event": "<name>", "body": {...}}`
+/// Wraps `beava_core::wire::decode_frame` and lifts the raw `Frame` into a
+/// typed `WireRequest`. TCP wire envelope for OP_PUSH: payload =
+/// JSON `{"event": "<name>", "body": {...}}`.
 pub fn parse_wire_request(
     buf: &mut BytesMut,
     max_frame_bytes: u32,
@@ -747,10 +736,9 @@ pub fn parse_wire_request(
 
     let req = match frame.op {
         OP_PING => WireRequest::Ping,
-        // Plan 12.6-15: TCP register accepts CT_JSON only (matches legacy
-        // axum register handler `is_json_content_type`). Other content
-        // types surface as `unsupported_content_type` via ParseError —
-        // the apply-shard dispatcher classifies it as a TcpError.
+        // TCP register accepts CT_JSON only. Other content types surface as
+        // `unsupported_content_type` via ParseError — the apply-shard
+        // dispatcher classifies it as a TcpError.
         OP_REGISTER => match frame.content_type {
             CT_JSON => WireRequest::Register {
                 payload: frame.payload,
@@ -762,8 +750,8 @@ pub fn parse_wire_request(
         OP_PUSH => {
             match frame.content_type {
                 CT_JSON => {
-                    // Plan 18-10 D-2: sonic-rs LazyValue zero-copy envelope scan.
-                    // Body slice aliases frame.payload directly; no re-serialise.
+                    // Zero-copy envelope scan. Body slice aliases
+                    // frame.payload directly; no re-serialise.
                     match parse_json_envelope(&frame.payload) {
                         Ok((event_name, body_bytes)) => {
                             // Slice frame.payload to keep the Bytes refcounted view.
@@ -783,9 +771,9 @@ pub fn parse_wire_request(
                     }
                 }
                 CT_MSGPACK => {
-                    // Plan 18-10 D-1: hand-rolled scanner via rmp::decode primitives.
-                    // No serde, no JsonValue, no body re-encode — body slice aliases
-                    // frame.payload directly. Target ≤80 ns vs Plan 18-09's 1,928 ns.
+                    // Hand-rolled scanner via rmp::decode primitives. No serde,
+                    // no JsonValue, no body re-encode — body slice aliases
+                    // frame.payload directly.
                     match parse_msgpack_envelope(&frame.payload) {
                         Ok((event_name, body_bytes)) => {
                             // Bytes::from triggers a refcount-bump copy out of the
@@ -811,9 +799,9 @@ pub fn parse_wire_request(
                 },
             }
         }
-        // ─── Plan 12-07 Wave 2: TCP /get variants ──────────────────────────
-        // Body is opaque to the parser — dispatch (apply_shard) deserialises
-        // the JSON / MsgPack body into {feature, key} or {keys, features}.
+        // TCP /get variants — body is opaque to the parser; dispatch
+        // (apply_shard) deserialises the JSON / MsgPack body into
+        // {feature, key} or {keys, features}.
         OP_GET => match frame.content_type {
             CT_JSON | CT_MSGPACK => WireRequest::TcpGet {
                 body: frame.payload,
@@ -841,10 +829,10 @@ pub fn parse_wire_request(
                 reason: format!("unsupported content_type: {other:#04x}"),
             },
         },
-        // Plan 13.4-03: OP_BATCH_GET (0x0024) — heterogeneous batched read.
-        // Body shape `{"requests":[{"table","entity_id"}, ...]}` is opaque to
-        // the parser; dispatch (`apply_shard.rs::dispatch_batch_get_sync`)
-        // deserialises per body_format.
+        // OP_BATCH_GET (0x0024) — heterogeneous batched read. Body shape
+        // `{"requests":[{"table","entity_id"}, ...]}` is opaque to the parser;
+        // dispatch (`apply_shard.rs::dispatch_batch_get_sync`) deserialises
+        // per body_format.
         OP_BATCH_GET => match frame.content_type {
             CT_JSON | CT_MSGPACK => WireRequest::TcpBatchGet {
                 body: frame.payload,
@@ -854,9 +842,9 @@ pub fn parse_wire_request(
                 reason: format!("unsupported content_type: {other:#04x}"),
             },
         },
-        // Plan 13.4-08: OP_RESET (0x0040) — full state + registry clear,
-        // gated server-side on test_mode. Body is empty `{}`; the parser is
-        // body-shape-agnostic (dispatch tolerates any body for compat).
+        // OP_RESET (0x0040) — full state + registry clear, gated server-side
+        // on test_mode. Body is empty `{}`; the parser is body-shape-agnostic
+        // (dispatch tolerates any body for compat).
         OP_RESET => match frame.content_type {
             CT_JSON | CT_MSGPACK => WireRequest::TcpReset {
                 body: frame.payload,
@@ -944,10 +932,8 @@ mod tests {
         assert_eq!(buf.len(), 0);
     }
 
-    // ─── Plan 18-10 Task 10.1 — parse_msgpack_envelope hand-rolled scanner ────
-
-    /// Helper: build a msgpack envelope `{event: "<name>", body: <body_json>}`.
-    /// Round-trips through `rmp_serde` so the bytes are real msgpack the SDK
+    /// Build a msgpack envelope `{event: "<name>", body: <body_json>}`.
+    /// Round-trips through `rmp_serde` so the bytes match what the SDK
     /// produces.
     fn build_msgpack_envelope(event_name: &str, body: &serde_json::Value) -> Vec<u8> {
         use serde::Serialize;
@@ -1060,9 +1046,9 @@ mod tests {
 
     #[test]
     fn parse_msgpack_envelope_replaces_old_branch_in_parse_wire_request() {
-        // Backward compat: existing CT_MSGPACK frame parsing path still
-        // produces correct WireRequest::TcpPush — the implementation MUST
-        // route through the new hand-rolled path.
+        // CT_MSGPACK frame parsing path produces the correct
+        // WireRequest::TcpPush; the implementation routes through the
+        // hand-rolled scanner.
         use beava_core::wire::{encode_frame, Frame, CT_MSGPACK, OP_PUSH};
         let body_json = serde_json::json!({"amount": 99});
         let envelope_bytes = build_msgpack_envelope("Txn", &body_json);
@@ -1089,8 +1075,6 @@ mod tests {
             other => panic!("expected TcpPush, got {other:?}"),
         }
     }
-
-    // ─── Plan 18-10 Task 10.2 — parse_json_envelope via sonic-rs LazyValue ────
 
     #[test]
     fn parse_json_envelope_happy() {
@@ -1129,8 +1113,7 @@ mod tests {
     #[test]
     fn parse_json_envelope_string_with_braces_in_field() {
         // String fields that contain `{` or `}` must NOT confuse the brace
-        // counter in the hand-rolled fallback. (sonic-rs handles this for free
-        // via its scanner; the test guards against a regression to a naive impl.)
+        // counter — guards against a regression to a naive impl.
         let payload = br#"{"event":"Note","body":{"text":"hello {world} }} {{"}}"#;
         let (event, body_bytes) = parse_json_envelope(payload).expect("ok");
         assert_eq!(event, "Note");
@@ -1171,7 +1154,8 @@ mod tests {
 
     #[test]
     fn parse_json_envelope_replaces_old_branch_in_parse_wire_request() {
-        // Backward compat: CT_JSON frame still produces the right WireRequest.
+        // CT_JSON frame produces the right WireRequest via the hand-rolled
+        // scanner.
         let payload = br#"{"event":"Txn","body":{"amount":99}}"#;
         let mut buf = make_frame(OP_PUSH, Bytes::copy_from_slice(payload));
         let req = parse_wire_request(&mut buf, 4 * 1024 * 1024)
@@ -1191,8 +1175,6 @@ mod tests {
             other => panic!("expected TcpPush, got {other:?}"),
         }
     }
-
-    // ─── Plan 12-07 Wave 2 Task 2.a (RED): OP_GET / OP_MGET / OP_GET_MULTI parser ───
 
     /// Build a frame with explicit content_type. Mirrors `make_frame` but lets
     /// the caller specify CT_JSON / CT_MSGPACK / arbitrary byte for negative tests.

@@ -1,4 +1,4 @@
-//! Path dispatch for HTTP requests in the hand-rolled event loop (Phase 18).
+//! Path dispatch for HTTP requests in the hand-rolled event loop.
 //!
 //! Simple match-based dispatch on path prefix. No regex, no macros —
 //! direct pattern matching for zero overhead.
@@ -16,44 +16,40 @@ pub enum Route {
     Get,
     /// GET /get/:feature/:key — single feature read.
     GetSingle { feature: String, key: String },
-    /// POST /batch_get — heterogeneous batched feature read (Plan 13.4-03).
+    /// POST /batch_get — heterogeneous batched feature read.
     /// Body shape `{"requests":[{"table","entity_id"}, ...]}`.
     BatchGet,
     /// POST /register — pipeline registration.
     Register,
-    /// GET /health — liveness probe (Plan 12-07). Always 200 once listener
-    /// is up; no apply-thread dependency.
+    /// GET /health — liveness probe. Always 200 once listener is up; no
+    /// apply-thread dependency.
     Health,
-    /// GET /ready — readiness probe (Plan 12.6-01). Mirrors the legacy axum
-    /// `/ready` route on the data-plane port for back-compat with the ~20
-    /// test files that poll `ts.base_url()` for readiness.  The admin port
-    /// also exposes `/ready` (canonical, per `project_phase18_no_dual_runtime`).
+    /// GET /ready — readiness probe on the data-plane port. Mirrors the
+    /// admin sidecar's `/ready` for back-compat with foundation tests that
+    /// poll `ts.base_url()` for readiness.
     Ready,
-    /// GET /registry — registry snapshot dump (Plan 12.6-01). Mirrors the
-    /// legacy axum `/registry` dev endpoint on the data-plane port for
-    /// back-compat with phase4/5/11.5 tests that GET `/registry` to assert
-    /// schema propagation.
+    /// GET /registry — registry snapshot dump on the data-plane port.
+    /// Mirrors the admin sidecar's `/registry` for back-compat with tests
+    /// that GET `/registry` to assert schema propagation.
     Registry,
-    /// POST /ping — verb-style liveness probe (Plan 13.4-04). HTTP mirror of
-    /// the TCP `OP_PING (0x0000)` semantics. Distinct from `/health` (which is
-    /// the existing readiness/liveness probe consumed by `read_bench.py`).
-    /// Always returns 200 `{"status":"ok"}` once the listener is up.
+    /// POST /ping — verb-style liveness probe; HTTP mirror of the TCP
+    /// `OP_PING (0x0000)` semantics. Distinct from `/health` (the existing
+    /// readiness/liveness probe consumed by `read_bench.py`). Always
+    /// returns 200 `{"status":"ok"}` once the listener is up.
     Ping,
-    /// POST /push — verb-style fire-and-forget push (Plan 13.4-04). Event
-    /// name lives in the JSON body (`{"event":"Tx","data":{...}}`) instead
-    /// of the URL path. Legacy `POST /push/:event_name` (`Route::Push`)
-    /// stays alive per A-07 in the Phase 13.4 SCRATCH-PLANNER-NOTES so the
-    /// ~20 in-tree tests that hit the path-segment URL keep passing.
-    /// Phase 13.5/13.6/13.7 SDKs use the new verb-style route.
+    /// POST /push — verb-style fire-and-forget push. Event name lives in
+    /// the JSON body (`{"event":"Tx","data":{...}}`) instead of the URL
+    /// path. Legacy `POST /push/:event_name` (`Route::Push`) stays alive
+    /// for in-tree tests that hit the path-segment URL.
     PushVerb,
-    /// POST /push-sync — verb-style synchronous push (Plan 13.4-04). Event
-    /// name in body; awaits fsync. Mirrors `Route::PushVerb` on the sync
-    /// path. Legacy `POST /push-sync/:event_name` (`Route::PushSync`) stays
-    /// alive per A-07.
+    /// POST /push-sync — verb-style synchronous push. Event name in body;
+    /// awaits fsync. Mirrors `Route::PushVerb` on the sync path. Legacy
+    /// `POST /push-sync/:event_name` (`Route::PushSync`) stays alive for
+    /// back-compat.
     PushSyncVerb,
-    /// POST /reset — full state + registry clear (Plan 13.4-08 / D-03
-    /// USER-LOCKED). Gated on server `test_mode`; default boot returns
-    /// 403 + `reset_disabled_in_production`. Body is empty `{}`.
+    /// POST /reset — full state + registry clear. Gated on server
+    /// `test_mode`; default boot returns 403 + `reset_disabled_in_production`.
+    /// Body is empty `{}`.
     Reset,
     /// Path not in the table.
     NotFound,
@@ -70,10 +66,8 @@ pub struct Router;
 impl Router {
     /// Dispatch `(method, path)` into a `Route`.
     pub fn route(method: &str, path: &str) -> Route {
-        // Plan 12.6-14: strip query string for route matching. Path-segment
-        // routes (e.g. `/upsert/:table`, `/table/:table`) capture the
-        // trailing path component; the query string is parsed separately by
-        // the dispatcher when needed (`HttpTableGet` carries query=...).
+        // Strip query string for route matching; the dispatcher parses it
+        // separately when needed.
         let path = match path.split_once('?') {
             Some((p, _q)) => p,
             None => path,
@@ -111,12 +105,12 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
-        // Plan 13.4-04 — verb-style exact-match routes. MUST come AFTER the
-        // `/push/`, `/push-sync/`, and `/push-batch/` strip_prefix arms above
-        // so that `/push/Tx` keeps resolving to `Route::Push { event_name }`
-        // (legacy backward-compat per A-07). The strip_prefix branches require
-        // a trailing `/` followed by a non-empty segment; bare `/push` falls
-        // through to here and matches `path == "/push"`.
+        // Verb-style exact-match routes MUST come AFTER the `/push/`,
+        // `/push-sync/`, and `/push-batch/` strip_prefix arms above so that
+        // `/push/Tx` keeps resolving to `Route::Push { event_name }`
+        // (legacy backward-compat). The strip_prefix branches require a
+        // trailing `/` followed by a non-empty segment; bare `/push` falls
+        // through here and matches `path == "/push"`.
         // /push (verb-style — event name in JSON body)
         if path == "/push" {
             return if method == "POST" {
@@ -141,11 +135,11 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
-        // /reset (Plan 13.4-08 — verb-style HTTP mirror of TCP OP_RESET).
-        // POST-only — GET / PUT / DELETE return 405 (router-level method
-        // check). The dispatch arm enforces the test_mode gate; routing
-        // here is unconditional so non-test_mode servers still emit a
-        // structured 403 (rather than a 404 that hides the surface).
+        // /reset is verb-style HTTP mirror of TCP OP_RESET. POST-only —
+        // GET / PUT / DELETE return 405 (router-level method check). The
+        // dispatch arm enforces the test_mode gate; routing here is
+        // unconditional so non-test_mode servers still emit a structured
+        // 403 (rather than a 404 that hides the surface).
         if path == "/reset" {
             return if method == "POST" {
                 Route::Reset
@@ -175,7 +169,7 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
-        // /batch_get (exact) — Plan 13.4-03 heterogeneous batched read.
+        // /batch_get (exact) — heterogeneous batched read.
         if path == "/batch_get" {
             return if method == "POST" {
                 Route::BatchGet
@@ -191,7 +185,7 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
-        // /health (Plan 12-07) — liveness probe; read_bench.py startup contract.
+        // /health — liveness probe; read_bench.py startup contract.
         if path == "/health" {
             return if method == "GET" {
                 Route::Health
@@ -199,9 +193,9 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
-        // /ready (Plan 12.6-01) — readiness probe on the data-plane port.
-        // Mirrors the admin sidecar's /ready for back-compat with foundation /
-        // phase1 / phase7 tests that check readiness on `ts.base_url()`.
+        // /ready — readiness probe on the data-plane port. Mirrors the
+        // admin sidecar's /ready for back-compat with foundation tests
+        // that check readiness on `ts.base_url()`.
         if path == "/ready" {
             return if method == "GET" {
                 Route::Ready
@@ -209,9 +203,9 @@ impl Router {
                 Route::MethodNotAllowed
             };
         }
-        // /registry (Plan 12.6-01) — registry snapshot dump on the data-plane
-        // port. Mirrors the admin sidecar's /registry for back-compat with
-        // phase4/5/11.5 tests that GET /registry to assert schema propagation.
+        // /registry — registry snapshot dump on the data-plane port.
+        // Mirrors the admin sidecar's /registry for back-compat with tests
+        // that GET /registry to assert schema propagation.
         if path == "/registry" {
             return if method == "GET" {
                 Route::Registry
@@ -259,37 +253,31 @@ mod tests {
         assert_eq!(Router::route("POST", "/get"), Route::Get);
     }
 
-    /// Plan 13.4-03: POST /batch_get routes to Route::BatchGet.
     #[test]
     fn route_batch_get_post() {
         assert_eq!(Router::route("POST", "/batch_get"), Route::BatchGet);
     }
 
-    /// Plan 13.4-03: GET /batch_get is a method-not-allowed (POST-only).
     #[test]
     fn route_batch_get_wrong_method() {
         assert_eq!(Router::route("GET", "/batch_get"), Route::MethodNotAllowed);
     }
 
-    /// Plan 13.4-08: POST /reset routes to Route::Reset.
     #[test]
     fn route_reset_post() {
         assert_eq!(Router::route("POST", "/reset"), Route::Reset);
     }
 
-    /// Plan 13.4-08: GET /reset is a method-not-allowed (POST-only).
     #[test]
     fn route_reset_wrong_method() {
         assert_eq!(Router::route("GET", "/reset"), Route::MethodNotAllowed);
     }
 
-    /// Plan 12-07 — GET /health on the data-plane HTTP port routes to Route::Health.
     #[test]
     fn route_health_get() {
         assert_eq!(Router::route("GET", "/health"), Route::Health);
     }
 
-    /// Plan 12-07 — POST /health is a method-not-allowed (matches /get behavior).
     #[test]
     fn route_health_wrong_method() {
         assert_eq!(Router::route("POST", "/health"), Route::MethodNotAllowed);

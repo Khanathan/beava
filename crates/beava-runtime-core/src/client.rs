@@ -1,19 +1,14 @@
-//! Per-connection client state machine (Phase 18 Plan 01).
+//! Per-connection client state machine.
 //!
-//! Translation table entry #9–#12 (18-rust-translation.md):
+//! Modelled after Redis's per-client struct:
 //! - `querybuf` → `BytesMut` read buffer
 //! - `qb_pos` → tracked via `BytesMut::split_to` consume
 //! - `reply` → `VecDeque<bytes::Bytes>` response queue
 //!
-//! Phase 18-01: scaffold. I/O-thread-aware fields (per-thread assignment,
-//! atomic flags) added in Plan 18-03.
-//!
-//! # Plan 18-03 additions
-//!
-//! - `pending_parse_input: bool` — set by main when client became readable this tick.
-//! - `parsed_requests: Vec<WireRequest>` — populated by I/O thread; drained by apply.
-//! - `parse_error: Option<String>` — populated on malformed input; main closes connection.
-//! - `parse_client_from_buf()` — free function; called by I/O thread work items.
+//! I/O-thread coordination slots (`pending_parse_input`, `parsed_requests`,
+//! `parse_error`) are written by I/O workers and read by the main (apply)
+//! thread; correctness is guaranteed by the `IoPool::join_all()` Acquire
+//! barrier (see `io_pool.rs`).
 
 use bytes::{Bytes, BytesMut};
 use std::collections::VecDeque;
@@ -24,7 +19,7 @@ use crate::wire_request::WireRequest;
 
 /// Error produced when parsing bytes from a client's read buffer fails.
 ///
-/// On `ParseError`, the main thread closes the connection (Redis D-11 pattern).
+/// On `ParseError`, the main thread closes the connection (Redis-style).
 #[derive(Debug, Error)]
 pub enum ParseError {
     /// The byte stream did not match the expected wire protocol.
@@ -39,33 +34,17 @@ pub enum ParseError {
 /// from the front via `split_to`. Responses are enqueued as raw `WireResponse`
 /// values by the apply thread into `output_queue`, then serialized and drained
 /// by the I/O write phase via `write_buf` + `write_offset`.
-///
-/// # Plan 18-03 fields
-///
-/// `pending_parse_input`, `parsed_requests`, and `parse_error` are the
-/// I/O-thread coordination slots. They are written by the I/O worker
-/// and read by the main (apply) thread, with correctness guaranteed by the
-/// `IoPool::join_all()` Acquire barrier (see `io_pool.rs`).
-///
-/// # Plan 18-04 fields
-///
-/// `output_queue` — raw responses enqueued by apply (no serialization on apply).
-/// `write_buf`    — staging buffer; I/O thread serializes output_queue into here.
-/// `write_offset` — how many bytes of `write_buf` have been flushed so far.
-///                  Non-zero indicates a partial write; resume next tick.
 #[derive(Debug)]
 pub struct Client {
     /// Inbound data not yet parsed. Equivalent to Redis's `querybuf`.
     pub query_buf: BytesMut,
     /// Serialized response frames waiting to be written to the socket.
-    /// Translation table entry #11: `VecDeque<Bytes>`.
-    /// Retained for compatibility with Plan 18-01/02 callers; new code should
+    /// Retained for compatibility with legacy callers; new code should
     /// use `output_queue` instead.
     pub pending_responses: VecDeque<Bytes>,
     /// Current connection lifecycle state.
     pub state: ClientState,
 
-    // ── Plan 18-03: I/O thread coordination ─────────────────────────────────
     /// Set by main when this client became readable this event-loop tick.
     /// Cleared after the I/O worker finishes parsing.
     pub pending_parse_input: bool,
@@ -77,7 +56,6 @@ pub struct Client {
     /// Parse error, if any. When `Some`, main closes the connection.
     pub parse_error: Option<ParseError>,
 
-    // ── Plan 18-04: I/O write phase ──────────────────────────────────────────
     /// Raw (unserialised) responses enqueued by the apply thread.
     /// I/O workers drain this queue and serialize each item into `write_buf`.
     /// Apply MUST NOT call `serialize_into` — that is the I/O thread's job.
@@ -148,8 +126,6 @@ impl Client {
         !self.pending_responses.is_empty()
     }
 
-    // ── Plan 18-04: write phase helpers ──────────────────────────────────────
-
     /// Enqueue a raw `WireResponse` for the I/O write phase.
     ///
     /// Apply thread calls this instead of `push_response`. The I/O worker will
@@ -185,21 +161,18 @@ impl Default for Client {
     }
 }
 
-// ─── Parse helpers (Plan 18-03) ───────────────────────────────────────────────
-
 /// Parse one framed TCP request from `buf`.
 ///
-/// This is the function executed by I/O worker threads. It operates on a
-/// `BytesMut` owned by (or exclusively borrowed from) a single `Client` — no
-/// other thread touches the same buffer concurrently.
+/// Executed by I/O worker threads. Operates on a `BytesMut` owned by (or
+/// exclusively borrowed from) a single `Client` — no other thread touches
+/// the same buffer concurrently.
 ///
 /// Returns `Ok(Some(req))` on a complete frame, `Ok(None)` if more bytes are
 /// needed, or `Err(ParseError)` on a protocol violation.
 ///
-/// Used in Task 3.2 work items (I/O thread calls this on each ready client's
-/// buffer). The full `Client::parse_client` method (operating on
-/// `self.query_buf`) is in `impl Client` below; this free-function variant is
-/// used in tests where the buffer is passed directly.
+/// The full `Client::parse_pending` method (operating on `self.query_buf`)
+/// is in `impl Client` below; this free-function variant is used in tests
+/// where the buffer is passed directly.
 pub fn parse_client_from_buf(buf: &mut BytesMut) -> Result<Option<WireRequest>, ParseError> {
     use crate::tcp_listener::parse_wire_request;
 
@@ -211,8 +184,8 @@ impl Client {
     /// Parse all complete frames from `self.query_buf` and push them into
     /// `self.parsed_requests`. On protocol error, sets `self.parse_error`.
     ///
-    /// Called by the I/O worker thread work item (via `parse_client`). Returns
-    /// `true` if at least one frame was parsed.
+    /// Called by the I/O worker thread work item. Returns `true` if at
+    /// least one frame was parsed.
     pub fn parse_pending(&mut self) -> bool {
         use crate::tcp_listener::parse_wire_request;
 

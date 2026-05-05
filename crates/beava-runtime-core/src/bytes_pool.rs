@@ -1,44 +1,30 @@
-//! Plan 12-08 (D-C): per-thread BytesMut pool.
+//! Per-thread BytesMut pool.
 //!
 //! Each IO worker thread holds one `BytesMutPool` of pre-sized BytesMut
 //! buffers used by `WriteEncoder` closures to build response payloads
 //! without per-call `BytesMut::with_capacity(4096)` allocator hits.
-//!
-//! # Reclamation
-//!
-//! Wave 4.b wires the pool into `worker_main_loop`'s write_rx drain. Each
-//! encoder closure acquires a temporary buffer from the pool, builds the
-//! response, extends the per-client `write_buf` from it, then releases the
-//! pool buffer back. Eviction: pool grows past `cap` buffers → drop excess
-//! on push (ArrayQueue::push returns Err(value) when full; we drop).
 //!
 //! # Why a fixed-cap ArrayQueue and not a Vec
 //!
 //! `ArrayQueue::pop` and `push` are lock-free and ~30 ns. The pool is also
 //! `Clone` (an `Arc<ArrayQueue<_>>`), so it can be cheaply cloned into
 //! encoder closures captured-by-move. Real per-thread isolation is achieved
-//! by NOT sharing the same pool clone across worker threads — Wave 4.b
-//! constructs ONE pool inside each worker's `worker_main_loop`.
-//!
-//! # Performance gate
-//!
-//! `apply_loop/pool_acquire_release` criterion bench (Wave 5.a) measures
-//! the round-trip cost. Target: < 100 ns per (acquire + release).
+//! by NOT sharing the same pool clone across worker threads — each worker
+//! constructs ONE pool inside its main loop.
 
 use bytes::BytesMut;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 
-/// Plan 12-08 (D-C) test instrumentation: cumulative count of pool
-/// allocations (cache misses — pool was empty when acquire() was called).
+// Test instrumentation: cumulative count of pool allocations (cache misses
+// — pool was empty when acquire() was called).
 static POOL_ALLOC_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Plan 12-08 (D-C) test instrumentation: cumulative count of pool acquires
-/// (hits + misses).
+// Test instrumentation: cumulative count of pool acquires (hits + misses).
 static POOL_ACQUIRE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Cumulative number of `BytesMut::with_capacity` allocations (cache misses).
-/// Test hook only — Wave 4 verifies that under steady-state push load
+/// Test hook only — verifies that under steady-state load
 /// `pool_alloc_count() < pool.cap` (only initial allocs; no per-response
 /// alloc churn).
 #[doc(hidden)]
@@ -64,8 +50,8 @@ pub struct BytesMutPool {
 }
 
 impl BytesMutPool {
-    /// Construct a new pool. Decision (locked 2026-04-29): cap=256,
-    /// buf_capacity=4096 → 1 MiB per IO worker maximum retained.
+    /// Construct a new pool. Typical settings: cap=256, buf_capacity=4096
+    /// → 1 MiB per IO worker maximum retained.
     pub fn new(cap: usize, buf_capacity: usize) -> Self {
         Self {
             inner: Arc::new(ArrayQueue::new(cap)),

@@ -1,4 +1,4 @@
-//! MioBackend — per-worker mio::Poll adapter (Plan 18-05).
+//! MioBackend — per-worker mio::Poll adapter.
 //!
 //! Implements `IoBackend` using `mio::Poll` + `mio::Waker`. Each worker thread
 //! owns one `MioBackend` exclusively; no sharing between threads.
@@ -42,8 +42,8 @@ struct MioWakerHandle {
 
 impl WakerHandle for MioWakerHandle {
     fn wake(&self) -> std::io::Result<()> {
-        // Plan 12-08 (D-B): bump the wake counter before the actual wake.
-        // Tests use this to verify response batching amortises worker wakes.
+        // Bump the wake counter before the actual wake. Tests use this to
+        // verify response batching amortises worker wakes.
         WORKER_WAKE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner.wake()
     }

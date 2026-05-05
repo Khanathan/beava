@@ -1,13 +1,15 @@
-//! beava-runtime-core — hand-rolled mio-based event loop (Phase 18).
+//! beava-runtime-core — hand-rolled mio-based event loop.
 //!
-//! Replaces tokio on the data-plane hot path (TCP + HTTP) per Phase 18 plan.
-//! Admin endpoints remain on tokio/axum on a separate port (D-01).
+//! The data-plane hot path (TCP + HTTP) runs on this crate's mio loop —
+//! tokio is forbidden here per the Phase 18 mio-only architectural
+//! commitment (see `CLAUDE.md` §"mio-only Hot-Path Invariant"). Admin
+//! endpoints remain on tokio/axum on a separate port.
 //!
 //! # Crate structure
 //!
 //! - `event_loop` — `EventLoop` wrapping `mio::Poll` + `mio::Events`
 //! - `client`     — per-connection state machine (`BytesMut` read buf, response queue)
-//! - `tcp_listener` — framed TCP listener + parser (Phase 2.5 wire format)
+//! - `tcp_listener` — framed TCP listener + parser
 //! - `http_listener` — HTTP/1.1 listener via `httparse`
 //! - `router`     — path dispatch for HTTP requests
 //! - `response`   — pre-encoded byte-string response templates (hot path, no serde)

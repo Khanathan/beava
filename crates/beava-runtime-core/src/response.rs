@@ -1,48 +1,28 @@
-//! Pre-encoded response templates and the `WireResponse` enum (Phase 18 Plan 04).
+//! Pre-encoded response templates and the `WireResponse` enum.
 //!
 //! Hot-path responses must NOT call `serde_json::to_vec` on the apply thread —
 //! that allocates and walks the object graph on every request. Instead, common
 //! responses are pre-formatted as `&'static [u8]`, and the `WireResponse` enum
 //! carries raw response data that I/O threads serialize off-apply via
 //! `serialize_into()`.
-//!
-//! # Plan 18-04 additions
-//!
-//! - `WireResponse` — raw (unserialised) response queued by the apply thread.
-//! - `serialize_into(resp, &mut BytesMut)` — called by I/O worker threads only.
-//!
-//! Translation table entry #12 (18-rust-translation.md): `addReply(c, bytes)`
-//! → `client.output_queue.push_back(WireResponse)` (apply) +
-//!   `serialize_into(&resp, &mut write_buf)` (I/O thread).
 
 use bytes::{BufMut, Bytes, BytesMut};
-
-// ─── OP codes used in response frames ────────────────────────────────────────
 
 /// TCP push-ACK response opcode (response-only, never a request opcode).
 /// Wire encoding: `[u32 length][u16 OP_ACK][u8 CT_JSON][u64 lsn BE]`
 const OP_ACK: u16 = 0x0080;
 
-/// TCP error response opcode (matches Phase 2.5 wire spec OP_ERROR_RESPONSE).
+/// TCP error response opcode.
 const OP_ERROR_RESPONSE: u16 = 0xFFFF;
 
-/// Content-type byte for JSON (CT_JSON from beava-core wire spec).
+/// Content-type byte for JSON.
 const CT_JSON: u8 = 0x01;
-
-// ─── WireResponse ─────────────────────────────────────────────────────────────
 
 /// An unserialised response queued by the apply thread into `Client::output_queue`.
 ///
 /// The apply thread MUST NOT call `serialize_into` — that is the I/O worker's job.
 /// Keeping the enum small (no allocated strings on most variants) avoids heap
 /// traffic on the apply-thread hot path.
-///
-/// # Plan 18-04 design decisions
-///
-/// - `TcpAck { lsn }` — the most common response. 8-byte payload, no allocation.
-/// - `TcpError { code, msg }` — error frame. `msg` is a `Bytes` (ref-counted, no copy).
-/// - `HttpStatus { status, body, keep_alive }` — HTTP response. `body` is a `Bytes`.
-/// - `HttpStaticOk { keep_alive }` — hot path HTTP 204, uses static template (no allocation).
 ///
 /// Adding variants here requires a matching arm in `serialize_into`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,14 +132,10 @@ fn http_status_reason(status: u16) -> &'static str {
     }
 }
 
-// ─── ResponseTemplate ─────────────────────────────────────────────────────────
-
 /// Pre-encoded HTTP and TCP response byte strings.
 pub struct ResponseTemplate;
 
 impl ResponseTemplate {
-    // ─── HTTP responses ────────────────────────────────────────────────────────
-
     /// HTTP 204 No Content — used for fire-and-forget push ACK.
     pub const HTTP_204: &'static [u8] =
         b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
@@ -212,8 +188,6 @@ impl ResponseTemplate {
         Bytes::from(out)
     }
 
-    // ─── TCP framed responses ──────────────────────────────────────────────────
-
     /// Build a TCP push-ACK frame (op=OP_PUSH, CT_JSON) with the given JSON body.
     ///
     /// Wire: `[u32 length BE][u16 op=0x0010][u8 ct=0x01][payload]`
@@ -247,7 +221,6 @@ mod tests {
 
     #[test]
     fn tcp_frame_encoding_matches_wire_spec() {
-        // Push ACK for payload b"{}" → length=5, op=0x0010, ct=0x01
         let frame = ResponseTemplate::tcp_push_ack(b"{}");
         assert_eq!(frame.len(), 4 + 3 + 2); // 4 len + 2 op + 1 ct + 2 payload
         assert_eq!(&frame[..4], &5u32.to_be_bytes()); // length = 5

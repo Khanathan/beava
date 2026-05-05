@@ -1,4 +1,4 @@
-//! IoBackend trait abstraction (Plan 18-05).
+//! IoBackend trait abstraction.
 //!
 //! Abstracts the polling primitive used by per-worker continuous-loop workers.
 //! The two concrete implementations are:
@@ -6,7 +6,7 @@
 //!  - `IoUringBackend`: uses `io_uring` submission/completion queues (Linux only,
 //!    feature-gated behind `--features io-uring`)
 //!
-//! # Per-worker model (Valkey 8 architecture)
+//! # Per-worker model (Valkey 8-style architecture)
 //!
 //! Each worker thread owns one `IoBackend` instance. The backend owns the
 //! polling fd, the waker, and the per-client connection state. Workers run a
@@ -67,16 +67,16 @@ pub trait WakerHandle: Send + Sync {
     fn wake(&self) -> std::io::Result<()>;
 }
 
-/// Plan 12-08 (D-B) test instrumentation: cumulative count of `wake()` calls
-/// on any `WakerHandle` (across all workers). Wave 3 verifies that response
-/// batching collapses N response wakes into one wake per batch.
+/// Test instrumentation: cumulative count of `wake()` calls on any
+/// `WakerHandle` (across all workers). Used to verify that response batching
+/// collapses N response wakes into one wake per batch.
 pub static WORKER_WAKE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Plan 12-08 test hook. Cumulative count of `WakerHandle::wake()` calls
-/// since process start (counts both data-plane worker wakes and the apply-side
-/// `apply_waker.wake()` fired by workers — when interpreting test results,
-/// hold the shape of traffic constant so the apply-side contribution stays
-/// proportional and the response-batch wakes drop visibly).
+/// Cumulative count of `WakerHandle::wake()` calls since process start.
+/// Counts both data-plane worker wakes and the apply-side
+/// `apply_waker.wake()` fired by workers; when interpreting results, hold
+/// the shape of traffic constant so the apply-side contribution stays
+/// proportional and the response-batch wakes drop visibly.
 #[doc(hidden)]
 pub fn worker_wake_calls() -> u64 {
     WORKER_WAKE_CALLS.load(std::sync::atomic::Ordering::Relaxed)

@@ -1,12 +1,9 @@
-//! I/O thread pool (Plan 18-03).
+//! I/O thread pool.
 //!
 //! `IoPool` manages N `std::thread` workers that execute `WorkItem` closures in
 //! parallel, coordinated via per-slot atomic spin-barriers.
 //!
-//! # Redis correspondence
-//!
 //! Mirrors `handleClientsWithPendingReadsUsingThreads` (Redis `networking.c`).
-//! Translation table entries #5–#8.
 //!
 //! # Usage
 //!

@@ -1,4 +1,4 @@
-//! WAL LSN (Log Sequence Number) watermark tracking — Phase 18-02 Task 2.1.
+//! WAL LSN (Log Sequence Number) watermark tracking.
 //!
 //! # Four-watermark discipline
 //!
@@ -102,8 +102,6 @@ impl WalLsn {
         }
     }
 
-    // ─── Watermark accessors ─────────────────────────────────────────────────
-
     /// Load the committed watermark (Acquire).
     #[inline]
     pub fn committed(&self) -> Lsn {
@@ -122,8 +120,6 @@ impl WalLsn {
         self.synced.load(Ordering::Acquire)
     }
 
-    // ─── Apply-thread API ────────────────────────────────────────────────────
-
     /// Advance `committed_lsn` by `n` bytes and return the new high-water mark.
     ///
     /// Called by the **apply thread only** after copying `n` bytes into the
@@ -138,8 +134,6 @@ impl WalLsn {
     pub fn record(&self, n: u64) -> Lsn {
         self.committed.fetch_add(n, Ordering::AcqRel) + n
     }
-
-    // ─── Writer-thread API ───────────────────────────────────────────────────
 
     /// Advance `written_lsn` to at least `lsn`.
     ///
@@ -170,8 +164,6 @@ impl WalLsn {
         self.synced_condvar.notify_all();
         // guard drops here, unlocking before waiters re-check their condition.
     }
-
-    // ─── PerEvent waiter API ─────────────────────────────────────────────────
 
     /// Returns `true` if `synced_lsn` is at least `lsn`.
     #[inline]

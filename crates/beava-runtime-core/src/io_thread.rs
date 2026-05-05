@@ -1,7 +1,6 @@
-//! I/O worker thread (Plan 18-03).
+//! I/O worker thread.
 //!
 //! Mirrors Redis's `IOThreadMain` from `src/networking.c`.
-//! Translation table entries #5–#8 (18-rust-translation.md).
 //!
 //! # Protocol
 //!

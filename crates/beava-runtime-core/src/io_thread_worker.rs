@@ -1,4 +1,4 @@
-//! Per-worker continuous-loop worker (Plan 18-05 Task 5.2).
+//! Per-worker continuous-loop worker.
 //!
 //! Each worker thread owns:
 //!  - One `IoBackend` instance (own mio::Poll + Waker + client map)
@@ -39,11 +39,11 @@ use std::time::Duration;
 pub enum WorkerProto {
     /// HTTP/1.1 text-based protocol (via httparse).
     Http,
-    /// Phase 2.5 framed TCP wire protocol (`[u32 length][u16 op][u8 ct][payload]`).
+    /// Framed TCP wire protocol (`[u32 length][u16 op][u8 ct][payload]`).
     Tcp,
 }
 
-/// Plan 18-06 follow-up: encoder closure that runs on the worker thread.
+/// Encoder closure that runs on the worker thread.
 ///
 /// Apply thread builds the closure with the typed response captured by move
 /// and ships it through `write_rx`. The worker invokes the closure with the
@@ -54,12 +54,11 @@ pub enum WorkerProto {
 /// `FnOnce` is appropriate because each closure encodes exactly one response.
 /// `Send + 'static` is required for crossbeam channels.
 ///
-/// Plan 12-08 (D-C): the encoder now takes a `&BytesMutPool` so it can
-/// acquire a pre-sized pool buffer for the encode work, fill it, then
-/// extend `client_write_buf` from it and release the pool buffer back.
-/// Net effect on the steady-state hot path: the per-response
-/// `BytesMut::with_capacity(4096)` allocator hit is gone (pool recycles
-/// after the first ~256 responses warm the pool).
+/// The encoder takes a `&BytesMutPool` so it can acquire a pre-sized pool
+/// buffer for the encode work, fill it, then extend `client_write_buf` from
+/// it and release the pool buffer back. The per-response
+/// `BytesMut::with_capacity(4096)` allocator hit is amortized over the pool
+/// (recycled after the first ~256 responses warm it).
 pub type WriteEncoder =
     Box<dyn FnOnce(WorkerProto, &BytesMutPool, &mut bytes::BytesMut) + Send + 'static>;
 
@@ -102,8 +101,7 @@ pub struct WorkerConfig {
     pub read_tx: Sender<RingItem>,
     /// Channel from apply thread carrying `(slot_idx, encoder)` write jobs.
     ///
-    /// Plan 18-06 follow-up + Plan 12-08 (D-C): encode is a closure that runs
-    /// on the worker thread (the worker calls
+    /// Encode is a closure that runs on the worker thread (the worker calls
     /// `encoder(proto, &pool, &mut client.write_buf)`). This moves response
     /// encoding off the apply hot path — apply just boxes the encoder
     /// closure with the response captured by move; the worker pays the JSON
@@ -114,16 +112,15 @@ pub struct WorkerConfig {
     pub new_client_rx: Receiver<NewClient>,
     /// Shared stop flag. When `true`, the worker exits after the current iteration.
     pub stop: Arc<AtomicBool>,
-    /// Plan 18-06 follow-up: optional `mio::Waker` registered with the apply
-    /// thread's listener `EventLoop`. The worker fires this after each
-    /// successful `read_tx.send(...)` so apply doesn't sit in `tick(timeout)`
-    /// while the worker has fresh items in `read_rx`. `None` keeps the
-    /// pre-Plan-18-06 behavior (apply polls on its own cadence).
+    /// Optional `mio::Waker` registered with the apply thread's listener
+    /// `EventLoop`. The worker fires this after each successful
+    /// `read_tx.send(...)` so apply doesn't sit in `tick(timeout)` while the
+    /// worker has fresh items in `read_rx`. `None` keeps apply polling on
+    /// its own cadence.
     pub apply_waker: Option<Arc<mio::Waker>>,
-    /// Maximum TCP frame size (bytes) accepted by the wire decoder. Replaces
-    /// the prior process-global `BEAVA_TCP_MAX_FRAME_BYTES` env-var read
-    /// (which leaked across parallel TestServers — Plan 13.5.2-postclose
-    /// determinism fix). Production callers populate from
+    /// Maximum TCP frame size (bytes) accepted by the wire decoder.
+    /// Per-worker (not global) so parallel TestServers don't leak limits
+    /// across each other. Production callers populate from
     /// `cfg.tcp.max_frame_bytes` (which itself honors the env-var at config
     /// load time). Default in `WorkerConfig`-construction sites: 4 MiB.
     pub tcp_max_frame_bytes: u32,
@@ -267,10 +264,10 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
     // Idle poll timeout: 1 second. Waker interrupts this for hot paths.
     const IDLE_TIMEOUT: Duration = Duration::from_secs(1);
 
-    // Plan 12-08 (D-C): per-worker BytesMutPool. Sized for typical fraud-team
-    // batch response (~3-5 KiB JSON); 256 cap = 1 MiB per worker; 4096
-    // capacity each. NOT shared across workers — each worker constructs its
-    // own pool here so there's no cross-thread contention on acquire/release.
+    // Per-worker BytesMutPool. Sized for typical fraud-team batch response
+    // (~3-5 KiB JSON); 256 cap = 1 MiB per worker; 4096 capacity each. NOT
+    // shared across workers — each worker constructs its own pool here so
+    // there's no cross-thread contention on acquire/release.
     const POOL_CAP: usize = 256;
     const POOL_BUF_CAPACITY: usize = 4096;
     let pool = BytesMutPool::new(POOL_CAP, POOL_BUF_CAPACITY);
@@ -287,16 +284,12 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
         }
 
         // 2. Drain write_rx — invoke each encoder closure to fill write_buf.
-        // Plan 18-06 follow-up: encoder runs HERE (worker thread), not on
-        // apply. JSON serialization + frame headers happen off the apply
-        // hot path. The closure was built on apply with the response
-        // captured by move; we just hand it the proto + pool + buffer.
-        //
-        // Plan 12-08 (D-C): the encoder uses `pool` to acquire a pre-sized
-        // BytesMut, fills it with the framed response, extends `c.write_buf`
-        // from the pool buffer, then releases the pool buffer back. Zero
-        // per-response BytesMut::with_capacity calls on the steady-state
-        // hot path.
+        // Encoder runs HERE (worker thread), not on apply: JSON serialization
+        // + frame headers happen off the apply hot path. The closure uses
+        // `pool` to acquire a pre-sized BytesMut, fills it with the framed
+        // response, extends `c.write_buf` from the pool buffer, then releases
+        // it back — zero per-response BytesMut::with_capacity calls on the
+        // steady-state hot path.
         while let Ok((slot, encoder)) = write_rx.try_recv() {
             if let Some(c) = clients.get_mut(&slot) {
                 let proto = c.proto;
@@ -318,9 +311,9 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
 
         // 4. Process events.
         let mut to_close: Vec<u64> = Vec::new();
-        // Plan 18-06 follow-up: track whether we sent anything to apply this
-        // pass. If yes, fire `apply_waker` once at the end so apply doesn't
-        // sit in `event_loop.tick(timeout)` while there's work in `read_rx`.
+        // Track whether we sent anything to apply this pass. If yes, fire
+        // `apply_waker` once at the end so apply doesn't sit in
+        // `event_loop.tick(timeout)` while there's work in `read_rx`.
         let mut sent_to_apply = false;
         for ev in events.drain(..) {
             match ev {
@@ -365,10 +358,10 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
             }
         }
 
-        // Plan 18-06: wake apply iff we actually pushed RingItems this pass.
-        // The waker is edge-triggered + idempotent; one wake per pass is
-        // enough to interrupt apply's `event_loop.tick()` and force it to
-        // re-drain `read_rx`.
+        // Wake apply iff we actually pushed RingItems this pass. The waker
+        // is edge-triggered + idempotent; one wake per pass is enough to
+        // interrupt apply's `event_loop.tick()` and force it to re-drain
+        // `read_rx`.
         if sent_to_apply {
             if let Some(w) = &apply_waker {
                 let _ = w.wake();
@@ -382,10 +375,9 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
         }
 
         // Clean up clients that were marked closed during read/write.
-        // Plan 12.6-15: flush any pending write_buf before close —
-        // without this, inline-encoded error frames (frame_too_large)
-        // are lost when the close cleanup runs in the same loop
-        // iteration as the parse error.
+        // Flush any pending write_buf before close — otherwise inline-encoded
+        // error frames (frame_too_large) are lost when the close cleanup
+        // runs in the same loop iteration as the parse error.
         let closed: Vec<u64> = clients
             .iter()
             .filter(|(_, c)| c.closed)
@@ -408,10 +400,10 @@ fn worker_main_loop<B: IoBackend>(mut backend: B, cfg: WorkerConfig) {
     }
 }
 
-/// Plan 12.6-15: inline-encode a `frame_too_large` error frame into the
-/// client's `write_buf`. Used by the parse-error branch (criterion 7) — the
-/// connection MUST close after the frame, so we can't take the apply→worker
-/// round-trip without racing against the close-cleanup loop.
+/// Inline-encode a `frame_too_large` error frame into the client's
+/// `write_buf`. The connection MUST close after the frame, so we can't take
+/// the apply→worker round-trip without racing against the close-cleanup
+/// loop.
 ///
 /// Wire format mirrors `encode_glue_response_tcp`'s TcpError arm.
 fn inline_encode_frame_too_large(write_buf: &mut bytes::BytesMut, declared: u32, limit: u32) {
@@ -480,14 +472,6 @@ fn parse_and_push(
     let slot_u32 = slot as u32;
     let mut sent: usize = 0;
 
-    // Plan 13.5.2-postclose: max_frame_bytes is now plumbed via WorkerConfig
-    // (was process-global BEAVA_TCP_MAX_FRAME_BYTES env-var read, which
-    // leaked across parallel TestServers and made criterion_7's 1024-byte
-    // limit reject criterion_6's pipelined registers — non-deterministic
-    // workspace test failures). Production main.rs populates the field from
-    // `cfg.tcp.max_frame_bytes`, which still honors the env-var at
-    // config-load time (`config.rs:267`).
-
     match client.proto {
         WorkerProto::Tcp => loop {
             match parse_wire_request(&mut client.read_buf, tcp_max_frame_bytes) {
@@ -508,18 +492,15 @@ fn parse_and_push(
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    // Plan 12.6-15: distinguish frame_too_large (criterion 7)
-                    // from generic frame parse errors so the apply path can
-                    // emit the rich error frame with `limit` field and
-                    // close the connection per spec.
+                    // Distinguish frame_too_large from generic frame parse
+                    // errors so the apply path can emit the rich error frame
+                    // (with `limit` field) and close the connection.
                     //
                     // For frame_too_large specifically: the connection MUST
-                    // close after the error frame (criterion 7 contract).
-                    // Inline-write the error frame into client.write_buf
-                    // BEFORE marking closed — the apply→worker→write
-                    // round-trip would race against the close cleanup
-                    // loop and drop the frame. This mirrors legacy
-                    // tcp.rs's behavior (write error inline + shutdown).
+                    // close after the error frame. Inline-write the error
+                    // frame into client.write_buf BEFORE marking closed —
+                    // the apply→worker→write round-trip would race against
+                    // the close cleanup loop and drop the frame.
                     let kind = match e {
                         beava_core::wire::FrameError::TooLarge {
                             declared_len,

@@ -1,4 +1,4 @@
-//! HTTP/1.1 listener + request parser for Phase 18's hand-rolled event loop.
+//! HTTP/1.1 listener + request parser for the hand-rolled event loop.
 //!
 //! Uses `httparse` for zero-copy header parsing (same library hyper uses).
 //! Wraps `mio::net::TcpListener` bound on the HTTP data-plane port.
@@ -67,14 +67,12 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     let mut req = httparse::Request::new(&mut headers);
 
     // Guard against absurdly large headers causing an OOM probe — but ONLY
-    // for header bytes. Phase 19.1.1: the cap previously applied to the whole
-    // buffer, which (incorrectly) rejected any HTTP request whose headers +
-    // body combined exceeded 8 KiB, even when Content-Length was well within
-    // MAX_BODY_BYTES = 4 MiB. The body cap below at the Content-Length check
-    // was unreachable. Fix: scan for `\r\n\r\n` to detect whether headers are
-    // complete. If yes — body bytes follow and are gated by Content-Length.
-    // If no — and we already have > MAX_HEADER_BYTES of unfinished headers —
-    // it's a genuine header bomb; reject as before.
+    // for header bytes. The cap MUST NOT apply to the whole buffer, or any
+    // HTTP request whose headers + body combined exceed 8 KiB would be
+    // rejected (even with Content-Length well within MAX_BODY_BYTES). Scan
+    // for `\r\n\r\n` to decide: if present, body bytes follow and are gated
+    // by Content-Length; if absent and we already have > MAX_HEADER_BYTES of
+    // unfinished headers, it's a genuine header bomb.
     let header_end_found = buf.windows(4).any(|w| w == b"\r\n\r\n");
     if !header_end_found && buf.len() > MAX_HEADER_BYTES {
         return Err(ParseError::TooLarge);
@@ -94,9 +92,9 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     let mut keep_alive = true; // HTTP/1.1 default
     let mut content_length: Option<usize> = None;
     let mut is_chunked = false;
-    // Plan 12.6-14: capture Content-Type so we can return 415 for POST
-    // endpoints when the client sends a non-JSON media type. None means
-    // header was absent; Some("") means header was present but empty.
+    // Capture Content-Type so we can return 415 for POST endpoints when the
+    // client sends a non-JSON media type. None means header was absent;
+    // Some("") means header was present but empty.
     let mut content_type_header: Option<String> = None;
 
     for h in req.headers.iter() {
@@ -180,14 +178,9 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
     // HTTP always carries JSON bodies (content_type = CT_JSON = 0x01).
     use beava_core::wire::CT_JSON;
 
-    // Plan 12.6-14: enforce application/json on POST /register only —
-    // matches legacy axum `register::post_register` which had the
-    // `is_json_content_type` check. Other POST endpoints in legacy axum
-    // did not validate Content-Type and just attempted JSON parse,
-    // returning 400 on failure. Replicating that posture here keeps
-    // every existing test (event_loop_smoke / phase8_tcp_push wire
-    // shape / phase18_07_push_and_get) untouched while turning the
-    // phase2_smoke success_criterion_5 415 contract green.
+    // Enforce application/json on POST /register only. Other POST endpoints
+    // do not validate Content-Type and just attempt JSON parse, returning
+    // 400 on failure — matching the surface tests assert against.
     let is_register_post = method.eq_ignore_ascii_case("POST") && matches!(route, Route::Register);
     if is_register_post {
         let ct_ok = match &content_type_header {
@@ -224,17 +217,16 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
         },
         Route::Get => WireRequest::HttpGet { body },
         Route::GetSingle { feature, key } => WireRequest::HttpGetSingle { feature, key },
-        // Plan 13.4-03: POST /batch_get — heterogeneous batched read; same
-        // payload shape as TCP OP_BATCH_GET, JSON-only on HTTP transport.
+        // POST /batch_get — heterogeneous batched read; same payload shape
+        // as TCP OP_BATCH_GET, JSON-only on HTTP transport.
         Route::BatchGet => WireRequest::HttpBatchGet { body },
         Route::Register => WireRequest::Register { payload: body },
-        // Plan 12-07: /health on the data-plane HTTP port — inline shim, no
-        // apply-thread roundtrip. read_bench.py polls /health at startup.
+        // /health on the data-plane HTTP port — inline shim, no apply-thread
+        // roundtrip. read_bench.py polls /health at startup.
         Route::Health => WireRequest::HttpHealth,
-        // Plan 12.6-01: /ready and /registry on the data-plane HTTP port —
-        // back-compat shims for TestServer-using tests; the admin sidecar
-        // remains the canonical home for both endpoints (per
-        // `project_phase18_no_dual_runtime`).
+        // /ready and /registry on the data-plane HTTP port — back-compat
+        // shims for TestServer-using tests; the admin sidecar remains the
+        // canonical home for both endpoints.
         Route::Ready => WireRequest::HttpReady,
         Route::Registry => WireRequest::HttpRegistry,
         Route::NotFound => WireRequest::HttpNotFound {
@@ -244,44 +236,39 @@ pub fn parse_http_request(buf: &mut BytesMut) -> Result<Option<(WireRequest, boo
             method: method.to_owned(),
             path: path.to_owned(),
         },
-        // Plan 13.4-04 Task 4.d — verb-style HTTP routes wired to dispatch.
         // POST /ping is the HTTP mirror of TCP OP_PING (0x0000). The
         // dispatch layer returns the same `200 {"status":"ok"}` shape as
-        // /health (`GlueResponse::HealthOk`) so fixtures can poll either
-        // endpoint interchangeably.
+        // /health so fixtures can poll either endpoint interchangeably.
         Route::Ping => WireRequest::HttpPing,
         // POST /push (verb-style — event name in JSON body). Body shape is
         // `{"event":"Tx","data":{...}}`; we extract the event name and
-        // synthesize the existing `HttpPush` variant with the inner `data`
-        // payload as the body so dispatch composes with the legacy
+        // synthesize the `HttpPush` variant with the inner `data` payload
+        // as the body so dispatch composes with the path-segment
         // `/push/:event_name` apply path.
         Route::PushVerb => parse_verb_push(&body, /* sync = */ false),
         // POST /push-sync (verb-style) — same body shape; awaits fsync.
         Route::PushSyncVerb => parse_verb_push(&body, /* sync = */ true),
-        // Plan 13.4-08 — POST /reset (verb-style HTTP mirror of TCP OP_RESET).
-        // Body is opaque (empty `{}` per spec); the dispatch arm enforces
-        // the test_mode gate.
+        // POST /reset (verb-style HTTP mirror of TCP OP_RESET). Body is
+        // opaque (empty `{}`); the dispatch arm enforces the test_mode gate.
         Route::Reset => WireRequest::HttpReset { body },
     };
 
     Ok(Some((wire_req, keep_alive)))
 }
 
-/// Plan 12.6-14: returns true iff the Content-Type media type (before `;`)
-/// is `application/json` (case-insensitive, trimmed). Mirrors the legacy
-/// axum `register::is_json_content_type` semantics so the mio path emits
-/// 415 for the same set of bad media types the legacy axum handler did.
+/// Returns true iff the Content-Type media type (before `;`) is
+/// `application/json` (case-insensitive, trimmed).
 fn is_json_content_type(ct: &str) -> bool {
     let media_type = ct.split(';').next().unwrap_or("").trim();
     media_type.eq_ignore_ascii_case("application/json")
 }
 
-/// Plan 13.4-04 — extract `event` from the JSON body of a verb-style
-/// `POST /push` (or `POST /push-sync`), then synthesize the corresponding
-/// `WireRequest::HttpPush` / `HttpPushSync` carrying the inner `data` payload
-/// as the body the existing apply path expects.
+/// Extract `event` from the JSON body of a verb-style `POST /push` (or
+/// `POST /push-sync`), then synthesize the corresponding
+/// `WireRequest::HttpPush` / `HttpPushSync` carrying the inner `data`
+/// payload as the body the apply path expects.
 ///
-/// Body contract: `{"event": "<name>", "data": {<existing push body>}}`.
+/// Body contract: `{"event": "<name>", "data": {<push body>}}`.
 ///
 /// Failure modes (both surface as `WireRequest::ParseError` with a special
 /// reason; the apply-shard dispatcher special-cases these reasons to emit a
@@ -306,10 +293,10 @@ fn parse_verb_push(body: &[u8], sync: bool) -> WireRequest {
             };
         }
     };
-    // Re-serialise the inner `data` payload — the existing dispatch layer
-    // expects the push body to be the bare event payload (matching legacy
-    // `/push/:event_name` semantics). Default to `{}` when absent so a
-    // schemaless event (no fields) still flows through validation.
+    // Re-serialise the inner `data` payload — dispatch expects the push
+    // body to be the bare event payload (matching `/push/:event_name`
+    // semantics). Default to `{}` when absent so a schemaless event (no
+    // fields) still flows through validation.
     let data = parsed
         .get("data")
         .cloned()
@@ -329,8 +316,6 @@ fn parse_verb_push(body: &[u8], sync: bool) -> WireRequest {
         }
     }
 }
-
-// ─── Chunked transfer encoding parser ─────────────────────────────────────────
 
 enum ChunkedResult {
     Complete { body: Bytes, bytes_consumed: usize },
@@ -408,9 +393,9 @@ use bytes::Buf;
 
 /// A mio-backed TCP listener for HTTP/1.1 connections.
 ///
-/// Phase 18-01 scaffold: binds the listener, exposes `accept()` for the
-/// event loop when the HTTP listener token fires. Full HTTP state machine
-/// (headers + body + keep-alive + chunked TE) added in Task 1.3.
+/// Binds the listener and exposes `accept()` for the event loop when the
+/// HTTP listener token fires. The HTTP state machine (headers + body +
+/// keep-alive + chunked TE) lives in `parse_http_request` above.
 pub struct HttpListener {
     inner: mio::net::TcpListener,
     local_addr: SocketAddr,
