@@ -279,13 +279,16 @@
 <p>Worked example: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/ping-request.json"><code>examples/wire/ping-request.json</code></a></p>
 <p><strong>Response body shape (success):</strong></p>
 <pre><code class="language-json">{
-  &quot;server_version&quot;: &quot;&lt;semver&gt;&quot;,
-  &quot;registry_version&quot;: &lt;integer&gt;
+  &quot;status&quot;: &quot;ok&quot;
 }
 </code></pre>
 <p>JSON Schema: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/schemas/ping.response.schema.json"><code>examples/wire/schemas/ping.response.schema.json</code></a></p>
 <p>Worked example: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/ping-response.json"><code>examples/wire/ping-response.json</code></a></p>
-<p><code>server_version</code> is the beava server's semantic version (e.g., <code>&quot;0.0.0&quot;</code> for the v0 launch). <code>registry_version</code> is a monotonic counter that increments on every successful <code>OP_REGISTER</code>; clients use it as a cache key when caching feature schemas.</p>
+<p>v0 ping is a minimal liveness probe — it returns <code>{&quot;status&quot;: &quot;ok&quot;}</code> if the
+server is reachable and processing requests. Version + registry-version
+discovery (<code>server_version</code>, <code>registry_version</code>) is reserved for v0.1+;
+for now, derive <code>registry_version</code> from any <code>POST /register</code> response or
+the <code>GET /registry</code> admin endpoint.</p>
 <p><strong>Errors:</strong> <code>OP_PING</code> does not validate any input, so it has no per-opcode error codes. Connection-level errors (e.g., framing) still apply.</p>
 <h3 id="opregister-0x0001" tabindex="-1"><a class="header-anchor" href="#opregister-0x0001" aria-hidden="true">#</a> OP_REGISTER (0x0001)</h3>
 <p>Register one or more <strong>descriptors</strong> with the beava server. A descriptor is one of three kinds, disambiguated by the JSON <code>kind</code> field:</p>
@@ -340,10 +343,27 @@ v0.1+ (the JSON-prelude shim amendment lands in a future phase); v0 ships the
   &quot;status&quot;: &quot;ok&quot;,
   &quot;registry_version&quot;: 1,
   &quot;added&quot;: [&quot;Txn&quot;, &quot;UserTxnFeatures&quot;],
-  &quot;removed&quot;: [],
-  &quot;changed&quot;: []
+  &quot;already_present&quot;: [],
+  &quot;registered_descriptors&quot;: [&quot;Txn&quot;, &quot;UserTxnFeatures&quot;]
 }
 </code></pre>
+<p>On idempotent re-register (same payload), <code>added</code> is empty and the
+existing nodes appear in <code>already_present</code>. <code>registered_descriptors</code>
+always lists every node currently in the registry (the union of <code>added</code>
+and <code>already_present</code> for the just-applied payload).</p>
+<p><strong>Response body shape (dry-run):</strong></p>
+<pre><code class="language-json">{
+  &quot;diff&quot;: {
+    &quot;additive&quot;: [],
+    &quot;destructive&quot;: []
+  },
+  &quot;would_apply&quot;: false
+}
+</code></pre>
+<p><code>diff.additive</code> lists nodes that would be appended (no destructive impact);
+<code>diff.destructive</code> lists nodes whose application would require <code>force=true</code>
+(field-type changes, key changes, removals). <code>would_apply</code> is <code>true</code> iff
+the diff is empty <em>or</em> entirely additive.</p>
 <p>JSON Schema: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/schemas/register.response.schema.json"><code>examples/wire/schemas/register.response.schema.json</code></a></p>
 <p>Worked example: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/register-fraud-team.response.json"><code>examples/wire/register-fraud-team.response.json</code></a></p>
 <p><strong>Errors:</strong></p>
@@ -436,10 +456,11 @@ a later phase. v0 SDKs emit the <code>kind: &quot;derivation&quot;</code> form s
 <p><strong>Response body shape (success):</strong></p>
 <pre><code class="language-json">{
   &quot;ack_lsn&quot;: 12345,
+  &quot;idempotent_replay&quot;: false,
   &quot;registry_version&quot;: 1
 }
 </code></pre>
-<p><code>ack_lsn</code> is the server-assigned monotonic Log Sequence Number for this event; clients can persist it as an idempotency anchor (re-pushing an event with the same fields and an idempotent dedupe key returns the same <code>ack_lsn</code> plus <code>idempotent_replay: true</code>).</p>
+<p><code>ack_lsn</code> is the server-assigned monotonic Log Sequence Number for this event; clients can persist it as an idempotency anchor. <code>idempotent_replay</code> is <code>true</code> iff the push matched a prior <code>dedupe_key</code> within the registered <code>dedupe_window</code> — in that case the server returns the original push's <code>ack_lsn</code> instead of writing a new entry. <code>registry_version</code> is the server's monotonic register counter, useful as a staleness sentinel for SDK schema caches.</p>
 <p>JSON Schema: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/schemas/push.response.schema.json"><code>examples/wire/schemas/push.response.schema.json</code></a></p>
 <p>Worked example: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/push-success.response.json"><code>examples/wire/push-success.response.json</code></a></p>
 <p><strong>Errors:</strong></p>
@@ -463,8 +484,8 @@ a later phase. v0 SDKs emit the <code>kind: &quot;derivation&quot;</code> form s
 <td>400</td>
 </tr>
 <tr>
-<td><code>unknown_event</code></td>
-<td>The event name (URL path or TCP routing prefix) is not registered.</td>
+<td><code>event_not_found</code></td>
+<td>The event name (URL path or TCP routing prefix) is not registered. (Earlier docs called this code <code>unknown_event</code>; the engine emits <code>event_not_found</code>.)</td>
 <td>404</td>
 </tr>
 <tr>
@@ -571,9 +592,12 @@ a later phase. v0 SDKs emit the <code>kind: &quot;derivation&quot;</code> form s
 <p>JSON Schema: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/schemas/reset.request.schema.json"><code>examples/wire/schemas/reset.request.schema.json</code></a></p>
 <p>Worked example: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/reset-request.json"><code>examples/wire/reset-request.json</code></a></p>
 <p><strong>Response body shape (success):</strong></p>
-<pre><code class="language-json">{ &quot;status&quot;: &quot;ok&quot; }
+<pre><code class="language-json">{
+  &quot;registry_version&quot;: 0,
+  &quot;reset&quot;: true
+}
 </code></pre>
-<p>The server replies after the WAL truncation completes — the call is <strong>synchronous</strong>. The next event push to the same connection observes the cleared state.</p>
+<p>The server replies after the WAL truncation completes — the call is <strong>synchronous</strong>. The next event push to the same connection observes the cleared state. <code>reset: true</code> confirms the operation succeeded; <code>registry_version</code> reflects the post-reset registry counter (zeroed unless the registry persists across resets, which it does NOT in v0).</p>
 <p>JSON Schema: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/schemas/reset.response.schema.json"><code>examples/wire/schemas/reset.response.schema.json</code></a></p>
 <p>Worked example: <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/reset-response.json"><code>examples/wire/reset-response.json</code></a></p>
 <p><strong>Errors:</strong></p>
@@ -587,8 +611,8 @@ a later phase. v0 SDKs emit the <code>kind: &quot;derivation&quot;</code> form s
 </thead>
 <tbody>
 <tr>
-<td><code>reset_disabled</code></td>
-<td>Server config has <code>enable_reset_op=false</code> (production operators set this to forbid resets).</td>
+<td><code>reset_disabled_in_production</code></td>
+<td>Server is not in test mode. v0 OP_RESET requires the server to be booted with <code>BEAVA_TEST_MODE=1</code> (or <code>Config { test_mode: true }</code>). Production operators leave this off; the call returns 403 with the structured code <code>reset_disabled_in_production</code>.</td>
 <td>403</td>
 </tr>
 <tr>
@@ -617,7 +641,7 @@ a later phase. v0 SDKs emit the <code>kind: &quot;derivation&quot;</code> form s
 <p>This wire spec is shaped by the following Architecture Decision Records:</p>
 <ul>
 <li>
-<p><strong><a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-001-bv-table-partial-overturn.md">ADR-001</a></strong> — <code>@bv.table</code> aggregation-output revival (partial overturn of v0 events-only scope). The wire-spec uses <code>kind=table</code> in register payloads per ADR-001. Mutation paths (<code>upsert</code> / <code>delete</code> / <code>retract</code>) and MVCC remain killed.</p>
+<p><strong><a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-001-bv-table-partial-overturn.md">ADR-001</a></strong> — <code>@bv.table</code> aggregation-output revival (partial overturn of v0 events-only scope). The post-13.4 wire form uses <code>kind=table</code> in register payloads per ADR-001; v0 today uses <code>kind=derivation</code> with <code>output_kind=table</code>, which the SDK already emits. Mutation paths (<code>upsert</code> / <code>delete</code> / <code>retract</code>) and MVCC remain killed.</p>
 </li>
 <li>
 <p><strong><a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-002-polars-op-rename.md">ADR-002</a></strong> — Polars op renames. Register payloads use the <strong>new</strong> op-string names (<code>mean</code>, <code>var</code>, <code>std</code>, <code>n_unique</code>, <code>quantile</code>). The Rust engine's internal <code>AggKind</code> enum variant names (<code>AggKind::Avg</code>, <code>AggKind::Variance</code>, etc.) are unchanged — only the public string mapping changes. SDKs in 13.5 (Python deprecation aliases) and 13.6 (TS + Go, no aliases) implement the full rename.</p>
