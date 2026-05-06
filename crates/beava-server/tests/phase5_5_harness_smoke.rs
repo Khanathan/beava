@@ -16,6 +16,7 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+#[ignore = "requires .planning/perf-baselines.md + CLAUDE.md from the private planning tree (both stripped from public OSS clone); run with --ignored in the private repo only"]
 fn harness_scaffolding_present() {
     let root = repo_root();
 

@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 
 #[test]
+#[ignore = "requires .planning/throughput-baselines.md from the private planning tree (stripped from public OSS clone); run with --ignored in the private repo only"]
 fn test_19_1_section_in_ledger() {
     // CARGO_MANIFEST_DIR = $WORKSPACE_ROOT/crates/beava-bench, so workspace root is two up.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

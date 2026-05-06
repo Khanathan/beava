@@ -106,6 +106,7 @@ const EXPECTED_BENCHES: &[&str] = &[
 ];
 
 #[test]
+#[ignore = "requires .planning/perf-baselines.md from the private planning tree (stripped from public OSS clone); run with --ignored in the private repo only"]
 fn baselines_populated_for_current_hw_class() {
     let root = repo_root();
     let baselines_path = root.join(".planning/perf-baselines.md");
