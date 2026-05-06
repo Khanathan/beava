@@ -1129,34 +1129,41 @@ Wave 6 — Workstream-F closure (depends on all above):
 
 ---
 
-### Phase 13.8: Packaging + GA tag — 📋 PLANNED 2026-05-03
+### Phase 13.8: Packaging + GA tag — 📋 PLANNED 2026-05-03 (scope amended 2026-05-06: Python-only)
 
-**Status:** Inserted 2026-05-03. Final phase — sequential after 13.4/13.5/13.6/13.7/13.7.5 all land.
+**Status:** Inserted 2026-05-03. Final phase — sequential after 13.4/13.5/13.6/13.7/13.7.5/13.7.6 all land.
 
-**Goal:** Cut v0.0.0 across all 4 repos and ship.
+**Scope amendment 2026-05-06:** Python-only OSS launch locked. Plans 13.8-02 (npm @beava/sdk) and 13.8-03 (Go module verify) **DEFERRED to v0.0.1**. TS+Go SDK code STAYS in repo and tests still run; only the publishing tracks defer.
 
-**Depends on:** Phases 13.4 + 13.5 + 13.6 + 13.7 all closed.
+**Goal:** Cut v0.0.0 — Python-first install path live across PyPI / Docker Hub / ghcr.io / Homebrew / GitHub Releases.
 
-**Plans (estimated, ~6 plans):**
+**Depends on:** Phases 13.4 + 13.5 + 13.6 + 13.7 + 13.7.5 + 13.7.6 all closed.
 
-- PyPI multi-arch wheels: Linux x86_64 / Linux ARM64 / macOS ARM64 (3 wheels with bundled binary, ~10-20 MB each)
-- npm: `@beava/sdk` (single package, all platforms — no native binary, just TS)
-- Go module: `github.com/beava-io/beava-go` (single module)
-- Docker Hub: `beava/beava:v0.0.0` (multi-arch manifest)
-- GitHub Releases: 3 platform binaries (no bundled SDK — for direct download)
-- CI green on all 4 repos
-- v0.0.0 tag cut on all 4 repos
-- Marketing assets: README hero, HN/Twitter/Reddit posts drafted, demo video
-- `examples/quickstart.sh` curl-only path tested manually
-- Brew formula (optional, can ship in v0.0.x if not done in 13.8)
+**Plans (10 plans; was 12):**
 
-**Success criteria:**
-1. `pip install beava && python -c "import beava as bv; print(bv.demo('adtech').replay())"` works on a fresh machine (Linux x86_64, Linux ARM64, macOS ARM64)
-2. `docker run -p 7380:7380 beava/beava:v0.0.0` works
-3. `npm install @beava/sdk` + sample TS code runs
-4. `go get github.com/beava-io/beava-go` + sample Go code runs
-5. v0.0.0 GitHub Release published with binaries + changelog
-6. v0 LAUNCH 🚀
+- PyPI multi-arch wheels (Plan 01): Linux x86_64 / Linux ARM64 / macOS ARM64 / macOS Intel — 4 wheels with bundled binary
+- ~~npm: `@beava/sdk`~~ (Plan 02 DEFERRED to v0.0.1)
+- ~~Go module: `github.com/beava-dev/beava/sdk/go`~~ (Plan 03 DEFERRED to v0.0.1)
+- Docker Hub + ghcr.io (Plan 04): multi-arch manifest at `beava/beava:v0.0.0` and `ghcr.io/beava-dev/beava:v0.0.0`
+- `curl | sh` installer (Plan 04a): `github.com/beava-dev/beava/releases/latest/download/install.sh`
+- Homebrew tap auto-bump (Plan 04b): `github.com/beava-dev/homebrew-beava` (already created)
+- `release.yml` multi-channel orchestrator (Plan 08; npm/Go steps removed for v0.0.0)
+- `Cargo.toml` version bump → 0.0.0; Python `__version__` → 0.0.0 (Plan 09)
+- README hero finalization (Plan 10): wire in honest Plan-28 sustained EPS numbers
+- Marketing drafts (Plan 11): HN, Twitter, dev.to
+- SOAK-LOG.md scaffold + post-tag soak window (Plan 12)
+- Closure: tag v0.0.0 (Plan 13)
+
+**Success criteria (Python-only v0.0.0):**
+1. `pip install beava && python -c "import beava as bv; print(bv.demo('fraud'))"` works on a fresh machine (Linux x86_64, Linux ARM64, macOS ARM64, macOS Intel)
+2. `docker run -p 8080:8080 -p 8081:8081 beava/beava:v0.0.0` works
+3. `brew install beava-dev/beava/beava` works
+4. v0.0.0 GitHub Release published with binaries + changelog
+5. v0 LAUNCH 🚀
+
+**Deferred to v0.0.1 (Python-only locked 2026-05-06):**
+- `npm install @beava/sdk` + TS smoke
+- `go get github.com/beava-dev/beava/sdk/go` + Go smoke
 
 ### Phase 13.1: Perf regression fix — fsync off the runtime thread — ✅ COMPLETE
 
