@@ -89,9 +89,9 @@ class UserEvent:
 {`@bv.table(key="user_id")
 def UserActivityFeatures(ev: UserEvent) -> bv.Table:
     return ev.group_by("user_id").agg(
-        views_1h=bv.count(window="1h", where="_event.event_type == 'view'"),
-        clicks_1h=bv.count(window="1h", where="_event.event_type == 'click'"),
-        purchases_24h=bv.count(window="24h", where="_event.event_type == 'purchase'"),
+        views_1h=bv.count(window="1h", where=bv.col("event_type") == "view"),
+        clicks_1h=bv.count(window="1h", where=bv.col("event_type") == "click"),
+        purchases_24h=bv.count(window="24h", where=bv.col("event_type") == "purchase"),
         distinct_categories_24h=bv.count_distinct("category", window="24h"),
     )`}
             </Code>
