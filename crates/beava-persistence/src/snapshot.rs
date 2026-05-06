@@ -175,7 +175,7 @@ pub fn list_snapshots(dir: &Path) -> Result<Vec<(Lsn, PathBuf)>, PersistError> {
         };
         out.push((lsn, path));
     }
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|(lsn, _)| std::cmp::Reverse(*lsn));
     Ok(out)
 }
 
