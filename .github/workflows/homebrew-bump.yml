@@ -10,6 +10,13 @@ on:
         required: true
         type: string
 
+# Default-deny GITHUB_TOKEN (OWASP / GitHub-Actions hardening guide).
+# This workflow pushes to beava-dev/homebrew-beava using HOMEBREW_TAP_DEPLOY_KEY
+# (an SSH deploy key on the tap repo); the GITHUB_TOKEN is not used to write
+# anywhere, so contents:read against the source repo is sufficient.
+permissions:
+  contents: read
+
 jobs:
   bump-formula:
     runs-on: ubuntu-latest

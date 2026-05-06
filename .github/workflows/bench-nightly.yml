@@ -13,6 +13,12 @@ on:
   # Allow manual trigger for ad-hoc reference runs.
   workflow_dispatch:
 
+# Default-deny GITHUB_TOKEN (OWASP / GitHub-Actions hardening guide).
+# upload-artifact@v4 works under contents:read + the implicit actions
+# scope; no write permissions are needed for the source repo.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 

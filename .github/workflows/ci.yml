@@ -11,6 +11,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Default-deny GITHUB_TOKEN (OWASP / GitHub-Actions hardening guide).
+# Jobs that need write access elevate explicitly; none in ci.yml do.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -37,7 +42,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: cargo nextest run
