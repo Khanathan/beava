@@ -16,7 +16,13 @@
 //!
 //! Failing the test means the bench is mis-measuring wall_clock_ms again.
 
-const BENCH_V18_SOURCE: &str = include_str!("../src/bin/beava-bench-v18.rs");
+// Plan 13.7.6-32 migrated v18's production harness from
+// `src/bin/beava-bench-v18.rs` (deleted) to `src/harness/production.rs`. The
+// structural pins below now scan the harness module; the contract — `let
+// elapsed = start.elapsed();` precedes the `get_task` / `rss_task` awaits and
+// both background tasks use `tokio::select!` — is preserved across the
+// migration.
+const BENCH_V18_SOURCE: &str = include_str!("../src/harness/production.rs");
 
 /// Find the byte offset of the (last occurrence of the) given marker. Used to
 /// pin source-text ordering for the wall_clock capture relative to
@@ -39,20 +45,20 @@ fn test_elapsed_captured_before_background_task_awaits() {
     // restructured and this test needs an update.
     let elapsed_marker = "let elapsed = start.elapsed();";
     let elapsed_offset = find_offset(source, elapsed_marker).unwrap_or_else(|| {
-        panic!("could not find `{elapsed_marker}` in beava-bench-v18.rs — bench may have been restructured")
+        panic!("could not find `{elapsed_marker}` in harness/production.rs — bench may have been restructured")
     });
 
     let get_await_marker = "let _ = get_task.await;";
     let get_await_offset = find_offset(source, get_await_marker).unwrap_or_else(|| {
         panic!(
-            "could not find `{get_await_marker}` in beava-bench-v18.rs — bench may have been restructured"
+            "could not find `{get_await_marker}` in harness/production.rs — bench may have been restructured"
         )
     });
 
     let rss_await_marker = "let _ = rss_task.await;";
     let rss_await_offset = find_offset(source, rss_await_marker).unwrap_or_else(|| {
         panic!(
-            "could not find `{rss_await_marker}` in beava-bench-v18.rs — bench may have been restructured"
+            "could not find `{rss_await_marker}` in harness/production.rs — bench may have been restructured"
         )
     });
 

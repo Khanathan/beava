@@ -1,9 +1,17 @@
 //! Plan 13.7.6-27 — sustained-mode hang fix + burst-vs-sustained label discipline.
 //!
+//! Plan 13.7.6-32 migrated v18's production harness into
+//! `crates/beava-bench/src/harness/production.rs` and folded it under
+//! `beava-bench throughput --parallel N`. The contract this file pins
+//! (sustained-mode terminates within bounded time + sustained_eps vs
+//! burst_eps label discipline) is preserved across the migration; tests now
+//! exercise `beava-bench throughput …` instead of the standalone v18 binary.
+//!
 //! ## Bug 1 — sustained-mode hang
 //!
-//! `beava-bench-v18 --duration-secs N` (no `--total-events` cap) was observed
-//! 2026-05-05 to hang at ~0.1% CPU for 14+ minutes before being killed.
+//! `beava-bench throughput --duration-secs N` (no `--total-events` cap) was
+//! observed 2026-05-05 to hang at ~0.1% CPU for 14+ minutes before being
+//! killed.
 //!
 //! Root cause: in `run_tcp_continuous_push_worker`, the sender task awaits on
 //! `Semaphore::acquire_owned()` to gate `pipeline_depth` in-flight pushes. The
@@ -72,10 +80,7 @@ fn bench_binary() -> std::path::PathBuf {
         .parent()
         .expect("workspace root")
         .to_path_buf();
-    let bin = workspace
-        .join("target")
-        .join("release")
-        .join("beava-bench-v18");
+    let bin = workspace.join("target").join("release").join("beava-bench");
     assert!(
         bin.exists(),
         "release binary not found at {} — run `cargo build -p beava-bench --release` first",
@@ -93,10 +98,13 @@ fn run_with_timeout(
     let start = Instant::now();
     let mut child = Command::new(bench_binary())
         .args(args)
+        // The migrated harness reads `./configs/{pipeline}.json` relative to
+        // CWD; tests run from CARGO_MANIFEST_DIR (= crates/beava-bench).
+        .current_dir(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("spawn beava-bench-v18");
+        .expect("spawn beava-bench");
 
     // Poll for exit with a small sleep so we don't busy-spin.
     loop {
@@ -145,6 +153,7 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
         &[
+            "throughput",
             "--pipeline",
             "small",
             "--transport",
@@ -164,7 +173,7 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
 
     assert!(
         exit_code.is_some(),
-        "bench-v18 sustained-mode (--duration-secs 5, no --total-events) timed out — \
+        "beava-bench throughput sustained-mode (--duration-secs 5, no --total-events) timed out — \
          the pre-13.7.6-27 hang has regressed. \
          elapsed={:?}\nstdout:\n{}\nstderr:\n{}",
         elapsed,
@@ -174,7 +183,7 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
     assert_eq!(
         exit_code,
         Some(0),
-        "bench-v18 must exit cleanly. \
+        "beava-bench throughput must exit cleanly. \
          elapsed={:?} exit={:?}\nstdout:\n{}\nstderr:\n{}",
         elapsed,
         exit_code,
@@ -184,7 +193,7 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
     // Should take roughly 5s + slack, definitely not 30s+.
     assert!(
         elapsed < Duration::from_secs(20),
-        "bench-v18 took too long ({:?}) — deadline path may still be inefficient",
+        "beava-bench throughput took too long ({:?}) — deadline path may still be inefficient",
         elapsed
     );
     // Sustained-mode run must report sustained_eps (the run actually achieved
@@ -209,6 +218,7 @@ fn total_events_capped_run_reports_burst_eps_label() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
         &[
+            "throughput",
             "--pipeline",
             "small",
             "--transport",
@@ -231,7 +241,7 @@ fn total_events_capped_run_reports_burst_eps_label() {
     assert_eq!(
         exit_code,
         Some(0),
-        "bench-v18 total-events run must exit cleanly. \
+        "beava-bench throughput total-events run must exit cleanly. \
          elapsed={:?} exit={:?}\nstdout:\n{}\nstderr:\n{}",
         elapsed,
         exit_code,
@@ -262,6 +272,7 @@ fn full_duration_run_reports_sustained_eps_label() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, _elapsed) = run_with_timeout(
         &[
+            "throughput",
             "--pipeline",
             "small",
             "--transport",

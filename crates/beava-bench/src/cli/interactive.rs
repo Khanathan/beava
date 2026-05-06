@@ -63,17 +63,40 @@ pub fn run_interactive() -> Result<()> {
 
     match mode {
         "throughput" => {
-            // Plan 13.7.6-24 stripped `parallel` from ThroughputArgs (it was
-            // a no-op flag in the smoke-test harness).
+            // Plan 13.7.6-32 reverses Plan 13.7.6-24's strip and merges v18's
+            // production harness into `beava-bench throughput`. The interactive
+            // walkthrough drives the production harness with sensible defaults;
+            // `--parallel = None` means harness::production picks min(8, ncpus).
+            // Workload selection (small/medium/large/fraud/adtech/ecommerce)
+            // maps to the corresponding pipeline config under configs/.
+            let pipeline = match workload {
+                "fraud" => "fraud-team".to_string(),
+                "adtech" => "medium-with-sketches".to_string(),
+                "ecommerce" => "large-with-sketches".to_string(),
+                other => other.to_string(),
+            };
+            let duration_secs = parse_duration_to_secs(&duration_or_entities).unwrap_or(60);
             let args = crate::cli::throughput::ThroughputArgs {
-                workload: workload.into(),
-                size,
-                duration: duration_or_entities,
-                format: OutputFormat::Human,
-                json: false,
-                markdown: false,
-                append: None,
-                yes: true,
+                pipeline,
+                transport: crate::harness::production::Transport::Tcp,
+                wire_format: crate::harness::production::WireFormat::Msgpack,
+                duration_secs,
+                parallel: None,
+                seed: 0xCAFE_BABE,
+                get_sample_interval_ms: 1000,
+                get_batch_keys: 100,
+                read_workers: 0,
+                no_ledger: true,
+                remote_addr: None,
+                pipeline_depth: 1024,
+                continuous_pipeline: true,
+                total_events: None,
+                blast_shape: crate::harness::production::BlastShapeArg::Zipfian,
+                zipf_alpha: 1.0,
+                cardinality: 10_000,
+                mixed_event_count: 3,
+                isolation_mode: false,
+                io_threads: None,
             };
             crate::cli::throughput::run_throughput(args)
         }
@@ -122,4 +145,12 @@ pub fn run_interactive() -> Result<()> {
         }
         _ => unreachable!(),
     }
+}
+
+/// Parse `30s` / `60s` / `2m` / `5m` / `1h` style duration strings into integer
+/// seconds. Returns `None` on a malformed string so the caller can fall back
+/// to a default (60 s for the throughput interactive default).
+fn parse_duration_to_secs(s: &str) -> Option<u64> {
+    let parsed = humantime::parse_duration(s.trim()).ok()?;
+    Some(parsed.as_secs())
 }

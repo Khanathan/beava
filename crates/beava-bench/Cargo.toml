@@ -6,13 +6,14 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Beava v2 end-to-end throughput harness — drives a live beava server over HTTP+TCP and produces sustained EPS / latency / RSS numbers."
-# Plan 13.7.6-25: `cargo run -p beava-bench` previously failed with
-# "could not determine which binary to run" because the crate ships four
-# binaries. The throughput-baselines.md ledger is reproduced via the
-# production harness `beava-bench-v18`; default plain `cargo run -p beava-bench`
-# to that binary so the Reproduce block in `.planning/throughput-baselines.md`
-# works without a `--bin` argument.
-default-run = "beava-bench-v18"
+# Plan 13.7.6-32 consolidated the previous 4-binary cruft (beava-bench /
+# beava-bench-legacy / beava-bench-v18 / beava-bench-v2) into a single
+# canonical `beava-bench` binary with subcommands. v18's production harness
+# lives in `harness::production`; `beava-bench throughput --parallel N`
+# reproduces ledger numbers. `default-run` is self-referential now (only one
+# bin remains post-Plan-32, but the field is harmless and avoids warnings if
+# auxiliary bins are added in the future).
+default-run = "beava-bench"
 
 [dependencies]
 beava-core = { path = "../beava-core" }
@@ -58,10 +59,6 @@ path = "src/bin/beava-bench.rs"
 [[bin]]
 name = "beava-bench-legacy"
 path = "src/bin/beava-bench-legacy.rs"
-
-[[bin]]
-name = "beava-bench-v18"
-path = "src/bin/beava-bench-v18.rs"
 
 [[bin]]
 name = "beava-bench-v2"

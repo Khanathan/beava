@@ -1,8 +1,11 @@
-//! `beava bench <mode>` CLI — the polished subcommand surface.
+//! `beava-bench <mode>` CLI — the single canonical bench binary.
 //!
-//! Standalone bench binaries (`beava-bench-legacy`, `beava-bench-v18`,
-//! `beava-bench-v2`) live alongside this one for the deeper harnesses used by
-//! `.planning/throughput-baselines.md` runs.
+//! Plan 13.7.6-32 consolidated the previous 4-binary cruft (`beava-bench`,
+//! `beava-bench-legacy`, `beava-bench-v18`, `beava-bench-v2`) into this one
+//! entry point with subcommands. v18's production harness lives in
+//! `harness::production`; `beava-bench throughput --parallel N` is the
+//! production benchmark surface used to reproduce
+//! `.planning/throughput-baselines.md` ledger numbers.
 
 use clap::{Parser, Subcommand};
 

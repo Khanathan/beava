@@ -1,47 +1,26 @@
-//! Standalone throughput harness binding `ServerV18` directly.
+//! Production throughput harness — drives `ServerV18` directly with N parallel
+//! workers + Pool=N + continuous-pipeline (sender / receiver split with
+//! semaphore-gated inflight queue). Migrated from `bin/beava-bench-v18.rs`
+//! per Plan 13.7.6-32 so `beava-bench throughput --parallel N` IS the
+//! production benchmark (reverses Plan 13.7.6-24's strip; the standalone v18
+//! binary is gone).
 //!
-//! Boots `ServerV18::bind()` + `serve_with_dirs()` (NOT `TestServer`), then
-//! drives it at saturation for N seconds (or N events, when `--total-events`
-//! is set). Captures:
-//! - Sustained EPS (events / wall-time)
-//! - P50 / P95 / P99 push latency (HDR histogram, 1µs precision)
-//! - P99 batch-get latency (sampled every second)
-//! - Peak RSS (sampled every 500 ms via `ps`)
+//! Captures sustained EPS / latency percentiles / RSS / batch-get latency.
+//! Self-labels `sustained_eps:` vs `burst_eps:` based on the
+//! elapsed/duration ratio (Plan 13.7.6-27 Bug 2 fix preserved).
 //!
-//! Blast modes:
-//! - `--total-events N` — fixed-event blast using the [`blast_shape`]
-//!   pre-encoded frame pool. `--duration-secs` becomes a safety upper bound
-//!   only; the receiver flips `stop` and closes the sender semaphore as soon
-//!   as `acks >= N`. A hard-cap counter on the sender prevents over-pushing
-//!   past `N`; run end reports the invariant tuple
-//!   `{requested, pushed, acked}` (asserted equal when `--total-events` is
-//!   set).
-//! - `--blast-shape={fixed,uniform,zipfian,mixed}` — distribution that the
-//!   Pool=N builder samples.
-//! - `--isolation-mode` — adds `wall_clock_ms` / `send_drain_ms` /
-//!   `ack_lag_ms = wall_clock - send_drain` columns. Pool-build time is
-//!   excluded from `wall_clock_ms` via a `tokio::sync::Barrier::new(parallel + 1)`
-//!   synchronization point.
+//! ## Plan 27 sem.close() fix preserved
 //!
-//! Usage:
-//! ```text
-//! ./target/release/beava-bench-v18 \
-//!     --pipeline small --transport tcp --duration-secs 10 --parallel 16 --no-ledger
-//!
-//! ./target/release/beava-bench-v18 \
-//!     --total-events 1_000_000 --blast-shape zipfian --transport tcp \
-//!     --wire-format msgpack --pipeline small --duration-secs 30 \
-//!     --parallel 16 --pipeline-depth 1024 --no-ledger --isolation-mode
-//! ```
-//!
-//! [`blast_shape`]: beava_bench::blast_shape
+//! `run_tcp_continuous_push_worker`'s receiver path closes the sender's
+//! semaphore at exit (`sem.close()` immediately before `sender_handle.await`)
+//! so the deadline-only sustained path doesn't deadlock. See the `sem.close()`
+//! call site below for the rationale block.
 
 use anyhow::{Context, Result};
-use beava_bench::blast_shape::{build_pool_timed, BlastShape, BlastShapeConfig, PipelineConfig};
 use beava_core::wire::{CT_JSON, OP_GET_MULTI, OP_GET_RESPONSE, OP_PUSH};
 use beava_server::server::ServerV18;
 use bytes::Bytes;
-use clap::{Parser, ValueEnum};
+use clap::ValueEnum;
 use hdrhistogram::Histogram;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -50,136 +29,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::blast_shape::{build_pool_timed, BlastShape, BlastShapeConfig, PipelineConfig};
+
 const KEY_SPACE: u64 = 100_000;
 
-#[derive(Parser, Debug)]
-#[command(
-    version,
-    about = "Beava v18 standalone throughput harness (ServerV18 direct)",
-    long_about = None
-)]
-struct Cli {
-    /// Pipeline config name (small, medium, large) OR explicit JSON file path.
-    #[arg(long, default_value = "small")]
-    pipeline: String,
-
-    /// Transport to use.
-    #[arg(long, value_enum, default_value_t = Transport::Tcp)]
-    transport: Transport,
-
-    /// Wire format for TCP pushes (json or msgpack). HTTP always uses JSON.
-    #[arg(long, value_enum, default_value_t = WireFormat::Json)]
-    wire_format: WireFormat,
-
-    /// Wall-time duration in seconds. Becomes a safety upper bound only when
-    /// `--total-events` is set.
-    #[arg(long, default_value_t = 60)]
-    duration_secs: u64,
-
-    /// Number of parallel push workers. Defaults to min(8, num_cpus).
-    #[arg(long)]
-    parallel: Option<usize>,
-
-    /// Random seed.
-    #[arg(long, default_value_t = 0xCAFE_BABE_u64)]
-    seed: u64,
-
-    /// How often to sample batch /get latency (ms).
-    #[arg(long, default_value_t = 1000)]
-    get_sample_interval_ms: u64,
-
-    /// Keys per batch /get sample.
-    #[arg(long, default_value_t = 100)]
-    get_batch_keys: usize,
-
-    /// Number of parallel back-to-back /get worker tasks. Each worker holds
-    /// its own `TcpClient` connection (TCP transport) or reqwest client
-    /// (HTTP transport) and issues /get requests as fast as the server
-    /// responds — no sleep between requests. Use this to measure read
-    /// throughput, not just sampled latency. 0 (default) disables parallel
-    /// read workers; the `--get-sample-interval-ms` sampler still runs.
-    #[arg(long, default_value_t = 0)]
-    read_workers: usize,
-
-    /// Suppress markdown ledger row; only print human summary.
-    #[arg(long)]
-    no_ledger: bool,
-
-    /// Connect to an existing remote beava server instead of binding our
-    /// own ServerV18. Format: `host:http_port,host:tcp_port` (e.g.
-    /// `127.0.0.1:8080,127.0.0.1:8081`). When set, the bench skips
-    /// ServerV18::bind, /register (assumes pipeline already registered),
-    /// and pre-warm; just runs the workload. Used to measure server-side
-    /// throughput with multiple bench client processes pointing at one
-    /// server (escapes per-process glibc mmap_lock contention).
-    #[arg(long)]
-    remote_addr: Option<String>,
-
-    /// TCP pipeline depth — caps inflight pushes per worker connection.
-    /// In burst mode (--continuous-pipeline=false), each batch sends N
-    /// pushes back-to-back then reads N acks. In continuous mode (default),
-    /// this is the inflight semaphore size: sender keeps up to N pushes
-    /// in-flight concurrently with receiver. Default 1 (request-response
-    /// per event). HTTP transport ignores this.
-    #[arg(long, default_value_t = 1)]
-    pipeline_depth: usize,
-
-    /// TCP continuous pipelining (default true) — split sender/receiver
-    /// tasks with a semaphore-gated inflight queue. Eliminates the burst-
-    /// mode sawtooth (apply thread idles between batches while the bench
-    /// is reading N acks then re-sending N events) and produces constant
-    /// load on the apply thread. Set `--continuous-pipeline=false` to
-    /// fall back to the burst pattern. HTTP transport ignores this.
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-    continuous_pipeline: bool,
-
-    /// Send a fixed total number of events instead of running for
-    /// `--duration-secs`. When set, the bench reports `wall_clock` to push N
-    /// events end-to-end; `--duration-secs` becomes a safety upper bound only.
-    #[arg(long)]
-    total_events: Option<u64>,
-
-    /// Blast shape — distribution that the Pool=N is built from.
-    #[arg(long, value_enum, default_value_t = BlastShapeArg::Fixed)]
-    blast_shape: BlastShapeArg,
-
-    /// Zipfian alpha skew (only used when --blast-shape=zipfian). Default 1.0.
-    #[arg(long, default_value_t = 1.0)]
-    zipf_alpha: f64,
-
-    /// Cardinality K for uniform/zipfian shapes. Default 1_000_000.
-    #[arg(long, default_value_t = 1_000_000)]
-    cardinality: u64,
-
-    /// Number of distinct event names for --blast-shape=mixed. Default 3.
-    #[arg(long, default_value_t = 3)]
-    mixed_event_count: usize,
-
-    /// Isolation mode — print wall_clock_ms / send_drain_ms / ack_lag_ms columns.
-    #[arg(long, default_value_t = false)]
-    isolation_mode: bool,
-
-    /// IoPool worker count override.
-    ///
-    /// Defaults to `max(2, available_parallelism / 4)` (Redis-style ratio).
-    /// On virtualized cloud servers with ≥ 16 vCPUs the auto-default can
-    /// underperform: the Hetzner sweep on 2026-04-28 showed `iot=4` is the
-    /// worst config for fraud-team-shaped workloads (~10% lift available at
-    /// `iot=2` or `iot=8`). Try `--io-threads 2` for feature-heavy workloads
-    /// or `--io-threads 8` for thin shapes if the auto-default underperforms
-    /// on your box. Equivalent to setting `BEAVA_IO_THREADS=N`.
-    #[arg(long)]
-    io_threads: Option<usize>,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum Transport {
+/// Transport selector for the production harness.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum Transport {
     Http,
     Tcp,
 }
 
 impl Transport {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Transport::Http => "http",
             Transport::Tcp => "tcp",
@@ -187,14 +49,15 @@ impl Transport {
     }
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum WireFormat {
+/// Wire format for TCP push frames. HTTP transport always uses JSON regardless.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum WireFormat {
     Json,
     Msgpack,
 }
 
 impl WireFormat {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             WireFormat::Json => "json",
             WireFormat::Msgpack => "msgpack",
@@ -202,8 +65,9 @@ impl WireFormat {
     }
 }
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum BlastShapeArg {
+/// Blast-shape selector for the pre-encoded frame pool.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum BlastShapeArg {
     Fixed,
     Uniform,
     Zipfian,
@@ -211,7 +75,7 @@ enum BlastShapeArg {
 }
 
 impl BlastShapeArg {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             BlastShapeArg::Fixed => "fixed",
             BlastShapeArg::Uniform => "uniform",
@@ -219,24 +83,241 @@ impl BlastShapeArg {
             BlastShapeArg::Mixed => "mixed",
         }
     }
-    fn to_blast_shape(self, cli: &Cli) -> BlastShape {
+    fn to_blast_shape(self, cfg: &ProductionConfig) -> BlastShape {
         match self {
             BlastShapeArg::Fixed => BlastShape::Fixed,
             BlastShapeArg::Uniform => BlastShape::Uniform {
-                cardinality: cli.cardinality,
+                cardinality: cfg.cardinality,
             },
             BlastShapeArg::Zipfian => BlastShape::Zipfian {
-                alpha: cli.zipf_alpha,
-                cardinality: cli.cardinality,
+                alpha: cfg.zipf_alpha,
+                cardinality: cfg.cardinality,
             },
             BlastShapeArg::Mixed => BlastShape::Mixed {
-                event_count: cli.mixed_event_count,
+                event_count: cfg.mixed_event_count,
             },
         }
     }
 }
 
-fn load_pipeline(name_or_path: &str) -> Result<PipelineConfig> {
+/// Configuration for one production-harness run. Built from the CLI's
+/// `ThroughputArgs`; the harness reads it as a single struct so the call site
+/// in `cli/throughput.rs` stays small.
+#[derive(Debug, Clone)]
+pub struct ProductionConfig {
+    pub pipeline: String,
+    pub transport: Transport,
+    pub wire_format: WireFormat,
+    pub duration_secs: u64,
+    pub parallel: Option<usize>,
+    pub seed: u64,
+    pub get_sample_interval_ms: u64,
+    pub get_batch_keys: usize,
+    pub read_workers: usize,
+    pub no_ledger: bool,
+    pub remote_addr: Option<String>,
+    pub pipeline_depth: usize,
+    pub continuous_pipeline: bool,
+    pub total_events: Option<u64>,
+    pub blast_shape: BlastShapeArg,
+    pub zipf_alpha: f64,
+    pub cardinality: u64,
+    pub mixed_event_count: usize,
+    pub isolation_mode: bool,
+    pub io_threads: Option<usize>,
+}
+
+/// Spawn the production harness end-to-end: bind ServerV18 (or connect to a
+/// remote one), register the pipeline, run N parallel push workers for the
+/// configured duration, and print the human report + ledger row to stdout/
+/// stderr (matching v18's surface byte-for-byte so existing scripts /
+/// regression tests keep working).
+pub async fn run_production(cfg: &ProductionConfig) -> Result<()> {
+    // `--io-threads N` overrides the IoPool worker count by setting
+    // BEAVA_IO_THREADS, which `default_io_threads()` reads inside
+    // `run_mio_event_loop`. Must land BEFORE `ServerV18::bind` so the apply
+    // thread sees it when it spawns the per-worker continuous-loop pool.
+    if let Some(n) = cfg.io_threads {
+        std::env::set_var("BEAVA_IO_THREADS", n.to_string());
+        eprintln!("beava-bench: --io-threads {n} → BEAVA_IO_THREADS={n}");
+    }
+
+    let pipeline = load_pipeline(&cfg.pipeline)?;
+    let parallel = cfg
+        .parallel
+        .unwrap_or_else(|| std::cmp::min(8, num_cpus_or_default()));
+
+    eprintln!(
+        "beava-bench: pipeline={} transport={} wire_format={} duration_secs={} parallel={} seed={} get_sample_ms={} get_batch_keys={} blast_shape={} total_events={:?}",
+        pipeline.name,
+        cfg.transport.label(),
+        cfg.wire_format.label(),
+        cfg.duration_secs,
+        parallel,
+        cfg.seed,
+        cfg.get_sample_interval_ms,
+        cfg.get_batch_keys,
+        cfg.blast_shape.label(),
+        cfg.total_events,
+    );
+
+    // Bind a local ServerV18, or connect to an existing remote one. Remote
+    // mode is the "many bench clients, one server" pattern used to escape
+    // per-process glibc mmap_lock contention that caps in-process push EPS.
+    let (http_addr, tcp_addr, _local_server_handles) = if let Some(remote) = &cfg.remote_addr {
+        let parts: Vec<&str> = remote.split(',').collect();
+        anyhow::ensure!(
+            parts.len() == 2,
+            "--remote-addr expects \"host:http_port,host:tcp_port\", got {:?}",
+            remote
+        );
+        let http: std::net::SocketAddr = parts[0]
+            .parse()
+            .with_context(|| format!("parse remote http addr {:?}", parts[0]))?;
+        let tcp: std::net::SocketAddr = parts[1]
+            .parse()
+            .with_context(|| format!("parse remote tcp addr {:?}", parts[1]))?;
+        eprintln!(
+            "beava-bench: REMOTE mode http={} tcp={} (skipping bind/register/prewarm)",
+            http, tcp
+        );
+        (http, tcp, None)
+    } else {
+        let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let sv18 = ServerV18::bind(any, any, any)
+            .await
+            .context("ServerV18::bind")?;
+
+        let http_addr = sv18.http_addr();
+        let tcp_addr = sv18.tcp_addr();
+
+        eprintln!(
+            "beava-bench: bound http={} tcp={} admin={}",
+            http_addr,
+            tcp_addr,
+            sv18.admin_addr()
+        );
+
+        let wal_dir = tempfile::tempdir().context("wal tempdir")?;
+        let snap_dir = tempfile::tempdir().context("snap tempdir")?;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let wal_path = wal_dir.path().to_path_buf();
+        let snap_path = snap_dir.path().to_path_buf();
+        let serve_task = tokio::spawn(async move {
+            sv18.serve_with_dirs(
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                wal_path,
+                snap_path,
+            )
+            .await
+        });
+
+        // Hold dirs + shutdown so they outlive the bench (drop closes them).
+        (
+            http_addr,
+            tcp_addr,
+            Some((wal_dir, snap_dir, shutdown_tx, serve_task)),
+        )
+    };
+
+    // Wait for the server to start accepting.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let http_base = format!("http://{}", http_addr);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(parallel + 4)
+        .build()
+        .context("build reqwest client")?;
+
+    if cfg.remote_addr.is_none() {
+        let reg_resp = client
+            .post(format!("{http_base}/register"))
+            .header("Content-Type", "application/json")
+            .body(pipeline.register.to_string())
+            .send()
+            .await
+            .context("register request")?;
+        let reg_status = reg_resp.status();
+        let reg_body = reg_resp.text().await.unwrap_or_default();
+        anyhow::ensure!(
+            reg_status.is_success(),
+            "register failed: status={reg_status} body={reg_body}"
+        );
+        eprintln!("beava-bench: registered pipeline OK ({})", reg_status);
+
+        // Pre-warm: 100 events serially before timed run.
+        let mut rng = sampling_rng(cfg.seed ^ 0xDEAD);
+        for i in 0..100_u64 {
+            let body = make_event_payload(&pipeline, i, &mut rng);
+            let _ = client
+                .post(format!("{http_base}/push/{}", pipeline.event_name))
+                .header("Content-Type", "application/json")
+                .body(body.to_string())
+                .send()
+                .await;
+        }
+        eprintln!("beava-bench: pre-warm done");
+    } else {
+        eprintln!(
+            "beava-bench: REMOTE mode — skipping pipeline register + pre-warm (assumed already done)"
+        );
+    }
+
+    let result = run_workload(
+        http_addr,
+        tcp_addr,
+        &pipeline,
+        cfg,
+        parallel,
+        Arc::new(client.clone()),
+        cfg.wire_format,
+    )
+    .await?;
+
+    let report = format_report(&pipeline, cfg.transport, cfg.wire_format, cfg, &result);
+    if !cfg.no_ledger {
+        println!("{}", report.ledger_row);
+    }
+    eprintln!("\n=== beava-bench summary ===\n{}\n", report.human);
+
+    // Invariant tuple {requested, pushed, acked}: printed unconditionally so
+    // smoke tests can grep for it; asserted equal when `--total-events` is
+    // set. `pushes` is incremented by the receiver per ack (so
+    // `push_count == acked`); `pushes_cap` tracks issued frames before
+    // `write_all` and is not reused here.
+    let requested = cfg.total_events.unwrap_or(0);
+    let pushed = result.push_count;
+    let acked = pushed;
+    eprintln!("beava-bench: invariant_tuple requested={requested} pushed={pushed} acked={acked}",);
+    if cfg.total_events.is_some() {
+        anyhow::ensure!(
+            requested == pushed,
+            "{{requested, pushed}} mismatch — measurement error: requested={requested} pushed={pushed} acked={acked}",
+        );
+    }
+
+    if cfg.isolation_mode {
+        let wall_clock_ms = result.elapsed.as_millis() as u64;
+        let send_drain_ms = result.send_drain_ms;
+        let ack_lag_ms = wall_clock_ms.saturating_sub(send_drain_ms);
+        eprintln!(
+            "beava-bench: isolation_mode wall_clock_ms={wall_clock_ms} send_drain_ms={send_drain_ms} ack_lag_ms={ack_lag_ms}",
+        );
+    }
+
+    if let Some((_wal_dir, _snap_dir, shutdown_tx, serve_task)) = _local_server_handles {
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
+    }
+
+    Ok(())
+}
+
+pub fn load_pipeline(name_or_path: &str) -> Result<PipelineConfig> {
     let path = PathBuf::from(name_or_path);
     let resolved = if path.is_file() {
         path
@@ -300,232 +381,36 @@ fn make_event_payload(pipeline: &PipelineConfig, seq: u64, rng: &mut rand::rngs:
     Value::Object(obj)
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new("beava_bench_v18=info,warn")
-            }),
-        )
-        .init();
-
-    let cli = Cli::parse();
-
-    // `--io-threads N` overrides the IoPool worker count by setting
-    // BEAVA_IO_THREADS, which `default_io_threads()` reads inside
-    // `run_mio_event_loop`. Must land BEFORE `ServerV18::bind` so the apply
-    // thread sees it when it spawns the per-worker continuous-loop pool.
-    if let Some(n) = cli.io_threads {
-        std::env::set_var("BEAVA_IO_THREADS", n.to_string());
-        eprintln!("beava-bench-v18: --io-threads {n} → BEAVA_IO_THREADS={n}");
-    }
-
-    let pipeline = load_pipeline(&cli.pipeline)?;
-    let parallel = cli
-        .parallel
-        .unwrap_or_else(|| std::cmp::min(8, num_cpus_or_default()));
-
-    eprintln!(
-        "beava-bench-v18: pipeline={} transport={} wire_format={} duration_secs={} parallel={} seed={} get_sample_ms={} get_batch_keys={} blast_shape={} total_events={:?}",
-        pipeline.name,
-        cli.transport.label(),
-        cli.wire_format.label(),
-        cli.duration_secs,
-        parallel,
-        cli.seed,
-        cli.get_sample_interval_ms,
-        cli.get_batch_keys,
-        cli.blast_shape.label(),
-        cli.total_events,
-    );
-
-    // Bind a local ServerV18, or connect to an existing remote one. Remote
-    // mode is the "many bench clients, one server" pattern used to escape
-    // per-process glibc mmap_lock contention that caps in-process push EPS.
-    let (http_addr, tcp_addr, _local_server_handles) = if let Some(remote) = &cli.remote_addr {
-        let parts: Vec<&str> = remote.split(',').collect();
-        anyhow::ensure!(
-            parts.len() == 2,
-            "--remote-addr expects \"host:http_port,host:tcp_port\", got {:?}",
-            remote
-        );
-        let http: std::net::SocketAddr = parts[0]
-            .parse()
-            .with_context(|| format!("parse remote http addr {:?}", parts[0]))?;
-        let tcp: std::net::SocketAddr = parts[1]
-            .parse()
-            .with_context(|| format!("parse remote tcp addr {:?}", parts[1]))?;
-        eprintln!(
-            "beava-bench-v18: REMOTE mode http={} tcp={} (skipping bind/register/prewarm)",
-            http, tcp
-        );
-        (http, tcp, None)
-    } else {
-        let any: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let sv18 = ServerV18::bind(any, any, any)
-            .await
-            .context("ServerV18::bind")?;
-
-        let http_addr = sv18.http_addr();
-        let tcp_addr = sv18.tcp_addr();
-
-        eprintln!(
-            "beava-bench-v18: bound http={} tcp={} admin={}",
-            http_addr,
-            tcp_addr,
-            sv18.admin_addr()
-        );
-
-        let wal_dir = tempfile::tempdir().context("wal tempdir")?;
-        let snap_dir = tempfile::tempdir().context("snap tempdir")?;
-
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-        let wal_path = wal_dir.path().to_path_buf();
-        let snap_path = snap_dir.path().to_path_buf();
-        let serve_task = tokio::spawn(async move {
-            sv18.serve_with_dirs(
-                async move {
-                    let _ = shutdown_rx.await;
-                },
-                wal_path,
-                snap_path,
-            )
-            .await
-        });
-
-        // Hold dirs + shutdown so they outlive the bench (drop closes them).
-        (
-            http_addr,
-            tcp_addr,
-            Some((wal_dir, snap_dir, shutdown_tx, serve_task)),
-        )
-    };
-
-    // Wait for the server to start accepting.
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let http_base = format!("http://{}", http_addr);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(parallel + 4)
-        .build()
-        .context("build reqwest client")?;
-
-    if cli.remote_addr.is_none() {
-        let reg_resp = client
-            .post(format!("{http_base}/register"))
-            .header("Content-Type", "application/json")
-            .body(pipeline.register.to_string())
-            .send()
-            .await
-            .context("register request")?;
-        let reg_status = reg_resp.status();
-        let reg_body = reg_resp.text().await.unwrap_or_default();
-        anyhow::ensure!(
-            reg_status.is_success(),
-            "register failed: status={reg_status} body={reg_body}"
-        );
-        eprintln!("beava-bench-v18: registered pipeline OK ({})", reg_status);
-
-        // Pre-warm: 100 events serially before timed run.
-        let mut rng = sampling_rng(cli.seed ^ 0xDEAD);
-        for i in 0..100_u64 {
-            let body = make_event_payload(&pipeline, i, &mut rng);
-            let _ = client
-                .post(format!("{http_base}/push/{}", pipeline.event_name))
-                .header("Content-Type", "application/json")
-                .body(body.to_string())
-                .send()
-                .await;
-        }
-        eprintln!("beava-bench-v18: pre-warm done");
-    } else {
-        eprintln!("beava-bench-v18: REMOTE mode — skipping pipeline register + pre-warm (assumed already done)");
-    }
-
-    let result = run_workload(
-        http_addr,
-        tcp_addr,
-        &pipeline,
-        &cli,
-        parallel,
-        Arc::new(client.clone()),
-        cli.wire_format,
-    )
-    .await?;
-
-    let report = format_report(&pipeline, cli.transport, cli.wire_format, &cli, &result);
-    if !cli.no_ledger {
-        println!("{}", report.ledger_row);
-    }
-    eprintln!("\n=== beava-bench-v18 summary ===\n{}\n", report.human);
-
-    // Invariant tuple {requested, pushed, acked}: printed unconditionally so
-    // smoke tests can grep for it; asserted equal when `--total-events` is
-    // set. `pushes` is incremented by the receiver per ack (so
-    // `push_count == acked`); `pushes_cap` tracks issued frames before
-    // `write_all` and is not reused here.
-    let requested = cli.total_events.unwrap_or(0);
-    let pushed = result.push_count;
-    let acked = pushed;
-    eprintln!(
-        "beava-bench-v18: invariant_tuple requested={requested} pushed={pushed} acked={acked}",
-    );
-    if cli.total_events.is_some() {
-        anyhow::ensure!(
-            requested == pushed,
-            "{{requested, pushed}} mismatch — measurement error: requested={requested} pushed={pushed} acked={acked}",
-        );
-    }
-
-    if cli.isolation_mode {
-        let wall_clock_ms = result.elapsed.as_millis() as u64;
-        let send_drain_ms = result.send_drain_ms;
-        let ack_lag_ms = wall_clock_ms.saturating_sub(send_drain_ms);
-        eprintln!(
-            "beava-bench-v18: isolation_mode wall_clock_ms={wall_clock_ms} send_drain_ms={send_drain_ms} ack_lag_ms={ack_lag_ms}",
-        );
-    }
-
-    if let Some((_wal_dir, _snap_dir, shutdown_tx, serve_task)) = _local_server_handles {
-        let _ = shutdown_tx.send(());
-        let _ = tokio::time::timeout(Duration::from_secs(5), serve_task).await;
-    }
-
-    Ok(())
-}
-
 #[derive(Debug)]
-struct WorkloadResult {
+pub struct WorkloadResult {
     /// `push_count / elapsed.as_secs_f64()` — the wire-rate the run
     /// produced. NOT necessarily a sustained rate: when the run was capped
     /// early (typically by `--total-events`), this is a *burst* rate, and
     /// `format_report` switches the human-report label from `sustained_eps:`
     /// to `burst_eps:` accordingly (Plan 13.7.6-27 Bug 2). The field name
     /// is kept for API stability; the label renders the methodology.
-    sustained_eps: f64,
-    push_p50_us: u64,
-    push_p95_us: u64,
-    push_p99_us: u64,
-    push_count: u64,
-    push_errors: u64,
-    get_p99_us: u64,
-    get_samples: u64,
-    peak_rss_mb: u64,
-    elapsed: Duration,
+    pub sustained_eps: f64,
+    pub push_p50_us: u64,
+    pub push_p95_us: u64,
+    pub push_p99_us: u64,
+    pub push_count: u64,
+    pub push_errors: u64,
+    pub get_p99_us: u64,
+    pub get_samples: u64,
+    pub peak_rss_mb: u64,
+    pub elapsed: Duration,
     /// `last_send_ts - first_send_ts` across all workers, in milliseconds.
     /// Zero when no sends were captured (e.g., legacy duration-only mode where
     /// the timestamps are not wired). Populated on every continuous + burst
     /// run; the smoke test reads it via the `send_drain_ms` field.
-    send_drain_ms: u64,
+    pub send_drain_ms: u64,
 }
 
 async fn run_workload(
     http_addr: std::net::SocketAddr,
     tcp_addr: std::net::SocketAddr,
     pipeline: &PipelineConfig,
-    cli: &Cli,
+    cfg: &ProductionConfig,
     parallel: usize,
     http_client: Arc<reqwest::Client>,
     wire_format: WireFormat,
@@ -539,17 +424,17 @@ async fn run_workload(
 
     // When --total-events is set, --duration-secs is a safety upper bound
     // only; raise the floor to 1h so an unbounded runaway is impossible.
-    let effective_duration_secs = if cli.total_events.is_some() {
-        cli.duration_secs.max(3600)
+    let effective_duration_secs = if cfg.total_events.is_some() {
+        cfg.duration_secs.max(3600)
     } else {
-        cli.duration_secs
+        cfg.duration_secs
     };
     let deadline = Instant::now() + Duration::from_secs(effective_duration_secs);
 
     // Hard-cap counter: sender uses `fetch_add(1, Relaxed) >= cap` before
     // `write_all` so `{requested, pushed, acked}` stay equal at run end.
     let pushes_cap = Arc::new(AtomicU64::new(0));
-    let total_events_cap: Option<u64> = cli.total_events;
+    let total_events_cap: Option<u64> = cfg.total_events;
     // Per-worker first/last send timestamps for --isolation-mode.
     let first_send_ts: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
     let last_send_ts: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
@@ -576,7 +461,7 @@ async fn run_workload(
         if names.is_empty() {
             names.push(pipeline.event_name.clone());
         }
-        let want = cli.mixed_event_count.max(1);
+        let want = cfg.mixed_event_count.max(1);
         let original_len = names.len();
         while names.len() < want {
             let i = names.len();
@@ -585,15 +470,15 @@ async fn run_workload(
         if names.len() > want {
             names.truncate(want);
         }
-        if matches!(cli.blast_shape, BlastShapeArg::Mixed) && original_len < cli.mixed_event_count {
+        if matches!(cfg.blast_shape, BlastShapeArg::Mixed) && original_len < cfg.mixed_event_count {
             eprintln!(
                 "warning: --blast-shape=mixed but pipeline has only {} distinct events; padding to {} with synthetic names",
-                original_len, cli.mixed_event_count
+                original_len, cfg.mixed_event_count
             );
         }
         names
     };
-    let blast_shape = cli.blast_shape.to_blast_shape(cli);
+    let blast_shape = cfg.blast_shape.to_blast_shape(cfg);
 
     // Background-task stop signal: `tokio::sync::watch` lets each sampler
     // race its sleep against the stop signal in `tokio::select!` and exit
@@ -642,12 +527,12 @@ async fn run_workload(
     let get_samples_clone = Arc::clone(&get_samples_counter);
     let get_url = format!("http://{}/get", http_addr);
     let features_clone = pipeline.features.clone();
-    let get_interval_ms = cli.get_sample_interval_ms;
-    let get_batch_keys = cli.get_batch_keys;
-    let get_seed = cli.seed;
+    let get_interval_ms = cfg.get_sample_interval_ms;
+    let get_batch_keys = cfg.get_batch_keys;
+    let get_seed = cfg.seed;
     let get_client = Arc::clone(&http_client);
     let mut get_stop_rx = bg_stop_tx.subscribe();
-    let get_transport = cli.transport;
+    let get_transport = cfg.transport;
     let get_tcp_addr = tcp_addr;
     let get_task = tokio::spawn(async move {
         use rand::Rng;
@@ -740,19 +625,19 @@ async fn run_workload(
     // across all workers count toward `get_samples_counter` (the total
     // completed-read count under this mode) and `get_hist` (aggregated
     // latency histogram).
-    let read_workers_count = cli.read_workers;
+    let read_workers_count = cfg.read_workers;
     let mut read_worker_handles: Vec<tokio::task::JoinHandle<()>> =
         Vec::with_capacity(read_workers_count);
     for read_worker_id in 0..read_workers_count {
         let read_hist = Arc::clone(&get_hist);
         let read_samples = Arc::clone(&get_samples_counter);
-        let read_seed = cli
+        let read_seed = cfg
             .seed
             .wrapping_add(0xBADC0FEE)
             .wrapping_add(read_worker_id as u64 * 0x9E37);
         let read_features = pipeline.features.clone();
-        let read_batch_keys = cli.get_batch_keys;
-        let read_transport = cli.transport;
+        let read_batch_keys = cfg.get_batch_keys;
+        let read_transport = cfg.transport;
         let read_tcp_addr = tcp_addr;
         let read_get_url = format!("http://{}/get", http_addr);
         let read_http_client = Arc::clone(&http_client);
@@ -841,13 +726,13 @@ async fn run_workload(
         let first_send_ts_w = Arc::clone(&first_send_ts);
         let last_send_ts_w = Arc::clone(&last_send_ts);
         let pool_barrier_w = Arc::clone(&pool_ready_barrier);
-        let seed = cli.seed.wrapping_add(worker_id as u64 * 0x9E37);
+        let seed = cfg.seed.wrapping_add(worker_id as u64 * 0x9E37);
         let http_url = format!("http://{}/push/{}", http_addr, pipeline.event_name);
-        let transport = cli.transport;
+        let transport = cfg.transport;
         let wf = wire_format;
         let client = Arc::clone(&http_client);
-        let pipeline_depth = cli.pipeline_depth.max(1);
-        let continuous_pipeline = cli.continuous_pipeline;
+        let pipeline_depth = cfg.pipeline_depth.max(1);
+        let continuous_pipeline = cfg.continuous_pipeline;
         let total_cap = total_events_cap;
         let bs = blast_shape;
 
@@ -1128,8 +1013,8 @@ fn build_worker_pool(
         pipeline,
         event_names_for_mixed: &names_ref,
         wire_format: match wire_format {
-            WireFormat::Json => beava_bench::blast_shape::WireFormat::Json,
-            WireFormat::Msgpack => beava_bench::blast_shape::WireFormat::Msgpack,
+            WireFormat::Json => crate::blast_shape::WireFormat::Json,
+            WireFormat::Msgpack => crate::blast_shape::WireFormat::Msgpack,
         },
         seed,
     };
@@ -1564,19 +1449,19 @@ async fn run_tcp_continuous_push_worker(
     flush_latencies(&push_hist, &mut latency_batch).await;
 
     // Wake up the sender if it's parked on `acquire_owned().await`. The cap-
-    // cross path inside the 'recv loop already calls `sem.close()` (line ~1515)
-    // before breaking — but every OTHER exit path (deadline fired with `stop`
+    // cross path inside the 'recv loop already calls `sem.close()` before
+    // breaking — but every OTHER exit path (deadline fired with `stop`
     // set by the main task; socket EOF; decode error; 50 ms tick + stop) leaves
     // the sender potentially parked on a permit that will never become
     // available because we won't be calling `add_permits(1)` again. Without
     // this close, the trailing `sender_handle.await` below deadlocks: receiver
     // waits for sender, sender waits for permit, neither ever fires.
     //
-    // 13.7.6-27 root cause: pre-fix, `--duration-secs N` (no --total-events)
-    // hung at 0.1 % CPU for 14+ minutes before being killed; the cap-cross
-    // path was the only branch that closed the semaphore, so the
-    // deadline-only path always deadlocked when the sender happened to be
-    // awaiting a permit at the moment `stop` flipped.
+    // 13.7.6-27 root cause (preserved across the 13.7.6-32 migration): pre-fix,
+    // `--duration-secs N` (no --total-events) hung at 0.1 % CPU for 14+ minutes
+    // before being killed; the cap-cross path was the only branch that closed
+    // the semaphore, so the deadline-only path always deadlocked when the
+    // sender happened to be awaiting a permit at the moment `stop` flipped.
     //
     // Idempotent — if already closed (cap-cross path), this is a no-op.
     sem.close();
@@ -1595,7 +1480,7 @@ fn format_report(
     pipeline: &PipelineConfig,
     transport: Transport,
     wire_format: WireFormat,
-    cli: &Cli,
+    cfg: &ProductionConfig,
     r: &WorkloadResult,
 ) -> Report {
     let date = current_utc_date();
@@ -1607,11 +1492,11 @@ fn format_report(
         String::new()
     };
     let ledger_row = format!(
-        "| 18 | {date} | {pipeline} | {transport} | {parallel} | {duration}s | {eps:.0} | {p50} | {p95} | {p99} | {gp99} | {rss} | {commit} | {notes} |",
+        "| 32 | {date} | {pipeline} | {transport} | {parallel} | {duration}s | {eps:.0} | {p50} | {p95} | {p99} | {gp99} | {rss} | {commit} | {notes} |",
         pipeline = pipeline.name,
         transport = transport_label,
-        parallel = cli.parallel.unwrap_or(0),
-        duration = cli.duration_secs,
+        parallel = cfg.parallel.unwrap_or(0),
+        duration = cfg.duration_secs,
         eps = r.sustained_eps,
         p50 = r.push_p50_us,
         p95 = r.push_p95_us,
@@ -1619,24 +1504,17 @@ fn format_report(
         gp99 = r.get_p99_us,
         rss = r.peak_rss_mb,
     );
-    // Burst-vs-sustained label discipline (Plan 13.7.6-27 Bug 2).
+    // Burst-vs-sustained label discipline (Plan 13.7.6-27 Bug 2; preserved
+    // across the Plan 13.7.6-32 v18 → harness/production.rs migration).
     //
-    // Pre-fix, the `sustained_eps:` label was emitted unconditionally — even
-    // when `--total-events N` capped the run before `--duration-secs` elapsed.
-    // At ~600K EPS, `--total-events 1_000_000 --duration-secs 60` finished in
-    // ~1.5 s (well below the 60 s deadline), so the reported number was a
-    // 1.5 s burst rate mislabelled as a 60 s sustained rate. Most committed
-    // numbers in `.planning/throughput-baselines.md` through Phase 13 are
-    // affected — Plan 13.7.6-28 will re-baseline using true sustained runs.
-    //
-    // Rule: when `elapsed >= duration_secs * 0.95`, the run actually spent
-    // its full deadline window saturating the apply thread → emit
+    // Pre-Plan-27 the `sustained_eps:` label was emitted unconditionally —
+    // even when `--total-events N` capped the run before `--duration-secs`
+    // elapsed. Rule: when `elapsed >= duration_secs * 0.95`, the run actually
+    // spent its full deadline window saturating the apply thread → emit
     // `sustained_eps:`. Otherwise the run was capped early (most commonly
-    // by `--total-events`) → emit `burst_eps:`. The label itself surfaces
-    // the methodology distinction so a reader can tell at a glance whether
-    // the number is a sustained or a burst measurement.
+    // by `--total-events`) → emit `burst_eps:`.
     let elapsed_secs = r.elapsed.as_secs_f64();
-    let duration_secs = cli.duration_secs as f64;
+    let duration_secs = cfg.duration_secs as f64;
     let is_sustained_run = elapsed_secs >= duration_secs * 0.95;
     let eps_label = if is_sustained_run {
         "sustained_eps:"
@@ -1664,8 +1542,8 @@ fn format_report(
         pipeline.name,
         transport.label(),
         wire_format.label(),
-        cli.duration_secs,
-        cli.parallel.unwrap_or(0),
+        cfg.duration_secs,
+        cfg.parallel.unwrap_or(0),
         r.push_count,
         r.push_errors,
         eps_label,
@@ -1674,7 +1552,7 @@ fn format_report(
         r.push_p95_us,
         r.push_p99_us,
         r.get_samples,
-        cli.read_workers,
+        cfg.read_workers,
         r.get_samples as f64 / r.elapsed.as_secs_f64(),
         r.get_p99_us,
         r.peak_rss_mb,
@@ -1682,7 +1560,7 @@ fn format_report(
         hw_class_string(),
         commit,
     );
-    if cli.isolation_mode {
+    if cfg.isolation_mode {
         let wall_clock_ms = r.elapsed.as_millis() as u64;
         let send_drain_ms = r.send_drain_ms;
         let ack_lag_ms = wall_clock_ms.saturating_sub(send_drain_ms);
@@ -1692,8 +1570,8 @@ fn format_report(
              wall_clock_ms:    {}\n\
              send_drain_ms:    {}\n\
              ack_lag_ms:       {}\n",
-            cli.blast_shape.label(),
-            cli.total_events,
+            cfg.blast_shape.label(),
+            cfg.total_events,
             wall_clock_ms,
             send_drain_ms,
             ack_lag_ms,
@@ -1771,33 +1649,5 @@ mod tests {
     fn decode_pool_frame_rejects_truncated() {
         let bytes = Bytes::from_static(&[0u8, 0, 0, 0, 0, 0]); // <7 bytes
         assert!(decode_pool_frame(&bytes).is_none());
-    }
-
-    /// `--io-threads N` must parse into `Cli::io_threads = Some(N)` so users
-    /// can override the auto-default IoPool worker count without setting the
-    /// `BEAVA_IO_THREADS` env var.
-    ///
-    /// Rationale: the Hetzner sweep on 2026-04-28 (16-vCPU vServer) showed
-    /// the auto-default `iot=4` is the worst tested config for fraud-team
-    /// workloads, with ~10% lift available at `iot=2` or `iot=8`. Exposing
-    /// the CLI knob lets users tune without env-var ceremony.
-    #[test]
-    fn cli_parses_io_threads_flag() {
-        let cli = Cli::try_parse_from(["beava-bench-v18", "--io-threads", "7"])
-            .expect("parses --io-threads 7");
-        assert_eq!(
-            cli.io_threads,
-            Some(7),
-            "--io-threads 7 must parse to Some(7)"
-        );
-    }
-
-    #[test]
-    fn cli_io_threads_defaults_to_none() {
-        let cli = Cli::try_parse_from(["beava-bench-v18"]).expect("parses with no args");
-        assert!(
-            cli.io_threads.is_none(),
-            "no --io-threads flag means auto-default (BEAVA_IO_THREADS env or formula)"
-        );
     }
 }

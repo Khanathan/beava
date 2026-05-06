@@ -1,9 +1,12 @@
-//! Minimal in-process `TestServer` harness shared by the four CLI mode modules
-//! (throughput / mixed / memory / fsync).
+//! In-process `TestServer` harness shared by the `mixed` / `memory` / `fsync`
+//! CLI modes (smoke-test surfaces; single-threaded; CI-friendly).
 //!
-//! Intentionally lighter than the standalone bench binaries (`beava-bench-v18`
-//! / `beava-bench-v2`); the four entry points each return a [`BenchResult`]
-//! with the relevant measurement fields populated.
+//! The `throughput` mode lives in [`production`] post-Plan 13.7.6-32 — that
+//! module owns the v18 production harness migrated out of the standalone
+//! `beava-bench-v18` binary (now deleted). `production::run_production` is
+//! the canonical implementation behind `beava-bench throughput --parallel N`.
+
+pub mod production;
 
 use std::time::{Duration, Instant};
 
@@ -14,81 +17,6 @@ use serde_json::Value;
 
 use crate::cli::output::BenchResult;
 use crate::workloads;
-
-/// Spawn an in-process server, register the workload, push events for the
-/// given duration in best-effort mode (acks=1), record latency percentiles
-/// and EPS. Returns a populated [`BenchResult`] for the throughput mode.
-///
-/// Single-threaded by design — this is the smoke-test surface. Production
-/// throughput numbers come from `beava-bench-v18` (see the bench README).
-/// Plan 13.7.6-24 dropped a `parallel: u32` parameter here that was
-/// advertised on the CLI but silently discarded.
-pub async fn run_throughput_acks_one(
-    workload_name: &str,
-    _size_override: Option<&str>,
-    duration: Duration,
-) -> Result<BenchResult> {
-    let mut result = BenchResult::new("throughput", workload_name);
-
-    let workload = workloads::load_by_name(workload_name)
-        .with_context(|| format!("load workload {:?}", workload_name))?;
-
-    let ts = spawn_test_server().await?;
-    register_workload(&ts, &workload).await?;
-
-    // Pre-warm: 16 events to ensure the WAL has something committed.
-    let mut prewarm_iter = (workload.event_generator)(16);
-    for _ in 0..16 {
-        if let Some(event) = prewarm_iter.next() {
-            push_one(&ts, &event.event_name, &event.fields).await?;
-        }
-    }
-
-    let mut hist: Histogram<u64> = Histogram::new_with_bounds(1, 60_000_000, 3)?;
-    // Sequential push for the smoke-test surface; real parallelism lives in
-    // the standalone bench binaries.
-
-    let deadline = Instant::now() + duration;
-    let start = Instant::now();
-    let mut events_pushed: u64 = 0;
-    let batch_size: u64 = 256;
-
-    while Instant::now() < deadline {
-        let mut events = (workload.event_generator)(batch_size);
-        for _ in 0..batch_size {
-            if Instant::now() >= deadline {
-                break;
-            }
-            if let Some(event) = events.next() {
-                let push_start = Instant::now();
-                if push_one(&ts, &event.event_name, &event.fields)
-                    .await
-                    .is_ok()
-                {
-                    let elapsed_us = push_start.elapsed().as_micros() as u64;
-                    hist.record(elapsed_us.max(1)).ok();
-                    events_pushed += 1;
-                }
-            } else {
-                break;
-            }
-        }
-    }
-    let elapsed = start.elapsed();
-    result.duration_ms = elapsed.as_millis() as u64;
-    result.events_pushed = events_pushed;
-    result.events_per_sec = if elapsed.as_secs_f64() > 0.0 {
-        events_pushed as f64 / elapsed.as_secs_f64()
-    } else {
-        0.0
-    };
-    result.p50_us = Some(hist.value_at_quantile(0.50));
-    result.p99_us = Some(hist.value_at_quantile(0.99));
-    result.p999_us = Some(hist.value_at_quantile(0.999));
-
-    ts.shutdown().await.ok();
-    Ok(result)
-}
 
 /// Mixed read/write benchmark — fraction of operations are batch-get rather
 /// than push. Read ratio is parsed from `read_write_ratio` like `"70/30"`.
