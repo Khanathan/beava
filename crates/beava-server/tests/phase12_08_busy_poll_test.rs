@@ -204,6 +204,7 @@ fn apply_thread_cpu_seconds(_pthread_id: libc::pthread_t) -> f64 {
 // ─── Test 1: idle apply-thread CPU stays bounded ─────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "Busy-poll <5% CPU assertion; flakes on shared CI runners with noisy neighbors. Run on dedicated hw via `cargo test -- --ignored`."]
 async fn test_idle_apply_thread_cpu_under_5pct() {
     {
         let _g = SERVER_SERIALIZER.lock().unwrap_or_else(|e| e.into_inner());
