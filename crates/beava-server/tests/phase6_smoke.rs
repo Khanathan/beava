@@ -114,6 +114,7 @@ async fn phase6_criterion_2_dedupe_replay_byte_identical() {
 }
 
 #[tokio::test]
+#[ignore = "requires .planning/perf-baselines.md from the private planning tree (stripped from public OSS clone); run with --ignored in the private repo only"]
 async fn phase6_criterion_3_fsync_overhead_documented() {
     // The concrete <2ms P50 assertion lives inside the criterion bench run
     // under CI; here we assert the baselines file contains a row for the
