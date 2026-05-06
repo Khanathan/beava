@@ -1090,13 +1090,11 @@ mod tests {
     use super::*;
 
     // ── Helpers (some used only in green-phase tests; allow dead_code for red commit) ──
-    //
-    // reason: AST-construction helpers retained as scaffolding for future
-    // red-phase tests in this module; the doc-comment above explains the
-    // grandfathered TDD-pattern origin. Single per-fn allows are kept (rather
-    // than a module-wide allow) so removing a helper that genuinely becomes
-    // unreachable later is a one-line edit.
+    // Per-fn allows below carry a brief `// reason:` so each is grep-discoverable
+    // in isolation; the shared rationale is "AST-construction scaffolding for
+    // future red-phase tests" per the doc-comment above.
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn field(name: &str, start: usize, end: usize) -> Expr {
         Expr::Field {
@@ -1105,31 +1103,37 @@ mod tests {
         }
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn lit_int(n: i64, start: usize, end: usize) -> Expr {
         Expr::Literal(Literal::Int(n), Span { start, end })
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn lit_float(f: f64, start: usize, end: usize) -> Expr {
         Expr::Literal(Literal::Float(f), Span { start, end })
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn lit_null(start: usize, end: usize) -> Expr {
         Expr::Literal(Literal::Null, Span { start, end })
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn lit_bool(b: bool, start: usize, end: usize) -> Expr {
         Expr::Literal(Literal::Bool(b), Span { start, end })
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn lit_str(s: &str, start: usize, end: usize) -> Expr {
         Expr::Literal(Literal::Str(s.to_string()), Span { start, end })
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn binop(op: &str, left: Expr, right: Expr, start: usize, end: usize) -> Expr {
         Expr::BinOp {
@@ -1140,6 +1144,7 @@ mod tests {
         }
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn unaryop(op: &str, operand: Expr, start: usize, end: usize) -> Expr {
         Expr::UnaryOp {
@@ -1149,6 +1154,7 @@ mod tests {
         }
     }
 
+    // reason: AST-construction scaffolding (see header comment above).
     #[allow(dead_code)]
     fn call(fn_name: &str, args: Vec<Expr>, start: usize, end: usize) -> Expr {
         Expr::Call {
