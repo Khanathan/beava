@@ -498,6 +498,12 @@ async fn main() -> Result<()> {
 
 #[derive(Debug)]
 struct WorkloadResult {
+    /// `push_count / elapsed.as_secs_f64()` — the wire-rate the run
+    /// produced. NOT necessarily a sustained rate: when the run was capped
+    /// early (typically by `--total-events`), this is a *burst* rate, and
+    /// `format_report` switches the human-report label from `sustained_eps:`
+    /// to `burst_eps:` accordingly (Plan 13.7.6-27 Bug 2). The field name
+    /// is kept for API stability; the label renders the methodology.
     sustained_eps: f64,
     push_p50_us: u64,
     push_p95_us: u64,
@@ -1557,6 +1563,24 @@ async fn run_tcp_continuous_push_worker(
     // Flush any tail-batch latencies before exiting.
     flush_latencies(&push_hist, &mut latency_batch).await;
 
+    // Wake up the sender if it's parked on `acquire_owned().await`. The cap-
+    // cross path inside the 'recv loop already calls `sem.close()` (line ~1515)
+    // before breaking — but every OTHER exit path (deadline fired with `stop`
+    // set by the main task; socket EOF; decode error; 50 ms tick + stop) leaves
+    // the sender potentially parked on a permit that will never become
+    // available because we won't be calling `add_permits(1)` again. Without
+    // this close, the trailing `sender_handle.await` below deadlocks: receiver
+    // waits for sender, sender waits for permit, neither ever fires.
+    //
+    // 13.7.6-27 root cause: pre-fix, `--duration-secs N` (no --total-events)
+    // hung at 0.1 % CPU for 14+ minutes before being killed; the cap-cross
+    // path was the only branch that closed the semaphore, so the
+    // deadline-only path always deadlocked when the sender happened to be
+    // awaiting a permit at the moment `stop` flipped.
+    //
+    // Idempotent — if already closed (cap-cross path), this is a no-op.
+    sem.close();
+
     // Wait for the sender to finish before returning so the worker doesn't
     // outlive its sender task (avoids tokio "task stopped" warnings).
     let _ = sender_handle.await;
@@ -1595,6 +1619,30 @@ fn format_report(
         gp99 = r.get_p99_us,
         rss = r.peak_rss_mb,
     );
+    // Burst-vs-sustained label discipline (Plan 13.7.6-27 Bug 2).
+    //
+    // Pre-fix, the `sustained_eps:` label was emitted unconditionally — even
+    // when `--total-events N` capped the run before `--duration-secs` elapsed.
+    // At ~600K EPS, `--total-events 1_000_000 --duration-secs 60` finished in
+    // ~1.5 s (well below the 60 s deadline), so the reported number was a
+    // 1.5 s burst rate mislabelled as a 60 s sustained rate. Most committed
+    // numbers in `.planning/throughput-baselines.md` through Phase 13 are
+    // affected — Plan 13.7.6-28 will re-baseline using true sustained runs.
+    //
+    // Rule: when `elapsed >= duration_secs * 0.95`, the run actually spent
+    // its full deadline window saturating the apply thread → emit
+    // `sustained_eps:`. Otherwise the run was capped early (most commonly
+    // by `--total-events`) → emit `burst_eps:`. The label itself surfaces
+    // the methodology distinction so a reader can tell at a glance whether
+    // the number is a sustained or a burst measurement.
+    let elapsed_secs = r.elapsed.as_secs_f64();
+    let duration_secs = cli.duration_secs as f64;
+    let is_sustained_run = elapsed_secs >= duration_secs * 0.95;
+    let eps_label = if is_sustained_run {
+        "sustained_eps:"
+    } else {
+        "burst_eps:    "
+    };
     let mut human = format!(
         "pipeline:         {}\n\
          transport:        {}\n\
@@ -1603,7 +1651,7 @@ fn format_report(
          parallel:         {}\n\
          pushes:           {}\n\
          push_errors:      {}\n\
-         sustained_eps:    {:.0}\n\
+         {} {:.0}\n\
          push p50/p95/p99: {} / {} / {} µs\n\
          get_samples:      {}\n\
          read_workers:     {}\n\
@@ -1620,6 +1668,7 @@ fn format_report(
         cli.parallel.unwrap_or(0),
         r.push_count,
         r.push_errors,
+        eps_label,
         r.sustained_eps,
         r.push_p50_us,
         r.push_p95_us,

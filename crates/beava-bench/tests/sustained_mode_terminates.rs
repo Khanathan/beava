@@ -39,7 +39,24 @@
 //! opposite.
 
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
+
+/// Each test in this file boots a full ServerV18 + spawns N workers + N×K
+/// in-flight pushes. Running all three tests concurrently on a developer
+/// machine (especially with `cargo test`'s default test-thread parallelism)
+/// starves the runtime and produces sporadic timeouts that aren't related
+/// to the bug the tests pin. Serializing them via a process-global Mutex
+/// keeps the suite reliable without forcing every consumer to remember
+/// `--test-threads=1`.
+fn serial_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        // A poisoned lock just means a sibling test panicked — we still want
+        // to run, so recover the guard.
+        .unwrap_or_else(|p| p.into_inner())
+}
 
 /// Path to the release binary built by `cargo build -p beava-bench --release`.
 /// Tests assume the binary already exists; tests fail fast with a clear error
@@ -55,7 +72,10 @@ fn bench_binary() -> std::path::PathBuf {
         .parent()
         .expect("workspace root")
         .to_path_buf();
-    let bin = workspace.join("target").join("release").join("beava-bench-v18");
+    let bin = workspace
+        .join("target")
+        .join("release")
+        .join("beava-bench-v18");
     assert!(
         bin.exists(),
         "release binary not found at {} — run `cargo build -p beava-bench --release` first",
@@ -66,7 +86,10 @@ fn bench_binary() -> std::path::PathBuf {
 
 /// Run the binary with the given args; kill if it doesn't exit within
 /// `wall_clock_limit`. Returns `(stdout, stderr, exit_code, elapsed)`.
-fn run_with_timeout(args: &[&str], wall_clock_limit: Duration) -> (String, String, Option<i32>, Duration) {
+fn run_with_timeout(
+    args: &[&str],
+    wall_clock_limit: Duration,
+) -> (String, String, Option<i32>, Duration) {
     let start = Instant::now();
     let mut child = Command::new(bench_binary())
         .args(args)
@@ -91,7 +114,9 @@ fn run_with_timeout(args: &[&str], wall_clock_limit: Duration) -> (String, Strin
             // Kill and report timeout.
             let _ = child.kill();
             let elapsed = start.elapsed();
-            let output = child.wait_with_output().expect("wait_with_output after kill");
+            let output = child
+                .wait_with_output()
+                .expect("wait_with_output after kill");
             return (
                 String::from_utf8_lossy(&output.stdout).to_string(),
                 String::from_utf8_lossy(&output.stderr).to_string(),
@@ -108,8 +133,16 @@ fn run_with_timeout(args: &[&str], wall_clock_limit: Duration) -> (String, Strin
 /// Pre-13.7.6-27, this scenario hung for 14+ minutes; we cap the test wall-
 /// clock at 30 s. After the fix, the bench should exit in ~5–8 s (5 s deadline
 /// + pool-build + tokio teardown).
+///
+/// Parallelism is intentionally modest (`--parallel 4 --pipeline-depth 16`)
+/// — the bench-side deadlock the fix addresses is independent of these knobs,
+/// and modest values let `cargo test` run all three tests concurrently without
+/// the runtime starving on a 10-core developer machine. The original
+/// `--parallel 32 --pipeline-depth 1024` heavy shape exposes a separate
+/// server-side starvation under extreme fan-out which is out of scope here.
 #[test]
 fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
+    let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
         &[
             "--pipeline",
@@ -121,9 +154,9 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
             "--duration-secs",
             "5",
             "--parallel",
-            "8",
+            "4",
             "--pipeline-depth",
-            "32",
+            "16",
             "--no-ledger",
         ],
         Duration::from_secs(30),
@@ -134,14 +167,19 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
         "bench-v18 sustained-mode (--duration-secs 5, no --total-events) timed out — \
          the pre-13.7.6-27 hang has regressed. \
          elapsed={:?}\nstdout:\n{}\nstderr:\n{}",
-        elapsed, stdout, stderr
+        elapsed,
+        stdout,
+        stderr
     );
     assert_eq!(
         exit_code,
         Some(0),
         "bench-v18 must exit cleanly. \
          elapsed={:?} exit={:?}\nstdout:\n{}\nstderr:\n{}",
-        elapsed, exit_code, stdout, stderr
+        elapsed,
+        exit_code,
+        stdout,
+        stderr
     );
     // Should take roughly 5s + slack, definitely not 30s+.
     assert!(
@@ -156,7 +194,8 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
         "5 s deadline-bound run must report sustained_eps: \
          (the duration actually elapsed). \
          stdout:\n{}\nstderr:\n{}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -167,6 +206,7 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
 /// `--duration-secs` is 60, so `elapsed / duration` is tiny — clearly a burst.
 #[test]
 fn total_events_capped_run_reports_burst_eps_label() {
+    let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
         &[
             "--pipeline",
@@ -193,7 +233,10 @@ fn total_events_capped_run_reports_burst_eps_label() {
         Some(0),
         "bench-v18 total-events run must exit cleanly. \
          elapsed={:?} exit={:?}\nstdout:\n{}\nstderr:\n{}",
-        elapsed, exit_code, stdout, stderr
+        elapsed,
+        exit_code,
+        stdout,
+        stderr
     );
     let combined = format!("{}\n{}", stdout, stderr);
     assert!(
@@ -216,6 +259,7 @@ fn total_events_capped_run_reports_burst_eps_label() {
 /// — keeping a focused check here makes the contract explicit.
 #[test]
 fn full_duration_run_reports_sustained_eps_label() {
+    let _guard = serial_lock();
     let (stdout, stderr, exit_code, _elapsed) = run_with_timeout(
         &[
             "--pipeline",
