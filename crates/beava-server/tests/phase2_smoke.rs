@@ -138,23 +138,23 @@ async fn success_criterion_4_conflict_returns_409_with_diff() {
     let r1 = post_register_json(&ts, &transaction_payload()).await;
     assert_eq!(r1["registry_version"], 1);
 
-    // Re-register Transaction with amount: i64 → 409
+    // Re-register Transaction with amount: i64 → 409 (force_required, per Phase 13.4-06 D-01 force-gate)
     let conflict_body = valid_event_payload("Transaction", "amount", "i64");
     let resp = post_register(&ts, &conflict_body).await;
     assert_eq!(resp.status().as_u16(), 409);
     let val: Value = resp.json().await.expect("json");
-    assert_eq!(val["error"]["code"], "registration_conflict");
-    assert_eq!(val["error"]["diff"]["added"], json!([]));
-    assert_eq!(val["error"]["diff"]["removed"], json!([]));
-    let changed = &val["error"]["diff"]["changed"];
-    assert!(changed.is_array() && !changed.as_array().unwrap().is_empty());
-    assert_eq!(changed[0]["name"], "Transaction");
-    assert_eq!(changed[0]["reason"], "schema_mismatch");
-    let details = changed[0]["details"].as_str().unwrap_or("");
+    assert_eq!(val["error"]["code"], "force_required");
+    assert_eq!(val["error"]["diff"]["additive"], json!([]));
+    let destructive = &val["error"]["diff"]["destructive"];
     assert!(
-        details.contains("amount"),
-        "details should mention 'amount': {details}"
+        destructive.is_array() && !destructive.as_array().unwrap().is_empty(),
+        "destructive must be a non-empty array: {destructive:?}"
     );
+    // Type change f64 → i64 lands as DiffEntry::TypeChange { field, from, to }
+    assert_eq!(destructive[0]["kind"], "type_change");
+    assert_eq!(destructive[0]["field"], "Transaction.amount");
+    assert_eq!(destructive[0]["from"], "f64");
+    assert_eq!(destructive[0]["to"], "i64");
     assert_eq!(
         val["registry_version"], 1,
         "registry_version must not bump on 409"
