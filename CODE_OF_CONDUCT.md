@@ -1,8 +1,6 @@
 # Code of Conduct
 
-Beava follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
-
-The full text is available at the link above and is incorporated here by reference.
+Beava follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/). The full text is available at the link above and is incorporated here by reference.
 
 ## Summary
 
@@ -10,10 +8,14 @@ We pledge to make participation in the Beava community a respectful and welcomin
 
 ## Reporting
 
-If you observe or experience behavior inconsistent with this code, report it to **hoang at beava.dev** (the current sole maintainer — see `MAINTAINERS.md`). Reports are handled confidentially.
+If you observe or experience behavior inconsistent with this code, report it to **hoang@beava.dev** (current sole maintainer).
 
-If a second committer joins down the line (see `MAINTAINERS.md` — bus factor of 1 today, no committed timeline), reporting channels and handling procedures will be updated accordingly.
+Reports are handled confidentially. The maintainer will acknowledge receipt within a reasonable window, investigate, and respond with a course of action proportionate to the issue (warning, content removal, temporary or permanent ban from project spaces).
 
 ## Scope
 
 This code applies to all Beava spaces: GitHub repo, Discussions, issue tracker, Discord, Slack, mailing lists, conference presentations representing the project, and any other official community venue.
+
+## Attribution
+
+This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org), version 2.1, available at <https://www.contributor-covenant.org/version/2/1/code_of_conduct.html>.
