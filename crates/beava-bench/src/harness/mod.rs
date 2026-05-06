@@ -18,11 +18,15 @@ use crate::workloads;
 /// Spawn an in-process server, register the workload, push events for the
 /// given duration in best-effort mode (acks=1), record latency percentiles
 /// and EPS. Returns a populated [`BenchResult`] for the throughput mode.
+///
+/// Single-threaded by design — this is the smoke-test surface. Production
+/// throughput numbers come from `beava-bench-v18` (see the bench README).
+/// Plan 13.7.6-24 dropped a `parallel: u32` parameter here that was
+/// advertised on the CLI but silently discarded.
 pub async fn run_throughput_acks_one(
     workload_name: &str,
     _size_override: Option<&str>,
     duration: Duration,
-    parallel: u32,
 ) -> Result<BenchResult> {
     let mut result = BenchResult::new("throughput", workload_name);
 
@@ -43,7 +47,6 @@ pub async fn run_throughput_acks_one(
     let mut hist: Histogram<u64> = Histogram::new_with_bounds(1, 60_000_000, 3)?;
     // Sequential push for the smoke-test surface; real parallelism lives in
     // the standalone bench binaries.
-    let _ = parallel;
 
     let deadline = Instant::now() + duration;
     let start = Instant::now();
