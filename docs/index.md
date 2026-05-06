@@ -6,7 +6,7 @@ Beava is a single-binary feature server. Push events in over HTTP, declare aggre
 
 ## Quickstart
 
-- [Quickstart](./quickstart.md) — `pip install beava` → first feature in 60 seconds (authored by Plan 13.0-14)
+- [Quickstart](./quickstart.md) — `pip install tally` → first feature in 60 seconds (authored by Plan 13.0-14; PyPI package is currently `tally` until v0.0.0 GA)
 
 ## Wire contract
 

@@ -115,15 +115,21 @@
 <article class="docs-prose">
 <h1>Beava Quickstart</h1>
 <blockquote>
-<p><code>pip install beava</code> -&gt; first feature in 60 seconds.</p>
+<p><code>pip install tally</code> -&gt; first feature in 60 seconds.</p>
 </blockquote>
 <p>Beava is a real-time feature server. You declare aggregations in plain Python,
 push events over HTTP, and query computed features by entity key --
 sub-millisecond -- with <code>curl</code> alone or any HTTP client.</p>
-<p><img src="/assets/quickstart-demo.svg" alt="Beava quickstart: pip install beava, push events, query fresh per-campaign features" loading="lazy" class="doc-img"></p>
+<p><img src="/assets/quickstart-demo.svg" alt="Beava quickstart: pip install tally, push events, query fresh per-campaign features" loading="lazy" class="doc-img"></p>
 <h2 id="install" tabindex="-1"><a class="header-anchor" href="#install" aria-hidden="true">#</a> Install</h2>
-<pre><code class="language-bash">pip install beava
+<pre><code class="language-bash">pip install tally
 </code></pre>
+<blockquote>
+<p><strong>Pre-release naming.</strong> The PyPI package is currently published as <code>tally</code>
+(the project's repo codename). The <code>beava</code> package name is reserved for
+v0.0.0 GA. Until then, install <code>tally</code> and import as <code>import beava as bv</code>
+(the import name is already <code>beava</code>).</p>
+</blockquote>
 <p>The pip package ships the Python SDK. The <code>beava</code> server binary is bundled and
 discovered automatically by <code>bv.App()</code> (no separate install). For production
 deployment use the Docker image (Phase 13.8 release).</p>
@@ -201,10 +207,15 @@ features. See
 <a href="https://github.com/beava-dev/beava/blob/main/examples/python/adtech.py">examples/python/adtech.py</a>,
 <a href="https://github.com/beava-dev/beava/blob/main/examples/python/fraud.py">examples/python/fraud.py</a>, and
 <a href="https://github.com/beava-dev/beava/blob/main/examples/python/ecommerce.py">examples/python/ecommerce.py</a>
-for the full source. Equivalent demos exist for
-<a href="https://github.com/beava-dev/beava/blob/main/examples/typescript/">TypeScript</a> and <a href="https://github.com/beava-dev/beava/blob/main/examples/go/">Go</a> -- see
-<a href="/docs/sdk-api/typescript/">docs/sdk-api/typescript.md</a> +
-<a href="/docs/sdk-api/go/">docs/sdk-api/go.md</a>.</p>
+for the full source.</p>
+<blockquote>
+<p><strong>Cross-language note:</strong> Pipeline authoring is <strong>Python-only</strong> in v0. The
+<a href="/docs/sdk-api/typescript/">TypeScript</a> and <a href="/docs/sdk-api/go/">Go</a> SDKs are
+communicate-only — they push events, register pre-compiled JSON descriptors
+(authored from Python), and read features. Use Python to design and compile
+your pipeline; TS/Go services then push events + read features against the
+same registered pipeline.</p>
+</blockquote>
 <h2 id="next-steps" tabindex="-1"><a class="header-anchor" href="#next-steps" aria-hidden="true">#</a> Next steps</h2>
 <ul>
 <li><strong>API reference:</strong> <a href="/docs/sdk-api/python/">docs/sdk-api/python.md</a> -- full

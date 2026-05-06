@@ -80,7 +80,7 @@ class LoginAttempt:
 
 @bv.table(key="ip")
 def IpSignals(e: LoginAttempt):
-    return e.agg(
+    return e.group_by("ip").agg(
         attempts_5m       = bv.count(window="5m"),
         failures_5m       = bv.count(window="5m", where=~e.success),
         distinct_users_5m = bv.distinct(e.user_id, window="5m"),
@@ -88,13 +88,15 @@ def IpSignals(e: LoginAttempt):
 
 @bv.table(key="user_id")
 def UserSignals(e: LoginAttempt):
-    return e.agg(
+    return e.group_by("user_id").agg(
         fail_streak   = bv.consecutive(where=~e.success),
         failed_ips_1h = bv.distinct(e.ip, window="1h", where=~e.success),
         buy_intent_5m = bv.sum(e.amount_usd, window="5m"),
     )
 
-bv.App("0.0.0.0:6400").register(LoginAttempt, IpSignals, UserSignals).serve()`;
+# Spawn the beava binary in another shell, then connect:
+app = bv.App(url="http://0.0.0.0:8080")
+app.register(LoginAttempt, IpSignals, UserSignals)`;
       return (
         <section style={{ padding: '48px 28px 16px' }}>
           <div style={{ maxWidth: 880, margin: '0 auto' }}>
@@ -117,19 +119,21 @@ bv.App("0.0.0.0:6400").register(LoginAttempt, IpSignals, UserSignals).serve()`;
                 {'    '}amount_usd: <span className="ty">float</span>   <span className="cmt"># 0 for login, {'>'}0 for checkout intent</span>{'\n'}{'\n'}
                 <span className="fn">@bv.table</span>(key=<span className="str">"ip"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">IpSignals</span>(e: LoginAttempt):{'\n'}
-                {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+                {'    '}<span className="kw">return</span> e.<span className="fn">group_by</span>(<span className="str">"ip"</span>).<span className="fn">agg</span>({'\n'}
                 {'        '}attempts_5m       = bv.<span className="fn">count</span>(window=<span className="str">"5m"</span>),{'\n'}
                 {'        '}failures_5m       = bv.<span className="fn">count</span>(window=<span className="str">"5m"</span>, where=~e.success),{'\n'}
                 {'        '}distinct_users_5m = bv.<span className="fn">distinct</span>(e.user_id, window=<span className="str">"5m"</span>),{'\n'}
                 {'    '}){'\n'}{'\n'}
                 <span className="fn">@bv.table</span>(key=<span className="str">"user_id"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">UserSignals</span>(e: LoginAttempt):{'\n'}
-                {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+                {'    '}<span className="kw">return</span> e.<span className="fn">group_by</span>(<span className="str">"user_id"</span>).<span className="fn">agg</span>({'\n'}
                 {'        '}fail_streak   = bv.<span className="fn">consecutive</span>(where=~e.success),{'\n'}
                 {'        '}failed_ips_1h = bv.<span className="fn">distinct</span>(e.ip, window=<span className="str">"1h"</span>, where=~e.success),{'\n'}
                 {'        '}buy_intent_5m = bv.<span className="fn">sum</span>(e.amount_usd, window=<span className="str">"5m"</span>),{'\n'}
                 {'    '}){'\n'}{'\n'}
-                bv.<span className="fn">App</span>(<span className="str">"0.0.0.0:6400"</span>).<span className="fn">register</span>(LoginAttempt, IpSignals, UserSignals).<span className="fn">serve</span>()
+                <span className="cmt"># Spawn the beava binary in another shell, then connect:</span>{'\n'}
+                app = bv.<span className="fn">App</span>(url=<span className="str">"http://0.0.0.0:8080"</span>){'\n'}
+                app.<span className="fn">register</span>(LoginAttempt, IpSignals, UserSignals)
               </pre>
               <CopyBtn text={code}/>
             </div>
@@ -139,7 +143,7 @@ bv.App("0.0.0.0:6400").register(LoginAttempt, IpSignals, UserSignals).serve()`;
     };
 
     const RegisterAndQuery = () => {
-      const install = `pip install beava\npython fraud_pipeline.py`;
+      const install = `pip install tally\npython fraud_pipeline.py`;
       const push = `curl -X POST https://your-beava/events/LoginAttempt \\
   -H 'Content-Type: application/json' \\
   -d '{
@@ -168,7 +172,7 @@ bv.App("0.0.0.0:6400").register(LoginAttempt, IpSignals, UserSignals).serve()`;
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--fg3)', marginBottom: 8, letterSpacing: '0.03em' }}>1. install + run</div>
               <div style={{ position: 'relative' }}>
                 <pre className="code-well" style={{ fontSize: 14, padding: '18px 22px', lineHeight: 1.65, margin: 0 }}>
-                  <span className="cmt">$ </span>pip install beava{'\n'}
+                  <span className="cmt">$ </span>pip install tally{'\n'}
                   <span className="cmt">$ </span>python fraud_pipeline.py
                 </pre>
                 <CopyBtn text={install}/>

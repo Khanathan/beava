@@ -510,9 +510,10 @@
       { t: 't',   v: '    path: ' },    { t: 'ty', v: 'str' }, { t: 't', v: '\n\n' },
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'UserStats' }, { t: 't', v: '(e: PageView):\n' },
-      { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(views_total=bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '())' },
+      { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'group_by' }, { t: 't', v: '(' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ').' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(views_total=bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '())' },
       { t: 'note', v: '← one counter per user' }, { t: 't', v: '\n\n' },
-      { t: 't', v: 'bv.' }, { t: 'fn', v: 'App' }, { t: 't', v: '(' }, { t: 'str', v: '"0.0.0.0:6400"' }, { t: 't', v: ').' }, { t: 'fn', v: 'register' }, { t: 't', v: '(PageView, UserStats).' }, { t: 'fn', v: 'serve' }, { t: 't', v: '()' }, { t: 'note', v: '← starts the server' },
+      { t: 't', v: 'app = bv.' }, { t: 'fn', v: 'App' }, { t: 't', v: '(url=' }, { t: 'str', v: '"http://0.0.0.0:8080"' }, { t: 't', v: ')\n' },
+      { t: 't', v: 'app.' }, { t: 'fn', v: 'register' }, { t: 't', v: '(PageView, UserStats)' }, { t: 'note', v: '← connect to a beava server in another shell' },
     ];
 
     const pipelineDashboard = [
@@ -526,19 +527,20 @@
       { t: 't',   v: '    category: ' },{ t: 'ty', v: 'str' }, { t: 't', v: '\n\n' },
       { t: 'fn',  v: '@bv.table' }, { t: 't', v: '(key=' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ')\n' },
       { t: 'kw',  v: 'def' }, { t: 't', v: ' ' }, { t: 'fn', v: 'Dashboard' }, { t: 't', v: '(e: PageView):\n' },
-      { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(\n' },
+      { t: 't',   v: '    ' }, { t: 'kw', v: 'return' }, { t: 't', v: ' e.' }, { t: 'fn', v: 'group_by' }, { t: 't', v: '(' }, { t: 'str', v: '"user_id"' }, { t: 't', v: ').' }, { t: 'fn', v: 'agg' }, { t: 't', v: '(\n' },
       { t: 't',   v: '        views_total        = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(),' }, { t: 'note', v: '← lifetime views' }, { t: 't', v: '\n' },
       { t: 't',   v: '        views_24h          = bv.' }, { t: 'fn', v: 'count' }, { t: 't', v: '(window=' }, { t: 'str', v: '"24h"' }, { t: 't', v: '),' }, { t: 'note', v: "← today's activity bar" }, { t: 't', v: '\n' },
       { t: 't',   v: '        distinct_cats_7d   = bv.' }, { t: 'fn', v: 'distinct' }, { t: 't', v: '(e.category, window=' }, { t: 'str', v: '"7d"' }, { t: 't', v: '),' }, { t: 'note', v: '← category breakdown' }, { t: 't', v: '\n' },
       { t: 't',   v: '        last_seen          = bv.' }, { t: 'fn', v: 'latest' }, { t: 't', v: '(e.ts),' }, { t: 'note', v: '← "last seen" timestamp' }, { t: 't', v: '\n' },
       { t: 't',   v: '    )\n\n' },
-      { t: 't', v: 'bv.' }, { t: 'fn', v: 'App' }, { t: 't', v: '(' }, { t: 'str', v: '"0.0.0.0:6400"' }, { t: 't', v: ').' }, { t: 'fn', v: 'register' }, { t: 't', v: '(PageView, Dashboard).' }, { t: 'fn', v: 'serve' }, { t: 't', v: '()' }, { t: 'note', v: '← replaces the old table, serves the new one' },
+      { t: 't', v: 'app = bv.' }, { t: 'fn', v: 'App' }, { t: 't', v: '(url=' }, { t: 'str', v: '"http://0.0.0.0:8080"' }, { t: 't', v: ')\n' },
+      { t: 't', v: 'app.' }, { t: 'fn', v: 'register' }, { t: 't', v: '(PageView, Dashboard)' }, { t: 'note', v: '← replaces the old table, serves the new one' },
     ];
 
     // RegisterCommand — small terminal-like block that shows what the
     // Register button does behind the scenes: run the Python file, which
-    // calls bv.App(...).register(...).serve(). Copy button copies the raw
-    // command. Sits next to / under the Register button.
+    // connects to bv.App(url=...) and calls .register(...). Copy button
+    // copies the raw command. Sits next to / under the Register button.
     const RegisterCommand = ({ file, table, replaced }) => {
       const cmd = `python ${file}`;
       return (
@@ -562,13 +564,13 @@
             lineHeight: 1.55, margin: 0, color: 'var(--code-fg)',
             whiteSpace: 'pre',
           }}>
-<span className="cmt">$ </span>pip install beava{'\n'}
+<span className="cmt">$ </span>pip install tally{'\n'}
 <span className="cmt">$ </span>python {file}{'\n'}
 <span style={{ color: 'var(--beava-success)' }}>✓ </span>
 {replaced
   ? <>replaced previous table &mdash; serving <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{table}</span> (4 metrics, key=user_id){'\n'}</>
   : <>registered <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{table}</span> (key=user_id){'\n'}</>}
-<span style={{ color: 'var(--beava-success)' }}>✓ </span>listening on 0.0.0.0:6400
+<span style={{ color: 'var(--beava-success)' }}>✓ </span>connected to beava server at 0.0.0.0:8080
           </pre>
           <div style={{ position: 'absolute', top: 10, right: 10 }}>
             <CopyBtn text={cmd}/>

@@ -29,9 +29,10 @@ per Plan 12.7-06; only 32 of the 53 op helpers are present; `app.batch_get`
 and `app.reset` are not yet wired). The forward-looking shape documented
 here is what the SDK rewrite ships.
 
-> **Module name:** install via `pip install beava`. Import as
-> `import beava as bv` for the canonical short alias used throughout the
-> Beava docs and examples.
+> **Module name:** install via `pip install tally` (the PyPI package is
+> currently published as `tally`; the `beava` package name is reserved for
+> v0.0.0 GA). Import as `import beava as bv` — the import name is `beava`
+> regardless of which package was installed.
 
 ## Module structure
 

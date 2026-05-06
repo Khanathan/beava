@@ -1,18 +1,23 @@
 # Beava Quickstart
 
-> `pip install beava` -> first feature in 60 seconds.
+> `pip install tally` -> first feature in 60 seconds.
 
 Beava is a real-time feature server. You declare aggregations in plain Python,
 push events over HTTP, and query computed features by entity key --
 sub-millisecond -- with `curl` alone or any HTTP client.
 
-![Beava quickstart: pip install beava, push events, query fresh per-campaign features](./_assets/quickstart-demo.svg)
+![Beava quickstart: pip install tally, push events, query fresh per-campaign features](./_assets/quickstart-demo.svg)
 
 ## Install
 
 ```bash
-pip install beava
+pip install tally
 ```
+
+> **Pre-release naming.** The PyPI package is currently published as `tally`
+> (the project's repo codename). The `beava` package name is reserved for
+> v0.0.0 GA. Until then, install `tally` and import as `import beava as bv`
+> (the import name is already `beava`).
 
 The pip package ships the Python SDK. The `beava` server binary is bundled and
 discovered automatically by `bv.App()` (no separate install). For production

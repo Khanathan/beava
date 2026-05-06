@@ -453,19 +453,21 @@ class FeedClick:
 
 @bv.table(key="session_id")
 def Session(e: FeedClick):
-    return e.agg(
+    return e.group_by("session_id").agg(
         my_feeds  = bv.count(),
         my_streak = bv.consecutive(),
     )
 
-@bv.table(key="__global__")
+@bv.table   # no key= -> global table
 def Global(e: FeedClick):
     return e.agg(
         p99_clickspeed = bv.p99(e.click_speed_ms, window="1h"),
         visitors_1h    = bv.distinct(e.session_id, window="1h"),
     )
 
-bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
+# Spawn the beava binary in another shell, then connect:
+app = bv.App(url="http://0.0.0.0:8080")
+app.register(FeedClick, Session, Global)`;
       return (
         <section style={{ padding: '96px 28px' }}>
           <div style={{ maxWidth: 1000, margin: '0 auto' }}>
@@ -491,17 +493,19 @@ bv.App("0.0.0.0:6400").register(FeedClick, Session, Global).serve()`;
                 <span className="cmt">    # session_id regenerated every refresh — no cookies, no tracking.</span>{'\n'}{'\n'}
                 <span className="fn">@bv.table</span>(key=<span className="str">"session_id"</span>){'\n'}
                 <span className="kw">def</span> <span className="fn">Session</span>(e: FeedClick):{'\n'}
-                {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
+                {'    '}<span className="kw">return</span> e.<span className="fn">group_by</span>(<span className="str">"session_id"</span>).<span className="fn">agg</span>({'\n'}
                 {'        '}my_feeds  = bv.<span className="fn">count</span>(),<NoteArrow>← "FED"</NoteArrow>{'\n'}
                 {'        '}my_streak = bv.<span className="fn">consecutive</span>(),<NoteArrow>← "STREAK"</NoteArrow>{'\n'}
                 {'    '}){'\n'}{'\n'}
-                <span className="fn">@bv.table</span>(key=<span className="str">"__global__"</span>){'\n'}
+                <span className="fn">@bv.table</span>{'   '}<span className="cmt"># no key= → global table</span>{'\n'}
                 <span className="kw">def</span> <span className="fn">Global</span>(e: FeedClick):{'\n'}
                 {'    '}<span className="kw">return</span> e.<span className="fn">agg</span>({'\n'}
                 {'        '}p99_clickspeed = bv.<span className="fn">p99</span>(e.click_speed_ms, window=<span className="str">"1h"</span>),<NoteArrow>← "P99 CLICKSPEED (1h)"</NoteArrow>{'\n'}
                 {'        '}visitors_1h{'    '}= bv.<span className="fn">distinct</span>(e.session_id, window=<span className="str">"1h"</span>),{'\n'}
                 {'    '}){'\n'}{'\n'}
-                bv.<span className="fn">App</span>(<span className="str">"0.0.0.0:6400"</span>).<span className="fn">register</span>(FeedClick, Session, Global).<span className="fn">serve</span>()
+                <span className="cmt"># Spawn the beava binary in another shell, then connect:</span>{'\n'}
+                app = bv.<span className="fn">App</span>(url=<span className="str">"http://0.0.0.0:8080"</span>){'\n'}
+                app.<span className="fn">register</span>(FeedClick, Session, Global)
               </pre>
               <CopyBtn text={code}/>
             </div>

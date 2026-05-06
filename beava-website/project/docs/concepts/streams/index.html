@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Events · beava docs</title>
+  <meta name="description" content="An event is a fact that happened in your application. beava ingests events and turns them into queryable per-key state. Derived events are filter/transform chains over upstream events.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'what', label: 'What is an event?' },
+      { id: 'inputs', label: 'Events are inputs' },
+      { id: 'derived', label: 'Derived events' },
+      { id: 'design', label: 'Good event design' },
+      { id: 'related', label: 'Related reading' },
+    ];
+    const quote = {borderLeft:'3px solid var(--accent)', paddingLeft:14, color:'var(--fg2)', margin:'14px 0', fontStyle:'italic'};
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Events"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Concepts</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Events</span>
+            </div>
+
+            <h1>Events</h1>
+
+            <p className="bv-lede">An event is a fact your application produces. <code>@bv.event</code> declares the shape — beava ingests events and turns them into queryable per-key state.</p>
+
+            <h2 id="what">What is an event?</h2>
+            <Code lang="python">
+{`@bv.event
+class UserEvent:
+    user_id: str
+    item_id: str
+    event_type: str
+    ts: float`}
+            </Code>
+            <p>An event is not just a transport message. It is part of the application model.</p>
+            <p>It says:</p>
+            <blockquote style={quote}>These are the facts my application produces.</blockquote>
+
+            <h2 id="inputs">Events are inputs</h2>
+            <p>Tables depend on events. When an event arrives, beava updates every table that consumes it.</p>
+            <p>One event type can feed many tables.</p>
+            <p>For example, a <code>UserEvent</code> might feed:</p>
+            <ul>
+              <li>User activity features</li>
+              <li>Item popularity features</li>
+              <li>Category affinity features</li>
+              <li>Session features</li>
+              <li>Fraud velocity features</li>
+            </ul>
+            <p>This keeps the event model simple while letting multiple feature views grow from the same input.</p>
+
+            <h2 id="derived">Derived events</h2>
+            <p>You can build a new event from an existing one without re-pushing data. A <strong>derived event</strong> is a filter or transform chain on top of a parent event — it has its own name and shape, and tables can depend on it just like a base event.</p>
+            <p>The function form of <code>@bv.event</code> takes an upstream event and returns a chain. The function name becomes the derived event's name:</p>
+            <Code lang="python">
+{`@bv.event
+class Click:
+    user_id: str
+    page: str
+    amount: float
+
+@bv.event
+def Checkout(click: Click):
+    return click.filter(bv.col("page") == "/checkout")
+
+@bv.event
+def BigCheckout(checkout: Checkout):
+    return (
+        checkout
+        .filter(bv.col("amount") > 100)
+        .with_columns(bucket=bv.col("amount").cast(int) // 50)
+    )`}
+            </Code>
+            <p>Push events to the parent (<code>Click</code>); beava routes matching records through the derivation chain and updates downstream tables for free. You never push to a derived event directly.</p>
+            <p>Available chain methods (Polars-shaped): <code>filter(expr)</code>, <code>select(*cols)</code>, <code>drop(*cols)</code>, <code>rename(**mapping)</code>, <code>with_columns(**exprs)</code>, <code>cast(**type_map)</code>, <code>fillna(**defaults)</code>. Each returns a new derivation you can chain or register.</p>
+            <p><strong>Use derived events to:</strong> narrow a high-volume event to a meaningful subset (clicks → checkouts), pre-compute typed columns once instead of per-table, or split one wire-shape into multiple semantic events. They cost almost nothing — just a filter / projection on the apply path.</p>
+
+            <h2 id="design">Good event design</h2>
+            <p>A good event should be:</p>
+            <ul>
+              <li>Close to the application fact (one event = one thing that happened).</li>
+              <li>Easy to test.</li>
+              <li>Stable enough for downstream tables.</li>
+              <li>Explicit about timestamps.</li>
+              <li>Clear about entity identifiers.</li>
+            </ul>
+            <p>Avoid designing events around infrastructure first. Design them around what happened in the product. When the shape feels off, reach for a <a href="#derived">derived event</a> before mutating the source.</p>
+            <p><strong>Events are product facts. beava turns them into queryable state.</strong></p>
+
+            <h2 id="related">Related reading</h2>
+            <ul>
+              <li><a href="/docs/concepts/tables/">Tables</a> — how events turn into per-key state.</li>
+              <li><a href="/docs/concepts/windows/">Windows</a> — sliding / tumbling / lifetime aggregations.</li>
+              <li><a href="/docs/concepts/get-and-mget/">Reads (get / mget)</a> — how the application reads features back by key.</li>
+              <li><a href="/docs/concepts/freshness/">Freshness</a> — what "live" actually means.</li>
+              <li><a href="/docs/operators/">Operator catalog</a> — every aggregation you can put inside <code>e.group_by(...).agg(...)</code>.</li>
+              <li><a href="/docs/get-started/push-events/">Push events</a> — the wire format for sending events in.</li>
+            </ul>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/concepts/streams/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

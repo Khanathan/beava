@@ -142,9 +142,10 @@ per Plan 12.7-06; only 32 of the 53 op helpers are present; <code>app.batch_get<
 and <code>app.reset</code> are not yet wired). The forward-looking shape documented
 here is what the SDK rewrite ships.</p>
 <blockquote>
-<p><strong>Module name:</strong> install via <code>pip install beava</code>. Import as
-<code>import beava as bv</code> for the canonical short alias used throughout the
-Beava docs and examples.</p>
+<p><strong>Module name:</strong> install via <code>pip install tally</code> (the PyPI package is
+currently published as <code>tally</code>; the <code>beava</code> package name is reserved for
+v0.0.0 GA). Import as <code>import beava as bv</code> — the import name is <code>beava</code>
+regardless of which package was installed.</p>
 </blockquote>
 <h2 id="module-structure" tabindex="-1"><a class="header-anchor" href="#module-structure" aria-hidden="true">#</a> Module structure</h2>
 <pre><code>beava/                     # core flat namespace
@@ -267,6 +268,16 @@ per <a href="/docs/sdk-api/shared/#wire-transports">shared.md § Wire transports
 <p>Calling <code>register(...)</code> on an embed-mode <code>App</code> outside a <code>with</code> block raises
 <code>RuntimeError</code>. Explicit-URL <code>App</code> instances may use <code>with</code> or be closed
 manually via <code>app.close()</code>; both are idempotent.</p>
+<p><strong>Embed-mode disk lifecycle (<code>test_mode=True</code> and the default
+embed-spawn path):</strong> Each embed spawn allocates a unique tmpdir under
+<code>$TMPDIR/beava-embed-&lt;pid&gt;-&lt;unix-ms&gt;-&lt;hex&gt;/</code> holding the binary's
+<code>./wal</code> and <code>./snapshots</code> sub-dirs. The path is registered with
+<code>atexit.register(shutil.rmtree, ..., ignore_errors=True)</code>, so the dir
+is reaped at Python interpreter shutdown — long-running test processes
+(e.g. a pytest session that spawns 100s of embed apps) do not leak
+disk. SIGKILL'd Python processes leave the dir for the OS tmpfs reaper
+to handle (typical <code>$TMPDIR</code> aging is days). Users of <code>App(test_mode=True)</code>
+do not need to register their own cleanup; the SDK handles it.</p>
 <h3 id="appregisterdescriptors-forcefalse-dryrunfalse" tabindex="-1"><a class="header-anchor" href="#appregisterdescriptors-forcefalse-dryrunfalse" aria-hidden="true">#</a> <code>app.register(*descriptors, force=False, dry_run=False)</code></h3>
 <p><strong>Wire opcode:</strong> <code>OP_REGISTER</code> (<code>0x0001</code>).</p>
 <p>Validates the descriptor list locally (DAG / schema checks; zero network
@@ -457,6 +468,10 @@ The decorator extracts the chain, names it (function name → derivation
 name), and registers it as a derivation node with <code>output_kind=event</code>.</p>
 <p>The chain methods supported on event descriptors are documented under
 <a href="#pipeline-dsl-chained-methods-on-eventtable">Pipeline DSL</a> below.</p>
+<p>The function-form parameter annotations are resolved against the same
+declaration-site contract documented under
+<a href="#supported-bvevent-declaration-sites">Supported <code>@bv.event</code> declaration sites</a>
+below — module-level + enclosing closure + caller-frame locals.</p>
 <h3 id="bvtable-function-form-per-adr-001" tabindex="-1"><a class="header-anchor" href="#bvtable-function-form-per-adr-001" aria-hidden="true">#</a> @bv.table (function form, per ADR-001)</h3>
 <pre><code class="language-python">@bv.event
 class Txn:
@@ -497,6 +512,110 @@ the list.</li>
 The decorator captures the chain, names the result (function name →
 table name), and emits a derivation node with <code>output_kind=table</code>.</p>
 <p><strong>Class form is v0.1+</strong> — only function form is supported in v0.</p>
+<h4 id="supported-bvevent-declaration-sites" tabindex="-1"><a class="header-anchor" href="#supported-bvevent-declaration-sites" aria-hidden="true">#</a> Supported <code>@bv.event</code> declaration sites</h4>
+<p><code>@bv.event</code> and <code>@bv.table</code> need to resolve their parameter annotations
+back to the actual upstream class objects. This works under PEP 563
+(<code>from __future__ import annotations</code>) by following a documented
+resolution order. Any name found by one of the sites below resolves
+correctly; names that don't appear in any of these scopes raise a
+<code>NameError</code>-style failure at decoration time.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Site</th>
+<th>Mechanism</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Module-level (canonical)</td>
+<td><code>fn.__globals__</code></td>
+<td><code>@bv.event class Click: ...</code> at module top</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Enclosing closure cells</td>
+<td><code>fn.__closure__</code> + <code>fn.__code__.co_freevars</code></td>
+<td>Inner-class captured by the decorated fn body</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Caller-frame <code>f_locals</code> (user-code)</td>
+<td>Walked outward from the decoration site by FILE IDENTITY (any frame outside <code>python/beava/_table.py</code> and <code>python/beava/_events.py</code>); first-seen wins; depth-bounded to 32 frames</td>
+<td>Function-local class declared inside a pytest test fn or class method</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Module-level (priority 1, canonical):</strong></p>
+<pre><code class="language-python">@bv.event
+class Click:
+    user_id: str
+    page: str
+
+@bv.table(key=&quot;user_id&quot;)
+def UserClicks(c: Click):
+    return c.group_by(&quot;user_id&quot;).agg(n=bv.count(window=&quot;forever&quot;))
+</code></pre>
+<p>This is the mypy-friendly default; prefer it whenever possible.</p>
+<p><strong>Function-local (priority 3, pytest-fixture pattern):</strong></p>
+<pre><code class="language-python">def test_user_clicks():
+    @bv.event
+    class Click:                 # local to this fn — never reaches module scope
+        user_id: str
+
+    @bv.table(key=&quot;user_id&quot;)
+    def UserClicks(c: Click):
+        return c.group_by(&quot;user_id&quot;).agg(n=bv.count(window=&quot;forever&quot;))
+
+    # ... use UserClicks in the test ...
+</code></pre>
+<p>The resolver finds <code>Click</code> by walking outward through the call stack
+(skipping its own internal frames) until it lands on the test fn's frame,
+where <code>Click</code> is in <code>f_locals</code>.</p>
+<p><strong>Inner-class via closure (priority 2, factory pattern):</strong></p>
+<pre><code class="language-python">@bv.event
+class Click:
+    user_id: str
+
+def make_user_clicks_table():
+    @bv.table(key=&quot;user_id&quot;)
+    def UserClicks(c: Click):    # Click captured as a free variable
+        return c.group_by(&quot;user_id&quot;).agg(n=bv.count(window=&quot;forever&quot;))
+
+    return UserClicks
+</code></pre>
+<p>The decorated fn <code>UserClicks</code> references <code>Click</code> from the enclosing
+scope. Python compiles <code>Click</code> into the fn's <code>__closure__</code> cells; the
+resolver inspects the cells directly. This pattern is also robust to
+<code>@functools.lru_cache</code>-wrapped factories — the cache wraps the OUTER
+factory, not the inner decorated fn, so the closure cells survive.</p>
+<p><strong>Class-method (priority 3, unittest pattern):</strong></p>
+<pre><code class="language-python">class TestSuite:
+    def make_table(self):
+        @bv.event
+        class Click:
+            user_id: str
+
+        @bv.table(key=&quot;user_id&quot;)
+        def UserClicks(c: Click):
+            return c.group_by(&quot;user_id&quot;).agg(n=bv.count(window=&quot;forever&quot;))
+
+        return UserClicks
+</code></pre>
+<p>Same priority-3 mechanism as the function-local pattern; the resolver
+walks back to the method body's frame.</p>
+<p><strong>Not supported:</strong></p>
+<ul>
+<li>Lambdas: <code>@bv.table</code> requires a real <code>def</code> body — the upstream-proxy
+call needs a fn object, and lambdas are limited to a single
+expression.</li>
+<li>Names imported via <code>from x import *</code> <em>after</em> the decorator runs: the
+resolver runs at decoration time; if the name doesn't exist yet, it
+can't be found.</li>
+</ul>
 <h2 id="bvsum-signature-q1-path-b-locked" tabindex="-1"><a class="header-anchor" href="#bvsum-signature-q1-path-b-locked" aria-hidden="true">#</a> bv.sum signature (Q1 Path B locked)</h2>
 <pre><code class="language-python">def sum(field: str, *, window: str | None = None, where: bv.Col | None = None) -&gt; AggDescriptor: ...
 </code></pre>
