@@ -1,5 +1,6 @@
 # Rust
 /target
+**/target/
 **/*.rs.bk
 !/Cargo.lock
 # proptest regression files (generated at test time; not committed per proptest convention)
@@ -69,3 +70,48 @@ Thumbs.db
 beava-website/node_modules/
 render-docs-warnings.txt
 beava-website/link-audit-report.txt
+
+# IDE configs (additional)
+.cursor/
+
+# OS metadata (additional)
+._*
+Desktop.ini
+
+# Editor backups / generic temp
+*.bak
+*.tmp
+.cache/
+
+# Logs
+*.log
+tmp/
+
+# Python type-check + lint caches
+.mypy_cache/
+.ruff_cache/
+
+# JS/TS (global; sdk/typescript also has its own .gitignore)
+node_modules/
+*.tsbuildinfo
+
+# Go (defensive — Go SDK in Phase 13.6 roadmap)
+vendor/
+*.test
+
+# Coverage / profiling
+.coverage
+coverage.xml
+htmlcov/
+*.lcov
+flamegraph.svg
+*.trace/
+*.trace
+
+# Local secrets (additional)
+*.pem
+*.key
+secrets/
+
+# Beava runtime data dir (post-12.9 convention)
+.beava/
