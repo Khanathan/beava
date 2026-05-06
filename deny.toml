@@ -1,0 +1,67 @@
+# cargo-deny config (https://embarkstudios.github.io/cargo-deny/)
+# Phase 13.7.6-02 — Workstream-C-2 (security audit baseline)
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+db-path = "$CARGO_HOME/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "warn"
+ignore = [
+  # bincode 1.3.3 unmaintained — bincode 2.0 migration scheduled for v0.0.x
+  # See .planning/ideas/v0.1-deferrals.md
+  "RUSTSEC-2025-0141",
+  # fxhash 0.2.1 unmaintained — migration to ahash/rustc-hash scheduled for v0.0.x
+  "RUSTSEC-2025-0057",
+]
+
+[licenses]
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "0BSD",
+  "MPL-2.0",
+  "CC0-1.0",
+  "Zlib",
+  "BSL-1.0",
+  "Unlicense",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+# Per-crate license exceptions
+exceptions = [
+  # r-efi is LGPL-2.1-or-later but is target-conditional (UEFI only via getrandom).
+  # Verified 2026-05-05: not present in cargo tree for aarch64-apple-darwin /
+  # x86_64-unknown-linux-gnu / x86_64-apple-darwin builds. Not linked into v0
+  # shipping binaries (macOS + Linux multi-arch wheels per Phase 13.8 D-8-C).
+  { name = "r-efi", version = "*", allow = ["LGPL-2.1-or-later"] },
+]
+
+[bans]
+multiple-versions = "warn"
+# Workspace-internal path deps (e.g. beava-core = { path = "../beava-core" })
+# don't carry version specs — idiomatic for internal crates not published to
+# crates.io. v0 only publishes one Python wheel; internal crates stay
+# path-only. Tighten to "deny" + add version specs in v0.1+ if any internal
+# crate gets published to crates.io.
+wildcards = "allow"
+allow-wildcard-paths = true
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
