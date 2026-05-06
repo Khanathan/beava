@@ -1,0 +1,23 @@
+[
+ {
+  "RuleID": "generic-api-key",
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 271,
+  "EndLine": 271,
+  "StartColumn": 38,
+  "EndColumn": 64,
+  "Match": "access: REDACTED",
+  "Secret": "REDACTED",
+  "File": ".planning/phases/03-python-sdk/03-03-PLAN.md",
+  "SymlinkFile": "",
+  "Commit": "c72020ee4ac54933b8fca04f1f469f1b2b423d24",
+  "Link": "https://github.com/petrpan26/tally/blob/c72020ee4ac54933b8fca04f1f469f1b2b423d24/.planning/phases/03-python-sdk/03-03-PLAN.md?plain=1#L271",
+  "Entropy": 3.787144,
+  "Author": "petrpan26",
+  "Email": "phan.minhhoang2606@gmail.com",
+  "Date": "2026-04-09T16:20:49Z",
+  "Message": "docs(03-python-sdk): create phase plan for Python SDK\n\n4 plans across 3 waves covering all SDK-* requirements:\n- Plan 01 (W1): project skeleton, types, protocol encoding\n- Plan 02 (W1): operators, @stream/@view decorators, metaclass\n- Plan 03 (W2): TCP client, App class with all commands\n- Plan 04 (W3): end-to-end integration tests against live server",
+  "Tags": [],
+  "Fingerprint": "c72020ee4ac54933b8fca04f1f469f1b2b423d24:.planning/phases/03-python-sdk/03-03-PLAN.md:generic-api-key:271"
+ }
+]
