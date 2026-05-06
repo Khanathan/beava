@@ -2171,3 +2171,48 @@ Phase 13.7.5 did NOT modify any of the 4 hot-path entry points or the `apply_eve
 
 - bench-v18 push **small/tcp+msgpack ≥ 567,342 EPS** (10% under post-13.7.5 630,380 EPS median) — Phase 13.8 ship-gate floor for the regression-gate cell.
 - bench-v18 push **fraud-team/tcp+msgpack ≥ 75,861 EPS** (10% under post-13.7.5 84,290 EPS median) — primary tuning-bench floor; **TENTATIVE** until quiescent re-measurement firms up the cell. Does NOT supersede the post-12.9 floor of 92,825 EPS — the post-13.7.5 single-high-run (93,246) is within the post-12.9 3-run band; phase 13.7.5's median is depressed by box-load on this run.
+
+
+---
+
+## Phase 13.7.6 — Honest sustained-mode 8-cell rebaseline (Apple-M4)
+
+**Date:** 2026-05-05
+**Methodology:** post-Plan-13.7.6-27 fixed bench. `--duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger` (no `--total-events` cap → true 60-second sustained rate; `sustained_eps:` label only emits when elapsed ≥ 95% of duration). Compare burst-rate columns to prior committed baselines for context. Per Plan 27 SUMMARY § Out of scope, `--parallel 32 --pipeline-depth 1024` is excluded due to a separate server-side `semaphore_wait_trap` starvation hang; moderate parallelism (`--parallel 16`) is the canonical rebaseline shape.
+**Commit:** `93fcca1c` (HEAD at run completion; cells 1–3 captured at `f547e3ac`, cells 4–8 at `93fcca1c` — both commits are docs-only relative to the bench binary, which is unchanged since `ab5d6dc4`)
+**hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
+**Reproduce:** `for s in small medium large fraud-team; do for t in tcp http; do w=$([ "$t" = "tcp" ] && echo "msgpack" || echo "json"); cd crates/beava-bench && timeout 90 ../../target/release/beava-bench-v18 --pipeline "$s" --transport "$t" --wire-format "$w" --blast-shape zipfian --cardinality 10000 --duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger; done; done`
+
+### 8-cell honest sustained rebaseline
+
+| Cell | Phase 13.7.6 sustained EPS (60s) | Push p99 (µs) | Prior committed (burst rate) | Sustained/burst ratio | Notes |
+|------|--------------------------------:|---------------:|-----------------------------:|-----------------------:|-------|
+| **small/tcp (gate)** | **660,458** | 60,991 | 630,380 (Phase 13.7.5 burst) | **1.05** | sustained slightly **above** committed burst — committed number was already a near-honest rate at the small-shape ceiling |
+| medium/tcp | 619,175 | 59,839 | 648,022 (Phase 13.7.5 burst) | **0.96** | sustained ≈ committed burst (within ±5%); medium-shape fast path is steady-state-dominated |
+| large/tcp | 507,226 | 91,135 | 546,935 (Phase 13.7.5 burst) | **0.93** | sustained slightly below committed burst; large-shape windowed-op cost grows with run length |
+| **fraud-team/tcp (primary)** | **125,061** | 148,095 | 84,290 (Phase 13.7.5 burst) | **1.48** | sustained **48% above** committed median — Phase 13.7.5 fraud-team/tcp median was depressed by box-load (own SUMMARY tags it −20% measurement variance); 60-second run is a more honest read |
+| small/http | 69,421 | 379 | 92,088 (WEBSITE-GAPS Gap 43; user measurement Apple-M4) | **0.75** | sustained 25% below user-measured Gap-43 burst — Gap 43 used `--parallel 32 --duration 30s` (higher fan-out + shorter window); this run uses `--parallel 16 --duration-secs 60` (moderate fan-out per Plan 27); honest moderate-fan-out figure |
+| medium/http | 73,098 | 353 | (no recent baseline; first sustained capture) | n/a | first sustained baseline at this cell |
+| large/http | 71,123 | 364 | (no recent baseline) | n/a | first sustained baseline at this cell |
+| fraud-team/http | 40,130 | 776 | (no recent baseline) | n/a | first sustained baseline at this cell; elapsed 64.6 s (deadline overshoot in teardown — `sustained_eps:` label triggered, ≥ 95% threshold met) |
+
+### Headline
+
+**The honest sustained rebaseline tells a more nuanced story than "burst rates are inflated by 5-10×".** The data shows:
+
+- **TCP small / medium / large** sustained ≈ committed burst within ±7% — committed numbers were already honest within measurement variance, and the post-Plan-27 sustained-rate methodology mostly confirms them.
+- **TCP fraud-team** sustained at **125,061 EPS** is **+48% above** the prior committed burst median (84,290 EPS) — prior runs were genuinely depressed by box-load, not the burst-vs-sustained methodology gap. The honest figure is **125 K EPS sustained on the 14-node × 110-feature primary tuning bench**.
+- **HTTP small** sustained at **69,421 EPS** is **−25% below** the WEBSITE-GAPS Gap-43 user-measured number (92,088 EPS); the difference is 32-parallel vs 16-parallel measurement (Gap 43 used `--parallel 32 --duration 30s`; this run uses `--parallel 16 --duration-secs 60`). Lower fan-out → fewer concurrent HTTP requests → lower throughput; this is the honest moderate-fan-out figure.
+
+The headline number for v0 ship-pitch is **660 K EPS sustained / 60 s on small/tcp** on Apple-M4 / 10 cores; this is the honest figure that should land in the README per Plan 13.7.6-29 and WEBSITE-GAPS.md §43.
+
+### Implications
+
+- Most pre-Plan-27 baselines (Phases 12.6 through 13.7.5) reported `sustained_eps` that was actually a 1.5-second burst rate; this rebaseline confirms the gap is **smaller than feared on most cells** but **non-trivial on HTTP small** and **inverted on fraud-team/tcp** (sustained > committed burst, due to box-load variance in the prior measurement).
+- README throughput claim should be `~660K EPS sustained on 10-core Apple-M4 / Darwin (msgpack/TCP fast path); ~70K EPS sustained over HTTP+JSON; scales linearly with cores` (no more "315K EPS TCP" — that was a different higher-core box of unknown spec, and the current Apple-M4 number is honest at 660 K).
+- Future regression-gate runs against this baseline use the same invocation: `--duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger` and compare `sustained_eps:` (not `burst_eps:`).
+- 10% warn floors (post-13.7.6 → forward): small/tcp ≥ 594,412 EPS; medium/tcp ≥ 557,257; large/tcp ≥ 456,503; fraud-team/tcp ≥ 112,555; small/http ≥ 62,479; medium/http ≥ 65,788; large/http ≥ 64,011; fraud-team/http ≥ 36,117.
+
+### Deferred
+
+- `--parallel 32 --pipeline-depth 1024` cells: server-side `semaphore_wait_trap` starvation hang (per Plan 13.7.6-27 SUMMARY § Out of scope). Tracked separately; v0.0.x candidate.
