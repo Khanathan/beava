@@ -196,6 +196,8 @@ criterion_main!(phase4_expr);
 // ── Contract constant ───────────────────────────────────────────────────────────
 
 /// Declares the expected number of bench IDs: 3 parse + 5 eval + 2 op_chain.
+// reason: red-commit contract constant published for the unit-test below;
+// criterion never reads it directly.
 #[allow(dead_code)]
 pub mod phase4_expr_benches {
     pub const EXPECTED_GROUPS: usize = 10;

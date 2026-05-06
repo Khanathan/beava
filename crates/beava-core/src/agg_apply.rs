@@ -57,12 +57,16 @@ pub(crate) fn extracted_build_count_increment() {
     EXTRACTED_BUILD_COUNT.with(|c| c.set(c.get() + 1));
 }
 
+// reason: test-only counter accessor; kept on the `tests` cfg even when no
+// in-tree test currently invokes it so external integration tests / debug
+// builds can flip it.
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn extracted_build_count_load() -> u64 {
     EXTRACTED_BUILD_COUNT.with(|c| c.get())
 }
 
+// reason: see `extracted_build_count_load` above.
 #[cfg(test)]
 #[allow(dead_code)]
 pub(crate) fn extracted_build_count_store(v: u64) {

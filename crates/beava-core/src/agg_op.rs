@@ -171,6 +171,9 @@ impl Default for AggExtParams {
     }
 }
 
+// reason: explicit Default impl makes the chosen default (Count) discoverable
+// at the type definition; #[derive(Default)] would silently pick the first
+// variant and shift on enum reordering.
 #[allow(clippy::derivable_impls)]
 impl Default for AggKind {
     fn default() -> Self {
@@ -699,6 +702,8 @@ impl AggOp {
 
     /// Returns true iff the op is a core scalar op that supports the 64-bucket
     /// Windowed wrap. Used by serialization/debugging helpers; keep crate-public.
+    // reason: kept crate-public for serialization / debugging helpers per the
+    // doc-comment above; current call sites are cfg-gated.
     #[allow(dead_code)]
     pub(crate) fn is_core(&self) -> bool {
         matches!(
@@ -856,6 +861,10 @@ impl AggOp {
     /// `field_idx` and `extracted` are passed through so `EventTypeMix` can call
     /// its `update_at` fast-path (consuming the pre-extracted Value directly,
     /// avoiding the `row.get(fname)` scan that `update()` pays).
+    // reason: pre-extraction protocol threads each independently-meaningful
+    // hot-path parameter (pre_val, now_ms, where_expr, row, field, indices)
+    // into the inner dispatch; struct-bag refactor would add per-event alloc
+    // and obscure call-site intent on the apply hot path.
     #[allow(clippy::too_many_arguments)]
     pub fn update_with_extracted(
         &mut self,
@@ -899,6 +908,8 @@ impl AggOp {
     ///
     /// The Windowed arm here calls `WindowedOp::update_at`, NOT `update_with_row`,
     /// so the pre-extraction protocol crosses the WindowedOp wrapper boundary.
+    // reason: pre-where-evaluated sibling of update_with_extracted; same
+    // hot-path parameter list with where_matched threaded in pre-computed.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_with_extracted_no_where(
         &mut self,

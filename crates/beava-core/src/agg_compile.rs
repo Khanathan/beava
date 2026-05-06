@@ -32,6 +32,9 @@ use std::sync::Arc;
 /// or strings that cannot be parsed.
 ///
 /// # SDK-AGG-06
+// reason: `Result<_, ()>` is the SDK-AGG-06 contract — caller distinguishes
+// "forever" (Ok(None)) from finite (Ok(Some(_))) from invalid (Err(())); the
+// error variant carries no information by design.
 #[allow(clippy::result_unit_err)]
 pub fn parse_duration_to_ms(s: &str) -> Result<Option<u64>, ()> {
     if s == "forever" {

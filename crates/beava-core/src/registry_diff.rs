@@ -193,6 +193,8 @@ pub enum DiffReason {
     /// `event_time_field` value differed between current and submitted
     /// EventDescriptor. The diff classifier no longer raises this; the field
     /// is gone from EventDescriptor. Variant kept for wire-codec stability.
+    // reason: wire-codec stability — discriminant retained per Phase 12.7
+    // events-only pivot; never constructed at runtime.
     #[allow(dead_code)]
     EventTimeFieldMismatch,
     PrimaryKeyMismatch,

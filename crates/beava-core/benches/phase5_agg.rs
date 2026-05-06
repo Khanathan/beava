@@ -305,6 +305,9 @@ criterion_main!(phase5_agg);
 
 // ─── Contract constant ────────────────────────────────────────────────────────
 
+// reason: red-commit contract constant published for the unit-test below;
+// the bench binary itself doesn't reference the module so it's dead from
+// criterion's POV but load-bearing for the contract test.
 #[allow(dead_code)]
 pub mod phase5_agg_benches {
     /// Total number of bench IDs registered: 8 AggOp + 2 WindowedOp + 1 apply.

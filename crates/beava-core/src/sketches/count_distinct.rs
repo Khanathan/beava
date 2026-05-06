@@ -56,6 +56,9 @@ type HashSetU64 = hashbrown::HashSet<u64, std::hash::BuildHasherDefault<NoOpHash
 // still construct the variant via `CountDistinctState::new(...)` +
 // `add_hash(...)` (the only supported APIs); they cannot name `NoOpHasher`
 // or `HashSetU64` directly.
+// reason: NoOpHasher is intentionally module-private but reachable through
+// the public HashSet variant's HashSetU64 type alias; see the long comment
+// above for the API-surface rationale.
 #[allow(private_interfaces)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CountDistinctState {

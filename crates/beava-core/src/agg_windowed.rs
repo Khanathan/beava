@@ -227,6 +227,9 @@ impl WindowedOp {
     /// Min/Max/Variance/StdDev/CountDistinct/Percentile/TopK/Entropy via
     /// `update_pre`) or are fieldless (Count/Ratio). Passing an empty `Row`
     /// + `None` field down through the bucket dispatch is therefore safe.
+    // reason: per-bucket hot-path dispatch; see AggOp::update_with_extracted
+    // for the rationale on threading independent parameters rather than a
+    // struct-bag.
     #[allow(clippy::too_many_arguments)]
     pub fn update_at(
         &mut self,

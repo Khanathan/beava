@@ -1090,6 +1090,12 @@ mod tests {
     use super::*;
 
     // ── Helpers (some used only in green-phase tests; allow dead_code for red commit) ──
+    //
+    // reason: AST-construction helpers retained as scaffolding for future
+    // red-phase tests in this module; the doc-comment above explains the
+    // grandfathered TDD-pattern origin. Single per-fn allows are kept (rather
+    // than a module-wide allow) so removing a helper that genuinely becomes
+    // unreachable later is a one-line edit.
 
     #[allow(dead_code)]
     fn field(name: &str, start: usize, end: usize) -> Expr {

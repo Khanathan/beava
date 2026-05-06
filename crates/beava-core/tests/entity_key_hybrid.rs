@@ -6,6 +6,9 @@
 
 use beava_core::agg_state_table::EntityKeyShape;
 use beava_core::registry::{DerivationDescriptor, EventDescriptor, OutputKind, Registry};
+// reason: PayloadNode is imported under conditional test paths; some test
+// scenarios in this file don't exercise it directly but the import is kept
+// for symmetry with the green-phase scenarios that do.
 #[allow(unused_imports)]
 use beava_core::registry_diff::PayloadNode;
 use beava_core::row::{Row, Value};

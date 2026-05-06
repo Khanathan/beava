@@ -39,11 +39,14 @@ pub enum ErrorCode {
     /// at the JSON-prelude layer (`pre_check_legacy_event_time_keys`) before
     /// the validator runs. Variant kept for wire-codec stability and to avoid
     /// an `ErrorCode` discriminant shift.
+    // reason: wire-codec stability — discriminant retained per Phase 12.7
+    // events-only pivot; never constructed at runtime.
     #[allow(dead_code)]
     EventTimeFieldMissing,
     /// Pre-pivot variant — emitted when the `event_time_field` decorator
     /// referenced a field of the wrong type (non-i64). Same posture as
     /// `EventTimeFieldMissing` — variant kept, no longer raised.
+    // reason: wire-codec stability — see `EventTimeFieldMissing` above.
     #[allow(dead_code)]
     EventTimeFieldWrongType,
     EventSchemaEmpty,
@@ -70,6 +73,8 @@ pub enum ErrorCode {
     /// GroupBy / Join / Union appearing in an op chain — treated as
     /// pass-through (not an error); variant exists for future use but
     /// Rule 10 does NOT emit this — it treats them as warnings.
+    // reason: variant reserved for future Rule 10 strictening; never
+    // constructed at runtime. ErrorCode discriminant pinned by wire-codec.
     #[allow(dead_code)]
     UnsupportedOpInPhase4,
     // Rule 11: aggregation validation.
@@ -87,6 +92,8 @@ pub enum ErrorCode {
     /// NOTE: BTreeMap deserialization deduplicates JSON keys (last-writer-wins),
     /// so this variant is currently unreachable via normal JSON parsing.
     /// Reserved for future Vec-based deserialization that preserves duplicates.
+    // reason: variant reserved for future Vec-based deserialization that
+    // preserves duplicate JSON keys; never constructed at runtime today.
     #[allow(dead_code)]
     AggregationDuplicateFeatureName,
     /// A feature name collides with a group_by key.
@@ -668,6 +675,9 @@ impl ValidatedPayload {
     }
 
     /// Decompose into (nodes, compiled_chains, propagated_schemas, compiled_aggregations).
+    // reason: 4-tuple return is the documented decomposition shape; introducing
+    // a wrapper struct just for the lint would obscure the call-site pattern
+    // (caller destructures with `let (nodes, chains, schemas, aggs) = ...`).
     #[allow(clippy::type_complexity)]
     pub fn into_parts(
         self,
