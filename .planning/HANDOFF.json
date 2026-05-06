@@ -39,6 +39,15 @@
   ],
   "remaining_v0_critical_path": [
     {
+      "id": "13.7.6-32-bench-consolidation",
+      "what": "USER DIRECTIVE 2026-05-05 LATE: collapse 4 bench binaries into single canonical `beava-bench`. Delete beava-bench-legacy + beava-bench-v2 + beava-bench-v18; merge v18's harness into `beava-bench` subcommands; RESTORE --parallel to throughput subcommand (Option A from Gap 44 — wire through, do NOT strip).",
+      "scope": "1-2 days. Harness merge (v18's worker-pool + epoll loop + frame codec into beava-bench's harness module), --parallel re-add (this time wired through correctly), beava-bench/README.md rewrite (no decision tree; one binary), throughput-baselines.md Reproduce update, Cargo.toml [[bin]] collapse to single entry, default-run self-reference, regression tests for parallel/sustained/burst paths",
+      "supersedes": "Plan 24 (strip --parallel) chose Option B; user's revised direction is Option A (wire through after consolidation). Plan 26 README documenting 4 binaries becomes obsolete.",
+      "blocks": "Phase 13.8 packaging — should ship ONE canonical bench binary, not four",
+      "rationale": "User-locked architectural call: 'beava-bench should be the only one'. The 4-binary split is cruft documented as a feature; canonical CLI = single binary with subcommands.",
+      "carry_forward_from_plans": ["Plan 28 rebaseline numbers stay valid post-consolidation; same workload via unified beava-bench produces same measurements"]
+    },
+    {
       "id": "beava-website-tier-1",
       "what": "Gaps 7/12/13/14/15/16/17/18/21/22 docs drift — 10 gaps × multiple pages",
       "scope": "LARGE — needs full agent context budget (~4-6x what's available now). Boot binary + curl probes for Gap 21; rebuild error-codes table from grep crates/ for Gap 22.",
