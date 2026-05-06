@@ -115,8 +115,12 @@ pub fn load_snapshot_if_any(
 /// JSON shape of a WAL Event record's payload (matches push.rs encoder).
 #[derive(Debug, Deserialize)]
 struct WalEventPayload {
+    // reason: serde-shape parity with the WAL Event record format; recovery
+    // doesn't consult `v` directly, but the field must be deserialized to
+    // round-trip the format.
     #[allow(dead_code)]
     v: u64,
+    // reason: see `v` above — serde-shape parity with the WAL Event record.
     #[allow(dead_code)]
     rv: u64,
     s: String,
@@ -127,6 +131,8 @@ struct WalEventPayload {
 /// A single decoded v=2 record from the hand-rolled WAL file.
 struct V2Record {
     body_format: u8,
+    // reason: parsed from the v=2 record header for completeness; recovery
+    // doesn't depend on the per-record registry version.
     #[allow(dead_code)]
     rv: u32,
     et_ms: i64,

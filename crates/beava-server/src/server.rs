@@ -436,6 +436,10 @@ impl ServerV18 {
     /// `registry()`, and `snapshot_trigger_handle()` before
     /// `serve_with_dirs` is called. Production callers use `bind()` +
     /// `serve()`.
+    // reason: TestServer construction surface — every parameter is an
+    // independently-meaningful production knob (HTTP/TCP/admin addresses,
+    // WAL/snapshot dirs, intervals, frame cap). A struct-bag would obscure
+    // call-site intent across the test harness.
     #[allow(clippy::too_many_arguments)]
     pub async fn bind_with_state(
         http_addr: std::net::SocketAddr,
@@ -469,6 +473,9 @@ impl ServerV18 {
     /// finer control than the production env interface exposes (most
     /// `TestServer`s pass `1` to keep macOS `F_FULLSYNC` latency from
     /// dominating wall-clock).
+    // reason: see `bind_with_state` above — TestServer construction surface;
+    // independently-meaningful parameters with finer-grained control than
+    // the production env interface exposes.
     #[allow(clippy::too_many_arguments)]
     pub async fn bind_with_state_and_overrides(
         http_addr: std::net::SocketAddr,
@@ -684,6 +691,10 @@ async fn build_runtime_state(
 ///
 /// `wal_fsync_interval_ms` is honoured only in Disk mode; Memory mode
 /// drives the no-op writer at `wal_cfg.tick_ms`.
+// reason: persistence-aware constructor for the runtime state; each
+// parameter is an independently-meaningful subsystem knob (persistence
+// mode, intervals, test_mode, frame cap, WAL overrides, IO threads, memory
+// governance). Group structs would split into N partial-struct refactors.
 #[allow(clippy::too_many_arguments)]
 async fn build_runtime_state_with_persistence(
     persistence: Persistence,
@@ -1083,15 +1094,21 @@ const TOKEN_APPLY_WAKER: mio::Token = mio::Token(usize::MAX);
 /// Currently unused — connections are owned by per-worker IoBackends in
 /// `beava-runtime-core`. Retained for the legacy IoPool helpers below
 /// (still compiled but never invoked at runtime).
+// reason: legacy IoPool scaffolding retained as build-time reference for
+// the per-tick lifecycle; the runtime path uses per-worker IoBackends.
+// Removing the constants/types/fns risks losing the architecture-doc
+// mapping; the dead_code allows are localized to this scaffolding block.
 #[allow(dead_code)]
 const TOKEN_CLIENT_BASE: usize = 2;
 
 /// Maximum concurrent clients supported by the legacy per-tick IoPool
 /// lifecycle. See `TOKEN_CLIENT_BASE` — unused at runtime.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 const MAX_CONCURRENT_CLIENTS: usize = 8192;
 
 /// Per-client connection state for the mio event loop.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 struct MioClient {
     stream: mio::net::TcpStream,
@@ -1116,6 +1133,7 @@ struct MioClient {
     closed: bool,
 }
 
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq)]
 enum MioProto {
@@ -1164,6 +1182,9 @@ pub mod iopool_observer {
     /// per-worker `IoBackend` threads in `beava-runtime-core`, which
     /// can't reach back into this module — but kept for potential
     /// re-instrumentation.
+    // reason: optional re-instrumentation point per the doc-comment above;
+    // the lint observer module keeps the symbol available without forcing
+    // callers in beava-runtime-core to reach back.
     #[allow(dead_code)]
     pub(crate) fn record_parse() {
         if is_apply_thread() {
@@ -1923,6 +1944,7 @@ fn accept_clients_to_workers<L>(
 /// bounded by the IoPool's Release/Acquire barrier — only one worker
 /// touches a given slot index per tick, and the apply thread waits at
 /// `join_all()` before reading.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 struct ClientsPtr(*mut Option<MioClient>);
@@ -1931,6 +1953,7 @@ struct ClientsPtr(*mut Option<MioClient>);
 unsafe impl Send for ClientsPtr {}
 unsafe impl Sync for ClientsPtr {}
 
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 impl ClientsPtr {
     /// Access the slot at `idx`. Method form (rather than direct field
@@ -1944,6 +1967,7 @@ impl ClientsPtr {
     }
 }
 
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 impl MioClient {
     /// True if the client has bytes to write — either un-serialised
@@ -1956,6 +1980,7 @@ impl MioClient {
 
 /// Accept all pending connections from `listener` until WouldBlock, allocate
 /// a free slot for each, and register with the event loop.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 fn accept_clients<L>(
     listener: &mut L,
@@ -2037,6 +2062,7 @@ impl AcceptStream for beava_runtime_core::tcp_listener::TcpListener {
 /// The channel is bounded; if apply falls behind, `send` blocks the
 /// worker briefly. In normal operation apply is faster than parse (apply
 /// ~0.9 µs vs parse ~4 µs per push), so contention is rare.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 fn read_and_parse_client_to_channel(
     client: &mut MioClient,
@@ -2178,6 +2204,7 @@ fn read_and_parse_client_to_channel(
 /// - `try_recv` → `dispatch_wire_request_with_row` → push response to
 ///   `clients[slot_idx].output_queue`
 /// - `ParseError` → push error response, mark client closed.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 fn drain_channel_until_workers_done(
     io_pool: &beava_runtime_core::io_pool::IoPool,
@@ -2276,6 +2303,7 @@ fn drain_channel_until_workers_done(
 /// 2. Loop on `socket.write` from the head of `write_buf` until `WouldBlock`
 ///    or `write_buf` is empty.
 /// 3. On EOF / error, mark closed.
+// reason: legacy IoPool scaffolding — see TOKEN_CLIENT_BASE above.
 #[allow(dead_code)]
 fn serialize_and_write_client(client: &mut MioClient) {
     use std::io::Write;

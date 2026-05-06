@@ -175,10 +175,14 @@ pub enum RegisterOutcome {
     /// v0 exposes "first-error-wins" on the wire; full Vec is logged at WARN.
     ValidationFailed {
         version: u64,
+        // reason: structured fields recorded for future logging/metrics; the
+        // wire response only emits first_error_path / first_error_reason in
+        // v0 (first-error-wins).
         #[allow(dead_code)]
         first_error_code: ErrorCode,
         first_error_path: String,
         first_error_reason: String,
+        // reason: see `first_error_code` above — recorded for future use.
         #[allow(dead_code)]
         all_errors_count: usize,
     },

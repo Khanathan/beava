@@ -18,6 +18,9 @@ use std::time::Duration;
 /// Helper: create N worker handles using `start_worker`.
 /// Returns `(Vec<WorkerHandle>, read_rx, Vec<write_tx>)`.
 /// `write_tx[w]` is the apply-side sender for worker `w`'s response channel.
+// reason: test-only helper; the 3-tuple return shape mirrors the production
+// `start_worker` callers and is easier to read at the call site than a
+// helper-specific struct.
 #[allow(clippy::type_complexity)]
 fn spawn_n_workers_with_write(
     n: usize,

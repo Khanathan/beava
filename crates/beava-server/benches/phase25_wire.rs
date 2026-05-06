@@ -104,6 +104,8 @@ criterion_group!(phase25_wire, all_benches);
 criterion_main!(phase25_wire);
 
 // Published for the red-commit contract test.
+// reason: red-commit contract constant referenced only by the unit-test
+// below; the criterion bench binary doesn't read it.
 #[allow(dead_code)]
 pub mod phase25_wire_benches {
     pub const CRITERION_GROUP_COUNT: usize = 1;
@@ -113,6 +115,8 @@ pub mod phase25_wire_benches {
 
 #[cfg(test)]
 mod tests {
+    // reason: glob import covers symbols referenced via fully-qualified
+    // paths inside individual tests; per-test imports would be noisier.
     #[allow(unused_imports)]
     use super::*;
 

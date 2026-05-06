@@ -209,6 +209,9 @@ fn active_sink() -> Option<Arc<Mutex<Vec<u8>>>> {
     ACTIVE_SINK.get().and_then(|m| m.lock().unwrap().clone())
 }
 
+// reason: test-only nested-Mutex sink; the layered Option<Arc<Mutex<…>>>
+// shape lets each test install/clear its per-test buffer without racing on
+// the OnceLock. A helper alias would obscure the swap_active_sink semantics.
 #[allow(clippy::type_complexity)]
 static ACTIVE_SINK: OnceLock<Mutex<Option<Arc<Mutex<Vec<u8>>>>>> = OnceLock::new();
 static SUBSCRIBER_INSTALLED: OnceLock<()> = OnceLock::new();

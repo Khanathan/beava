@@ -26,6 +26,9 @@ use std::sync::Arc;
 pub struct ApplyShard {
     state: Arc<AppState>,
     wal_ring: Arc<WalBufferRing>,
+    // reason: WalLsn handle retained on the shard for future WAL-coordinated
+    // dispatches; the current apply path drives writes through `wal_ring`
+    // directly. Drop only when watermark observation can be shown unneeded.
     #[allow(dead_code)]
     wal_lsn: Arc<WalLsn>,
 }
