@@ -149,6 +149,7 @@ fn run_with_timeout(
 /// `--parallel 32 --pipeline-depth 1024` heavy shape exposes a separate
 /// server-side starvation under extreme fan-out which is out of scope here.
 #[test]
+#[ignore = "requires target/release/beava-bench; run with --ignored after `cargo build --release`"]
 fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
@@ -214,6 +215,7 @@ fn sustained_mode_5s_deadline_terminates_in_bounded_time() {
 /// 100 events @ any reasonable EPS finishes in well under 1 s; the default
 /// `--duration-secs` is 60, so `elapsed / duration` is tiny — clearly a burst.
 #[test]
+#[ignore = "requires target/release/beava-bench; run with --ignored after `cargo build --release`"]
 fn total_events_capped_run_reports_burst_eps_label() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
@@ -268,6 +270,7 @@ fn total_events_capped_run_reports_burst_eps_label() {
 /// Covered by `sustained_mode_5s_deadline_terminates_in_bounded_time` already
 /// — keeping a focused check here makes the contract explicit.
 #[test]
+#[ignore = "requires target/release/beava-bench; run with --ignored after `cargo build --release`"]
 fn full_duration_run_reports_sustained_eps_label() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, _elapsed) = run_with_timeout(
