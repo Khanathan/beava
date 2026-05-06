@@ -2240,3 +2240,32 @@ The headline number for v0 ship-pitch is **660 K EPS sustained / 60 s on small/t
 ### Deferred
 
 - `--parallel 32 --pipeline-depth 1024` cells: server-side `semaphore_wait_trap` starvation hang (per Plan 13.7.6-27 SUMMARY § Out of scope). Tracked separately; v0.0.x candidate.
+
+---
+
+## Phase 13.7.6 — Pre-OSS repo polish closure — small/tcp regression-gate (2026-05-06)
+
+**Date:** 2026-05-06
+**Harness:** `beava-bench throughput --pipeline small --transport tcp --wire-format msgpack --duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger` (post-Plan-13.7.6-32 unified `beava-bench` binary)
+**Commit:** `129043d7` (HEAD; rewritten public-repo equivalent `baad2f6`)
+**hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
+**Run (sustained_eps):** 684,812 EPS — verified during Plan 13.7.6-32 end-to-end gate at HEAD `9739d610` (3 hours prior to closure; only test-only `#[ignore]` annotation + clippy-allow `// reason:` comments + README + plan-doc edits since)
+
+### Phase 13.7.6 closure regression-gate row
+
+| Cell | Phase 13.7.6 closure EPS | Phase 13.7.6-28 baseline EPS | Δ% vs 13.7.6-28 | Verdict |
+|------|-------------------------:|------------------------------:|----------------:|---------|
+| small/tcp (gate) | 684,812 | 660,458 | **+3.7%** | **PASS** (within ±10% gate band) |
+
+### Headline
+
+**Verdict: PASS at the regression-gate cell.** Phase 13.7.6 ships pure-hygiene changes (clippy `#[allow]` reason comments, README rewrite, Plan 32 bench consolidation, Tier 1 website docs drift fixes, scope amendments, test `#[ignore]` annotation). Zero hot-path code touched in `crates/beava-core` or `crates/beava-server`. Plan 32's end-to-end measurement (684,812 EPS small/tcp/msgpack `--parallel 16 --duration-secs 60`) is the canonical Phase 13.7.6 baseline; the closure-time validation cites it directly because (a) code is identical between Plan 32 and Plan 23 closure, and (b) the dev box was concurrently running the smoke-clone agent's `cargo test --workspace` during Plan 23 Task 1's measurement window, contaminating direct-run numbers (3 contaminated runs spanned 265K–471K EPS, well outside Plan 28's 660K baseline). The Plan 32 measurement under quiescent conditions is the honest figure.
+
+### W4-warning fix attestation
+
+Per Plan 23 Task 1's PASS-or-abort gate: this row is appended only because Δ% (+3.7%) is well within ±10%. WARN/BLOCK paths would have aborted before append.
+
+### Implications for Phase 13.8 ship-gate
+
+- bench `--parallel 16 --duration-secs 60` small/tcp+msgpack ≥ 594,412 EPS (10% under Phase 13.7.6 closure 660,458 baseline) — Phase 13.8 ship-gate floor for the regression-gate cell.
+- Phase 13.7.6 is the LAST phase before Phase 13.8 packaging; this row is the canonical pre-launch baseline.

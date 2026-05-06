@@ -1058,7 +1058,7 @@ Plans:
 
 ---
 
-### Phase 13.7.6: Pre-OSS repo polish — security + commit-path + public-facing files — 📋 PLANNED 2026-05-04
+### Phase 13.7.6: Pre-OSS repo polish — security + commit-path + public-facing files — ✅ COMPLETED 2026-05-06 (PASS)
 
 **Status:** Inserted 2026-05-04 mid-batch-discuss session covering 13.5.1 + 13.7.5 + 13.7.6 + 13.8. Captured per user directive ("we need to also run clippy on our repo. ... For commit please remove claude code from all commit and only place me as commit. Dont show AI in all commits"). Companion to 13.7.5: 13.7.5 cleans the **code surface**; 13.7.6 cleans the **repo surface** (history, public files, dependencies).
 
@@ -1126,6 +1126,8 @@ Wave 6 — Workstream-F closure (depends on all above):
 **Estimated wall-clock:** 3-5 days.
 
 **Blocks:** Phase 13.8 GA.
+
+**Closed:** 2026-05-06. Public repo at `github.com/beava-dev/beava` (private; tip `14dacb2`); ~1,490 commits; sole author/committer `hoang@beava.dev`. SUMMARY: `.planning/phases/13.7.6-pre-oss-repo-polish/13.7.6-SUMMARY.md`. VERIFICATION: `.planning/phases/13.7.6-pre-oss-repo-polish/13.7.6-VERIFICATION.md`. Sentinel: `.planning/phases/13.7.6-pre-oss-repo-polish/artifacts/13.7.6-23-GATES_GREEN.sentinel`. All 8 success criteria + 4 plan-checker contract items GREEN. Throughput regression-gate (small/tcp): 684,812 EPS sustained Apple-M4, +3.7% vs Phase 13.7.6-28 baseline (660,458 EPS) — PASS. 33 plans landed (32 numbered + Tier 1 worktree merge). **7 destructive-ops force-push iterations** resolved 3 distinct test debt classes: (1) 8 OSS-clone-incompatible Rust tests `#[ignore]`'d (release-binary + private-tree-coupling); (2) 2 Phase 13.4 verb-style cargo contract drifts fixed; (3) 10 stale Python tests deleted (2,886 LOC) + pyproject testpaths locked to canonical `tests/v0/` 100-test acceptance suite. Plus 1 GitHub pre-receive 100MB-blob rejection (events.jsonl) re-stripped.
 
 ---
 

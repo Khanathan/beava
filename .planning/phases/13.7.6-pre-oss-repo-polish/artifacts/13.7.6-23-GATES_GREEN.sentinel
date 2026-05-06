@@ -1,0 +1,15 @@
+GATES_GREEN
+attempt: 7
+tip_sha: 14dacb2c62cd10a1ea527c37053df4926e7b2c8b
+clone_url: https://github.com/beava-dev/beava.git
+timestamp: 2026-05-06T19:38:27Z
+
+cargo test --workspace --features testing exit: 0 (132s; 125 ok-blocks, 0 FAILED)
+cargo clippy --workspace --all-targets --all-features -- -D warnings exit: 0 (11s)
+cargo fmt --all --check exit: 0 (1s)
+python -m pytest -q --no-header (testpaths=tests/v0) exit: 0 (15s; 100/100 v0 acceptance)
+
+pre-flight:
+  .planning/ absent: PASS
+  CLAUDE.md absent:  PASS
+  .claude/ absent:   PASS
