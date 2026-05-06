@@ -436,7 +436,7 @@
 {'$ docker run -p 8080:8080 -v $(pwd)/data:/var/lib/beava beava/beava:v0\n'}
 {'\n'}
 {'# homebrew — native binary on macOS / Linux\n'}
-{'$ brew install beava && beava serve --data-dir ./beava-data\n'}
+{'$ brew install beava && beava -c beava.yaml\n'}
 {'\n'}
 {'# verify\n'}
 {'$ curl http://localhost:8080/health\n'}
