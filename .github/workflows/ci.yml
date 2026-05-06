@@ -90,6 +90,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest pytest-timeout
 
-      - name: Run pytest
+      - name: Run pytest (v0 acceptance suite via pyproject testpaths)
         working-directory: python
-        run: python -m pytest tests/ -q --timeout=60 --no-header
+        run: python -m pytest -q --timeout=60 --no-header
