@@ -145,8 +145,12 @@ structs with <code>beava:&quot;&lt;wire_field_name&gt;&quot;</code> tags.</li>
 <a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-002-polars-op-rename.md">ADR-002</a>.</li>
 </ul>
 <blockquote>
-<p><strong>Module:</strong> <code>github.com/beava-io/beava-go</code>. Install via
-<code>go get github.com/beava-io/beava-go</code>. Import as
+<p><strong>Module:</strong> <code>github.com/beava-io/beava-go</code> — <strong>not yet published;
+coming v0.0.1.</strong> The Go SDK source ships in this repo (<code>sdk/go/</code>) and its
+test suite runs in CI on every commit, but the Go module proxy publication is
+part of the v0.0.1 cut. v0.0.0 is Python-only on the public package surface.
+To use the Go SDK before v0.0.1, build from the in-repo source. Once published,
+install via <code>go get github.com/beava-io/beava-go</code> and import as
 <code>import beava &quot;github.com/beava-io/beava-go&quot;</code>. The SDK targets Go
 1.22+ (modern context handling, slog).</p>
 </blockquote>
