@@ -56,14 +56,6 @@ path = "src/lib.rs"
 name = "beava-bench"
 path = "src/bin/beava-bench.rs"
 
-[[bin]]
-name = "beava-bench-legacy"
-path = "src/bin/beava-bench-legacy.rs"
-
-[[bin]]
-name = "beava-bench-v2"
-path = "src/bin/beava-bench-v2.rs"
-
 [[bench]]
 name = "blast_shape_bench"
 harness = false
