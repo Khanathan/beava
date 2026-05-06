@@ -35,6 +35,9 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PipelineConfig {
     pub name: String,
+    // reason: deserialized from configs/*.json; retained for serde-shape
+    // parity with the binary harness even if the blast_shape path doesn't
+    // read this field.
     #[allow(dead_code)]
     pub description: String,
     pub register: Value,

@@ -53,12 +53,17 @@ pub struct GeneratedEvent {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PipelineConfig {
+    // reason: deserialized from configs/*.json; retained for serde-shape
+    // parity with the binary harness even if the workload path doesn't read
+    // these fields.
     #[allow(dead_code)]
     pub name: String,
+    // reason: see `name` above — serde-shape parity with bench config files.
     #[allow(dead_code)]
     pub description: String,
     pub register: Value,
     pub event_name: String,
+    // reason: see `name` above — serde-shape parity with bench config files.
     #[allow(dead_code)]
     pub features: Vec<String>,
     pub key_field: String,

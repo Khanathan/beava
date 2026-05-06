@@ -834,6 +834,10 @@ async fn run_workload(
     })
 }
 
+// reason: per-worker push driver fans every independently-meaningful
+// parameter (transport, wire format, deadline, barriers, atomic counters)
+// down from the dispatcher; a struct-bag refactor would obscure call-site
+// intent at the only call site in `run_pool`.
 #[allow(clippy::too_many_arguments)]
 async fn run_push_worker(
     _worker_id: usize,
@@ -1027,6 +1031,8 @@ fn build_worker_pool(
     }
 }
 
+// reason: see `run_push_worker` — independent parameters threaded down
+// from the dispatcher; struct-bag refactor would obscure call site.
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp_burst_push_worker(
     seed: u64,
@@ -1224,6 +1230,8 @@ fn decode_pool_frame(buf: &Bytes) -> Option<(u16, u8, Bytes)> {
 /// records `now() - send_ts` into the histogram. FIFO ordering is the wire
 /// contract (Redis-style strict-FIFO, no request_id), so the timestamp queue
 /// pairs correctly with acks one-to-one.
+// reason: see `run_push_worker` — independent parameters threaded down
+// from the dispatcher; struct-bag refactor would obscure call site.
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp_continuous_push_worker(
     seed: u64,
