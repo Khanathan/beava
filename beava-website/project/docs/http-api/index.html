@@ -430,17 +430,22 @@ list with full HTTP status mapping (Plan 13.0-12 — forward reference).</p>
 <a href="/docs/wire-spec/#op_push-0x0010"><code>OP_PUSH</code> request schema</a>. The full JSON Schema
 lives at
 <a href="https://github.com/beava-dev/beava/blob/main/examples/wire/schemas/push.request.schema.json"><code>examples/wire/schemas/push.request.schema.json</code></a>.</p>
-<p>The body shape is <code>{event_name, fields: {...}}</code> in the post-13.4 verb-style
-form. The <code>event_name</code> field MUST match a registered <code>@bv.event</code> source; the
-<code>fields</code> object MUST match its declared schema (same field names, compatible
-types). Type coercion on the JSON boundary is allowed in v0 — string <code>&quot;42&quot;</code>
-for an <code>i64</code> field is accepted (the JSON-to-Rust coercer handles common
-mismatches). Strict-mode rejection is v0.1+.</p>
+<p><strong>Path-style (recommended in v0):</strong> the engine accepts <code>POST /push/{event_name}</code>
+with body <code>{&quot;user_id&quot;: &quot;alice&quot;, ...}</code> — the body is the bare <code>fields</code> dict
+(the event name lives in the URL path). The fields object MUST match the registered
+event source's declared schema (same field names, compatible types). Type coercion on
+the JSON boundary is allowed in v0 — string <code>&quot;42&quot;</code> for an <code>i64</code> field is
+accepted (the JSON-to-Rust coercer handles common mismatches). Strict-mode rejection
+is v0.1+.</p>
+<p><strong>Verb-style (also accepted):</strong> <code>POST /push</code> with body
+<code>{&quot;event&quot;: &quot;<name>&quot;, &quot;data&quot;: {...}}</code>. Both shapes are equivalent. SDKs
+prefer the verb-style form internally because it composes with batch dispatch on
+the TCP transport (<code>OP_PUSH</code> opcode + JSON body); curl users tend to find the
+path-style URL clearer.</p>
 <blockquote>
-<p><strong>Pre-13.4 form:</strong> the current engine accepts <code>POST /push/{event_name}</code> with
-body <code>{fields: {...}}</code> (no <code>event_name</code> key — it is in the URL path). Phase
-13.4 mechanically renames to the verb-style form documented above. SDKs ship
-against the post-13.4 form from day one (Plan 13.5 Python, Plan 13.6 TS + Go).</p>
+<p><strong>Note:</strong> Earlier draft docs and the Phase-13.0 specs referred to a verb-style
+body of <code>{event_name, fields}</code>. The shipped engine accepts <code>{event, data}</code> instead;
+the older shape will return HTTP 400 <code>missing_event_name_in_body</code>.</p>
 </blockquote>
 <p><strong>Response body (success):</strong> see the wire-spec
 <a href="/docs/wire-spec/#op_push-0x0010"><code>OP_PUSH</code> response schema</a>. The full JSON
@@ -475,7 +480,7 @@ v0.1+ via the wire-level opcode <code>OP_PUSH_SYNC = 0x0011</code>.</p>
 </tr>
 <tr>
 <td>404</td>
-<td><code>unknown_event</code> — the <code>event_name</code> is not registered.</td>
+<td><code>event_not_found</code> — the event name is not registered.</td>
 </tr>
 <tr>
 <td>415</td>
@@ -487,23 +492,20 @@ v0.1+ via the wire-level opcode <code>OP_PUSH_SYNC = 0x0011</code>.</p>
 </tr>
 </tbody>
 </table>
-<p><strong>Curl example:</strong></p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/push \
-  -H 'Content-Type: application/json' \
-  -d '{&quot;event_name&quot;: &quot;Txn&quot;, &quot;fields&quot;: '&quot;$(cat examples/wire/push-success.request.json | jq .fields)&quot;'}'
-</code></pre>
-<p>Or, when the <code>event_name</code> is already inlined in the fixture (post-13.4
-fixtures bundle the field):</p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/push \
+<p><strong>Curl example (path-style — simplest):</strong></p>
+<pre><code class="language-bash">curl -X POST http://localhost:8080/push/Txn \
   -H 'Content-Type: application/json' \
   -d @examples/wire/push-success.request.json
 </code></pre>
+<p>Or with the verb-style body that the SDKs send internally:</p>
+<pre><code class="language-bash">curl -X POST http://localhost:8080/push \
+  -H 'Content-Type: application/json' \
+  -d '{&quot;event&quot;: &quot;Txn&quot;, &quot;data&quot;: {&quot;user_id&quot;: &quot;u123&quot;, &quot;amount&quot;: 42.5}}'
+</code></pre>
 <blockquote>
-<p>Note: <code>examples/wire/push-success.request.json</code> currently carries only the
-<code>fields</code> object (matching the wire-level body which routes <code>event_name</code>
-separately on TCP). The HTTP transport in the post-13.4 target form expects
-<code>event_name</code> inside the body; SDKs synthesise that from their <code>app.push(&quot;Txn&quot;, {...})</code>
-call. The two-line <code>jq</code> example above demonstrates the manual transform.</p>
+<p>The wire-level fixture <code>examples/wire/push-success.request.json</code> carries
+only the bare fields dict, which is the path-style body. To replay it via verb-style,
+wrap it as <code>{&quot;event&quot;: &quot;Txn&quot;, &quot;data&quot;: <fixture>}</code> with <code>jq</code>.</p>
 </blockquote>
 <p><strong>Errors specific to this endpoint:</strong></p>
 <table>
@@ -1212,10 +1214,10 @@ full dedupe semantics.</li>
 </tr>
 </tbody>
 </table>
-<p>Phase 13.4 ships the rename mechanically. The body shape changes from
-<code>{fields: {...}}</code> to <code>{event_name: &quot;...&quot;, fields: {...}}</code>. Other routes
-(<code>/register</code>, <code>/get</code>, <code>/batch_get</code>, <code>/reset</code>, <code>/ping</code>) are already verb-style
-in the current code; only <code>/push</code> (and its TCP analog) needs the rename.</p>
+<p>The verb-style body shape is <code>{&quot;event&quot;: &quot;<name>&quot;, &quot;data&quot;: {...}}</code>
+(both keys required); the path-style body is the bare fields dict. Other routes
+(<code>/register</code>, <code>/get</code>, <code>/batch_get</code>, <code>/reset</code>, <code>/ping</code>) are verb-style
+in the current code.</p>
 <p>The rename rationale aligns with <code>project_v2_devex_first</code> and the broader
 Polars / DuckDB voice (<code>feedback_beava_website_voice</code>):</p>
 <ul>
