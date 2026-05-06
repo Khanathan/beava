@@ -1,0 +1,18 @@
+# Phase 13.7.6-09 mailmap: rewrite all historical authors+committers → Hoang Phan <hoang@beava.dev> per D-04
+#
+# git-filter-repo --mailmap consumes git's standard mailmap format:
+#   <Proper Name> <proper@email>  <Commit Name> <commit@email>
+# When the LHS is just `<Proper Name> <proper@email>`, the RHS may be either
+# `<email>` (matches any author with that email) or `Name <email>` (matches
+# author-name + author-email pair).
+#
+# Historical identities surfaced via:
+#   git log --all --pretty=format:'%aN <%aE>' | sort -u
+#   git log --all --pretty=format:'%cN <%cE>' | sort -u
+# (both enumerated identical sets at rehearsal time, 2026-05-05)
+#
+# Mapping every historical (name,email) tuple → canonical Hoang Phan <hoang@beava.dev>.
+
+Hoang Phan <hoang@beava.dev> Hoang Phan <hoang.phan@viggle.ai>
+Hoang Phan <hoang@beava.dev> Hoang Phan <phan.minhhoang2606@gmail.com>
+Hoang Phan <hoang@beava.dev> petrpan26 <phan.minhhoang2606@gmail.com>
