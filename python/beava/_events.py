@@ -257,7 +257,7 @@ def _collect_closure_cells_for_events(fn: Callable[..., Any]) -> dict[str, Any]:
     if code is None or closure is None:
         return cells
     freevars = getattr(code, "co_freevars", ())
-    for name, cell in zip(freevars, closure):
+    for name, cell in zip(freevars, closure, strict=False):
         try:
             cells[name] = cell.cell_contents
         except ValueError:

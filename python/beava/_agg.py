@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import re
 import warnings
-from dataclasses import dataclass, field as _dc_field
+from dataclasses import dataclass
+from dataclasses import field as _dc_field
 from typing import Any
 
 from beava._col import _Expr
