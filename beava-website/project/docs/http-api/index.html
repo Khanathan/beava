@@ -347,7 +347,7 @@ schema-dependent state.</p>
 </tbody>
 </table>
 <p><strong>Curl example:</strong></p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/register \
+<pre><code class="language-bash">curl -X POST http://localhost:8080/register \
   -H 'Content-Type: application/json' \
   -d @examples/wire/register-fraud-team.request.json
 </code></pre>
@@ -624,7 +624,7 @@ the Redis-shaped contract: a cold key is just a key with no data, not a
 </tbody>
 </table>
 <p><strong>Curl example:</strong></p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/get \
+<pre><code class="language-bash">curl -X POST http://localhost:8080/get \
   -H 'Content-Type: application/json' \
   -d @examples/wire/get-found.request.json
 </code></pre>
@@ -746,7 +746,7 @@ re-issue with the bad request removed. Partial success is reserved for v0.1+.</p
 </tbody>
 </table>
 <p><strong>Curl example:</strong></p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/batch_get \
+<pre><code class="language-bash">curl -X POST http://localhost:8080/batch_get \
   -H 'Content-Type: application/json' \
   -d @examples/wire/batch_get-heterogeneous.request.json
 </code></pre>
@@ -859,12 +859,12 @@ route then returns <code>403 Forbidden</code> with <code>reset_disabled</code>.<
 </tbody>
 </table>
 <p><strong>Curl example:</strong></p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/reset \
+<pre><code class="language-bash">curl -X POST http://localhost:8080/reset \
   -H 'Content-Type: application/json' \
   -d @examples/wire/reset-request.json
 </code></pre>
 <p>Or, since the body is empty:</p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/reset \
+<pre><code class="language-bash">curl -X POST http://localhost:8080/reset \
   -H 'Content-Type: application/json' \
   -d '{}'
 </code></pre>
@@ -959,7 +959,7 @@ feature schemas.</p>
 </tbody>
 </table>
 <p><strong>Curl example:</strong></p>
-<pre><code class="language-bash">curl -X POST http://localhost:7380/ping \
+<pre><code class="language-bash">curl -X POST http://localhost:8080/ping \
   -H 'Content-Type: application/json' \
   -d @examples/wire/ping-request.json
 </code></pre>

@@ -67,7 +67,7 @@
 
         <pre className="code-well">
 <span className="cmt">$ </span><span style={{color:'var(--fg1)'}}>brew install beava &amp;&amp; beava serve</span>{'\n'}
-<span className="cmt"># listening on :6400 · 14 MB binary · 62ms cold start</span>
+<span className="cmt"># listening on :8080 · 14 MB binary · 62ms cold start</span>
         </pre>
 
         <p>You define two streams — one for watches, one for the items themselves — and a single rolling-count feature keyed on the pair <code>(user_id, tag_id)</code>:</p>
@@ -131,13 +131,13 @@
 
         <pre className="code-well">
 <span className="cmt"># 1. Register the pipeline</span>{'\n'}
-<span className="kw">curl</span> -X POST localhost:6400/pipelines -d @pipeline.py{'\n'}{'\n'}
+<span className="kw">curl</span> -X POST localhost:8080/pipelines -d @pipeline.py{'\n'}{'\n'}
 <span className="cmt"># 2. Send a watch</span>{'\n'}
-<span className="kw">curl</span> -X POST localhost:6400/events/Watch \<br/>
+<span className="kw">curl</span> -X POST localhost:8080/events/Watch \<br/>
 {'  '}-H <span className="str">'content-type: application/json'</span> \<br/>
 {'  '}-d <span className="str">{`'{"user_id":"u1","video_id":"v_abc","watch_seconds":42}'`}</span>{'\n'}{'\n'}
 <span className="cmt"># 3. Ask what this user cares about in the last hour</span>{'\n'}
-<span className="kw">curl</span> localhost:6400/features/UserTagAffinity?user_id=u1{'\n'}
+<span className="kw">curl</span> localhost:8080/features/UserTagAffinity?user_id=u1{'\n'}
 <span className="cmt">{`# => [{"tag":"woodworking","weight_1h":42.0,...}, ...]`}</span>
         </pre>
 
