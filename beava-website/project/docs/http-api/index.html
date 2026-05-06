@@ -828,8 +828,8 @@ Schema lives at
 WAL. It is intended for <strong>test fixtures</strong> (<code>bv.test.fixture</code> and the
 <code>BeavaTestServer</code> harness use it between tests). Production operators MUST
 NOT call <code>/reset</code> on an instance bound to live data. Operators concerned
-about misuse should set <code>enable_reset_op=false</code> in the server config; the
-route then returns <code>403 Forbidden</code> with <code>reset_disabled</code>.</p>
+about misuse should boot without test mode (the v0 default) — the route then
+returns <code>403 Forbidden</code> with <code>reset_disabled_in_production</code>.</p>
 </blockquote>
 <p><strong>HTTP status codes:</strong></p>
 <table>
@@ -846,7 +846,7 @@ route then returns <code>403 Forbidden</code> with <code>reset_disabled</code>.<
 </tr>
 <tr>
 <td>403</td>
-<td><code>reset_disabled</code> — server config has <code>enable_reset_op=false</code>.</td>
+<td><code>reset_disabled_in_production</code> — server is not in test mode (the v0 default).</td>
 </tr>
 <tr>
 <td>415</td>
@@ -879,9 +879,9 @@ route then returns <code>403 Forbidden</code> with <code>reset_disabled</code>.<
 </thead>
 <tbody>
 <tr>
-<td><code>reset_disabled</code></td>
-<td>Server config has <code>enable_reset_op=false</code>.</td>
-<td>Set the config to <code>true</code> if appropriate; otherwise reset is intentionally forbidden on this instance.</td>
+<td><code>reset_disabled_in_production</code></td>
+<td>Server is not in test mode. v0 OP_RESET requires <code>BEAVA_TEST_MODE=1</code> at boot.</td>
+<td>Boot the server with <code>BEAVA_TEST_MODE=1</code> if reset is appropriate; otherwise reset is intentionally forbidden on this instance.</td>
 </tr>
 <tr>
 <td><code>wal_truncate_failed</code></td>
