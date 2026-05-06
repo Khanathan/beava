@@ -433,17 +433,17 @@
               overflowX: 'auto',
             }}>
 {'# docker — pinned tag, no install needed\n'}
-{'$ docker run -p 6400:6400 -v $(pwd)/data:/var/lib/beava beava/beava:v0\n'}
+{'$ docker run -p 8080:8080 -v $(pwd)/data:/var/lib/beava beava/beava:v0\n'}
 {'\n'}
 {'# homebrew — native binary on macOS / Linux\n'}
-{'$ brew install beava && beava serve --data-dir ./beava-data\n'}
+{'$ brew install beava && beava -c beava.yaml\n'}
 {'\n'}
 {'# verify\n'}
-{'$ curl http://localhost:6400/health\n'}
+{'$ curl http://localhost:8080/health\n'}
 {'{"status":"ok","version":"0.1.0"}'}
             </pre>
             <p style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--fg3)', margin: '10px 0 0' }}>
-              ~14 MB binary · ~62 ms cold start · zero config required · point any of the curl examples below at <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>localhost:6400</code> instead of the in-browser sim.
+              ~14 MB binary · ~62 ms cold start · zero config required · point any of the curl examples below at <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>localhost:8080</code> instead of the in-browser sim.
             </p>
           </div>
         </div>

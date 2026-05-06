@@ -129,18 +129,21 @@ command. Until then, install <code>tally</code> and import as <code>import beava
 </blockquote>
 <p>The Python SDK ships with the server binary embedded. <code>bv.App()</code> discovers and runs it on an ephemeral port. This is what you want for development, tests, and most production deployments.</p>
 <h2 id="docker" tabindex="-1"><a class="header-anchor" href="#docker" aria-hidden="true">#</a> Docker</h2>
-<pre><code class="language-bash">docker run -p 6400:6400 ghcr.io/beava-dev/beava:latest
+<pre><code class="language-bash">docker run -p 8080:8080 ghcr.io/beava-dev/beava:latest
 </code></pre>
-<p>Push and query against <code>:6400</code>. Mount a volume at <code>/data</code> to persist the WAL and snapshots.</p>
+<p>Push and query against <code>:8080</code>. Mount a volume at <code>/data</code> to persist the WAL and snapshots.</p>
 <h2 id="homebrew-macos-linux" tabindex="-1"><a class="header-anchor" href="#homebrew-macos-linux" aria-hidden="true">#</a> Homebrew (macOS, Linux)</h2>
 <pre><code class="language-bash">brew install beava-dev/tap/beava
-beava serve --port 6400
+beava -c beava.yaml      # binds 127.0.0.1:8080 by default (admin :8090)
 </code></pre>
+<p>The binary takes a single YAML config (default <code>./beava.yaml</code>); ports come
+from <code>listen_addr</code> / <code>admin_addr</code> keys, or env vars
+<code>BEAVA_LISTEN_ADDR</code> / <code>BEAVA_ADMIN_ADDR</code>. There is no <code>serve</code> subcommand.</p>
 <h2 id="static-binary" tabindex="-1"><a class="header-anchor" href="#static-binary" aria-hidden="true">#</a> Static binary</h2>
 <p>Download the prebuilt binary for your platform from the <a href="https://github.com/beava-dev/beava/releases">releases page</a> — about 14 MB, no runtime dependencies.</p>
 <pre><code class="language-bash">curl -L https://github.com/beava-dev/beava/releases/latest/download/beava-$(uname -s)-$(uname -m) -o beava
 chmod +x beava
-./beava serve --port 6400
+./beava -c beava.yaml
 </code></pre>
 <h2 id="verify" tabindex="-1"><a class="header-anchor" href="#verify" aria-hidden="true">#</a> Verify</h2>
 <pre><code class="language-bash">$ beava --version
