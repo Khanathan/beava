@@ -171,7 +171,22 @@ fn throughput_accepts_parallel_argument() {
 ///     (Plan 32's migration regressed), or
 ///   - the `sustained_eps:` label discipline (Plan 27) was not preserved
 ///     across the migration.
+///
+/// `#[ignore]` because this test requires the **release** binary at
+/// `target/release/beava-bench` (debug mode is 10-100× slower and won't
+/// produce meaningful sustained_eps in 5 seconds). Default `cargo test`
+/// only builds debug artifacts, so a fresh clone would fail this test
+/// without first running `cargo build -p beava-bench --release`. Run via:
+///
+///     cargo build -p beava-bench --release
+///     cargo test -p beava-bench --test parallel_wired_through -- --ignored
+///
+/// CI invokes both steps explicitly. Local development runs default
+/// `cargo test` and skips this test (the contract is still locked by
+/// the two non-ignored sibling tests above + Plan 13.7.6-32 SUMMARY's
+/// end-to-end measurement gate).
 #[test]
+#[ignore = "requires target/release/beava-bench; run with --ignored after `cargo build --release`"]
 fn throughput_parallel_produces_sustained_eps() {
     let _guard = serial_lock();
     let (stdout, stderr, exit_code, elapsed) = run_with_timeout(
