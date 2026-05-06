@@ -102,9 +102,7 @@ pub async fn run_memory(
     // Sample RSS via `ps -o rss=`.
     let rss_kb = sample_rss_kb();
     result.rss_mb_max = Some(rss_kb / 1024);
-    if events_pushed > 0 {
-        result.bytes_per_entity_p99 = Some((rss_kb * 1024) / events_pushed);
-    }
+    result.bytes_per_entity_p99 = (rss_kb * 1024).checked_div(events_pushed);
 
     let elapsed = start.elapsed();
     result.duration_ms = elapsed.as_millis() as u64;
