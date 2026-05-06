@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Questions & Discussion
+  - name: GitHub Discussions
     url: https://github.com/beava-dev/beava/discussions
-    about: Ask questions and discuss Beava in GitHub Discussions
+    about: Questions, ideas, design discussions, and "is this a bug or expected behavior?" — start here before filing.
+  - name: Security disclosure
+    url: https://github.com/beava-dev/beava/security/advisories/new
+    about: Report security vulnerabilities privately via GitHub Security Advisories. Do NOT open a public issue for security concerns. See SECURITY.md.
