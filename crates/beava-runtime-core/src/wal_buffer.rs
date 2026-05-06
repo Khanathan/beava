@@ -252,6 +252,9 @@ pub struct WalBufferRing {
     /// Fraction of buffer capacity at which auto-seal triggers (default 0.80).
     /// Used by the writer thread's tick logic to decide when to force-seal
     /// an active buffer that is past the high-water mark.
+    // reason: stored at construction for the WAL writer's tick logic; the
+    // current writer path doesn't read it but the field is retained as the
+    // canonical record of the configured high-water threshold.
     #[allow(dead_code)]
     seal_threshold: f32,
 }

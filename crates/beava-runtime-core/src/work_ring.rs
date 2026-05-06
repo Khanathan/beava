@@ -21,6 +21,8 @@ use beava_core::row::Row;
 /// (~30 ns/event) matches the copy cost (~30 ns for 533 bytes through a
 /// channel). Net: leave it inline; the compiler-suggested Box<Row> doesn't
 /// help in this regime.
+// reason: ~533 B Request variant is intentional — boxing parsed_row trades
+// alloc cost for copy cost at our throughput regime; see doc comment above.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum RingItem {
