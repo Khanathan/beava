@@ -1,106 +1,108 @@
 # Contributing to Beava
 
-Welcome! Beava is a real-time feature server: push events in, get features out, one Rust binary, zero infrastructure. See the [README](README.md) for an overview.
+Thanks for your interest in Beava. This guide covers the local build, test, and pull-request workflow. For what Beava *is*, see the [README](README.md).
 
-## Development Setup
+## Prerequisites
 
-**Prerequisites:**
+- **Rust 1.94+** (stable). Install via [rustup](https://rustup.rs/), then add the formatter and linter:
+  ```bash
+  rustup component add rustfmt clippy
+  ```
+- **Python 3.10+** with `pip`.
+- **System packages:**
+  - Debian / Ubuntu: `sudo apt install build-essential pkg-config libssl-dev`
+  - macOS: `brew install openssl@3`
 
-- Rust stable toolchain (install via [rustup](https://rustup.rs/))
-- `rustfmt` and `clippy` components: `rustup component add rustfmt clippy`
-- Python 3.10+ and pip
-- On Debian/Ubuntu: `sudo apt install build-essential pkg-config libssl-dev`
-- On macOS: `brew install openssl@3`
-
-**Build and run:**
+## Build
 
 ```bash
-git clone https://github.com/petrpan26/beava.git
+git clone https://github.com/beava-dev/beava.git
 cd beava
-cargo build
+cargo build --workspace
 ```
 
-**Install the Python SDK (editable):**
+Install the Python SDK in editable mode:
 
 ```bash
 cd python && pip install -e .
 ```
 
-**Start the server (debug build):**
+## Run the server
 
 ```bash
-./target/debug/beava
-# or
 cargo run
+# or, after `cargo build`:
+./target/debug/beava
 ```
 
-The server listens on TCP port 6400 (protocol) and HTTP port 6401 (management) by default.
+Defaults (override via `--http-addr` / `--tcp-addr` or env vars — see `cargo run -- --help`):
 
-## Running Tests
+- HTTP / JSON listener: `127.0.0.1:7379`
+- Binary-framed TCP listener: `127.0.0.1:7380`
 
-**Rust tests:**
+## Run the tests
+
+Run the same gates CI runs before opening a pull request.
+
+**Rust:**
 
 ```bash
-cargo test -- --test-threads=1
+cargo test --workspace --features testing
 ```
 
-`--test-threads=1` is required because integration tests bind to fixed ports and will fail with port contention under parallel execution. CI uses this flag.
-
-**Python tests:**
+**Python SDK:**
 
 ```bash
-cd python && python -m pytest tests/ -q
+cd python
+python -m pytest tests/v0 -q
 ```
 
-Python integration tests build and start the Beava binary automatically, so run `cargo build` first.
+The Python integration tests spawn the Beava binary, so run `cargo build` first.
 
-**Linting and formatting:**
+## Lint and format
 
 ```bash
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-CI enforces all of the above. A PR that fails any check will not be merged.
+For the Python SDK:
 
-## Project Structure
-
-```
-src/
-  engine/       Pipeline engine, operators, expressions, HLL
-  server/       TCP protocol, HTTP API, debug UI
-  state/        In-memory store, snapshots, event log, eviction
-
-python/
-  beava/        Python SDK (client, dataset API, operators, protocol)
-  tests/        Python SDK and integration tests
-
-tests/          Rust integration tests
-benchmark/      Performance benchmarks (fraud pipeline, throughput)
+```bash
+ruff check python/beava
+ruff format --check python/beava
+mypy --strict python/beava
 ```
 
-## Code Style
+CI enforces all of the above. A pull request that fails any check will not be merged.
 
-- **Rust:** Follow `rustfmt` defaults. Keep clippy clean (`-D warnings`).
-- **Python:** Standard Python conventions.
-- No unnecessary AI-generated comments or docstrings.
-- Write tests for all new features.
+## Pull-request workflow
 
-## Pull Request Process
+1. Fork [`beava-dev/beava`](https://github.com/beava-dev/beava) and create a feature branch off `main`.
+2. Make your changes with tests.
+3. Run the gates locally:
+   ```bash
+   cargo fmt --all --check \
+     && cargo clippy --workspace --all-targets --all-features -- -D warnings \
+     && cargo test --workspace --features testing
+   ```
+4. Use [conventional-commits](https://www.conventionalcommits.org/) commit subjects: `type(scope): subject` (`feat`, `fix`, `test`, `refactor`, `chore`, `docs`).
+5. Open a pull request against `main`. Describe **what** changed and **why**.
 
-1. Fork the repo and create a feature branch.
-2. Implement your changes with tests.
-3. Ensure CI passes locally: `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test -- --test-threads=1`
-4. Open a PR against `main`.
-5. Describe **what** changed and **why** in the PR description.
+## Reporting bugs
 
-## Reporting Issues
+File issues at [`beava-dev/beava` GitHub Issues](https://github.com/beava-dev/beava/issues). Good reports include:
 
-Use [GitHub Issues](https://github.com/petrpan26/beava/issues).
+- Beava version (`beava --version`) and OS / platform.
+- A minimal, runnable reproducer (curl commands, JSON payload, register definition).
+- Expected vs actual behavior, with logs or stack traces if the server panics.
 
-- **Bug reports:** Include steps to reproduce, expected behavior, and actual behavior.
-- **Feature requests:** Describe the use case and why it matters.
+For feature requests, describe the use case first — the operator catalogue is intentionally narrow, so we tend to extend it through real workloads rather than speculative APIs.
+
+## Reporting security vulnerabilities
+
+**Do not file security issues on the public tracker.** See [SECURITY.md](SECURITY.md) for the disclosure process — in short: email `security@beava.dev` or use a GitHub private security advisory.
 
 ## License
 
-Contributions are licensed under Apache 2.0.
+Beava is licensed under [Apache 2.0](LICENSE). By submitting a pull request, you agree to license your contribution under the same terms.
