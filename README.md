@@ -1,114 +1,132 @@
 # Beava
 
-Real-time feature server for ML. Single binary, event-time semantics, HTTP + CDC fork.
+A real-time feature server. Push events over HTTP or TCP, declare features in Python, query them at sub-millisecond latency.
 
-[![CI](https://github.com/petrpan26/beava/actions/workflows/ci.yml/badge.svg)](https://github.com/petrpan26/beava/actions/workflows/ci.yml)
-[![Docker Pulls](https://img.shields.io/docker/pulls/beavadb/beava.svg)](https://hub.docker.com/r/beavadb/beava)
+[![CI](https://github.com/beava-dev/beava/actions/workflows/ci.yml/badge.svg)](https://github.com/beava-dev/beava/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/beava.svg)](https://pypi.org/project/beava/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ---
 
+Beava is a single-binary feature server for fraud detection, ad-tech, and behavioral analytics. Push events in over HTTP or TCP; Beava tracks per-entity features (counters, velocities, distances, rates, distributions) updated atomically on every event; your application queries them at sub-millisecond latency to power live scoring rules.
+
+Think **Redis for stateful streaming features**, with 50+ purpose-built aggregation primitives instead of do-it-yourself Lua scripts.
+
 ## 60-second quickstart
 
 ```bash
-docker run -p 6900:6900 beavadb/beava:latest
-curl -X POST http://localhost:6900/push/clicks -d '{"user":"alice","page":"/home"}'
-curl http://localhost:6900/features/alice
+pip install beava
+beava --data-dir ./.beava/    # in another terminal
 ```
 
-Beava ingested the event, bucketed by event-time, and served the feature vector keyed by
-`alice`. No broker, no ETL, one binary.
+```python
+import beava as bv
 
-Full walkthrough: [docs/getting-started.md](docs/getting-started.md).
+@bv.event
+class Click:
+    user_id: str
+    page: str
 
-## Iterate features against live prod — fork
+@bv.table(key="user_id")
+def UserActivity(e: Click) -> bv.Table:
+    return e.group_by("user_id").agg(
+        clicks_1h=bv.count(window="1h"),
+        unique_pages_1h=bv.count_distinct("page", window="1h"),
+    )
 
-```bash
-tally fork --remote prod.example.com --streams transactions --pipeline-file pipeline.py
+app = bv.App(url="http://localhost:8080")
+app.register(Click, UserActivity)
+
+app.push("Click", {"user_id": "alice", "page": "/home"})
+app.push("Click", {"user_id": "alice", "page": "/products"})
+
+app.get("UserActivity", "alice")
+# => {"clicks_1h": 2, "unique_pages_1h": 2}
 ```
 
-A scoped replica of live prod state. Define a new feature, see the value it produces from
-real production history, close the context — production never sees your reads.
+That's it. **No broker, no ETL, no schema registry, no separate stream / batch path.** One binary, one Python decorator, real-time features.
 
-Details: [docs/architecture.md](docs/architecture.md) § Fork model.
+Full walkthrough: [beava.dev/docs](https://beava.dev/docs).
 
 ## Why Beava
 
-Replaces Postgres triggers + Redis counters + the cron job that heals drift. Same pipeline
-from laptop to production. 315K EPS single-binary TCP push; 100K+ EPS over HTTP. See
-[benchmark/README.md](benchmark/README.md) for reproducible numbers and
-[docs/comparison.md](docs/comparison.md) for honest tradeoffs vs Flink / Feast.
+Replaces Postgres triggers + Redis counters + the cron job that heals drift. Same pipeline from laptop to production.
 
-## TCP wire protocol
+**Performance:** 684,812 sustained events/sec on a single Apple-M4 core[^1] — simple-fraud pipeline, TCP transport, msgpack wire, parallel=16, 60s sustained run. Run multiple Beava instances for higher throughput (Redis-cluster style; no in-process sharding).
 
-Beava binds two listeners by default:
+**Memory:** ~7 KB per entity for a rich 30-feature pack → ~700 GB for 100M entities. Size your box; in-memory only — no SSD overflow.
 
-- **HTTP/JSON on `127.0.0.1:7379`** — debugging-friendly, curl-compatible. See [docs/http-api.md](docs/http-api.md).
-- **Binary-framed TCP on `127.0.0.1:7380`** — lower-overhead fast path. Same JSON bodies, wrapped in a length-prefixed frame.
+**Durability:** WAL on every push + periodic snapshot. Boot recovers state in seconds. Refuse-on-network-FS so you don't accidentally fsync over NFS.
 
-### Frame format
+[^1]: Reproduce: `cargo run -p beava-bench --release -- throughput --pipeline small --transport tcp --wire-format msgpack --parallel 16 --duration-secs 60 --pipeline-depth 1024`. Numbers vary by hardware; dedicated x86 server-class boxes typically clear 1M+ EPS sustained. See [crates/beava-bench/README.md](crates/beava-bench/README.md) for the harness.
+
+## Wire surface
+
+Beava binds two listeners:
+
+- **HTTP/JSON on `127.0.0.1:8080`** — curl-compatible debugging path. See [docs/http-api](https://beava.dev/docs/http-api).
+- **Framed TCP on `127.0.0.1:8081`** — sub-millisecond fast-path. JSON or msgpack content. See [docs/wire-spec](https://beava.dev/docs/wire-spec).
+
+### HTTP
+
+```bash
+curl -X POST localhost:8080/register -d '{...schema...}'
+curl -X POST localhost:8080/push     -d '{"event":"Click","data":{"user_id":"alice","page":"/home"}}'
+curl -X POST localhost:8080/get      -d '{"table":"UserActivity","key":"alice"}'
+curl -X POST localhost:8080/batch_get -d '{"requests":[{"table":"UserActivity","key":"alice"}]}'
+curl -X POST localhost:8080/ping
+```
+
+### TCP frame
 
 ```text
 [u32 length BE][u16 op BE][u8 content_type][payload: length - 3 bytes]
 ```
 
-`length` counts the bytes after itself (i.e., `op + content_type + payload`). Minimum valid length is 3. Multi-byte integers are big-endian.
+`length` counts the bytes after itself. Multi-byte integers are big-endian. **Strict FIFO per connection** (Redis RESP style) — frame order correlates requests to responses; no `request_id` field.
 
-### Opcode table (v0)
+| Opcode | Name | Body |
+|--------|------|------|
+| `0x0010` | `push` | `{event, data}` |
+| `0x0020` | `get` | `{table, key}` |
+| `0x0024` | `batch_get` | `{requests: [...]}` |
+| `0x0030` | `register` | full schema |
+| `0x0040` | `reset` | `{}` (test_mode-only) |
+| `0xFFFF` | `error_response` | `{error: {code, message}}` |
 
-| Opcode   | Name             | Status                 |
-|----------|------------------|------------------------|
-| `0x0000` | `ping`           | implemented            |
-| `0x0001` | `register`       | implemented            |
-| `0x0010` | `push`           | reserved (Phase 6)     |
-| `0x0011` | `push_sync`      | reserved (Phase 12)    |
-| `0x0012` | `push_many`      | reserved (Phase 12)    |
-| `0x0013` | `push_table`     | reserved (Phase 12)    |
-| `0x0014` | `delete_table`   | reserved (Phase 12)    |
-| `0x0020` | `get`            | reserved (Phase 12)    |
-| `0x0021` | `mget`           | reserved (Phase 12)    |
-| `0x0022` | `get_multi`      | reserved (Phase 12)    |
-| `0x0030` | `set`            | reserved (Phase 12)    |
-| `0x0031` | `mset`           | reserved (Phase 12)    |
-| `0xFFFF` | `error_response` | implemented            |
+| Content-type | Format |
+|--------------|--------|
+| `0x01` | JSON |
+| `0x02` | msgpack |
 
-Reserved opcodes return `error_response` with code `op_not_implemented`. Unknown opcodes return code `unknown_op`. In both cases the connection stays open.
+Unknown opcodes return `error_response` with code `unknown_op` and the connection stays open.
 
-### Content-type bytes
+## Server CLI
 
-| Byte   | Name        | Status                      |
-|--------|-------------|-----------------------------|
-| `0x01` | JSON        | v0 implementation           |
-| `0x02` | MessagePack | reserved (Phase 6 / 12)     |
+```text
+beava [OPTIONS]
 
-Frames with unknown content-types return `unsupported_content_type`; the connection stays open.
+  --http-addr <ADDR>            default: 127.0.0.1:8080
+  --tcp-addr <ADDR>             default: 127.0.0.1:8081
+  --data-dir <PATH>             default: ./.beava/
+  --memory-only                 ephemeral; no WAL/snapshot
+  --test-mode                   enable POST /reset and OP_RESET
+  --wal-flush-ms <MS>           default: 100
+  --snapshot-interval-mins <M>  default: 30
+  -h, --help
+  -V, --version
 
-### Connection model
+env vars
+  BEAVA_LOG=debug|info|warn     default: info
+```
 
-- Strict FIFO per connection (Redis RESP style) — client sends N frames, server reads/dispatches/writes one at a time in order. No `request_id` field; order correlates requests to responses.
-- Oversized frames (default max `4 MiB`) return `frame_too_large` and the connection closes.
-- No TLS in v0 — terminate at nginx / Envoy / Cloudflare if needed.
-
-### Config keys
-
-| YAML key              | Env var                       | Default           |
-|-----------------------|-------------------------------|-------------------|
-| `tcp.enabled`         | `BEAVA_TCP_ENABLED`           | `true`            |
-| `tcp.host`            | `BEAVA_TCP_HOST`              | `127.0.0.1`       |
-| `tcp.port`            | `BEAVA_TCP_PORT`              | `7380`            |
-| `tcp.max_frame_bytes` | `BEAVA_TCP_MAX_FRAME_BYTES`   | `4194304` (4 MiB) |
-
-Disable with `tcp.enabled: false` or `BEAVA_TCP_ENABLED=0`.
+No TLS in v0 — terminate at nginx, Envoy, or Cloudflare if you need it. No auth in v0 — bind to a private network.
 
 ## Learn more
 
-- [Getting started](docs/getting-started.md) — 60-second path on a fresh machine
-- [Concepts](docs/concepts.md) — streams, tables, operators, fork, event-time
-- [HTTP API](docs/http-api.md) — curl examples for all endpoints
-- [Architecture](docs/architecture.md) — single-node design, fork model, scaling posture
-- [Operations](docs/operations.md) — sizing, durability, crash recovery
-- [Event time](docs/event-time.md) — bucketing, watermarks, TTL semantics
-- [Comparison](docs/comparison.md) — vs Feast, Flink+Redis, Redpanda
-- [Examples](examples/) — fraud-scoring, session-features, curl-ingest
+- [beava.dev/docs](https://beava.dev/docs) — full reference
+- [beava.dev/guide](https://beava.dev/guide) — fraud, adtech, ecommerce use-case guides
+- [crates/beava-bench/README.md](crates/beava-bench/README.md) — benchmark harness, reproduce the numbers
+- [examples/](examples/) — vertical demos in Python
 
-[Apache 2.0](LICENSE) · [CHANGELOG](CHANGELOG.md) · [GOVERNANCE](GOVERNANCE.md) · [SECURITY](SECURITY.md)
+[Apache 2.0](LICENSE) · [CHANGELOG](CHANGELOG.md) · [SECURITY](SECURITY.md) · [CONTRIBUTING](CONTRIBUTING.md)
