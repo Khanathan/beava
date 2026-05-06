@@ -139,8 +139,9 @@ async fn criterion_5_unimplemented_opcode_returns_error_connection_stays_open() 
     let ts = TestServer::spawn().await.expect("spawn");
     let mut c = ts.tcp_client().await.expect("tcp client");
 
-    // Reserved opcode (OP_PUSH_SYNC is reserved for Phase 12; OP_PUSH was
-    // wired in Phase 8 folded scope and is no longer reserved).
+    // OP_PUSH_SYNC TCP opcode is intentionally not implemented in v0 —
+    // push-sync is HTTP-only per Phase 13.4 ADR-002 (POST /push-sync).
+    // OP_PUSH was wired in Phase 8 folded scope and is no longer reserved.
     let resp = c
         .send_raw(OP_PUSH_SYNC, CT_JSON, Bytes::new())
         .await
@@ -150,7 +151,7 @@ async fn criterion_5_unimplemented_opcode_returns_error_connection_stays_open() 
     assert_eq!(body["error"]["code"], "op_not_implemented");
     let msg = body["error"]["message"].as_str().unwrap();
     assert!(msg.contains("push_sync"), "msg: {msg}");
-    assert!(msg.contains("Phase 12"), "msg: {msg}");
+    assert!(msg.contains("not yet implemented"), "msg: {msg}");
 
     // Connection still works — send a ping
     let pong = c.ping().await.expect("ping after error");
