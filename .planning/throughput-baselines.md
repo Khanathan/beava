@@ -34,46 +34,70 @@ phase-specific variant the operator family introduces) and appends a row
 per (size, transport) to this ledger. Plan-checker rejects Phase 8+ plans
 without such a task.
 
-## Reproduce
+## Reproduce — post-13.7.6-32
 
-The committed rows below were captured with the production harness
-`beava-bench-v18` (multi-worker; real parallelism). The polished CLI
-`beava-bench throughput …` is a single-threaded smoke surface — its
-`--parallel` flag is currently a no-op in the throughput harness — and
-**must not** be used to produce ledger numbers. Use `beava-bench-v18`.
+Plan 13.7.6-32 consolidated the four bench binaries (`beava-bench /
+beava-bench-legacy / beava-bench-v18 / beava-bench-v2`) into a single
+canonical `beava-bench` with subcommands. v18's production harness now
+lives in `crates/beava-bench/src/harness/production.rs` and is reachable
+via `beava-bench throughput --parallel N`. **Use this invocation for any
+new ledger row; it reproduces Plan 13.7.6-28's 660K EPS sustained / 60 s
+on small/tcp Apple-M4 baseline within ±10%.**
 
 ```bash
-# Reproduce a throughput baseline (Apple-M4 / 10 cores; same hw-class as
-# the committed rows). The cd is required: beava-bench-v18 reads
+# Reproduce a throughput baseline. The cd is required: the harness reads
 # `./configs/{pipeline}.json` relative to CWD, not to the binary.
+cargo build --release -p beava-bench   # one-time
 cd crates/beava-bench
-../../target/release/beava-bench-v18 \
+../../target/release/beava-bench throughput \
     --pipeline small \
     --transport tcp \
     --wire-format msgpack \
     --blast-shape zipfian \
     --cardinality 10000 \
     --duration-secs 60 \
-    --parallel 32 \
+    --parallel 16 \
     --pipeline-depth 1024 \
     --no-ledger
 ```
 
-Build the binary first with `cargo build --release -p beava-bench --bin
-beava-bench-v18` (or `cargo run -p beava-bench --release --bin
-beava-bench-v18 -- …`). After Plan 13.7.6-25 added `default-run =
-"beava-bench-v18"` to `crates/beava-bench/Cargo.toml`, plain `cargo run -p
-beava-bench --release -- …` also resolves to this binary without an
-explicit `--bin` flag.
+After Plan 13.7.6-32, plain `cargo run -p beava-bench --release -- throughput
+…` (no `--bin` flag) also dispatches correctly because `default-run =
+"beava-bench"` in `crates/beava-bench/Cargo.toml` is self-referential.
 
 **Sustained-rate vs burst-rate.** Use `--duration-secs 60` *without*
 `--total-events` for sustained-rate measurements. Setting
 `--total-events N` causes the run to finish in ~1.5 s at our throughput,
 which is a burst rate, not the sustained-rate number that Phase
-regression gates target (CLAUDE.md §Performance Discipline).
+regression gates target (CLAUDE.md §Performance Discipline). The bench
+self-labels: `sustained_eps:` when elapsed ≥ 95% of duration; `burst_eps:`
+otherwise (Plan 13.7.6-27).
+
+**Parallelism note.** Plan 13.7.6-28 used `--parallel 16` because
+`--parallel 32 --pipeline-depth 1024` triggers a separate server-side
+`semaphore_wait_trap` starvation hang under extreme fan-out. `--parallel
+16` is the canonical rebaseline shape; the 32-parallel cells are tracked
+as v0.0.x deferred work.
 
 Markdown ledger row prints to stdout (omit `--no-ledger`); copy it into
 the matching hw-class section below.
+
+### Historical Reproduce (pre-13.7.6-32)
+
+Rows committed before Plan 13.7.6-32 were captured with the standalone
+`beava-bench-v18` binary, which has been deleted. To reproduce a historical
+row exactly via the unified binary, swap the `beava-bench-v18 ...` line for
+`beava-bench throughput ...` (the flag set is identical) and use the
+post-13.7.6-32 build. The pre-Plan-32 invocation pattern was:
+
+```bash
+# DEPRECATED — kept here only as provenance for archival rows.
+cd crates/beava-bench
+../../target/release/beava-bench-v18 \
+    --pipeline small --transport tcp --wire-format msgpack \
+    --blast-shape zipfian --cardinality 10000 \
+    --duration-secs 60 --parallel 32 --pipeline-depth 1024 --no-ledger
+```
 
 ## hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores
 
@@ -2181,7 +2205,7 @@ Phase 13.7.5 did NOT modify any of the 4 hot-path entry points or the `apply_eve
 **Methodology:** post-Plan-13.7.6-27 fixed bench. `--duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger` (no `--total-events` cap → true 60-second sustained rate; `sustained_eps:` label only emits when elapsed ≥ 95% of duration). Compare burst-rate columns to prior committed baselines for context. Per Plan 27 SUMMARY § Out of scope, `--parallel 32 --pipeline-depth 1024` is excluded due to a separate server-side `semaphore_wait_trap` starvation hang; moderate parallelism (`--parallel 16`) is the canonical rebaseline shape.
 **Commit:** `93fcca1c` (HEAD at run completion; cells 1–3 captured at `f547e3ac`, cells 4–8 at `93fcca1c` — both commits are docs-only relative to the bench binary, which is unchanged since `ab5d6dc4`)
 **hw-class:** Darwin-24.3.0 / 10 cores (Apple M4)
-**Reproduce:** `for s in small medium large fraud-team; do for t in tcp http; do w=$([ "$t" = "tcp" ] && echo "msgpack" || echo "json"); cd crates/beava-bench && timeout 90 ../../target/release/beava-bench-v18 --pipeline "$s" --transport "$t" --wire-format "$w" --blast-shape zipfian --cardinality 10000 --duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger; done; done`
+**Reproduce:** `for s in small medium large fraud-team; do for t in tcp http; do w=$([ "$t" = "tcp" ] && echo "msgpack" || echo "json"); cd crates/beava-bench && timeout 90 ../../target/release/beava-bench-v18 --pipeline "$s" --transport "$t" --wire-format "$w" --blast-shape zipfian --cardinality 10000 --duration-secs 60 --parallel 16 --pipeline-depth 1024 --no-ledger; done; done` *(archival; post-Plan-13.7.6-32 the equivalent unified-binary invocation substitutes `beava-bench throughput …` for `beava-bench-v18 …` — same flag set, same numbers within ±10%.)*
 
 ### 8-cell honest sustained rebaseline
 
