@@ -50,7 +50,16 @@ exclude = [
 "beava/demos" = "beava/demos"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "tests/bench"]
+# v0 acceptance suite — 100 canonical tests covering the public Python SDK
+# surface (push, get, batch_get, register, decorators, operators). Default
+# `pytest` from project root runs this suite; CI gates against it.
+#
+# Other directories (tests/internal/, tests/bench/, tests/integration/,
+# tests/conformance/) hold legacy / deep-dive tests that pre-date the
+# Phase 13.5.1 SDK rewrite and have known drift; run explicitly via e.g.
+# `pytest python/tests/internal/` if you want to dig in. Cleanup of these
+# is tracked as v0.0.x backlog in `.planning/ideas/v0.1-deferrals.md`.
+testpaths = ["tests/v0"]
 addopts = "-ra --strict-markers"
 markers = [
     "phase4: Phase 4 Python acceptance smoke tests (SC1-SC5)",
