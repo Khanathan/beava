@@ -6,6 +6,13 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Beava v2 end-to-end throughput harness — drives a live beava server over HTTP+TCP and produces sustained EPS / latency / RSS numbers."
+# Plan 13.7.6-25: `cargo run -p beava-bench` previously failed with
+# "could not determine which binary to run" because the crate ships four
+# binaries. The throughput-baselines.md ledger is reproduced via the
+# production harness `beava-bench-v18`; default plain `cargo run -p beava-bench`
+# to that binary so the Reproduce block in `.planning/throughput-baselines.md`
+# works without a `--bin` argument.
+default-run = "beava-bench-v18"
 
 [dependencies]
 beava-core = { path = "../beava-core" }

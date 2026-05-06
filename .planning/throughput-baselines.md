@@ -36,16 +36,44 @@ without such a task.
 
 ## Reproduce
 
+The committed rows below were captured with the production harness
+`beava-bench-v18` (multi-worker; real parallelism). The polished CLI
+`beava-bench throughput …` is a single-threaded smoke surface — its
+`--parallel` flag is currently a no-op in the throughput harness — and
+**must not** be used to produce ledger numbers. Use `beava-bench-v18`.
+
 ```bash
-cargo run -p beava-bench --release -- \
-    --pipeline {small|medium|large} \
-    --transport {http|tcp} \
+# Reproduce a throughput baseline (Apple-M4 / 10 cores; same hw-class as
+# the committed rows). The cd is required: beava-bench-v18 reads
+# `./configs/{pipeline}.json` relative to CWD, not to the binary.
+cd crates/beava-bench
+../../target/release/beava-bench-v18 \
+    --pipeline small \
+    --transport tcp \
+    --wire-format msgpack \
+    --blast-shape zipfian \
+    --cardinality 10000 \
     --duration-secs 60 \
-    --parallel 8
+    --parallel 32 \
+    --pipeline-depth 1024 \
+    --no-ledger
 ```
 
-Markdown ledger row prints to stdout; copy it into the matching hw-class
-section below.
+Build the binary first with `cargo build --release -p beava-bench --bin
+beava-bench-v18` (or `cargo run -p beava-bench --release --bin
+beava-bench-v18 -- …`). After Plan 13.7.6-25 added `default-run =
+"beava-bench-v18"` to `crates/beava-bench/Cargo.toml`, plain `cargo run -p
+beava-bench --release -- …` also resolves to this binary without an
+explicit `--bin` flag.
+
+**Sustained-rate vs burst-rate.** Use `--duration-secs 60` *without*
+`--total-events` for sustained-rate measurements. Setting
+`--total-events N` causes the run to finish in ~1.5 s at our throughput,
+which is a burst rate, not the sustained-rate number that Phase
+regression gates target (CLAUDE.md §Performance Discipline).
+
+Markdown ledger row prints to stdout (omit `--no-ledger`); copy it into
+the matching hw-class section below.
 
 ## hw-class: Apple-M4 / Darwin-24.3.0 / 10 cores
 
