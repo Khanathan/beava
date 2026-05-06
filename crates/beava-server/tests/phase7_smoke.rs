@@ -125,17 +125,19 @@ async fn phase7_register_push_get_unaffected() {
     let r = reqwest::Client::new()
         .post(&url)
         .header("Content-Type", "application/json")
-        .body(json!({"keys": ["alice"], "features": ["cnt"]}).to_string())
+        .body(json!({"table": "TxnAgg", "key": "alice"}).to_string())
         .send()
         .await
         .expect("post /get");
     assert_eq!(r.status().as_u16(), 200);
     let v: serde_json::Value = r.json().await.expect("json");
     // Plan 13.4-02: dropped `{"result": ...}` envelope per Phase 13.0-15.
+    // Plan 13.4 verb-style single-key /get returns flat `{feature: value}`
+    // (no key wrapper). For batch reads use POST /batch_get.
     assert!(
         v.get("result").is_none(),
         "result envelope must be absent (Plan 13.4-02), got {v:#}"
     );
-    assert_eq!(v["alice"]["cnt"], 50);
+    assert_eq!(v["cnt"], 50);
     ts.shutdown().await.expect("shutdown");
 }
