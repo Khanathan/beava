@@ -63,11 +63,12 @@ pub fn run_interactive() -> Result<()> {
 
     match mode {
         "throughput" => {
+            // Plan 13.7.6-24 stripped `parallel` from ThroughputArgs (it was
+            // a no-op flag in the smoke-test harness).
             let args = crate::cli::throughput::ThroughputArgs {
                 workload: workload.into(),
                 size,
                 duration: duration_or_entities,
-                parallel: 16,
                 format: OutputFormat::Human,
                 json: false,
                 markdown: false,
