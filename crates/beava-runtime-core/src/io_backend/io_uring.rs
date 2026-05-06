@@ -181,21 +181,13 @@ impl IoBackend for IoUringBackend {
         timeout: Option<Duration>,
         events_out: &mut Vec<IoEvent>,
     ) -> std::io::Result<()> {
-        // Wait for completions.
-        let timeout_ts = timeout.map(|d| {
-            types::Timespec::new()
-                .sec(d.as_secs())
-                .nsec(d.subsec_nanos())
-        });
-
-        match timeout_ts {
-            Some(ts) => {
-                let _ = self.ring.submit_and_wait_with_timeout(1, &ts);
-            }
-            None => {
-                self.ring.submit_and_wait(1)?;
-            }
-        }
+        // Wait for completions. io-uring 0.6.4 does NOT have
+        // submit_and_wait_with_timeout (added in 0.7+); both branches
+        // currently use the unbounded `submit_and_wait`. The timeout
+        // argument is preserved for API compatibility; bumping io-uring
+        // to 0.7+ to honor the timeout is v0.0.x backlog.
+        let _ = timeout;
+        self.ring.submit_and_wait(1)?;
 
         // Drain the completion queue.
         let cq = self.ring.completion();

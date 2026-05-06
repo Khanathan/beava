@@ -114,21 +114,17 @@ pub fn propagate_aggregation_schema(
             AggKind::Variance,
             AggKind::StdDev,
         ];
+        // Field is optional for Sum/Avg/Variance/StdDev in the descriptor
+        // (none = whole-row semantics deferred to v1). No error in v0.
         if field_check_kinds.contains(&feat.descriptor.kind) {
-            match &feat.descriptor.field {
-                None => {
-                    // Field is optional for Sum/Avg/Variance/StdDev in the descriptor
-                    // (none = whole-row semantics deferred to v1). No error in v0.
-                }
-                Some(field_name) => {
-                    if !upstream.fields.contains_key(field_name.as_str()) {
-                        errors.push(AggSchemaError::FeatureTypeError {
-                            feature: feat.feature_name.clone(),
-                            kind: feat.descriptor.kind,
-                            field_missing: Some(field_name.clone()),
-                        });
-                        continue;
-                    }
+            if let Some(field_name) = &feat.descriptor.field {
+                if !upstream.fields.contains_key(field_name.as_str()) {
+                    errors.push(AggSchemaError::FeatureTypeError {
+                        feature: feat.feature_name.clone(),
+                        kind: feat.descriptor.kind,
+                        field_missing: Some(field_name.clone()),
+                    });
+                    continue;
                 }
             }
         }
