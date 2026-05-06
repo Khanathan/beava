@@ -1135,31 +1135,38 @@ Wave 6 — Workstream-F closure (depends on all above):
 
 **Scope amendment 2026-05-06:** Python-only OSS launch locked. Plans 13.8-02 (npm @beava/sdk) and 13.8-03 (Go module verify) **DEFERRED to v0.0.1**. TS+Go SDK code STAYS in repo and tests still run; only the publishing tracks defer.
 
-**Goal:** Cut v0.0.0 — Python-first install path live across PyPI / Docker Hub / ghcr.io / Homebrew / GitHub Releases.
+**Scope amendment 2026-05-06 (PyPI):** Plan 13.8-01 (PyPI multi-arch wheels) **DEFERRED to v0.0.x** — PyPI publish not approved at v0.0.0 ship time. Python SDK ships via git-install for v0.0.0: `pip install git+https://github.com/beava-dev/beava.git@v0.0.0#subdirectory=python` (verified working with hatchling backend; ~30s install).
+
+**Goal:** Cut v0.0.0 — server binary across Docker Hub / ghcr.io / Homebrew / GitHub Releases + curl installer; Python SDK via git pip-install.
 
 **Depends on:** Phases 13.4 + 13.5 + 13.6 + 13.7 + 13.7.5 + 13.7.6 all closed.
 
-**Plans (10 plans; was 12):**
+**Plans (9 plans for v0.0.0; was 12):**
 
-- PyPI multi-arch wheels (Plan 01): Linux x86_64 / Linux ARM64 / macOS ARM64 / macOS Intel — 4 wheels with bundled binary
+- ~~PyPI multi-arch wheels~~ (Plan 01 DEFERRED to v0.0.x; reactivates when PyPI approves)
 - ~~npm: `@beava/sdk`~~ (Plan 02 DEFERRED to v0.0.1)
 - ~~Go module: `github.com/beava-dev/beava/sdk/go`~~ (Plan 03 DEFERRED to v0.0.1)
 - Docker Hub + ghcr.io (Plan 04): multi-arch manifest at `beava/beava:v0.0.0` and `ghcr.io/beava-dev/beava:v0.0.0`
 - `curl | sh` installer (Plan 04a): `github.com/beava-dev/beava/releases/latest/download/install.sh`
 - Homebrew tap auto-bump (Plan 04b): `github.com/beava-dev/homebrew-beava` (already created)
-- `release.yml` multi-channel orchestrator (Plan 08; npm/Go steps removed for v0.0.0)
-- `Cargo.toml` version bump → 0.0.0; Python `__version__` → 0.0.0 (Plan 09)
-- README hero finalization (Plan 10): wire in honest Plan-28 sustained EPS numbers
+- `release.yml` multi-channel orchestrator (Plan 08; PyPI/npm/Go steps removed for v0.0.0; binary-only)
+- `Cargo.toml` version bump → 0.0.0; `python/pyproject.toml` version → 0.0.0 (Plan 09)
+- README hero finalization (Plan 10): wire in honest Plan-28 sustained EPS numbers + git-install path
 - Marketing drafts (Plan 11): HN, Twitter, dev.to
 - SOAK-LOG.md scaffold + post-tag soak window (Plan 12)
 - Closure: tag v0.0.0 (Plan 13)
 
 **Success criteria (Python-only v0.0.0):**
-1. `pip install beava && python -c "import beava as bv; print(bv.demo('fraud'))"` works on a fresh machine (Linux x86_64, Linux ARM64, macOS ARM64, macOS Intel)
+1. `pip install git+https://github.com/beava-dev/beava.git@v0.0.0#subdirectory=python` works on Python 3.10+ (with git installed); `python -c "import beava as bv; print(bv.demo('fraud'))"` succeeds
 2. `docker run -p 8080:8080 -p 8081:8081 beava/beava:v0.0.0` works
 3. `brew install beava-dev/beava/beava` works
-4. v0.0.0 GitHub Release published with binaries + changelog
-5. v0 LAUNCH 🚀
+4. `curl https://beava.dev/install.sh | sh` works (Linux + macOS)
+5. v0.0.0 GitHub Release published with server binaries + changelog
+6. v0 LAUNCH 🚀
+
+**Deferred to v0.0.x (PyPI approval pending, locked 2026-05-06):**
+- `pip install beava` direct PyPI install (Plan 01 reactivates when PyPI org claim approves; ~7 days expected; v0.0.x patch)
+- README hero one-line update (`pip install git+...` → `pip install beava`); both URLs keep working
 
 **Deferred to v0.0.1 (Python-only locked 2026-05-06):**
 - `npm install @beava/sdk` + TS smoke

@@ -3,7 +3,7 @@
 A real-time feature server. Push events over HTTP or TCP, declare features in Python, query them at sub-millisecond latency.
 
 [![CI](https://github.com/beava-dev/beava/actions/workflows/ci.yml/badge.svg)](https://github.com/beava-dev/beava/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/beava.svg)](https://pypi.org/project/beava/)
+[![Release](https://img.shields.io/github/v/release/beava-dev/beava.svg)](https://github.com/beava-dev/beava/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ---
@@ -15,8 +15,15 @@ Think **Redis for stateful streaming features**, with 50+ purpose-built aggregat
 ## 60-second quickstart
 
 ```bash
-pip install beava
-beava --data-dir ./.beava/    # in another terminal
+# Server
+brew install beava-dev/beava/beava           # macOS
+# or: curl https://beava.dev/install.sh | sh # Linux + macOS
+# or: docker run -p 8080:8080 -p 8081:8081 beava/beava
+
+beava --data-dir ./.beava/                   # in another terminal
+
+# Python SDK (PyPI publish coming v0.0.x; install from git for now)
+pip install git+https://github.com/beava-dev/beava.git@v0.0.0#subdirectory=python
 ```
 
 ```python
