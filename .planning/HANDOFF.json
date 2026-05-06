@@ -1,124 +1,95 @@
 {
   "version": "1.0",
-  "timestamp": "2026-05-05T16:45:00Z",
-  "phase": "between-phases",
-  "phase_name": "Phase 13.5.4 closed — pivot to 13.7.5 (code polish + test coverage) + 13.7.6 (repo polish)",
-  "phase_dir": null,
-  "plan": null,
-  "task": null,
-  "total_tasks": null,
-  "status": "paused",
-  "user_directive": "focus on repo and code polish + test coverage checker (Phase 13.7.5 + 13.7.6). DEFER Phase 13.8 (packaging/GA tag) until 13.7.5 + 13.7.6 are clean.",
-  "completed_tasks": [
-    {"id": "260505-bn7", "name": "Phase 13.5.3 — workspace test determinism (env-var class)", "status": "done", "commit": "c386c8a0"},
-    {"id": "260505-j2n", "name": "Phase 13.5.4 — workspace test alignment + trend flake fix + bench_v18 retirement", "status": "done", "commit": "9f4dc588"},
-    {"id": "13.8-prep", "name": "Phase 13.8 prep: tap repo + deploy key + secret + bump workflow + Plans 13.8-04a/04b + D-09/D-10", "status": "done", "commits": ["ceed4299", "0e23c428", "6e2240c8"]}
+  "timestamp": "2026-05-05T22:30:00Z",
+  "phase": "13.7.6-mid-execution",
+  "phase_name": "Phase 13.7.6 — Pre-OSS repo polish (~25 of ~32 plans landed; in-flight + pending tracked below)",
+  "phase_dir": ".planning/phases/13.7.6-pre-oss-repo-polish/",
+  "status": "paused-mid-execution",
+  "head": "f547e3ac",
+  "branch": "v2/greenfield",
+  "session_summary": "Heavy 13.7.5 closure + 13.7.6 Wave 1 + Wave 1.5 launch-blocker fixes + parallel website Tier 0. Plan 28 (rebaseline) was in flight at pause; website Tier 1 self-aborted on its own context budget without making edits.",
+  "completed_in_this_session": [
+    {"id": "13.7.5-02b", "what": "Closed verifier-flagged D-01 gap; 318 residual phase/plan tags scrubbed from beava-core + beava-server", "commits": ["22f238a7", "102ee6d6"]},
+    {"id": "13.7.6-launch-plan", "what": "v0-LAUNCH-PLAN.md with 5 locked decisions", "commits": ["2000a318"]},
+    {"id": "13.7.6-02", "what": "cargo audit + cargo deny baseline; 2 unmaintained ignored; r-efi LGPL target-conditional exception", "commits": ["e74a48c5"]},
+    {"id": "13.7.6-03", "what": "ruff + mypy --strict (3 lints fixed)", "commits": ["d8815bb3"]},
+    {"id": "13.7.6-04+05+08", "what": "TS tsc + Go vet GREEN; 3-tool secrets sweep across 2530 commits = 0 true positives", "commits": ["fe9a9799"]},
+    {"id": "13.7.6-06", "what": "OWASP Top-10 + LLM Top-10 review; 0 HIGH findings; 3 MEDIUM deferred to v0.0.x", "commits": ["25d5b7f4"]},
+    {"id": "13.7.6-07", "what": "ASVS L1 threat model published", "commits": ["fe9a9799"]},
+    {"id": "13.7.6-09", "what": "filter-repo dry-run rehearsal: Plan 11 GO. Pre 2599 commits/123MB/874 trailers → Post 1545/31MB/0/all hoang@beava.dev", "commits": ["6a18f42e"]},
+    {"id": "13.7.6-10", "what": "4 unlocked stale worktree-agent-* branches deleted; 32+ locked dirs deferred to post-Plan-13", "commits": ["79101183"]},
+    {"id": "13.7.6-14", "what": "LICENSE replaced with byte-canonical Apache-2.0 + Hoang Phan copyright", "commits": ["0d69e053"]},
+    {"id": "13.7.6-16", "what": "CONTRIBUTING.md rewrite (108 LOC; D-06 lean OSS-dev variant)", "commits": ["ed5e77e8"]},
+    {"id": "13.7.6-17", "what": "SECURITY.md refresh; 0.0.x supported-versions; security@beava.dev", "commits": ["3b549839"]},
+    {"id": "13.7.6-18", "what": "CODE_OF_CONDUCT.md refresh (Contributor Covenant 2.1)", "commits": ["3631f699"]},
+    {"id": "13.7.6-19", "what": "CHANGELOG.md (Keep-a-Changelog 1.x; v0.0.0 curated entry)", "commits": ["093d7e67"]},
+    {"id": "13.7.6-20", "what": ".gitignore +46 LOC across 18 pattern groups", "commits": ["ca3267d8", "d1843f7c"]},
+    {"id": "13.7.6-21", "what": "GitHub issue + PR templates (4 files; bug_report / feature_request / config.yml / PR template)", "commits": ["aca04c74"]},
+    {"id": "13.7.6-22", "what": "Workflows audit + 5 fixes (default-deny perms; --workspace --all-features; --all-features clippy)", "commits": ["0e85ca48"]},
+    {"id": "13.7.6-24", "what": "Stripped lying --parallel flag from beava-bench throughput", "commits": ["f418a579", "3c9eacde", "c4d64c18", "625da1a6"]},
+    {"id": "13.7.6-25", "what": "throughput-baselines.md Reproduce block fix + Cargo default-run", "commits": ["bcb4176f"]},
+    {"id": "13.7.6-26", "what": "crates/beava-bench/README.md per-binary guidance (139 LOC)", "commits": ["b9c5b94a"]},
+    {"id": "13.7.6-27", "what": "bench-v18 sustained-mode hang fix (single sem.close() in deadline path) + burst-vs-sustained label discipline", "commits": ["f2e0a5ae", "ab5d6dc4", "df2d8984"]},
+    {"id": "13.7.6-30", "what": "Gap 32 fix: TCP send_push raises on OP_ERR_RESPONSE; v0 suite 100→104 tests", "commits": ["dd6e1276", "702594c7"]},
+    {"id": "13.7.6-31", "what": "Gap 25 fix: TS+Go batch_get URL hyphen→underscore; opt-in real-engine integration tests", "commits": ["e99457a9", "05fb4d00", "36831593"]},
+    {"id": "beava-website-tier-0", "what": "Gaps 0/2/3/4 — pip install / e.agg group_by / bv.App scheme / no .serve()", "commits": ["97a85bbe", "f547e3ac"]}
   ],
-  "remaining_phases_in_v0_critical_path": [
+  "in_flight_at_pause": [
+    {"id": "13.7.6-28", "what": "honest 8-cell sustained throughput rebaseline", "agent_id": "a6b2355ab6a7ca5bf", "expected_commit": "post-pause", "expected_artifact": ".planning/phases/13.7.6-pre-oss-repo-polish/13.7.6-28-SUMMARY.md", "expected_baseline_section": ".planning/throughput-baselines.md § Phase 13.7.6 — Honest sustained-mode 8-cell rebaseline", "verify_after_resume": "git log --oneline | head -5 should show chore(13.7.6-28); .planning/throughput-baselines.md should have new section"}
+  ],
+  "remaining_v0_critical_path": [
     {
-      "phase": "13.7.5",
-      "name": "Pre-OSS code polish — comment audit + test coverage matrix",
-      "status": "PLANNED — 12 plans authored, NOT executed",
-      "plan_dir": ".planning/phases/13.7.5-pre-oss-code-polish/",
-      "estimate": "1-2 days",
-      "depends_on": "13.5.4 (done)",
-      "blocks": "13.7.6 (lint sweep runs cleaner after comment audit)",
-      "scope": [
-        "Workstream A: per-component comment audit applying CLAUDE.md heuristic (drop AI-slop paraphrasing, keep WHY-non-obvious comments). 7 components: Rust crates + Python SDK + examples.",
-        "Workstream B: test-coverage matrix audit — 53 ops × 8 dimensions; wire endpoints; register flags; architectural invariants. Gap-fill MUST-FIX classifications.",
-        "OUT OF SCOPE per 13.7.5 D-03: cross-SDK conformance, WAL replay edge cases beyond happy path, snapshot upgrade-path testing — DEFER to v0.0.x.",
-        "Authored plans: 13.7.5-01 (KEEP/DELETE checklist), 13.7.5-02..08 (per-component audits), 13.7.5-09 (coverage matrix CSV), 13.7.5-10 (gap-fill), 13.7.5-11 (closure), 13.7.5-13 (audit-uat). Plan numbering has gap (no 12) — investigate at execute time."
-      ]
+      "id": "beava-website-tier-1",
+      "what": "Gaps 7/12/13/14/15/16/17/18/21/22 docs drift — 10 gaps × multiple pages",
+      "scope": "LARGE — needs full agent context budget (~4-6x what's available now). Boot binary + curl probes for Gap 21; rebuild error-codes table from grep crates/ for Gap 22.",
+      "estimate": "30-60 min wall-clock in fresh session",
+      "dispatch": "Use the same prompt structure as Tier 0 agent (model: gsd-executor / isolation: worktree / fresh session)",
+      "blocks": "soft-launch announcement readiness"
     },
     {
-      "phase": "13.7.6",
-      "name": "Pre-OSS repo polish",
-      "status": "PLANNED — 23 plans authored, NOT executed",
-      "plan_dir": ".planning/phases/13.7.6-pre-oss-repo-polish/",
-      "estimate": "2-3 days",
-      "depends_on": "13.7.5 (clean code surface for the public history)",
-      "scope": [
-        "git filter-repo strip .planning/ + CLAUDE.md + .claude/ from public history (D-01 USER-LOCKED).",
-        "Trailer-only surgical commit-message scrub (no rewriting bodies — D-02).",
-        "Repo rename tally → beava under beava-dev org (D-03 USER-LOCKED — rename happens BEFORE 13.8 tag).",
-        "Author email rewrite to hoang@beava.dev across history (D-04 USER-LOCKED).",
-        "Workstream-C: clippy + cargo audit + cargo deny + OWASP scan all GREEN before publish.",
-        "23 plans authored — see 13.7.6-CONTEXT.md for full Workstream A/B/C decomposition."
-      ]
+      "id": "13.7.6-29",
+      "what": "README.md throughput-paragraph update with honest sustained EPS from Plan 28 + hardware footnote",
+      "depends_on": "13.7.6-28 (need the actual sustained EPS numbers)",
+      "scope": "small — 5-line README edit + commit",
+      "estimate": "10 min inline"
     },
     {
-      "phase": "13.8",
-      "name": "Packaging + GA tag (SHIP)",
-      "status": "PLANNED — 12 plans authored (incl. NEW 04a curl|sh + 04b brew tap from this session); NOT executed",
-      "plan_dir": ".planning/phases/13.8-packaging-and-ga-tag/",
-      "estimate": "5-7 days",
-      "depends_on": "13.7.6 (clean public-ready repo)",
-      "scope": [
-        "Plan 01: PyPI multi-arch wheels (4 platforms; cibuildwheel + maturin)",
-        "Plan 02: npm @beava/sdk publish",
-        "Plan 03: Go module verify",
-        "Plan 04: Docker Hub + ghcr.io multi-arch (BuildKit)",
-        "Plan 04a (NEW): curl|sh installer at github.com/beava-dev/beava/releases/latest/download/install.sh",
-        "Plan 04b (NEW): Homebrew tap — bump workflow + tap repo (PREP DONE this session)",
-        "Plan 05: release.yml multi-channel orchestrator (must additionally upload install.sh + .sha256 sidecars per 04a/04b)",
-        "Plan 06: Cargo.toml version bump 0.1.0 → 0.0.0",
-        "Plan 07: README.md hero rewrite",
-        "Plan 08: marketing drafts (HN + Twitter + dev.to)",
-        "Plan 09: SOAK-LOG.md (post-tag soak window)",
-        "Plan 10: closure — tag v0.0.0 on main"
-      ]
+      "id": "13.7.6-23",
+      "what": "Phase 13.7.6 closure — SUMMARY + VERIFICATION + STATE.md + ROADMAP.md advance to 13.8",
+      "depends_on": "all prior 13.7.6 plans + tier-1 website",
+      "scope": "doc-only closure per CLAUDE.md TDD §item #7",
+      "estimate": "20 min inline"
+    },
+    {
+      "id": "13.7.6-DESTRUCTIVE-11-12-13",
+      "what": "STOP — explicit user auth required. filter-repo history rewrite + branch rename main + force-push to beava-dev/beava",
+      "rehearsal_artifacts": [".planning/phases/13.7.6-pre-oss-repo-polish/artifacts/13.7.6-09-mailmap.txt", ".planning/phases/13.7.6-pre-oss-repo-polish/artifacts/13.7.6-09-trailer-strip.py", ".planning/phases/13.7.6-pre-oss-repo-polish/artifacts/13.7.6-09-rehearsal-report.md"],
+      "rehearsal_verdict": "Plan 11 = GO (per Plan 09 rehearsal report)",
+      "preflight_checks": ["claim github.com/beava-dev org if not done", "verify hoang@beava.dev email"],
+      "scope": "destructive; ~30 min wall-clock"
+    },
+    {
+      "id": "phase-13.8",
+      "what": "Packaging + GA tag (12 plans authored)",
+      "scope": "5-7 days; PyPI multi-arch wheels + npm @beava/sdk + Go module + Docker Hub + ghcr.io + Homebrew tap + curl|sh installer + v0.0.0 tag",
+      "manual_prereqs": ["claim Docker Hub beava namespace", "claim npm org beava", "DOCKERHUB_USERNAME + DOCKERHUB_TOKEN secrets", "NPM_TOKEN or Trusted Publishers"]
     }
   ],
-  "blockers": [],
-  "human_actions_pending": [
-    {
-      "action": "Claim Docker Hub `beava` namespace (organization)",
-      "where": "https://hub.docker.com/orgs",
-      "why": "Plan 13.8-04 pushes beava/beava:v0.0.0 to Docker Hub primary registry",
-      "blocking": "Phase 13.8 only (NOT blocking 13.7.5 / 13.7.6)"
-    },
-    {
-      "action": "Generate Docker Hub access token (read+write+delete on beava namespace)",
-      "where": "https://hub.docker.com/settings/security",
-      "secret_to_set": "DOCKERHUB_USERNAME + DOCKERHUB_TOKEN in github.com/beava-dev/beava Settings → Secrets",
-      "blocking": "Phase 13.8 only"
-    },
-    {
-      "action": "Claim npm org `beava` (https://www.npmjs.com/org/create)",
-      "why": "Plan 13.8-02 publishes @beava/sdk",
-      "blocking": "Phase 13.8 only"
-    },
-    {
-      "action": "Generate npm token OR set up Trusted Publishers (preferred)",
-      "where": "https://www.npmjs.com/settings/<user>/tokens — automation token, scoped to @beava/sdk",
-      "secret_to_set": "NPM_TOKEN in github.com/beava-dev/beava (skip if Trusted Publishers used per Plan 13.8-02 D-05)",
-      "blocking": "Phase 13.8 only"
-    },
-    {
-      "action": "(Optional) DNS for beava.dev — only if you want vanity URLs (e.g. beava.dev/install.sh redirect)",
-      "why": "13.8-04a switched to GH Release asset hosting per D-09 revision; vanity URL is post-v0",
-      "blocking": false
-    }
+  "decisions_locked_this_session": {
+    "D1": "Compromise (D) — fold throughput methodology + Gap 32 + Gap 25 into 13.7.6; defer Gap 38/28/31 to v0.0.1",
+    "D2": "Decorator kwargs Gaps 28/31 — when fixed (v0.0.1+), raise NotImplementedError",
+    "D3": "README throughput claim — cite Apple-M4 honestly + hardware footnote",
+    "D4": "beava-website Tier 0/1 — drive in parallel with main-repo 13.7.6",
+    "D5": "Launch-blocker fixes land BEFORE filter-repo destructive ops"
+  },
+  "carry_forward_concerns": [
+    {"what": "--parallel 32 --pipeline-depth 1024 hangs due to server-side semaphore_wait_trap starvation", "source": "Plan 27 SUMMARY § Out of scope", "target": "v0.0.x"},
+    {"what": "docs/operators/index.md heading off-by-one (claims 53; canonical AggKind has 54)", "source": "Phase 13.7.5 verifier", "target": "v0.0.x"},
+    {"what": "Pre-existing app.ping() smoke tests expect /health fields that don't exist", "source": "Plan 31 deferred", "target": "v0.0.1"},
+    {"what": "spawnEmbeddedServer helpers (TS+Go) don't override BEAVA_ADMIN_ADDR, port 8090 collision risk", "source": "Plan 31 deferred", "target": "v0.0.1"},
+    {"what": "32+ locked worktree-agent-* dirs orphaned by Plan 11 history rewrite", "source": "Plan 10 deferred", "target": "post-Plan-13 bulk cleanup"},
+    {"what": "Most pre-Plan-27 throughput baselines are 1.5-second burst rates (not sustained); historical context only", "source": "Plan 27", "target": "documented in throughput-baselines.md going forward"}
   ],
-  "decisions_carried_forward": [
-    {"decision": "13.5.4 closure: zero crates/beava-*/src/ changes; engine FROZEN; test-only work", "rationale": "Wave 1 was lockstep test alignment (CLAUDE.md §TDD §item #4); Wave 2 was test-side relax to engine-correct None contract; bench_v18 retired (internal-only)"},
-    {"decision": "13.8-04a: drop Cloudflare Pages mirror; serve install.sh from GH Releases (D-09 revised 2026-05-05 PM)", "rationale": "beava.dev not hosted via Cloudflare Pages; GH Release asset is zero-infra-dependency"},
-    {"decision": "13.8-04b: Homebrew tap at beava-dev/homebrew-beava (D-10 USER-LOCKED)", "rationale": "Homebrew convention requires separate homebrew-<name> repo; auto-bump on tag-push via SSH deploy key"}
-  ],
-  "uncommitted_files": [
-    {
-      "scope": "beava-design-system/",
-      "count": "~50",
-      "nature": "User WIP — design system updates (modified + a few deletions); UNRELATED to v0 critical path; PRESERVED across all session work",
-      "action": "leave alone"
-    },
-    {
-      "scope": "beava-website/",
-      "count": "~400",
-      "nature": "User WIP — website redesign (mostly _pagefind/ deletions + new assets); UNRELATED to v0 critical path; PRESERVED across all session work",
-      "action": "leave alone"
-    }
-  ],
-  "next_action": "Resume next session: /clear → /gsd-execute-phase 13.7.5 (start with Workstream A comment audit + Workstream B test coverage matrix in parallel waves per existing plan structure). 13.7.5 → 13.7.6 → 13.8 is the sequence; 13.8 deferred until 13.7.5 + 13.7.6 are clean per user directive 2026-05-05 PM. Manual prereqs (Docker Hub / npm claims) can happen anytime before 13.8 tag-push — not blocking 13.7.5 / 13.7.6.",
-  "context_notes": "Session-end state at HEAD 9f4dc588 on v2/greenfield. Today's work: closed Phase 13.5.3 (env-var workspace determinism, 5 commits); closed Phase 13.5.4 (5 stale-test files aligned to post-Phase-13.4 contract + trend test None acceptance + bench_v18 retirement, 8 commits); landed Phase 13.8 prep work (3 commits — scope amend + curl|sh strategy revision + homebrew-bump workflow); inline gh-CLI setup of homebrew-beava tap repo (created public repo + seeded Formula/beava.rb with placeholder SHAs + README + LICENSE + SSH deploy key with write access + HOMEBREW_TAP_DEPLOY_KEY secret in main repo). One side-effect: org-level deploy_keys_enabled_for_repositories=true was flipped on beava-dev org (was disabled by default; required for tap repo's deploy key registration). That's reversible if desired post-13.8. Phase 13.5.3 (env-var class) + Phase 13.5.4 (stale-test class) together close the workspace test pollution problem; remaining failures (phase18_05_continuous_workers_test maybe; pytest cold-start fixture race in Run 1) are NOT in 13.5.4 scope and may be 13.7.5 Workstream-B coverage-matrix candidates. v0 critical path: 13.7.5 (12 plans) → 13.7.6 (23 plans) → 13.8 (12 plans incl. new 04a + 04b). User-WIP in beava-design-system/ + beava-website/ (~452 dirty files) is intact; UNRELATED to v0 path; do not touch."
+  "next_session_first_command": "/gsd-resume-work",
+  "session_context_at_pause": "65% used / 35% remaining; sufficient for end-of-session housekeeping; insufficient for new agent dispatches."
 }
