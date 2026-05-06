@@ -83,21 +83,21 @@ struct AggParams {
     field: Option<String>,
     window: Option<String>,
     where_str: Option<String>,
-    /// Phase 8 — bounded-buffer size for first_n/last_n/lag/time_since_last_n.
+    /// Bounded-buffer size for first_n/last_n/lag/time_since_last_n.
     n: Option<u32>,
-    /// Phase 9 — parsed from `params.half_life` (duration string).
+    /// Parsed from `params.half_life` (duration string) for decay ops.
     half_life_ms: Option<u64>,
-    /// Phase 9 — parsed from `params.sub_window` (duration string).
+    /// Parsed from `params.sub_window` (duration string) for burst_count.
     sub_window_ms: Option<u64>,
-    /// Phase 9 — parsed from `params.sigma` (number, defaults to 3.0 for outlier_count).
+    /// Parsed from `params.sigma` (number, defaults to 3.0 for outlier_count).
     sigma: Option<f64>,
-    /// Phase 9 — true when `half_life` was present but unparseable.
+    /// True when `half_life` was present but unparseable.
     half_life_invalid: bool,
-    /// Phase 9 — true when `sub_window` was present but unparseable.
+    /// True when `sub_window` was present but unparseable.
     sub_window_invalid: bool,
-    /// Plan 10-05: sketch construction params parsed from JSON kwargs.
+    /// Sketch construction params parsed from JSON kwargs.
     sketch_params: Option<SketchParams>,
-    // Phase 11 extended params (use ext_ prefix to avoid collision with `n` above).
+    // Extended params for buffer + geo ops (use ext_ prefix to avoid collision with `n` above).
     ext_buckets: Option<Vec<f64>>,
     ext_n: Option<usize>,
     ext_k: Option<usize>,
@@ -127,7 +127,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         .and_then(|v| v.as_u64())
         .and_then(|n| u32::try_from(n).ok());
 
-    // Phase 9 — half_life parsing.
+    // half_life parsing.
     let (half_life_ms, half_life_invalid) = match params.get("half_life").and_then(|v| v.as_str()) {
         Some(s) => match parse_duration_to_ms(s) {
             Ok(Some(ms)) if ms > 0 => (Some(ms), false),
@@ -136,7 +136,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         None => (None, false),
     };
 
-    // Phase 9 — sub_window parsing.
+    // sub_window parsing.
     let (sub_window_ms, sub_window_invalid) =
         match params.get("sub_window").and_then(|v| v.as_str()) {
             Some(s) => match parse_duration_to_ms(s) {
@@ -148,7 +148,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
 
     let sigma = params.get("sigma").and_then(|v| v.as_f64());
 
-    // Plan 10-05: parse sketch kwargs (q, k, capacity, fpr / target_fpr / expected_n).
+    // Parse sketch kwargs (q, k, capacity, fpr / target_fpr / expected_n).
     let percentile_q = params.get("q").and_then(|v| v.as_f64());
     let top_k_k = params.get("k").and_then(|v| v.as_u64()).map(|n| n as usize);
     let bloom_capacity = params
@@ -175,20 +175,19 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
         None
     };
 
-    // Phase 11 extended params (buffer + geo).
+    // Extended params for buffer + geo ops.
     //
-    // Plan 12.8-04: histogram's canonical memory-cap kwarg in lifetime mode is
-    // `buckets` (a Vec<f64>); the count of buckets is the per-entity memory
-    // ceiling. The bound is enforced at the JSON-prelude shim
-    // `pre_check_unbounded_op_in_lifetime_mode` via
+    // Phase 12.8 memory-governance: histogram's canonical memory-cap kwarg in
+    // lifetime mode is `buckets` (a Vec<f64>); the count of buckets is the
+    // per-entity memory ceiling. The bound is enforced at the JSON-prelude
+    // shim `pre_check_unbounded_op_in_lifetime_mode` via
     // `OpLifetimeBound::BoundedByRequiredKwarg("buckets")`. Aliases like
-    // `num_buckets` are NOT accepted on the wire — Plan 04 deliberately keeps
-    // `buckets` as the single canonical name (CONTEXT.md item 5
-    // "cap-where-missing"). When `BEAVA_MEMORY_GOV_ENFORCE=1` and `buckets`
-    // is empty/missing in lifetime mode, the shim rejects at register-time
-    // before this extractor runs. Defense-in-depth at agg_compile-time is
-    // intentionally NOT added here to preserve the workspace-stays-green
-    // invariant under default-OFF gate (see Plan 04 SUMMARY).
+    // `num_buckets` are NOT accepted on the wire — `buckets` is deliberately
+    // the single canonical name. When `BEAVA_MEMORY_GOV_ENFORCE=1` and
+    // `buckets` is empty/missing in lifetime mode, the shim rejects at
+    // register-time before this extractor runs. Defense-in-depth at
+    // agg_compile-time is intentionally NOT added here to preserve the
+    // workspace-stays-green invariant under default-OFF gate.
     let ext_buckets = params.get("buckets").and_then(|v| v.as_array()).map(|arr| {
         arr.iter()
             .filter_map(|x| x.as_f64().or_else(|| x.as_i64().map(|n| n as f64)))
@@ -257,7 +256,7 @@ fn extract_agg_params(params: &serde_json::Value) -> AggParams {
 
 pub fn parse_agg_kind(op: &str) -> Option<AggKind> {
     match op {
-        // Phase 5 core (Phase 13.4-01: avg→mean, variance→var, stddev→std per ADR-002)
+        // Core scalar (per ADR-002: avg→mean, variance→var, stddev→std)
         "count" => Some(AggKind::Count),
         "sum" => Some(AggKind::Sum),
         "mean" => Some(AggKind::Avg),
@@ -266,33 +265,33 @@ pub fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "var" => Some(AggKind::Variance),
         "std" => Some(AggKind::StdDev),
         "ratio" => Some(AggKind::Ratio),
-        // Phase 8 — point/ordinal
+        // Point/ordinal
         "first" => Some(AggKind::First),
         "last" => Some(AggKind::Last),
         "first_n" => Some(AggKind::FirstN),
         "last_n" => Some(AggKind::LastN),
         "lag" => Some(AggKind::Lag),
-        // Phase 8 — recency markers
+        // Recency markers
         "first_seen" => Some(AggKind::FirstSeen),
         "last_seen" => Some(AggKind::LastSeen),
         "age" => Some(AggKind::Age),
         "has_seen" => Some(AggKind::HasSeen),
         "time_since" => Some(AggKind::TimeSince),
         "time_since_last_n" => Some(AggKind::TimeSinceLastN),
-        // Phase 8 — streak family
+        // Streak family
         "streak" => Some(AggKind::Streak),
         "max_streak" => Some(AggKind::MaxStreak),
         "negative_streak" => Some(AggKind::NegativeStreak),
-        // Phase 8 — windowed recency
+        // Windowed recency
         "first_seen_in_window" => Some(AggKind::FirstSeenInWindow),
-        // Phase 9 decay (AGG-DECAY-01..06); "ema" is an SDK alias also accepted server-side.
+        // Decay; "ema" is an SDK alias also accepted server-side.
         "ewma" | "ema" => Some(AggKind::Ewma),
         "ewvar" => Some(AggKind::EwVar),
         "ew_zscore" => Some(AggKind::EwZScore),
         "decayed_sum" => Some(AggKind::DecayedSum),
         "decayed_count" => Some(AggKind::DecayedCount),
         "twa" => Some(AggKind::Twa),
-        // Phase 9 velocity
+        // Velocity
         "rate_of_change" => Some(AggKind::RateOfChange),
         "inter_arrival_stats" => Some(AggKind::InterArrivalStats),
         "burst_count" => Some(AggKind::BurstCount),
@@ -301,16 +300,15 @@ pub fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "trend_residual" => Some(AggKind::TrendResidual),
         "outlier_count" => Some(AggKind::OutlierCount),
         "value_change_count" => Some(AggKind::ValueChangeCount),
-        // Phase 9 z-score
+        // Z-score
         "z_score" => Some(AggKind::ZScore),
-        // Plan 10-05: 5 sketch ops. (Phase 13.4-01: count_distinct→n_unique,
-        // percentile→quantile per ADR-002.)
+        // 5 sketch ops (per ADR-002: count_distinct→n_unique, percentile→quantile).
         "n_unique" => Some(AggKind::CountDistinct),
         "quantile" => Some(AggKind::Percentile),
         "top_k" => Some(AggKind::TopK),
         "bloom_member" => Some(AggKind::BloomMember),
         "entropy" => Some(AggKind::Entropy),
-        // Phase 11 bounded-buffer operators (AGG-BUFFER-01..07)
+        // Bounded-buffer operators (AGG-BUFFER-01..07)
         "histogram" => Some(AggKind::Histogram),
         "hour_of_day_histogram" => Some(AggKind::HourOfDayHistogram),
         "dow_hour_histogram" => Some(AggKind::DowHourHistogram),
@@ -318,7 +316,7 @@ pub fn parse_agg_kind(op: &str) -> Option<AggKind> {
         "event_type_mix" => Some(AggKind::EventTypeMix),
         "most_recent_n" => Some(AggKind::MostRecentN),
         "reservoir_sample" => Some(AggKind::ReservoirSample),
-        // Phase 11 geo operators (AGG-GEO-01..04; unique_cells + geo_entropy removed in Plan 19.2-06)
+        // Geo operators (AGG-GEO-01..04; unique_cells + geo_entropy removed)
         "geo_velocity" => Some(AggKind::GeoVelocity),
         "geo_distance" => Some(AggKind::GeoDistance),
         "geo_spread" => Some(AggKind::GeoSpread),
@@ -327,7 +325,7 @@ pub fn parse_agg_kind(op: &str) -> Option<AggKind> {
     }
 }
 
-/// Phase 8 — true iff `kind` requires a `params.n` integer in the JSON wire.
+/// True iff `kind` requires a `params.n` integer in the JSON wire.
 fn agg_kind_requires_n(kind: AggKind) -> bool {
     matches!(
         kind,
@@ -335,7 +333,7 @@ fn agg_kind_requires_n(kind: AggKind) -> bool {
     )
 }
 
-/// Phase 8 — true iff `kind` requires a field name in `params.field`.
+/// True iff `kind` requires a field name in `params.field`.
 fn agg_kind_requires_field(kind: AggKind) -> bool {
     matches!(
         kind,
@@ -343,9 +341,9 @@ fn agg_kind_requires_field(kind: AggKind) -> bool {
     )
 }
 
-/// Phase 8 — true iff `kind` is a Phase 8 lifetime-only op that MUST NOT
-/// accept a `window=` (D-02). `first_seen_in_window` is the exception — it
-/// requires a window= as a lifetime parameter.
+/// True iff `kind` is a lifetime-only op that MUST NOT accept a `window=`.
+/// `first_seen_in_window` is the exception — it requires a window= as a
+/// lifetime parameter.
 fn agg_kind_rejects_window(kind: AggKind) -> bool {
     matches!(
         kind,
@@ -363,7 +361,7 @@ fn agg_kind_rejects_window(kind: AggKind) -> bool {
             | AggKind::Streak
             | AggKind::MaxStreak
             | AggKind::NegativeStreak
-            // Phase 11: all buffer + geo ops are windowless (D-08).
+            // All buffer + geo ops are windowless in v0.
             | AggKind::Histogram
             | AggKind::HourOfDayHistogram
             | AggKind::DowHourHistogram
@@ -535,7 +533,7 @@ pub fn compile_aggregations_from_nodes(
                     continue;
                 }
 
-                // Phase 9 — half_life validation for decay ops.
+                // half_life validation for decay ops.
                 if kind.requires_half_life()
                     && (params.half_life_ms.is_none() || params.half_life_invalid)
                 {
@@ -554,7 +552,7 @@ pub fn compile_aggregations_from_nodes(
                     continue;
                 }
 
-                // Phase 9 — sub_window validation for burst_count.
+                // sub_window validation for burst_count.
                 if matches!(kind, AggKind::BurstCount)
                     && (params.sub_window_ms.is_none() || params.sub_window_invalid)
                 {
@@ -600,8 +598,8 @@ pub fn compile_aggregations_from_nodes(
                 if needs_field {
                     match &params.field {
                         None => {
-                            // Phase 8 ops (first/last/first_n/last_n/lag) require a field.
-                            // Phase 5 sum/avg/variance/stddev do NOT require a field at
+                            // Point ops (first/last/first_n/last_n/lag) require a field.
+                            // Core sum/avg/variance/stddev do NOT require a field at
                             // register time (whole-row semantics deferred to v1).
                             if agg_kind_requires_field(kind) {
                                 errors.push(ValidationError {
@@ -636,7 +634,7 @@ pub fn compile_aggregations_from_nodes(
                     }
                 }
 
-                // Phase 8 — `n` parameter validation for first_n/last_n/lag/time_since_last_n.
+                // `n` parameter validation for first_n/last_n/lag/time_since_last_n.
                 if agg_kind_requires_n(kind) {
                     match params.n {
                         None => {
@@ -671,7 +669,7 @@ pub fn compile_aggregations_from_nodes(
                     }
                 }
 
-                // Phase 8 — reject window= for lifetime-only ops.
+                // Reject window= for lifetime-only ops.
                 if agg_kind_rejects_window(kind) && params.window.is_some() {
                     errors.push(ValidationError {
                         code: ErrorCode::AggregationInvalidWindow,
@@ -687,7 +685,7 @@ pub fn compile_aggregations_from_nodes(
                     continue;
                 }
 
-                // Phase 8 — first_seen_in_window REQUIRES a window=.
+                // first_seen_in_window REQUIRES a window=.
                 if matches!(kind, AggKind::FirstSeenInWindow) && params.window.is_none() {
                     errors.push(ValidationError {
                         code: ErrorCode::AggregationInvalidWindow,
@@ -701,7 +699,7 @@ pub fn compile_aggregations_from_nodes(
                     continue;
                 }
 
-                // Plan 10-05: sketch-op-specific param validation.
+                // Sketch-op-specific param validation.
                 let mut sketch_validation_failed = false;
                 match kind {
                     AggKind::BloomMember => {
@@ -797,19 +795,16 @@ pub fn compile_aggregations_from_nodes(
                     },
                 };
 
-                // Phase 11 (D-08): buffer/geo ops are lifetime-only in v0.
-                // Reject `window=...` with a clear error. (`agg_kind_rejects_window`
-                // covers both Phase 8 lifetime ops and Phase 11 buffer/geo ops.)
+                // Buffer/geo ops are lifetime-only in v0. Reject `window=...`
+                // with a clear error. (`agg_kind_rejects_window` covers both
+                // recency/streak lifetime ops and buffer/geo ops.)
                 if agg_kind_rejects_window(kind) && window_ms.is_some() {
                     errors.push(ValidationError {
                         code: ErrorCode::AggregationInvalidWindow,
                         path: format!(
                             "nodes[{node_idx}].ops[{op_idx}].agg.{feature_name}.params.window"
                         ),
-                        reason: format!(
-                            "op '{}' does not support 'window=' in v0 (Phase 11 D-08)",
-                            agg_spec.op
-                        ),
+                        reason: format!("op '{}' does not support 'window=' in v0", agg_spec.op),
                     });
                     deriv_errors = true;
                     continue;
@@ -869,7 +864,7 @@ pub fn compile_aggregations_from_nodes(
                     samples: params.ext_samples,
                     categories: params.ext_categories,
                     max_categories: params.ext_max_categories,
-                    // Plan 19.2-06 (D-01): resolved at apply_registration time by
+                    // Resolved at apply_registration time by
                     // Registry::resolve_field_indices; default to sentinel here.
                     lat_idx: crate::agg_op::FIELD_IDX_NONE,
                     lon_idx: crate::agg_op::FIELD_IDX_NONE,
@@ -882,17 +877,17 @@ pub fn compile_aggregations_from_nodes(
                         window_ms,
                         where_expr,
                         n: params.n,
-                        // Phase 9 fields — populated by extract_agg_params extension.
+                        // Decay/velocity fields — populated by extract_agg_params extension.
                         half_life_ms: params.half_life_ms,
                         sub_window_ms: params.sub_window_ms,
                         sigma: params.sigma,
                         sketch_params: params.sketch_params.clone(),
                         ext,
-                        // Plan 19.2-01: placeholder; registry overwrites at apply_registration
+                        // Placeholder; registry overwrites at apply_registration
                         // via resolve_field_indices_for_agg_mut.
                         field_idx: crate::agg_op::FIELD_IDX_NONE,
-                        // Plan 19.4-04 (D-02): placeholder; resolver writes at
-                        // apply_registration via resolve_field_indices_for_agg_mut*.
+                        // Placeholder; resolver writes at apply_registration via
+                        // resolve_field_indices_for_agg_mut*.
                         field_idx_into_event_extracted: Vec::new(),
                     },
                 });
@@ -905,11 +900,11 @@ pub fn compile_aggregations_from_nodes(
                     group_keys: keys.clone(),
                     features,
                     agg_id: 0, // placeholder; registry overwrites at apply_registration
-                    // Plan 19.2-01: populated by Registry::resolve_field_indices_for_agg_mut
-                    // at apply_registration time. Placeholder here so compile step is
-                    // decoupled from schema validation.
+                    // Populated by Registry::resolve_field_indices_for_agg_mut
+                    // at apply_registration time. Placeholder here so compile
+                    // step is decoupled from schema validation.
                     field_names: vec![],
-                    // Plan 19.2-03: assigned by Registry::apply_registration via
+                    // Assigned by Registry::apply_registration via
                     // cluster_id_by_signature. Placeholder 0 here.
                     cluster_id: 0,
                 };
@@ -918,7 +913,7 @@ pub fn compile_aggregations_from_nodes(
         }
     }
 
-    // Plan 05-06: cross-aggregation feature-name collision check.
+    // Cross-aggregation feature-name collision check.
     //
     // After per-node validation, check that no newly-compiled feature name collides
     // with an existing feature name in the registry's feature_index (from a different
@@ -980,7 +975,7 @@ fn resolve_upstream_schema_for_agg(
     nodes: &[PayloadNode],
     registry: &RegistryInner,
 ) -> Option<Schema> {
-    // Phase 13.5.1 Plan 07b — Sibling-derivation schema union.
+    // Sibling-derivation schema union.
     //
     // When the upstream is an EVENT (either in the same payload or registered),
     // additionally union in the schemas of any same-payload event-derivations
@@ -1113,25 +1108,24 @@ mod tests {
     }
 
     /// CR-01: register with window="0ms" must produce AggregationInvalidWindow error.
-    // ── Phase 13.5.2 — chain-aware where validation + 07b sibling-union RED tests ──
+    // ── Chain-aware where validation + sibling-union tests ──
     //
     // These tests pin the contract that the where-predicate validator (and
     // group-by/agg field-ref validators) MUST consider both:
-    //   (a) Same-payload sibling event-derivations of the same upstream event
-    //       (per Phase 13.5.1 Plan 07b — currently NON-FUNCTIONAL).
+    //   (a) Same-payload sibling event-derivations of the same upstream event.
     //   (b) The effective schema after applying chain ops (with_columns / select /
     //       drop / rename / cast / fillna) preceding the GroupBy in the same
-    //       derivation's chain (NEW in Phase 13.5.2).
+    //       derivation's chain.
     //
-    // Both unblock the documented `bv.lit("web")` constant-column use case in
-    // `docs/sdk-api/python.md:182` + ADR-003.
+    // Both unblock the documented `bv.lit("web")` constant-column use case
+    // (see ADR-003).
 
     #[test]
     fn rule11_sibling_event_derivation_unions_schema_for_where_predicate() {
-        // Phase 13.5.1 Plan 07b documented intent: when an aggregation's
-        // upstream is an EVENT and a same-payload event-derivation declares
-        // additional fields on that event, the where-predicate validator
-        // MUST see the union of (event ∪ sibling-derivation) fields.
+        // When an aggregation's upstream is an EVENT and a same-payload
+        // event-derivation declares additional fields on that event, the
+        // where-predicate validator MUST see the union of
+        // (event ∪ sibling-derivation) fields.
         let nodes = vec![
             event_node_with_fields(
                 "Click",
@@ -1172,14 +1166,14 @@ mod tests {
         let (_, errors) = compile_aggregations_from_nodes(&nodes, &empty_registry());
         assert!(
             errors.is_empty(),
-            "Plan 07b sibling-union must add 'source' from Tagged to upstream_schema \
+            "sibling-union must add 'source' from Tagged to upstream_schema \
              for UserClicks's where-validator; got errors: {errors:#?}"
         );
     }
 
-    // Phase 13.5.2 — DOCUMENTED GAP for v0.1: chain-aware where validation.
+    // DOCUMENTED GAP for v0.1: chain-aware where validation.
     //
-    // The Phase 13.5.2 SDK chain-flatten approach (in _app.py::_descriptor_to_node)
+    // The SDK chain-flatten approach (in _app.py::_descriptor_to_node)
     // resolves the @bv.event def pattern by inlining ops into consumers and
     // setting upstream to the root event source. That covers the documented
     // `bv.lit("web")` constant-column use case via the `@bv.event def Tagged(...)`
@@ -1188,9 +1182,9 @@ mod tests {
     // as `@bv.event def Tagged(node): return node.with_columns(...)` followed by
     // `@bv.table def F(tagged: Tagged): return tagged.group_by(...).agg(...)`.
     #[test]
-    #[ignore = "v0.1 polish — single-chain with_columns→group_by(where=col(added)) requires chain-aware where validator. Workaround: split into @bv.event def + @bv.table def per Phase 13.5.2 D-01/D-02."]
+    #[ignore = "v0.1 polish — single-chain with_columns→group_by(where=col(added)) requires chain-aware where validator. Workaround: split into @bv.event def + @bv.table def."]
     fn rule11_chain_aware_where_validates_against_post_with_columns_schema() {
-        // Phase 13.5.2 NEW contract: in a single-derivation chain like
+        // In a single-derivation chain like
         // `event.with_columns(source=lit('x')).group_by(...).agg(where=col('source')...)`,
         // the where-predicate MUST be validated against the SCHEMA AFTER the
         // with_columns op (not just the raw upstream event schema).
@@ -1590,7 +1584,7 @@ mod tests {
         );
     }
 
-    // Plan 10-05: sketch op-name + sketch-param validation tests.
+    // Sketch op-name + sketch-param validation tests.
     fn sketch_event_node() -> PayloadNode {
         event_node_with_fields(
             "Txn",
@@ -1606,8 +1600,8 @@ mod tests {
 
     #[test]
     fn rule11_count_distinct_op_name_recognized() {
-        // Phase 13.4-01 per ADR-002: count_distinct → n_unique. Test name kept
-        // for git-blame continuity; fixture uses the new wire name.
+        // Per ADR-002: count_distinct → n_unique. Test name kept for
+        // git-blame continuity; fixture uses the new wire name.
         let nodes = vec![
             sketch_event_node(),
             group_by_derivation(
@@ -1624,8 +1618,8 @@ mod tests {
 
     #[test]
     fn rule11_percentile_op_name_recognized_with_q() {
-        // Phase 13.4-01 per ADR-002: percentile → quantile. Test name kept
-        // for git-blame continuity; fixture uses the new wire name.
+        // Per ADR-002: percentile → quantile. Test name kept for
+        // git-blame continuity; fixture uses the new wire name.
         let nodes = vec![
             sketch_event_node(),
             group_by_derivation(
@@ -1641,8 +1635,8 @@ mod tests {
 
     #[test]
     fn rule11_percentile_q_out_of_range_rejected() {
-        // Phase 13.4-01 per ADR-002: percentile → quantile. Test name kept
-        // for git-blame continuity; fixture uses the new wire name.
+        // Per ADR-002: percentile → quantile. Test name kept for
+        // git-blame continuity; fixture uses the new wire name.
         let nodes = vec![
             sketch_event_node(),
             group_by_derivation(

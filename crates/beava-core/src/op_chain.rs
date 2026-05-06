@@ -97,10 +97,10 @@ impl OpChain {
         input_schema: &Schema,
         ops: &[OpNode],
     ) -> Result<(Self, Schema), Vec<CompileError>> {
-        // Phase 1: schema propagation validates all ops.
+        // First: schema propagation validates all ops.
         let (final_schema, _per_step) = propagate_schema(input_schema, ops)?;
 
-        // Phase 2: build CompiledOp sequence (expressions already validated).
+        // Second: build CompiledOp sequence (expressions already validated).
         let mut compiled: Vec<CompiledOp> = Vec::with_capacity(ops.len());
 
         for (op_loop_idx, op) in ops.iter().enumerate() {
@@ -158,8 +158,8 @@ impl OpChain {
                 // GroupBy is rejected by propagate_schema as UnsupportedOp.
                 // If we somehow reach here, skip silently (defensive).
                 //
-                // Phase 12.6 (2026-04-30): OpNode::Join / OpNode::Union arms
-                // removed — variants permanently deleted from the enum.
+                // Phase 12.7 events-only: OpNode::Join / OpNode::Union variants
+                // permanently deleted from the enum.
                 OpNode::GroupBy { .. } => continue,
             };
             compiled.push(cop);
@@ -188,8 +188,8 @@ impl OpChain {
                 }
 
                 CompiledOp::Select(fields) => {
-                    // Plan 18-11: Row.0 is SmallVec — find each requested
-                    // field, take its value, build a new Row.
+                    // Row.0 is SmallVec — find each requested field, take
+                    // its value, build a new Row.
                     let mut new_row = Row::new();
                     for f in fields {
                         if let Some(idx) = row.0.iter().position(|(k, _)| k.as_str() == f.as_str())

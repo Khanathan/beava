@@ -740,9 +740,9 @@ mod tests {
 
     // ── Test 20: (x == null) via parser rewrite ───────────────────────────────
     //
-    // CONTRACT TEST between Plan 04-02 (parser) and Plan 04-03 (evaluator).
+    // CONTRACT TEST between the parser and the evaluator.
     //
-    // Plan 04-02's post-parse Pass B rewrites `BinOp("==", e, Literal::Null)` to
+    // The parser's post-parse Pass B rewrites `BinOp("==", e, Literal::Null)` to
     // `Call("isnull", [e])` before the AST reaches eval.rs. This test verifies
     // that contract end-to-end:
     //
@@ -750,7 +750,7 @@ mod tests {
     //   eval(Call("isnull", [Field("amount")]), row{amount=Null}) → Bool(true)
     //   eval(Call("isnull", [Field("amount")]), row{amount=I64(5)}) → Bool(false)
     //
-    // If Plan 04-02's rewrite regresses (returns BinOp("==") instead of
+    // If the parser rewrite regresses (returns BinOp("==") instead of
     // Call("isnull")), this test fails with "got Null, expected Bool(true)"
     // because strict-null BinOp("==") returns Null when either operand is Null.
     #[test]

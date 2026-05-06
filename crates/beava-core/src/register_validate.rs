@@ -33,18 +33,17 @@ pub enum ErrorCode {
     NameBadPattern,
     NameEmpty,
     NameTooLong,
-    /// Plan 12.6-06 D-03 hard rip: pre-pivot variant — emitted when the
-    /// `event_time_field` decorator referenced an unknown schema field. The
-    /// validator no longer raises this; stale fixtures get rejected at the
-    /// JSON-prelude layer (`pre_check_legacy_event_time_keys`) before the
-    /// validator runs. Variant kept for wire-codec stability and to avoid an
-    /// `ErrorCode` discriminant shift.
+    /// Phase 12.6 / Phase 12.7 events-only pivot, pre-pivot variant — emitted
+    /// when the `event_time_field` decorator referenced an unknown schema
+    /// field. The validator no longer raises this; stale fixtures get rejected
+    /// at the JSON-prelude layer (`pre_check_legacy_event_time_keys`) before
+    /// the validator runs. Variant kept for wire-codec stability and to avoid
+    /// an `ErrorCode` discriminant shift.
     #[allow(dead_code)]
     EventTimeFieldMissing,
-    /// Plan 12.6-06 D-03 hard rip: pre-pivot variant — emitted when the
-    /// `event_time_field` decorator referenced a field of the wrong type
-    /// (non-i64). Same posture as `EventTimeFieldMissing` — variant kept,
-    /// no longer raised.
+    /// Pre-pivot variant — emitted when the `event_time_field` decorator
+    /// referenced a field of the wrong type (non-i64). Same posture as
+    /// `EventTimeFieldMissing` — variant kept, no longer raised.
     #[allow(dead_code)]
     EventTimeFieldWrongType,
     EventSchemaEmpty,
@@ -58,7 +57,7 @@ pub enum ErrorCode {
     DedupeKeyUnknownField,
     DedupeWindowNonPositive,
     DerivationOutputKindTableMissingPrimaryKey,
-    // Phase 4 additions (Rule 10: expression / schema-propagation validation):
+    // Rule 10: expression / schema-propagation validation.
     /// Parse error in a Filter / WithColumns / Map expression.
     InvalidExpression,
     /// Expression references a field not in the upstream schema at that op step.
@@ -68,12 +67,12 @@ pub enum ErrorCode {
     /// Cast target type string is not one of {"str","int","float","bool"} or the
     /// source→target pair is illegal (e.g., Bytes cannot be cast).
     InvalidCastTarget,
-    /// GroupBy / Join / Union appearing in an op chain — treated as pass-through
-    /// in Phase 4 (not an error); variant exists for future use but Rule 10
-    /// does NOT emit this for UnsupportedOp errors — it treats them as warnings.
+    /// GroupBy / Join / Union appearing in an op chain — treated as
+    /// pass-through (not an error); variant exists for future use but
+    /// Rule 10 does NOT emit this — it treats them as warnings.
     #[allow(dead_code)]
     UnsupportedOpInPhase4,
-    // Phase 5, Rule 11 additions (aggregation validation):
+    // Rule 11: aggregation validation.
     /// Aggregation source is a Table — not supported in v0 (SDK-AGG-05).
     AggregationOnTableNotSupported,
     /// group_by key or op.field references a field not in the upstream schema.
@@ -92,16 +91,16 @@ pub enum ErrorCode {
     AggregationDuplicateFeatureName,
     /// A feature name collides with a group_by key.
     AggregationGroupKeyCollidesWithFeature,
-    /// Plan 05-06: two different aggregation nodes expose the same feature name.
+    /// Two different aggregation nodes expose the same feature name —
     /// e.g., AggA exposes "cnt" AND AggB exposes "cnt" → reject at register time.
     AggregationFeatureNameCollisionAcrossAggregations,
-    // Phase 9 (decay/velocity ops):
+    // Decay / velocity ops.
     /// Decay op (`ewma`, `ewvar`, `ew_zscore`, `decayed_sum`, `decayed_count`)
     /// missing `params.half_life` or value unparseable / non-positive / `"forever"`.
     AggregationInvalidHalfLife,
     /// `burst_count` missing `params.sub_window` or value unparseable / non-positive.
     AggregationInvalidSubWindow,
-    // Plan 10-05 — sketch op validation:
+    // Sketch op validation.
     /// bloom_member used with `window=` kwarg → rejected (windowless-only).
     WindowNotSupported,
     /// percentile.q out of (0.0, 1.0).
@@ -121,7 +120,7 @@ pub struct ValidationError {
     pub reason: String,
 }
 
-// ─── Removed-op JSON-prelude shim (Phase 12.6 Plan 04) ────────────────────────
+// ─── Removed-op JSON-prelude shim ─────────────────────────────────────────────
 
 /// Structured "feature removed" error emitted by `pre_check_removed_ops`.
 ///
@@ -145,8 +144,8 @@ pub struct FeatureRemovedError {
 ///
 /// Runs at the JSON layer BEFORE strict `RegisterPayload` deserialize so the
 /// rejection works whether or not the corresponding `OpNode` variants still
-/// exist in the enum. Once Phase 12.6 Plan 04 deletes `OpNode::Join` /
-/// `OpNode::Union`, serde would otherwise return "unknown variant `join`" and
+/// exist in the enum. With `OpNode::Join` / `OpNode::Union` deleted, serde
+/// would otherwise return "unknown variant `join`" and
 /// the structured error code would be lost — this shim preserves it.
 ///
 /// Architectural commitment per `project_redis_shaped_no_event_time_ever`
@@ -356,8 +355,8 @@ pub fn pre_check_unsupported_node_kind(body: &serde_json::Value) -> Option<Featu
 /// (Plan 01 state) — the shim rejects all such ops in lifetime mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpLifetimeBound {
-    /// Constant per-entity memory regardless of input — Phase 5 core ops,
-    /// Phase 8 recency markers + streaks, Phase 9 decay/velocity scalar ops.
+    /// Constant per-entity memory regardless of input — core scalar ops,
+    /// recency markers + streaks, decay / velocity scalar ops.
     O1,
     /// Sketch with a fixed structural bound — HLL precision (~12 KB),
     /// DDSketch buckets (~few KB), SpaceSaving (k entries), BloomFilter
@@ -369,7 +368,7 @@ pub enum OpLifetimeBound {
     BoundedByRequiredKwarg(&'static str),
     /// Bounded by a config kwarg the user MAY supply, with a sensible default
     /// applied if absent (e.g., histogram(num_buckets=256),
-    /// event_type_mix(max_categories=256), seasonal_deviation per Phase 19.2 D-05a).
+    /// event_type_mix(max_categories=256), seasonal_deviation).
     /// First field = kwarg name; second = default cap.
     BoundedByConfig(&'static str, usize),
     /// No declared per-entity bound — REJECTED in lifetime mode.
@@ -377,20 +376,14 @@ pub enum OpLifetimeBound {
 }
 
 /// Classifier helper: maps an op-string from a register payload to its
-/// declared lifetime bound.
-///
-/// **Plan 12.8-04 (this commit) populates the 53-variant / 54-op-string
-/// classification table per CONTEXT.md memory-bound classes section.**
-/// Plan 01 had a placeholder that returned `Unbounded` for every input;
-/// Plan 04 replaces it with this match. Plan 06 flips the env-gate default
-/// from OFF to ON.
+/// declared lifetime bound. Phase 12.8 memory-governance: every op-string
+/// returns a non-`Unbounded` variant; `Unbounded` is the catch-all for
+/// typos / unknown op-strings (rejected at register-time when the
+/// memory-governance gate is ON).
 ///
 /// Op-string list mirrors `crates/beava-core/src/agg_compile.rs::parse_agg_kind`
 /// (53 `AggKind` variants + the `"ema"` SDK alias for `AggKind::Ewma` =
-/// 54 distinct op-strings; Phase 11 also includes the standalone `first` /
-/// `last` single-element ops which raise the count to 55 if both aliases and
-/// singletons are enumerated). Every op-string returns a non-`Unbounded`
-/// variant; `Unbounded` is the catch-all for typos / unknown op-strings.
+/// 54 distinct op-strings, plus standalone `first` / `last` single-element ops).
 ///
 /// **Bound classes:**
 /// - `O1` — constant per-entity memory regardless of input.
@@ -405,37 +398,34 @@ pub enum OpLifetimeBound {
 ///   event_type_mix max_categories=256, distance_from_home samples=100).
 /// - `Unbounded` — unknown op (typo / unclassified) — REJECTED.
 ///
-/// Per CONTEXT.md `Claude's Discretion` + planner discretion: `top_k` uses
-/// `BoundedByConfig("k", 10)` (NOT `BoundedByRequiredKwarg("k")`) for
-/// backward-compat with existing top_k tests that don't specify `k`
-/// (`agg_compile.rs` line 606: `sp.top_k_k.unwrap_or(10).max(1)`). Histogram
-/// has no such default in the existing wire convention; Plan 04 elevates it
-/// to `BoundedByRequiredKwarg("buckets")` per CONTEXT.md item 5
-/// "cap-where-missing".
+/// `top_k` uses `BoundedByConfig("k", 10)` (NOT `BoundedByRequiredKwarg("k")`)
+/// for backward-compat with existing top_k tests that don't specify `k`
+/// (`agg_compile.rs`: `sp.top_k_k.unwrap_or(10).max(1)`). Histogram has no
+/// such default in the existing wire convention; it is elevated to
+/// `BoundedByRequiredKwarg("buckets")`.
 pub fn lifetime_bound_for_op_str(op_str: &str) -> OpLifetimeBound {
     match op_str {
-        // ── Phase 5 core: O(1) ─────────────────────────────────────────
-        // Phase 13.4-01 per ADR-002: avg→mean, variance→var, stddev→std.
+        // ── Core scalar: O(1) ──────────────────────────────────────────
+        // Per ADR-002: avg→mean, variance→var, stddev→std.
         "count" | "sum" | "mean" | "min" | "max" | "var" | "std" | "ratio" => OpLifetimeBound::O1,
-        // ── Phase 8 single-element: O(1) ───────────────────────────────
+        // ── Single-element: O(1) ───────────────────────────────────────
         "first" | "last" => OpLifetimeBound::O1,
-        // ── Phase 8 point/ordinal: BoundedByRequiredKwarg("n") ─────────
+        // ── Point/ordinal: BoundedByRequiredKwarg("n") ─────────────────
         "first_n" | "last_n" | "lag" | "time_since_last_n" => {
             OpLifetimeBound::BoundedByRequiredKwarg("n")
         }
-        // ── Phase 8 recency markers: O(1) ──────────────────────────────
+        // ── Recency markers: O(1) ──────────────────────────────────────
         "first_seen" | "last_seen" | "age" | "has_seen" | "time_since" => OpLifetimeBound::O1,
-        // ── Phase 8 streaks: O(1) ──────────────────────────────────────
+        // ── Streaks: O(1) ──────────────────────────────────────────────
         "streak" | "max_streak" | "negative_streak" => OpLifetimeBound::O1,
-        // ── Phase 8 windowed recency: O(1) (carries window_ms as a
-        //    lifetime parameter; storage stays constant per entity) ──────
+        // ── Windowed recency: O(1) (carries window_ms as a lifetime
+        //    parameter; storage stays constant per entity) ──────────────
         "first_seen_in_window" => OpLifetimeBound::O1,
-        // ── Phase 9 decay: O(1) — `ema` is an SDK alias for ewma (see
-        //    agg_compile.rs:271) ────────────────────────────────────────
+        // ── Decay: O(1) — `ema` is an SDK alias for ewma ───────────────
         "ewma" | "ema" | "ewvar" | "ew_zscore" | "decayed_sum" | "decayed_count" | "twa" => {
             OpLifetimeBound::O1
         }
-        // ── Phase 9 velocity: O(1) ─────────────────────────────────────
+        // ── Velocity: O(1) ─────────────────────────────────────────────
         "rate_of_change"
         | "inter_arrival_stats"
         | "burst_count"
@@ -444,47 +434,46 @@ pub fn lifetime_bound_for_op_str(op_str: &str) -> OpLifetimeBound {
         | "trend_residual"
         | "outlier_count"
         | "value_change_count" => OpLifetimeBound::O1,
-        // ── Phase 9 entity z-score: O(1) ───────────────────────────────
+        // ── Entity z-score: O(1) ───────────────────────────────────────
         "z_score" => OpLifetimeBound::O1,
-        // ── Phase 10 sketches: BoundedSketch (fixed structural cap) ────
-        // Phase 13.4-01 per ADR-002: count_distinct→n_unique, percentile→quantile.
+        // ── Sketches: BoundedSketch (fixed structural cap) ─────────────
+        // Per ADR-002: count_distinct→n_unique, percentile→quantile.
         "n_unique" | "quantile" | "bloom_member" => OpLifetimeBound::BoundedSketch,
-        // ── Phase 10 entropy: BoundedByConfig("max_categories", 256) ───
+        // ── Entropy: BoundedByConfig("max_categories", 256) ────────────
         "entropy" => OpLifetimeBound::BoundedByConfig("max_categories", 256),
-        // ── Phase 10 top_k: BoundedByConfig("k", 10) ───────────────────
-        // Per CONTEXT.md `Claude's Discretion` + Plan 04 objective: soft
-        // default keeps backward compat with ~10 existing top_k tests that
-        // don't specify k. The shim treats top_k as having a finite bound
-        // (10) without requiring the user to spell it out.
+        // ── top_k: BoundedByConfig("k", 10) ────────────────────────────
+        // Soft default keeps backward compat with ~10 existing top_k tests
+        // that don't specify k. The shim treats top_k as having a finite
+        // bound (10) without requiring the user to spell it out.
         "top_k" => OpLifetimeBound::BoundedByConfig("k", 10),
-        // ── Phase 11 buffer ops: histogram is HARD-required ────────────
-        // Wire convention (agg_compile.rs:179) is `params.buckets:
-        // Vec<f64>`; Plan 04 elevates this to a register-time requirement.
-        // Empty / missing buckets array → reject with cap-kwarg suggestion.
+        // ── Buffer ops: histogram is HARD-required ─────────────────────
+        // Wire convention is `params.buckets: Vec<f64>`; this is a
+        // register-time requirement. Empty / missing buckets array →
+        // reject with cap-kwarg suggestion.
         "histogram" => OpLifetimeBound::BoundedByRequiredKwarg("buckets"),
-        // ── Phase 11 fixed-size histograms: O(1) ───────────────────────
+        // ── Fixed-size histograms: O(1) ────────────────────────────────
         // 24 buckets (hour_of_day) and 24×24 = 576 buckets (dow_hour) and
         // 24 hourly slots (seasonal_deviation) are structural caps; no
         // user-supplied kwarg required.
         "hour_of_day_histogram" => OpLifetimeBound::O1,
         "dow_hour_histogram" => OpLifetimeBound::O1,
         "seasonal_deviation" => OpLifetimeBound::O1,
-        // ── Phase 11 event_type_mix: BoundedByConfig("max_categories", 256) ──
+        // ── event_type_mix: BoundedByConfig("max_categories", 256) ─────
         "event_type_mix" => OpLifetimeBound::BoundedByConfig("max_categories", 256),
-        // ── Phase 11 most_recent_n: BoundedByRequiredKwarg("n") ────────
+        // ── most_recent_n: BoundedByRequiredKwarg("n") ─────────────────
         "most_recent_n" => OpLifetimeBound::BoundedByRequiredKwarg("n"),
-        // ── Phase 11 reservoir_sample: BoundedByRequiredKwarg("samples") ──
+        // ── reservoir_sample: BoundedByRequiredKwarg("samples") ────────
         "reservoir_sample" => OpLifetimeBound::BoundedByRequiredKwarg("samples"),
-        // ── Phase 11 geo: O(1) ─────────────────────────────────────────
+        // ── Geo: O(1) ──────────────────────────────────────────────────
         "geo_velocity" | "geo_distance" | "geo_spread" => OpLifetimeBound::O1,
-        // ── Phase 11 distance_from_home: BoundedByConfig("samples", 100) ──
-        // (Carries a `samples` kwarg with default 100 per agg_compile.rs.)
+        // ── distance_from_home: BoundedByConfig("samples", 100) ────────
+        // (Carries a `samples` kwarg with default 100.)
         "distance_from_home" => OpLifetimeBound::BoundedByConfig("samples", 100),
         // ── Catch-all: typo / unclassified op ──────────────────────────
         // Reject in lifetime mode. New ops added to AggKind must extend
         // this match; the architectural test
-        // `phase12_8_lifetime_ops_have_bounds` (Plan 07) walks the catalogue
-        // and locks the invariant in CI.
+        // `phase12_8_lifetime_ops_have_bounds` walks the catalogue and
+        // locks the invariant in CI.
         _ => OpLifetimeBound::Unbounded,
     }
 }
@@ -637,22 +626,20 @@ pub fn pre_check_unbounded_op_in_lifetime_mode(
 }
 
 /// Newtype wrapper: a `Vec<PayloadNode>` that has passed all validation rules.
-/// `compute_diff` (Plan 03) accepts `&[PayloadNode]` via `as_slice()`.
-/// The endpoint (Plan 05) extracts the inner vec via `into_inner()`.
-///
-/// Phase 4 extends this with compiled chains and propagated schemas (Plan 04-05).
-/// Phase 5 Plan 04 extends this with compiled aggregation descriptors (Rule 11).
+/// `compute_diff` accepts `&[PayloadNode]` via `as_slice()`. The endpoint
+/// extracts the inner vec via `into_inner()`. Carries compiled OpChains,
+/// propagated schemas, and compiled aggregation descriptors (Rule 10 + 11).
 #[derive(Debug)]
 pub struct ValidatedPayload {
     pub(crate) nodes: Vec<PayloadNode>,
     /// Compiled OpChain per derivation name (Arc-wrapped for cheap sharing).
-    /// Populated by Rule 10 (validate_expressions). Empty until Phase 4 wiring.
+    /// Populated by Rule 10 (validate_expressions).
     pub compiled_chains: Vec<(String, std::sync::Arc<crate::op_chain::OpChain>)>,
     /// Server-propagated DerivedSchema per derivation name.
-    /// Replaces the client-supplied schema for derivations with ops (CONTEXT D-06).
+    /// Replaces the client-supplied schema for derivations with ops.
     pub propagated_schemas: Vec<(String, crate::schema::DerivedSchema)>,
     /// Compiled AggregationDescriptor per derivation name (Arc-wrapped).
-    /// Populated by Rule 11 (validate_aggregations). Empty until Phase 5 Plan 04.
+    /// Populated by Rule 11 (validate_aggregations).
     pub compiled_aggregations: Vec<(
         String,
         std::sync::Arc<crate::agg_descriptor::AggregationDescriptor>,
@@ -661,7 +648,7 @@ pub struct ValidatedPayload {
 
 impl ValidatedPayload {
     /// Construct a ValidatedPayload from plain nodes (no compiled chains or schemas).
-    /// Used by Phase 2 construction sites and tests.
+    /// Used by tests and back-compat construction sites.
     pub fn from_nodes(nodes: Vec<PayloadNode>) -> Self {
         Self {
             nodes,
@@ -675,12 +662,12 @@ impl ValidatedPayload {
         &self.nodes
     }
 
-    /// Phase 2 backward-compat: extract the inner nodes vec.
+    /// Backward-compat: extract the inner nodes vec.
     pub fn into_inner(self) -> Vec<PayloadNode> {
         self.nodes
     }
 
-    /// Phase 5 Plan 04: decompose into (nodes, compiled_chains, propagated_schemas, compiled_aggregations).
+    /// Decompose into (nodes, compiled_chains, propagated_schemas, compiled_aggregations).
     #[allow(clippy::type_complexity)]
     pub fn into_parts(
         self,
@@ -1244,12 +1231,11 @@ fn validate_node_name(i: usize, node: &PayloadNode, errors: &mut Vec<ValidationE
 // ─── Rule 3: event schema validation ─────────────────────────────────────────
 
 fn validate_event(i: usize, e: &EventDescriptor, errors: &mut Vec<ValidationError>) {
-    // Plan 12.6-06 D-03 hard rip: `event_time_field` deleted from
-    // EventDescriptor — windowed-op bucketing now uses server-side wall-clock
-    // exclusively per `project_redis_shaped_no_event_time_ever`. Stale
-    // fixtures sending `event_time_field` get rejected at the JSON-prelude
-    // layer (`pre_check_legacy_event_time_keys`) before reaching this
-    // validator. Schema must be non-empty (any fields OK).
+    // `event_time_field` deleted from EventDescriptor — windowed-op bucketing
+    // uses server-side wall-clock exclusively (Redis-shaped, processing-time
+    // only in v0). Stale fixtures sending `event_time_field` get rejected at
+    // the JSON-prelude layer (`pre_check_legacy_event_time_keys`) before
+    // reaching this validator. Schema must be non-empty (any fields OK).
     if e.schema.fields.is_empty() {
         errors.push(ValidationError {
             code: ErrorCode::EventSchemaEmpty,
@@ -1318,12 +1304,12 @@ fn validate_derivation_struct(
     d: &crate::registry::DerivationDescriptor,
     errors: &mut Vec<ValidationError>,
 ) {
-    // Phase 13.5.1 Plan 07b: clients may omit `schema.fields` entirely (the
-    // descriptor field is `serde(default)`-able). The empty-fields check
-    // only fires when the derivation ALSO has no ops — i.e. no chain to
-    // infer from at the `validate_expressions` (Rule 10) pass. With ops
-    // present, schema-propagation runs from upstream + chain and writes
-    // the resulting fields back to the registry post-validation.
+    // Clients may omit `schema.fields` entirely (the descriptor field is
+    // `serde(default)`-able). The empty-fields check only fires when the
+    // derivation ALSO has no ops — i.e. no chain to infer from at the
+    // `validate_expressions` (Rule 10) pass. With ops present,
+    // schema-propagation runs from upstream + chain and writes the
+    // resulting fields back to the registry post-validation.
     if d.schema.fields.is_empty() && d.ops.is_empty() {
         errors.push(ValidationError {
             code: ErrorCode::DerivationSchemaEmpty,
@@ -1671,10 +1657,10 @@ fn validate_expressions(
         };
 
         // Check for UnsupportedOp ops (GroupBy) — treat as pass-through.
-        // Filter them out before calling OpChain::compile so we don't get spurious errors.
-        // Phase 4 treats these as warnings; register succeeds.
+        // Filter them out before calling OpChain::compile so we don't get
+        // spurious errors. Treated as warnings; register succeeds.
         //
-        // Phase 12.6 (2026-04-30): OpNode::Join / OpNode::Union arms removed.
+        // Phase 12.7 events-only: OpNode::Join / OpNode::Union arms removed.
         // The JSON-prelude shim `pre_check_removed_ops` runs at the dispatch
         // layer BEFORE strict RegisterPayload deserialize and emits structured
         // error codes feature_removed_no_joins_v0 / feature_removed_no_unions_v0
@@ -1690,21 +1676,21 @@ fn validate_expressions(
             tracing::warn!(
                 kind = "register.rule10.unsupported_op",
                 derivation = %deriv.name,
-                "derivation contains GroupBy ops which are not validated in Phase 4 \
-                 (pass-through)"
+                "derivation contains GroupBy ops which are not validated by \
+                 Rule 10 (pass-through)"
             );
-            // Phase 13.5.2: still compile the chain prefix
-            // (filter / select / drop / rename / with_columns / cast / fillna)
-            // so the apply path can transform events at runtime BEFORE the
-            // aggregation evaluates. `OpChain::compile` internally skips
-            // `GroupBy` ops; we discard its `final_schema` because the
-            // post-agg table schema (already on `deriv.schema`) is the
-            // canonical propagated schema for downstream consumers.
+            // Still compile the chain prefix (filter / select / drop / rename /
+            // with_columns / cast / fillna) so the apply path can transform
+            // events at runtime BEFORE the aggregation evaluates.
+            // `OpChain::compile` internally skips `GroupBy` ops; we discard
+            // its `final_schema` because the post-agg table schema (already
+            // on `deriv.schema`) is the canonical propagated schema for
+            // downstream consumers.
             //
-            // Required for the `bv.lit('web')` constant-column flow per
-            // Phase 13.5.2 D-01/D-02 — without this, the runtime apply path
-            // never executes the prefix chain and where-predicates / agg
-            // field-refs that target chain-added columns silently see None.
+            // Required for the `bv.lit('web')` constant-column flow — without
+            // this, the runtime apply path never executes the prefix chain
+            // and where-predicates / agg field-refs that target chain-added
+            // columns silently see None.
             //
             // Filter out GroupBy ops before passing to OpChain::compile —
             // `propagate_schema` rejects GroupBy as `UnsupportedOp`, which
@@ -2020,17 +2006,17 @@ mod tests_structural {
         assert_ok(vec![minimal_event("T")]);
     }
 
-    // Plan 12.6-06 D-03 hard rip: tests `rule3_fail_event_time_field_missing`
-    // and `rule3_fail_event_time_field_wrong_type` deleted — `event_time_field`
-    // is gone from EventDescriptor (and the validator no longer checks it).
-    // The strict-deny path on stale `event_time_field` JSON keys lives in
-    // `register_validate::pre_check_legacy_event_time_keys` and is exercised
-    // by `phase12_6_event_time_hard_rip.rs`.
+    // Tests `rule3_fail_event_time_field_missing` and
+    // `rule3_fail_event_time_field_wrong_type` were deleted —
+    // `event_time_field` is gone from EventDescriptor (and the validator
+    // no longer checks it). The strict-deny path on stale `event_time_field`
+    // JSON keys lives in `register_validate::pre_check_legacy_event_time_keys`
+    // and is exercised by `phase12_6_event_time_hard_rip.rs`.
 
     #[test]
     fn rule3_fail_event_schema_empty() {
-        // Schema with zero fields fails. Post-Plan-12.6-06 the rule is "fields
-        // must be non-empty" — pre-pivot rule was "must have ≥1 non-event_time
+        // Schema with zero fields fails. The rule is "fields must be
+        // non-empty" — the pre-pivot rule was "must have ≥1 non-event_time
         // field" (the special-case is gone with event_time_field deletion).
         let node = PayloadNode::Event(EventDescriptor {
             name: "T".to_string(),
@@ -2320,9 +2306,9 @@ mod tests_structural {
     fn collects_multiple_errors() {
         // 3 nodes each with independent errors:
         // node 0: bad name
-        // node 1: empty event schema (Plan 12.6-06: was "bad event_time_field"
-        //        pre-pivot; the event_time_field validation rule was deleted
-        //        with the field itself per D-03 hard rip)
+        // node 1: empty event schema (was "bad event_time_field" pre-pivot;
+        //         the event_time_field validation rule was deleted with the
+        //         field itself)
         // node 2: empty derivation schema
         let mut fields = BTreeMap::new();
         fields.insert("event_time".to_string(), FieldType::I64);
@@ -3056,15 +3042,15 @@ mod tests_pre_check_unbounded_op_in_lifetime_mode {
 
     /// Sentinel op-string that does not appear in `lifetime_bound_for_op_str`
     /// — used by the rejection-tests below as a stand-in for any genuinely-
-    /// unclassified op. Plan 01's tests originally used "count", but Plan 04
-    /// classified count as O1, so these tests switched to a typo sentinel
-    /// that round-trips through `Unbounded` deterministically.
+    /// unclassified op. Earlier tests used "count", but the classifier
+    /// labels count as O1 — these tests switched to a typo sentinel that
+    /// round-trips through `Unbounded` deterministically.
     const UNCLASSIFIED_OP: &str = "nonexistent_op_zzz";
 
     #[test]
     fn pre_check_unbounded_op_returns_some_for_unbounded_op() {
-        // Plan 04: only genuinely-unclassified op-strings hit Unbounded.
-        // The sentinel `nonexistent_op_zzz` is the catch-all canary.
+        // Only genuinely-unclassified op-strings hit Unbounded. The sentinel
+        // `nonexistent_op_zzz` is the catch-all canary.
         let body = payload_with_op(Some("ByUser"), "cnt", UNCLASSIFIED_OP, false);
         let err = pre_check_unbounded_op_in_lifetime_mode(&body)
             .expect("windowless unclassified op should be rejected (catch-all → Unbounded)");

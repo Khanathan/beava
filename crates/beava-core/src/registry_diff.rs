@@ -1,7 +1,7 @@
 //! Registry diff engine: pure function that classifies each node in a registration
 //! payload as `added`, `already_present`, or `changed` relative to the current registry.
 //!
-//! Phase 2 additive-only rule: descriptors can be added but never mutated or removed.
+//! Additive-only rule: descriptors can be added but never mutated or removed.
 //! Any deviation from an existing descriptor's content (excluding `registered_at_version`)
 //! is a conflict.
 
@@ -189,7 +189,7 @@ pub struct ConflictDetail {
 pub enum DiffReason {
     KindMismatch,
     SchemaMismatch,
-    /// Plan 12.6-06 D-03 hard rip: pre-pivot variant — emitted when an
+    /// Pre-pivot variant — emitted when an
     /// `event_time_field` value differed between current and submitted
     /// EventDescriptor. The diff classifier no longer raises this; the field
     /// is gone from EventDescriptor. Variant kept for wire-codec stability.
@@ -311,7 +311,7 @@ fn classify_event_diff(
 ) -> (DiffReason, String) {
     // Priority order: schema → dedupe_key → ttl fields → fallback
     //
-    // Plan 12.6-06 D-03 hard rip: `event_time_field` and `tolerate_delay_ms`
+    // `event_time_field` and `tolerate_delay_ms` were removed (events-only,
     // were deleted from EventDescriptor — the diff routine no longer compares
     // them (they aren't on the struct).  Stale fixtures get rejected at the
     // JSON-prelude layer before reaching this classifier.
@@ -735,7 +735,7 @@ mod tests {
     fn dedupe_key_mismatch() {
         let schema = simple_event_schema();
         let mut current = registry_with_event("A", schema.clone());
-        // Plan 18-11 D-6: events are Arc — Arc::make_mut to update.
+        // Events are Arc — Arc::make_mut to update.
         Arc::make_mut(current.events.get_mut("A").unwrap()).dedupe_key =
             Some("request_id".to_string());
 
@@ -1180,7 +1180,7 @@ mod proptests {
     fn registry_inner_to_payload_nodes(reg: &RegistryInner) -> Vec<PayloadNode> {
         let mut nodes: Vec<PayloadNode> = Vec::new();
         for e in reg.events.values() {
-            // Plan 18-11 D-6: events are Arc-wrapped — clone the inner.
+            // Events are Arc-wrapped — clone the inner.
             nodes.push(PayloadNode::Event((**e).clone()));
         }
         for t in reg.tables.values() {

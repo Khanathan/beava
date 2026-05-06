@@ -1,36 +1,32 @@
 //! Windowed<Op> wrapper: 64-bucket event-time tumbling ring buffer.
 //!
-//! Phase 5 — implementation lands in plan 05-01 Task 2.b.
-//! This file provides a compilable stub so agg_op.rs can reference WindowedOp
-//! at Task 1 (red commit). Tests are added in Task 2.a (red).
-//!
 //! # Requirements traceability
 //! - AGG-CORE-09: Windowed<Op> with 64-bucket event-time tumbling
 //!
-//! D-04: bucket_index = floor(t / bucket_ms) mod 64 via div_euclid.
-//! D-06: no wall-clock reads, no rand — pure event-time determinism.
+//! Bucket index = `floor(t / bucket_ms) mod 64` via `div_euclid` — no
+//! wall-clock reads, no rand — pure event-time determinism.
 //!
-//! # Phase 19.1-04: lazy bucket allocation
+//! # Lazy bucket allocation
 //!
 //! The old layout pre-allocated `[Option<Box<AggOp>>; 64]` + `[i64; 64]` for
 //! every WindowedOp instance — ~1024 bytes of zero-init memory per instance.
 //! With 4-14 windowed ops per entity in fraud-team-shape pipelines, this was
 //! ~60% of the cold-key entity init cost (~1500 ns / 2576 ns mean).
 //!
-//! Phase 19.1-04 (per CONTEXT D-16/D-19/D-20) replaces this with
-//! `SmallVec<[(i64, Box<AggOp>); 4]>` + lazy allocation. Most entities only
-//! see 1-2 active buckets at any given moment; the 4-slot inline SmallVec
-//! covers the typical case without heap allocation. The 64-bucket cap from
-//! AGG-CORE-09 is enforced by oldest-epoch eviction on each new-epoch insert
-//! once `buckets.len() >= max_buckets`.
+//! The current layout is `SmallVec<[(i64, Box<AggOp>); 4]>` + lazy
+//! allocation. Most entities only see 1-2 active buckets at any given
+//! moment; the 4-slot inline SmallVec covers the typical case without heap
+//! allocation. The 64-bucket cap from AGG-CORE-09 is enforced by
+//! oldest-epoch eviction on each new-epoch insert once
+//! `buckets.len() >= max_buckets`.
 //!
-//! Bucket lookup is now a linear scan of the SmallVec by epoch (typical
+//! Bucket lookup is a linear scan of the SmallVec by epoch (typical
 //! 1-2 active = effectively O(1); worst-case 64 entries × ~0.5 ns scan ≈
 //! 32 ns — still cheap vs the saved ~1500 ns cold-init).
 //!
 //! Snapshot format: serde representation of `SmallVec<[(i64, Box<AggOp>); 4]>`
 //! is incompatible with the OLD `[Option<Box<AggOp>>; 64]` + `[i64; 64]`
-//! representation. Phase 7 recovery falls back to WAL replay if snapshot
+//! representation. Recovery falls back to WAL replay if snapshot
 //! deserialization fails. Operators with existing snapshots: delete the
 //! snapshot file before restart; the WAL will replay the missing state.
 
@@ -48,9 +44,9 @@ use smallvec::SmallVec;
 /// active buckets (those with epoch ∈ [query_time - window_ms, query_time])
 /// using op-specific combine logic (Welford pairwise for variance/stddev).
 ///
-/// Phase 19.1-04: lazy `SmallVec<[(epoch_ms, Box<AggOp>); 4]>` replaces
-/// the original `[Option<Box<AggOp>>; 64]` + `[i64; 64]` arrays for ~60%
-/// reduction in cold WindowedOp::new cost on complex pipelines.
+/// Lazy `SmallVec<[(epoch_ms, Box<AggOp>); 4]>` replaces the original
+/// `[Option<Box<AggOp>>; 64]` + `[i64; 64]` arrays for ~60% reduction in
+/// cold WindowedOp::new cost on complex pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowedOp {
     pub inner_kind: AggKind,
@@ -65,8 +61,8 @@ pub struct WindowedOp {
     /// entry is evicted on each new-epoch insert.
     #[serde(default = "default_max_buckets")]
     pub max_buckets: usize,
-    /// Plan 10-05: sketch construction params propagated to per-bucket
-    /// fresh_op() calls. Default for non-sketch kinds; threaded for sketch kinds.
+    /// Sketch construction params propagated to per-bucket fresh_op() calls.
+    /// Default for non-sketch kinds; threaded for sketch kinds.
     #[serde(default)]
     pub sketch_params: SketchParams,
 }
@@ -80,19 +76,18 @@ impl WindowedOp {
     ///
     /// `bucket_ms = ceil(window_ms / 64)` — ensures at least 1ms per bucket.
     ///
-    /// Phase 19.1-04: cold construction is allocation-free (`SmallVec::new`
-    /// is a no-op). Buckets are pushed lazily on the first event.
+    /// Cold construction is allocation-free (`SmallVec::new` is a no-op).
+    /// Buckets are pushed lazily on the first event.
     pub fn new(kind: AggKind, window_ms: u64) -> Self {
         Self::new_with_params(kind, window_ms, SketchParams::default())
     }
 
-    /// Plan 10-05: construct with explicit sketch params (k, q, fpr, etc.).
-    /// Sketch params are persisted on the WindowedOp so each bucket re-init
-    /// honors user-supplied configuration.
+    /// Construct with explicit sketch params (k, q, fpr, etc.). Sketch
+    /// params are persisted on the WindowedOp so each bucket re-init honors
+    /// user-supplied configuration.
     ///
     /// Panics for `AggKind::BloomMember` — bloom_member is windowless-only
-    /// per CONTEXT D-08 / Plan 10-05 (rejected at register time with
-    /// kind=window_not_supported).
+    /// (rejected at register time with kind=window_not_supported).
     pub fn new_with_params(kind: AggKind, window_ms: u64, sketch_params: SketchParams) -> Self {
         assert!(
             !matches!(kind, AggKind::BloomMember),
@@ -115,19 +110,19 @@ impl WindowedOp {
     ///
     /// Uses `div_euclid` so negative now_ms yields a non-negative index.
     ///
-    /// Phase 19.1-04 note: this is now a pure mathematical function returning
-    /// `floor(t / bucket_ms) mod 64`. It is no longer used to address physical
-    /// storage slots (the SmallVec is keyed by epoch_ms, not slot index), but
-    /// is kept as a public API for tests and external callers that reason
-    /// about bucket-collision behavior at the 64-slot abstraction level.
+    /// This is a pure mathematical function returning
+    /// `floor(t / bucket_ms) mod 64`. It is not used to address physical
+    /// storage slots (the SmallVec is keyed by epoch_ms, not slot index),
+    /// but is kept as a public API for tests and external callers that
+    /// reason about bucket-collision behavior at the 64-slot abstraction level.
     pub fn bucket_index(&self, now_ms: i64) -> usize {
         ((now_ms.div_euclid(self.bucket_ms as i64)) as usize) % 64
     }
 
     /// Compute the bucket epoch (start time in ms, inclusive) for an event.
     ///
-    /// Phase 19.1-04: this is the new bucket identifier in the SmallVec layout.
-    /// Two events at times `t1` and `t2` share a bucket iff
+    /// The bucket identifier in the SmallVec layout. Two events at times
+    /// `t1` and `t2` share a bucket iff
     /// `bucket_epoch(t1) == bucket_epoch(t2)`.
     #[inline]
     pub fn bucket_epoch(&self, now_ms: i64) -> i64 {
@@ -146,9 +141,10 @@ impl WindowedOp {
     /// Evict the oldest-epoch bucket. Called when `len >= max_buckets` and a
     /// new-epoch entry is about to be pushed. AGG-CORE-09: 64-bucket cap.
     fn evict_oldest_bucket(&mut self) {
-        // Plan 12.8-06: bump the process-static bucket-reclaim counter for the
-        // /metrics endpoint (`beava_bucket_reclaim_total`). Inline atomic
-        // fetch_add — Relaxed ordering, no allocation.
+        // Phase 12.8 memory-governance: bump the process-static
+        // bucket-reclaim counter for the /metrics endpoint
+        // (`beava_bucket_reclaim_total`). Inline atomic fetch_add —
+        // Relaxed ordering, no allocation.
         crate::agg_state::BucketReclaimCounter::inc();
         if let Some(min_pos) = self
             .buckets
@@ -208,18 +204,18 @@ impl WindowedOp {
         self.buckets.push((epoch, new_op));
     }
 
-    /// Plan 19.3-02 (D-04): pre-extracted fast-path mirroring
+    /// Pre-extracted fast-path mirroring
     /// `AggOp::update_with_extracted_no_where` across the WindowedOp wrapper.
     ///
     /// Per-bucket inner op dispatches via
     /// `AggOp::update_with_extracted_no_where` (NOT `update_with_row`),
-    /// preserving Plan 19.2-01's pre-extraction protocol across the wrapper
-    /// boundary. Eliminates inner `row.get(fname)` linear scan + per-bucket
+    /// preserving the pre-extraction protocol across the wrapper boundary.
+    /// Eliminates inner `row.get(fname)` linear scan + per-bucket
     /// `evaluate_where_predicate` re-evaluation.
     ///
     /// `where_matched` is computed once by the outer dispatcher
     /// (`AggOp::update_with_extracted`) and threaded down — no per-bucket
-    /// re-evaluation (R4 mitigation).
+    /// re-evaluation.
     ///
     /// `field_idx`/`lat_idx`/`lon_idx` use `FIELD_IDX_NONE` (u8::MAX) as the
     /// "no field" sentinel, matching the existing protocol.
@@ -231,8 +227,6 @@ impl WindowedOp {
     /// Min/Max/Variance/StdDev/CountDistinct/Percentile/TopK/Entropy via
     /// `update_pre`) or are fieldless (Count/Ratio). Passing an empty `Row`
     /// + `None` field down through the bucket dispatch is therefore safe.
-    ///
-    /// Phase 19.3-A.
     #[allow(clippy::too_many_arguments)]
     pub fn update_at(
         &mut self,
@@ -539,8 +533,9 @@ impl WindowedOp {
                     Value::F64(matching as f64 / total as f64)
                 }
             }
-            // Phase 8 + 9 + 11 ops are never wrapped in WindowedOp (compile-time
-            // invariant). Catch-all returns Null defensively.
+            // Lifetime-only ops (point/recency/streak/decay/velocity/buffer/geo)
+            // are never wrapped in WindowedOp — compile-time invariant.
+            // Catch-all returns Null defensively.
             _ => Value::Null,
         }
     }
@@ -871,8 +866,8 @@ mod tests {
         }
 
         // Snapshot state as debug representation — must be byte-identical.
-        // Phase 19.1-04: the SmallVec entry order can depend on push order,
-        // but with deterministic event streams it's deterministic across runs.
+        // The SmallVec entry order can depend on push order, but with
+        // deterministic event streams it's deterministic across runs.
         let snap1 = format!("{:?}", op1);
         let snap2 = format!("{:?}", op2);
         assert_eq!(
@@ -881,14 +876,14 @@ mod tests {
         );
     }
 
-    // ── Phase 19.1-04 lazy bucket allocation (D-19) ──────────────────────
+    // ── Lazy bucket allocation ──────────────────────
 
     /// Cold WindowedOp must not preallocate 64 bucket slots.
     ///
-    /// Phase 19.1 CONTEXT D-19: replace `[Option<Box<AggOp>>; 64]` + `[i64; 64]`
-    /// preallocation with a lazy SmallVec. A freshly-constructed op has zero
-    /// active buckets; pre-fix, `op.buckets.len()` returns 64 (array length),
-    /// which is the red signal.
+    /// The lazy SmallVec layout replaced earlier
+    /// `[Option<Box<AggOp>>; 64]` + `[i64; 64]` preallocation. A
+    /// freshly-constructed op has zero active buckets; pre-fix,
+    /// `op.buckets.len()` returned 64 (array length), which was the red signal.
     #[test]
     fn test_cold_windowed_op_has_no_allocated_buckets() {
         let op = WindowedOp::new(AggKind::Count, 60_000);
@@ -902,9 +897,9 @@ mod tests {
 
     /// First update must lazily allocate exactly one bucket entry.
     ///
-    /// Phase 19.1 CONTEXT D-19: with the SmallVec layout, `update` on a cold
-    /// op grows `buckets` from 0 → 1 (one push for the current epoch). Pre-fix,
-    /// `op.buckets.len()` is 64 regardless, which is the red signal.
+    /// With the SmallVec layout, `update` on a cold op grows `buckets`
+    /// from 0 → 1 (one push for the current epoch). Pre-fix,
+    /// `op.buckets.len()` was 64 regardless, which was the red signal.
     #[test]
     fn test_windowed_op_lazy_allocates_one_bucket_on_first_update() {
         let mut op = WindowedOp::new(AggKind::Count, 60_000);
@@ -921,8 +916,8 @@ mod tests {
     /// SmallVec inline cap is 4: pushing into 4 distinct epochs stays inline
     /// (no heap promotion); pushing a 5th promotes to heap but stays correct.
     ///
-    /// Phase 19.1 CONTEXT D-20: inline cap=4 covers the typical fraud case
-    /// (1-2 active buckets per entity at any time).
+    /// Inline cap=4 covers the typical fraud case (1-2 active buckets per
+    /// entity at any time).
     #[test]
     fn test_windowed_op_smallvec_inline_cap_4_then_spills_to_heap() {
         let mut op = WindowedOp::new(AggKind::Count, 64_000); // bucket_ms = 1000
@@ -976,9 +971,9 @@ mod tests {
         assert!(newest_present, "epoch=64 should still be present");
     }
 
-    // ── Phase 19.3-02: WindowedOp::update_at fast-path ───────────────────
+    // ── WindowedOp::update_at fast-path ──────────────────────────────────
 
-    /// Phase 19.3-A red-test #1.
+    /// Pre-extraction routes events to the right buckets via `update_at`.
     ///
     /// Constructing a WindowedOp(Count) and calling `update_at` 5 times across
     /// 3 distinct epochs (within `max_buckets`) must produce 3 buckets with
@@ -1038,9 +1033,9 @@ mod tests {
         assert_eq!(result, Value::I64(5), "count of all 5 events should be 5");
     }
 
-    /// Phase 19.3-A red-test #2 — bypass: pre-extracted Value is the source
-    /// of truth. The row's field at the same name has a DIFFERENT value;
-    /// `update_at` must use the pre-extracted Value, not consult the row.
+    /// Pre-extracted Value is the source of truth. The row's field at the
+    /// same name has a DIFFERENT value; `update_at` must use the
+    /// pre-extracted Value, not consult the row.
     #[test]
     fn windowed_update_at_bypasses_row_get() {
         let window_ms: u64 = 64_000;
@@ -1066,9 +1061,9 @@ mod tests {
         }
     }
 
-    /// Phase 19.3-A red-test #3 — `where_matched=false` skips bucket update.
-    /// No state should be mutated when the predicate already evaluated false
-    /// at the outer dispatcher.
+    /// `where_matched=false` skips bucket update. No state should be
+    /// mutated when the predicate already evaluated false at the outer
+    /// dispatcher.
     #[test]
     fn windowed_update_at_skips_when_where_matched_false() {
         use crate::agg_op::FIELD_IDX_NONE;

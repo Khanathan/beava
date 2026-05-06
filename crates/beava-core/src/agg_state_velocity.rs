@@ -380,11 +380,11 @@ impl OutlierCountState {
 
 /// AGG-VEL-08: count of value flips (consecutive different values).
 ///
-/// Phase 13.5.2: stores `last_value` as a generic `Value` (was `f64`) so
-/// string / bool / numeric state transitions are all counted. The previous
-/// numeric-only impl silently dropped string-typed events (e.g. tracking
-/// `state` field with values "A"/"B"/"C") because the per-row `numeric_from_row`
-/// check rejected non-numeric inputs.
+/// Stores `last_value` as a generic `Value` (was `f64`) so string / bool /
+/// numeric state transitions are all counted. The earlier numeric-only impl
+/// silently dropped string-typed events (e.g. tracking `state` field with
+/// values "A"/"B"/"C") because the per-row `numeric_from_row` check
+/// rejected non-numeric inputs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ValueChangeCountState {
     pub last_value: Option<Value>,

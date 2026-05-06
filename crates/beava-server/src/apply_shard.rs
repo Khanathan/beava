@@ -1295,8 +1295,8 @@ pub fn dispatch_batch_get_sync(
         let descriptor = match registry.compiled_aggregation(&entry.table) {
             Some(d) => d,
             None => {
-                // Plan 13.4.1 D-03 — flat per-tuple error tuple (no
-                // table/entity_id wrapping).
+                // Flat per-tuple error tuple (no table/entity_id wrapping)
+                // per the get-batch wire contract.
                 results.push(serde_json::json!({
                     "error": {
                         "code": "unknown_table",
@@ -1312,13 +1312,12 @@ pub fn dispatch_batch_get_sync(
 
         // Per ADR-003: forward `key` verbatim to parse_entity_key. For
         // `key_cols: []` (global table) the empty string parses to a 0-arity
-        // key; Plan 13.4-09 wires the register-time path that makes empty
-        // group_keys legal.
+        // key; the register-time path makes empty group_keys legal.
         let entity_key =
             match crate::feature_query::parse_entity_key(&entry.key, &descriptor.group_keys) {
                 Some(k) => k,
                 None => {
-                    // Plan 13.4.1 D-03 — flat per-tuple error tuple.
+                    // Flat per-tuple error tuple.
                     results.push(serde_json::json!({
                         "error": {
                             "code": "key_parse_failure",
@@ -1334,8 +1333,8 @@ pub fn dispatch_batch_get_sync(
                 }
             };
 
-        // Plan 13.4.1 D-03 + D-06 — FLAT row response with per-entry features
-        // filter. Drop the `{table, entity_id, features:{...}}` envelope.
+        // FLAT row response with per-entry features filter. Drop the
+        // `{table, entity_id, features:{...}}` envelope.
         let mut feature_map = serde_json::Map::new();
         if let Some(table) = tables.get(descriptor.agg_id as usize) {
             for (idx, named_op) in descriptor.features.iter().enumerate() {

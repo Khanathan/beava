@@ -52,9 +52,10 @@ impl BloomFilter {
     }
 
     fn base_hashes(&self, value: &str) -> (u64, u64) {
-        // Plan 19.2-02 (D-02a): use process-static RandomState instead of
-        // per-call AHasher::default() — saves ~30-50 ns per insert/contains.
-        // Hash the str via ahash for the input → 64-bit base; then derive h1/h2 with seeded finalizer.
+        // Use process-static RandomState instead of per-call
+        // AHasher::default() — saves ~30-50 ns per insert/contains.
+        // Hash the str via ahash for the input → 64-bit base; then derive
+        // h1/h2 with seeded finalizer.
         let raw = crate::sketches::ahash_random_state().hash_one(value);
         (murmur3_finalize(raw, SEED_A), murmur3_finalize(raw, SEED_B))
     }
@@ -66,9 +67,9 @@ impl BloomFilter {
     }
 
     pub fn insert(&mut self, value: &str) {
-        // Plan 19.2-05 (D-04b): record pointer of the &str received for no-alloc
-        // test probe. The probe proves that the caller passed a borrow from the
-        // Value::Str CompactString rather than an intermediate String allocation.
+        // Record pointer of the &str received for no-alloc test probe. The
+        // probe proves that the caller passed a borrow from the Value::Str
+        // CompactString rather than an intermediate String allocation.
         // Only compiled when feature = "test-utils" — zero overhead in production.
         #[cfg(feature = "test-utils")]
         BLOOM_LAST_INSERT_PTR.with(|c| c.set(value.as_ptr() as usize));
@@ -96,24 +97,23 @@ impl BloomFilter {
     }
 }
 
-// Plan 19.2-05 (D-04b): thread-local probe for integration tests.
-// Records the as_ptr() of the last &str passed to BloomFilter::insert.
-// Integration test test_bloom_consumes_cow_no_alloc compares this against
-// the pointer inside Value::Str's CompactString — pointer equality proves
-// that no intermediate String allocation occurred (Cow::Borrowed path).
+// Thread-local probe for integration tests. Records the as_ptr() of the
+// last &str passed to BloomFilter::insert. Integration test
+// test_bloom_consumes_cow_no_alloc compares this against the pointer
+// inside Value::Str's CompactString — pointer equality proves that no
+// intermediate String allocation occurred (Cow::Borrowed path).
 //
-// Gated on feature = "test-utils" (same as Row::_take_get_count in Plan
-// 19.2-01) so it is accessible from integration test crates. Using a
-// regular // comment (not ///) because rustdoc doesn't generate docs for
-// thread_local! macro invocations.
+// Gated on feature = "test-utils" so it is accessible from integration
+// test crates. Using a regular // comment (not ///) because rustdoc doesn't
+// generate docs for thread_local! macro invocations.
 #[cfg(feature = "test-utils")]
 thread_local! {
     static BLOOM_LAST_INSERT_PTR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Plan 19.2-05 (D-04b): test accessor for the Bloom insert pointer probe.
-/// Returns the `as_ptr()` of the last `&str` passed to `BloomFilter::insert`.
-/// Only available when `feature = "test-utils"` is enabled.
+/// Test accessor for the Bloom insert pointer probe. Returns the
+/// `as_ptr()` of the last `&str` passed to `BloomFilter::insert`. Only
+/// available when `feature = "test-utils"` is enabled.
 #[cfg(feature = "test-utils")]
 pub fn _last_bloom_insert_ptr() -> usize {
     BLOOM_LAST_INSERT_PTR.with(|c| c.get())

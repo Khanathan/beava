@@ -44,15 +44,15 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// Milliseconds since Unix epoch — matches the `event_time` convention.
     Datetime(i64),
-    /// Plan 10-05: Structured JSON output (top_k returns array of {value, count}).
+    /// Structured JSON output (top_k returns array of {value, count}).
     Json(serde_json::Value),
-    /// Phase 11 (D-01): ordered list of values used as an aggregation output
-    /// (e.g. `most_recent_n`, `reservoir_sample`). Never appears in event/table
+    /// Ordered list of values used as an aggregation output (e.g.
+    /// `most_recent_n`, `reservoir_sample`). Never appears in event/table
     /// rows — only as the output of `AggOp::query`. `type_of()` → None.
     List(Vec<Value>),
-    /// Phase 11 (D-01): keyed map of values used as a structured aggregation
-    /// output (e.g. `histogram`, `event_type_mix`). Never appears in
-    /// event/table rows — only as the output of `AggOp::query`. `type_of()` → None.
+    /// Keyed map of values used as a structured aggregation output (e.g.
+    /// `histogram`, `event_type_mix`). Never appears in event/table rows —
+    /// only as the output of `AggOp::query`. `type_of()` → None.
     Map(BTreeMap<String, Value>),
 }
 
@@ -100,8 +100,8 @@ impl PartialEq for Value {
             (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Datetime(a), Value::Datetime(b)) => a == b,
             (Value::Json(a), Value::Json(b)) => a == b,
-            // Phase 11: List + Map recurse element-wise (BTreeMap iteration is
-            // ordered + deterministic; PartialEq on Vec is positional).
+            // List + Map recurse element-wise (BTreeMap iteration is ordered
+            // + deterministic; PartialEq on Vec is positional).
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Map(a), Value::Map(b)) => a == b,
             // Cross-variant comparisons are always false.
@@ -123,9 +123,8 @@ impl Value {
             Value::Bytes(_) => Some(FieldType::Bytes),
             Value::Datetime(_) => Some(FieldType::Datetime),
             Value::Json(_) => Some(FieldType::Json),
-            // Phase 11: structured outputs are not representable as a
-            // FieldType — they only appear as aggregation outputs, never in
-            // event/table rows.
+            // Structured outputs are not representable as a FieldType —
+            // they only appear as aggregation outputs, never in event/table rows.
             Value::List(_) => None,
             Value::Map(_) => None,
         }
@@ -272,9 +271,9 @@ impl Row {
         self
     }
 
-    /// Plan 18-11 D-3: insert when the key is already a CompactString —
-    /// used by the Row Deserialize hot path to skip the &str→CompactString
-    /// conversion when the key comes typed from `next_key::<CompactString>`.
+    /// Insert when the key is already a CompactString — used by the Row
+    /// Deserialize hot path to skip the &str→CompactString conversion when
+    /// the key comes typed from `next_key::<CompactString>`.
     pub fn with_field_owned(mut self, field: CompactString, value: Value) -> Self {
         if let Some(slot) = self.0.iter_mut().find(|(k, _)| *k == field) {
             slot.1 = value;
@@ -333,20 +332,18 @@ impl Default for Row {
     }
 }
 
-// ─── Row Deserialize (Task 18-09 Plan 9.3, Plan 18-10 zero-alloc rewrite) ─────
+// ─── Row Deserialize (zero-alloc rewrite) ─────────────────────────────────────
 //
 // Custom Deserialize impl for Row that works with BOTH serde_json and rmp_serde.
 //
-// **Plan 18-10 D-3 rewrite:** the visitor walks the deserializer's MapAccess
-// directly — no `serde_json::Value` intermediate. Each field's value is
-// deserialized via a `BeavaValueVisitor` that handles serde primitives
-// (bool / i64 / u64 / f64 / str / unit / map / seq) and constructs a beava
-// `Value` directly.
+// The visitor walks the deserializer's MapAccess directly — no
+// `serde_json::Value` intermediate. Each field's value is deserialized via a
+// `BeavaValueVisitor` that handles serde primitives (bool / i64 / u64 / f64 /
+// str / unit / map / seq) and constructs a beava `Value` directly.
 //
 // This shaves the per-event JsonValue allocation that was the largest fixed
-// cost in dispatch_push_sync (Plan 18-09 measured 2,428 ns JSON / 5,041 ns
-// msgpack including this allocation). Plan 18-10 D-5 target after rewrite:
-// dispatch ≈ 1,800 ns for both formats.
+// cost in dispatch_push_sync. Post-rewrite the dispatch path runs ≈ 1,800 ns
+// for both JSON and msgpack on the M4 reference box.
 
 impl<'de> serde::Deserialize<'de> for Row {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -366,11 +363,10 @@ impl<'de> serde::Deserialize<'de> for Row {
             where
                 M: serde::de::MapAccess<'de>,
             {
-                // Plan 18-11 D-3: walk values directly via BeavaValueVisitor —
-                // no JsonValue heap allocation per field. Direct push into
-                // the SmallVec storage — no with_field re-clone, no schema
-                // lookup. This is the variant-D fast path measured at
-                // ~146 ns msgpack / ~184 ns json on M4.
+                // Walk values directly via BeavaValueVisitor — no JsonValue
+                // heap allocation per field. Direct push into the SmallVec
+                // storage — no with_field re-clone, no schema lookup.
+                // Measured at ~146 ns msgpack / ~184 ns json on the M4 box.
                 let mut row = Row(SmallVec::with_capacity(8));
                 while let Some(key) = access.next_key::<CompactString>()? {
                     let value: Value = access.next_value_seed(BeavaValueSeed)?;
@@ -517,9 +513,9 @@ impl serde::Serialize for Row {
 
 // ─── Test probe: Row::get call counter ───────────────────────────────────────
 
-// Plan 19.2-01 (D-01): thread-local counter incremented on every `Row::get`
-// call when `feature = "test-utils"` is active. Lets integration tests assert
-// that the apply-loop uses pre-extraction (O(distinct_fields) calls) rather
+// Thread-local counter incremented on every `Row::get` call when
+// `feature = "test-utils"` is active. Lets integration tests assert that
+// the apply-loop uses pre-extraction (O(distinct_fields) calls) rather
 // than per-feature scanning (O(n_features × distinct_fields) calls).
 // Never active in production builds.
 #[cfg(feature = "test-utils")]
@@ -527,8 +523,8 @@ thread_local! {
     static GET_COUNT: std::cell::RefCell<usize> = const { std::cell::RefCell::new(0) };
 }
 
-/// Plan 19.2-01 (D-01): drain and return the accumulated `Row::get` call count
-/// for the current thread. Resets the counter to zero. Available only when
+/// Drain and return the accumulated `Row::get` call count for the current
+/// thread. Resets the counter to zero. Available only when
 /// `feature = "test-utils"` is enabled on the beava-core crate.
 #[cfg(feature = "test-utils")]
 pub fn _take_get_count() -> usize {
@@ -712,7 +708,7 @@ mod tests {
 
     // ── Phase 11: Value::List + Value::Map for structured outputs (D-01) ──────
 
-    /// Phase 11 — D-01: Value::List variant exists and round-trips through serde.
+    /// Value::List variant exists and round-trips through serde.
     #[test]
     fn value_list_round_trips_serde() {
         let v = Value::List(vec![Value::I64(1), Value::I64(2), Value::I64(3)]);
@@ -721,7 +717,7 @@ mod tests {
         assert_eq!(v, v2);
     }
 
-    /// Phase 11 — D-01: Value::Map variant round-trips deterministically (BTreeMap).
+    /// Value::Map variant round-trips deterministically (BTreeMap).
     #[test]
     fn value_map_round_trips_serde() {
         let mut m = BTreeMap::new();
@@ -771,12 +767,11 @@ mod tests {
         assert_eq!(Value::Map(BTreeMap::new()).type_of(), None);
     }
 
-    // ── Plan 18-11 Task 11.2: Value::Str(CompactString) ─────────────────────────
+    // ── Value::Str(CompactString) ──────────────────────────────────────────────
 
-    /// Plan 18-11 D-2: `Value::Str` payload is a `CompactString` (was `String`).
+    /// `Value::Str` payload is a `CompactString` (was `String`).
     /// CompactString does inline-storage for strings ≤24 bytes — no heap alloc.
     ///
-    /// This is a compile-fail RED until the variant payload is changed.
     /// We don't measure the heap directly here (dhat is too heavy for unit
     /// scope); the structural guarantee is encoded by the type-name check
     /// + a CompactString-specific method call.
@@ -806,12 +801,10 @@ mod tests {
         }
     }
 
-    // ── Plan 18-11 Task 11.4: Row SmallVec<[(CompactString, Value); 8]> ────────
+    // ── Row SmallVec<[(CompactString, Value); 8]> ─────────────────────────────
 
-    /// Plan 18-11 D-1: `Row.0` storage is SmallVec inline for ≤8 fields.
-    /// Most events have ≤8 fields → zero heap allocation for the row container.
-    ///
-    /// Compile-fail RED until Row.0 is swapped from BTreeMap → SmallVec.
+    /// `Row.0` storage is SmallVec inline for ≤8 fields. Most events have
+    /// ≤8 fields → zero heap allocation for the row container.
     #[test]
     fn row_smallvec_inline_no_spill_for_six_fields() {
         use smallvec::SmallVec;

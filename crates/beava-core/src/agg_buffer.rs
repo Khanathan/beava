@@ -1,4 +1,4 @@
-//! Phase 11 bounded-buffer aggregation operators.
+//! Bounded-buffer aggregation operators.
 //!
 //! AGG-BUFFER-01..07:
 //! - HistogramState        — fixed-bucket counts of a numeric field (`buckets[]`)
@@ -29,7 +29,7 @@ fn numeric_from_row(row: &Row, field: &str) -> Option<f64> {
     }
 }
 
-/// Plan 19.2-05 (D-04b): Extract a string key from a Row field, borrowing from
+/// Extract a string key from a Row field, borrowing from
 /// `Value::Str(CompactString)` without allocating when possible. Allocates only
 /// for derived-string types (I64, Bool). Returns `None` for non-string-key types.
 ///
@@ -147,7 +147,7 @@ impl HourOfDayHistogramState {
     }
 
     pub fn query(&self) -> Value {
-        // Phase 13.5.2: emit as Value::List of 24 i64 counts (indexed 0..23
+        // Emit as Value::List of 24 i64 counts (indexed 0..23
         // by hour-of-day UTC). Was Value::Map with `"00".."23"` string keys
         // which forced callers to do `hist["03"]` lookups; the list shape is
         // simpler (`hist[3]`) and parses to a Python list at the wire boundary.
@@ -284,7 +284,7 @@ impl SeasonalDeviationState {
 /// Categories are pre-declared at register time via the `categories=[...]` kwarg
 /// when present; if not specified, we accept any category up to `max_categories`.
 ///
-/// Plan 19.2-05 (D-04b): `allowed_set` is the O(1) in-memory companion to
+/// `allowed_set` is the O(1) in-memory companion to
 /// `allowed`. Built at `new()` time from `allowed`, and lazily rebuilt on the
 /// first update after snapshot deserialization (via `#[serde(skip)]`). The
 /// serde-stable field `allowed: Option<Vec<String>>` is kept for snapshot
@@ -298,7 +298,7 @@ pub struct EventTypeMixState {
     /// In-memory access uses `allowed_set` for O(1) contains. Built at
     /// `new()` time and rebuilt lazily on first update post-snapshot load.
     pub allowed: Option<Vec<String>>,
-    /// Plan 19.2-05 (D-04b): O(1) AHashSet companion to `allowed`.
+    /// O(1) AHashSet companion to `allowed`.
     /// Skipped during serde; rebuilt from `allowed` at `new()` or lazily
     /// on first update after deserialization. Default = None.
     #[serde(skip, default)]
@@ -323,7 +323,7 @@ impl EventTypeMixState {
         }
     }
 
-    /// Plan 19.2-05 (D-04b): test accessor for `allowed_set`.
+    /// Test accessor for `allowed_set`.
     /// Allows integration tests to verify the AHashSet is built without
     /// accessing the private field directly.
     pub fn allowed_set_for_test(&self) -> Option<&ahash::AHashSet<String>> {
@@ -374,7 +374,7 @@ impl EventTypeMixState {
         *entry = entry.saturating_add(1);
     }
 
-    /// Plan 19.2-05 (D-04b): apply-path fast-path consuming a pre-extracted
+    /// Apply-path fast-path consuming a pre-extracted
     /// `Option<&Value>` from the apply-loop's `ExtractedFields` array (Plan
     /// 19.2-01). Avoids the `row.get(field)` linear scan that `update()` pays.
     ///
@@ -624,7 +624,7 @@ mod tests {
         h.update(10_800_000, true);
         // 1970-01-01 05:30:00 UTC → 5 * 3_600_000 + 30*60_000
         h.update(5 * 3_600_000 + 30 * 60_000, true);
-        // Phase 13.5.2 (cbf873fa): query now returns Value::List(24×I64) indexed
+        // Query returns Value::List(24×I64) indexed
         // 0..23 by hour-of-day UTC.
         let counts = match h.query() {
             Value::List(c) => c,

@@ -1,12 +1,12 @@
-//! Builtin function registry for the Phase 4 expression evaluator.
+//! Builtin function registry for the expression evaluator.
 //!
-//! # Design (CONTEXT.md §D-07, §D-08)
+//! # Design
 //!
-//! Builtins are stored in a static `BUILTINS` table. Adding a new builtin in
-//! Phase 5+ requires only appending one `BuiltinFn` entry — no grammar or
-//! evaluator dispatch changes needed (SRV-APPLY-06 extension hook).
+//! Builtins are stored in a static `BUILTINS` table. Adding a new builtin
+//! requires only appending one `BuiltinFn` entry — no grammar or evaluator
+//! dispatch changes needed (SRV-APPLY-06 extension hook).
 //!
-//! Phase 4 ships two builtins:
+//! Two builtins ship today:
 //! - `cast(value, type_str)` — converts `Value` to target type; returns `Value::Null` on failure.
 //! - `isnull(value)` — always returns `Bool(true/false)`, never `Null`.
 //!
@@ -47,9 +47,9 @@ pub struct BuiltinFn {
 
 // ─── BUILTINS table ───────────────────────────────────────────────────────────
 
-/// Static table of Phase 4 builtins.
+/// Static table of builtin functions.
 ///
-/// Phase 5+ extension: append a new `BuiltinFn` here. No grammar or evaluator
+/// Append a new `BuiltinFn` here to add one. No grammar or evaluator
 /// dispatch surgery required — `lookup_builtin` performs a linear scan.
 pub const BUILTINS: &[BuiltinFn] = &[
     BuiltinFn {

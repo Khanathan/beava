@@ -62,8 +62,8 @@ use smallvec::SmallVec;
 /// Stable entity identifier for snapshot serialization and query-side key
 /// parsing. The apply hot path uses `EntityKeyShape` instead (D-03).
 ///
-/// Plan 18-11 D-5: SmallVec inline storage of `(CompactString, Value)` pairs
-/// in declaration order. Serde-derived so it survives snapshot round-trips.
+/// SmallVec inline storage of `(CompactString, Value)` pairs in declaration
+/// order. Serde-derived so it survives snapshot round-trips.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityKey(pub SmallVec<[(CompactString, Value); 2]>);
 
@@ -180,8 +180,8 @@ fn cmp_entity_value(a: &Value, b: &Value) -> std::cmp::Ordering {
 impl EntityKey {
     /// Build an `EntityKey` from a `Row` (legacy path for snapshot/query compat).
     ///
-    /// Plan 18-11 D-5: Canonicalizes group-key values to `Value::Str`.
-    /// Returns `None` if any group-key field is absent or non-key-safe.
+    /// Canonicalizes group-key values to `Value::Str`. Returns `None` if
+    /// any group-key field is absent or non-key-safe.
     pub fn from_row(group_keys: &[String], row: &Row) -> Option<EntityKey> {
         let mut pairs: SmallVec<[(CompactString, Value); 2]> =
             SmallVec::with_capacity(group_keys.len());
@@ -204,11 +204,11 @@ impl EntityKey {
     }
 }
 
-// ─── EntityKeyShape (Plan 19.2-03 D-03 hot-path type) ────────────────────────
+// ─── EntityKeyShape (hot-path type) ────────────────────────────────────────
 
-/// Plan 19.2-03 (D-03): EntityKey hybrid — three storage shapes selected
-/// by group_keys cardinality + value type. Avoids SmallVec build +
-/// CompactString canonicalization on the single-key numeric path.
+/// EntityKey hybrid — three storage shapes selected by group_keys
+/// cardinality + value type. Avoids SmallVec build + CompactString
+/// canonicalization on the single-key numeric path.
 ///
 /// ## Tag layout for SingleU64
 ///
@@ -222,9 +222,9 @@ impl EntityKey {
 /// Payloads are masked to the low 60 bits. I64 negatives lose their sign
 /// extension above bit 59 — for fraud workloads (entity IDs, timestamps,
 /// booleans) all values are well below 2^59, making this a non-issue.
-/// Documented as a v0 limitation (threat model T-19.2-03-02).
+/// Documented as a v0 limitation.
 ///
-/// ## SingleStr collision behavior (T-19.2-03-03)
+/// ## SingleStr collision behavior
 ///
 /// Stores both the FxHash (for fast bucket lookup) and the original
 /// CompactString (for equality comparison). Hash collisions cause
@@ -360,10 +360,10 @@ thread_local! {
     static EKS_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Plan 19.2-03: take + reset the thread-local EntityKeyShape::from_row call
-/// counter. Used by cluster dispatch tests to verify EntityKey builds per event.
-/// Available in unit tests (`#[cfg(test)]`) and integration tests that enable
-/// the `test-utils` feature flag.
+/// Take + reset the thread-local EntityKeyShape::from_row call counter.
+/// Used by cluster dispatch tests to verify EntityKey builds per event.
+/// Available in unit tests (`#[cfg(test)]`) and integration tests that
+/// enable the `test-utils` feature flag.
 #[cfg(any(test, feature = "test-utils"))]
 pub fn _take_entity_key_build_count() -> usize {
     EKS_BUILDS.with(|c| {
@@ -377,8 +377,8 @@ pub fn _take_entity_key_build_count() -> usize {
 
 /// Outer state-tables vector, indexed by `AggregationDescriptor.agg_id`.
 ///
-/// Plan 18-16 Task 16.2 — pure array indexing by `agg_id` at apply time.
-/// Server-side register handler resizes via `ensure_capacity_for` after
+/// Pure array indexing by `agg_id` at apply time. Server-side register
+/// handler resizes via `ensure_capacity_for` after
 /// `Registry::apply_registration` so the Vec has at least `next_agg_id` slots.
 pub type StateTables = Vec<AggStateTable>;
 
@@ -446,24 +446,23 @@ pub struct AggStateTable {
     /// Populated by `get_or_init_by_shape` on first call; matches the
     /// descriptor's group_keys.
     pub group_keys: Vec<String>,
-    /// Plan 12.8-03 D-01: per-entity last_seen_ms sidecar for cold-TTL
-    /// eviction. Mirrors the 3-shape dispatch (single_u64 / single_str /
-    /// multi). Populated/updated only when the source has
-    /// `EventDescriptor.cold_after_ms = Some(_)` — `None` source skips
-    /// the read entirely (zero cost).
+    /// Phase 12.8 memory-governance: per-entity last_seen_ms sidecar for
+    /// cold-TTL eviction. Mirrors the 3-shape dispatch (single_u64 /
+    /// single_str / multi). Populated/updated only when the source has
+    /// `EventDescriptor.cold_after_ms = Some(_)` — `None` source skips the
+    /// read entirely (zero cost).
     ///
     /// Stored separately from `Vec<AggOp>` to avoid cascading the
     /// (Vec<AggOp>, u64) shape through query_feature / iter_sorted /
     /// snapshot code paths. Sidecar costs ~16 bytes/entity (key
-    /// replication + u64 timestamp); acceptable per CONTEXT D-04
-    /// "inline-cheap or amortized".
+    /// replication + u64 timestamp).
     ///
     /// On eviction (when `now_ms - last_seen_ms > cold_after_ms`), the
     /// entity's Vec<AggOp> is removed via `evict_entity_by_shape_if_cold`
     /// AND its last_seen_ms entry is removed. The next event call's
     /// `get_or_init_by_shape` then allocates a fresh Vec via `init_row`,
-    /// realising FRESH state on resurrect (Redis TTL pattern, locked
-    /// permanent per CONTEXT D-04).
+    /// realising FRESH state on resurrect (Redis TTL pattern — locked
+    /// architectural commitment per Phase 12.8).
     pub last_seen_u64: HashMap<u64, u64, FxBuildHasher>,
     pub last_seen_str: HashMap<CompactString, u64, FxBuildHasher>,
     pub last_seen_multi: HashMap<EntityKey, u64, FxBuildHasher>,
@@ -483,8 +482,8 @@ impl AggStateTable {
         }
     }
 
-    /// Plan 19.2-03 (D-03): look up or initialise the per-entity `Vec<AggOp>`
-    /// via `EntityKeyShape` dispatch. This is the HOT PATH.
+    /// Look up or initialise the per-entity `Vec<AggOp>` via `EntityKeyShape`
+    /// dispatch. This is the HOT PATH.
     ///
     /// - `SingleU64` → `single_u64` HashMap lookup (O(1), no alloc)
     /// - `SingleStr` → `single_str` HashMap lookup (O(1), no alloc for ≤24-byte keys)
@@ -604,16 +603,16 @@ impl AggStateTable {
 
     /// Return the number of distinct entities across all three sub-maps.
     ///
-    /// Plan 12.8-06: also used by the `/metrics` admin sidecar to populate
+    /// Also used by the `/metrics` admin sidecar to populate
     /// `beava_entity_count_resident`. The apply path sums this across all
-    /// state tables and writes the total into a process-static
-    /// `Arc<AtomicUsize>` snapshot the admin handler reads with `.load(Relaxed)`
-    /// — zero-lock metric exposition.
+    /// state tables and writes the total into a process-static `AtomicU64`
+    /// snapshot the admin handler reads with `.load(Relaxed)` — zero-lock
+    /// metric exposition.
     pub fn entity_count(&self) -> usize {
         self.single_u64.len() + self.single_str.len() + self.multi.len()
     }
 
-    /// Plan 12.8-03 D-01/D-04: cold-TTL eviction check.
+    /// Phase 12.8 memory-governance: cold-TTL eviction check.
     ///
     /// Reads the entity's `last_seen_ms` (from the appropriate sidecar map);
     /// if older than `now_ms - cold_after_ms`, REMOVES the entity from the
@@ -625,7 +624,7 @@ impl AggStateTable {
     /// the apply call (regardless of whether eviction fired). This is what
     /// keeps the sidecar tracking the most recent event per entity.
     ///
-    /// Per CONTEXT D-04 (Redis TTL pattern, locked permanent): on resurrect
+    /// Redis TTL semantics (locked architectural commitment): on resurrect
     /// the entity is treated as fresh — no partial-state preservation. The
     /// `get_or_init_by_shape` call after eviction allocates a new
     /// `Vec<AggOp>` via `init_row`.
@@ -673,9 +672,9 @@ impl AggStateTable {
         true
     }
 
-    /// Plan 12.8-03 D-01: record the wall-clock arrival time for this entity.
-    /// Called from the apply path AFTER `apply_event_to_aggregations` — only
-    /// when source has `cold_after_ms = Some(_)`.
+    /// Record the wall-clock arrival time for this entity. Called from the
+    /// apply path AFTER `apply_event_to_aggregations` — only when source
+    /// has `cold_after_ms = Some(_)`.
     ///
     /// Uses `raw_entry_mut` for the str/multi shapes to avoid an extra clone
     /// of the key when the entry is already present (the common warm path).
@@ -709,8 +708,7 @@ impl AggStateTable {
         }
     }
 
-    /// Plan 18-11 D-8 (updated for 3-map storage): iterate entries in
-    /// EntityKey-sorted order for snapshot serialization.
+    /// Iterate entries in EntityKey-sorted order for snapshot serialization.
     ///
     /// Reconstructs canonical `EntityKey` from single_u64 and single_str entries
     /// using stored `group_keys`. Multi entries already hold an EntityKey.

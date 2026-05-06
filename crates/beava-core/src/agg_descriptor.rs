@@ -39,19 +39,18 @@ pub struct NamedAggOp {
 /// - Which features to compute (`features`)
 ///
 /// The schema produced by this aggregation is computed by
-/// `agg_schema::propagate_aggregation_schema`. Plan 05-04 caches
+/// `agg_schema::propagate_aggregation_schema`. The registry caches
 /// `Arc<AggregationDescriptor>` in `RegistryInner.compiled_aggregations`.
 ///
-/// Plan 18-16: `agg_id` is a stable u32 assigned at registration time by the
-/// registry's monotonic `next_agg_id` counter. Used as an O(1) index into the
-/// `Vec<AggStateTable>` that replaces the BTreeMap in `DevAggState.state_tables`.
-/// Snapshot serializer skips it (re-derived from registry order on replay).
+/// `agg_id` is a stable u32 assigned at registration time by the registry's
+/// monotonic `next_agg_id` counter. Used as an O(1) index into the
+/// `Vec<AggStateTable>`. Snapshot serializer skips it (re-derived from
+/// registry order on replay).
 ///
-/// Plan 19.2-01 (D-01): `field_names` is the ordered list of distinct field
-/// names referenced by features in this aggregation. Built by
-/// `Registry::resolve_field_indices` at registration time. Each feature's
-/// `descriptor.field_idx` is an index into this list. The apply-loop uses
-/// `field_names` to drive pre-extraction.
+/// `field_names` is the ordered list of distinct field names referenced by
+/// features in this aggregation. Built by `Registry::resolve_field_indices`
+/// at registration time. Each feature's `descriptor.field_idx` is an index
+/// into this list. The apply-loop uses `field_names` to drive pre-extraction.
 #[derive(Debug, Clone)]
 pub struct AggregationDescriptor {
     /// Derivation node name — the Table this aggregation produces.
@@ -63,25 +62,24 @@ pub struct AggregationDescriptor {
     /// Ordered named features; `feature_name` must be unique within the list
     /// and must not collide with any `group_key`.
     pub features: Vec<NamedAggOp>,
-    /// Plan 18-16: stable u32 ID assigned at registration by `RegistryInner.next_agg_id`.
+    /// Stable u32 ID assigned at registration by `RegistryInner.next_agg_id`.
     /// Used as O(1) array index into `Vec<AggStateTable>`. Skipped in snapshot
     /// serialization; re-derived by registry monotonic counter on WAL replay.
     /// Default is 0 (placeholder); the registry always overwrites this at
     /// `apply_registration` time for newly-inserted aggregations.
     pub agg_id: u32,
-    /// Plan 19.2-01 (D-01): distinct field names referenced by features in this
-    /// aggregation, in resolution order. Each feature with `field: Some(fname)`
-    /// resolves `fname` to an index into this Vec. Empty if no feature references
-    /// a field (e.g. count-only aggregation). Populated by
+    /// Distinct field names referenced by features in this aggregation, in
+    /// resolution order. Each feature with `field: Some(fname)` resolves
+    /// `fname` to an index into this Vec. Empty if no feature references a
+    /// field (e.g. count-only aggregation). Populated by
     /// `Registry::resolve_field_indices` at registration time.
     pub field_names: Vec<String>,
-    /// Plan 19.2-03 (D-04): cluster identifier assigned at registration time.
-    /// Aggregations sharing the same `group_keys` signature (declaration-order
-    /// hash, NOT sorted-lex — see Warning 4 in 19.2-03-PLAN.md) get the same
-    /// `cluster_id`. The apply loop builds EntityKey ONCE per unique cluster_id
-    /// per event, then dispatches to each cluster member's own AggStateTable.
-    /// Default is 0; the registry always assigns the correct value at
-    /// `apply_registration` time.
+    /// Cluster identifier assigned at registration time. Aggregations
+    /// sharing the same `group_keys` signature (declaration-order hash,
+    /// NOT sorted-lex) get the same `cluster_id`. The apply loop builds
+    /// EntityKey ONCE per unique cluster_id per event, then dispatches to
+    /// each cluster member's own AggStateTable. Default is 0; the registry
+    /// always assigns the correct value at `apply_registration` time.
     pub cluster_id: u32,
 }
 

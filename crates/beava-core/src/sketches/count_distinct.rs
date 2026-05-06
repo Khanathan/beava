@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 const EXACT_THRESHOLD: usize = 16;
 const HASH_THRESHOLD: usize = 1024;
 
-// Plan 19.4-01 (D-01): identity hasher for the already-FxHashed u64 input.
-// The HashSet's u64 keys are FxHasher outputs (see agg_state::hash_value_for_hll);
-// re-hashing them with SipHash burns ~1,180 ns/event of apply CPU per the
-// 19.3-FLAMEGRAPH §2 row #3 measurement. The identity hasher stores the input
-// u64 verbatim as the slot index, with hashbrown's SIMD probing handling
-// any clustering. The byte-slice arm is unreachable because the only
-// consumer is `HashSet<u64>` whose Hash impl calls `Hasher::write_u64`.
+// Identity hasher for the already-FxHashed u64 input. The HashSet's u64
+// keys are FxHasher outputs (see agg_state::hash_value_for_hll); re-hashing
+// them with SipHash burned ~1,180 ns/event of apply CPU pre-fix. The
+// identity hasher stores the input u64 verbatim as the slot index, with
+// hashbrown's SIMD probing handling any clustering. The byte-slice arm is
+// unreachable because the only consumer is `HashSet<u64>` whose Hash impl
+// calls `Hasher::write_u64`.
 #[derive(Default)]
 pub(super) struct NoOpHasher {
     state: u64,
@@ -49,13 +49,13 @@ type HashSetU64 = hashbrown::HashSet<u64, std::hash::BuildHasherDefault<NoOpHash
 // tags still satisfy v0 snapshot stability — the variant rename strings are
 // the tag strings emitted in JSON / consumed by bincode's variant index.
 //
-// Plan 19.4-01 (D-01): the `HashSet` variant's `HashSetU64` alias references
-// the module-private `NoOpHasher`. Per `project_v2_devex_first` memory the
-// hasher type MUST stay module-internal (no API surface change), but rust's
-// `private_interfaces` lint warns because `NoOpHasher` is reachable via the
-// public variant's field type. External callers can still construct the
-// variant via `CountDistinctState::new(...)` + `add_hash(...)` (the only
-// supported APIs); they cannot name `NoOpHasher` or `HashSetU64` directly.
+// The `HashSet` variant's `HashSetU64` alias references the module-private
+// `NoOpHasher`. The hasher type stays module-internal (no API surface
+// change), but rust's `private_interfaces` lint warns because `NoOpHasher`
+// is reachable via the public variant's field type. External callers can
+// still construct the variant via `CountDistinctState::new(...)` +
+// `add_hash(...)` (the only supported APIs); they cannot name `NoOpHasher`
+// or `HashSetU64` directly.
 #[allow(private_interfaces)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CountDistinctState {
@@ -87,9 +87,9 @@ impl CountDistinctState {
 
     /// Insert a precomputed u64 hash. Promotes mode if threshold exceeded.
     ///
-    /// Plan 19.2-02 (D-02b): the input u64 is expected to come from a
-    /// FxHasher-backed hasher; HLL's internal `mix64` (`Hll::add_hash`)
-    /// post-processes for distribution. See `agg_state::hash_value_for_hll`.
+    /// The input u64 is expected to come from a FxHasher-backed hasher;
+    /// HLL's internal `mix64` (`Hll::add_hash`) post-processes for
+    /// distribution. See `agg_state::hash_value_for_hll`.
     pub fn add_hash(&mut self, hash: u64) {
         match self {
             CountDistinctState::ExactArray { values } => {
@@ -97,9 +97,9 @@ impl CountDistinctState {
                     values.insert(pos, hash);
                     if values.len() > EXACT_THRESHOLD {
                         // Promote to HashSet, preserving every value seen.
-                        // Plan 19.4-01 (D-01): HashSetU64 uses NoOpHasher so the
-                        // already-FxHashed u64 is stored as the slot index without
-                        // a redundant SipHash second-hash.
+                        // HashSetU64 uses NoOpHasher so the already-FxHashed
+                        // u64 is stored as the slot index without a redundant
+                        // SipHash second-hash.
                         let mut set = HashSetU64::with_capacity_and_hasher(
                             HASH_THRESHOLD,
                             std::hash::BuildHasherDefault::<NoOpHasher>::default(),
@@ -250,7 +250,7 @@ mod tests {
         assert!(j.contains("v0_count_distinct_exact_array"), "json={}", j);
     }
 
-    // Plan 19.4-01 (D-01) Task 1.a RED: NoOpHasher contract.
+    // NoOpHasher contract.
     use std::hash::Hasher as _StdHasher;
 
     #[test]

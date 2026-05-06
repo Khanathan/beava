@@ -33,14 +33,14 @@ use serde::{Deserialize, Serialize};
 /// Default max buckets before a collapse round halves α-resolution.
 pub const DEFAULT_MAX_BUCKETS: usize = 2048;
 
-/// Default starting α (planner-locked at 0.01 per Plan 22-03 SUMMARY).
+/// Default starting α (locked at 0.01).
 pub const DEFAULT_ALPHA: f64 = 0.01;
 
 /// UDDSketch: a Uniform Dyadic Distribution Sketch with retraction.
 ///
-/// Plan 19.2-04 (D-04a): internal storage uses flat sorted `Vec<(i32, u64)>`
-/// with binary-search insert/lookup, replacing the original `BTreeMap<i32, u64>`.
-/// Same α=0.01 accuracy contract, same 2,048-bucket cap, same retraction support.
+/// Internal storage uses flat sorted `Vec<(i32, u64)>` with binary-search
+/// insert/lookup. Same α=0.01 accuracy contract, same 2,048-bucket cap,
+/// same retraction support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UDDSketch {
     alpha0: f64,
@@ -49,13 +49,12 @@ pub struct UDDSketch {
     ln_gamma: f64,
     num_collapses: u32,
     max_buckets: usize,
-    /// Plan 19.2-04 (D-04a): flat sorted Vec replaces BTreeMap. Sorted
-    /// ascending by the i32 key. Binary-search insert/lookup → cache-
-    /// friendlier than BTreeMap node traversal. Per-call algorithmic
-    /// floor: ~75 ns vs BTreeMap's ~130 ns (post-Plan-19.2-01/02 wrapping).
+    /// Flat sorted Vec sorted ascending by the i32 key. Binary-search
+    /// insert/lookup → cache-friendlier than BTreeMap node traversal.
+    /// Per-call algorithmic floor: ~75 ns vs BTreeMap's ~130 ns.
     #[serde(default)]
     pos_buckets: Vec<(i32, u64)>,
-    /// Plan 19.2-04 (D-04a): flat sorted Vec for negative-value buckets.
+    /// Flat sorted Vec for negative-value buckets.
     #[serde(default)]
     neg_buckets: Vec<(i32, u64)>,
     /// Count of observations equal to exactly 0.0 (ln(0) is undefined).

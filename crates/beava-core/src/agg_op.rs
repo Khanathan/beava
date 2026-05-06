@@ -119,7 +119,7 @@ pub enum AggKind {
     DistanceFromHome,
 }
 
-/// Plan 10-05: optional sketch construction params attached to AggOpDescriptor.
+/// Optional sketch construction params attached to AggOpDescriptor.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SketchParams {
     pub percentile_q: Option<f64>,
@@ -128,12 +128,12 @@ pub struct SketchParams {
     pub bloom_fpr: Option<f64>,
 }
 
-/// Phase 11: extended params for buffer + geo operators (Plan 11-02).
+/// Extended params for buffer + geo operators.
 /// Default = empty (None-valued); core/sketch ops never consult this struct.
 ///
-/// Plan 19.2-06 (D-01): `lat_idx` + `lon_idx` are register-time-resolved
-/// indices into the apply-loop's `ExtractedFields` array. Sentinel
-/// `FIELD_IDX_NONE` (u8::MAX) means "not resolved yet" or "geo op not present".
+/// `lat_idx` + `lon_idx` are register-time-resolved indices into the apply-loop's
+/// `ExtractedFields` array. Sentinel `FIELD_IDX_NONE` (u8::MAX) means
+/// "not resolved yet" or "geo op not present".
 #[derive(Debug, Clone)]
 pub struct AggExtParams {
     pub buckets: Option<Vec<f64>>,
@@ -145,11 +145,11 @@ pub struct AggExtParams {
     pub samples: Option<usize>,
     pub categories: Option<Vec<String>>,
     pub max_categories: Option<usize>,
-    /// Plan 19.2-06 (D-01): resolved index of the latitude field in
-    /// `ExtractedFields`. `FIELD_IDX_NONE` = not a geo op / not yet resolved.
+    /// Resolved index of the latitude field in `ExtractedFields`.
+    /// `FIELD_IDX_NONE` = not a geo op / not yet resolved.
     pub lat_idx: u8,
-    /// Plan 19.2-06 (D-01): resolved index of the longitude field in
-    /// `ExtractedFields`. `FIELD_IDX_NONE` = not a geo op / not yet resolved.
+    /// Resolved index of the longitude field in `ExtractedFields`.
+    /// `FIELD_IDX_NONE` = not a geo op / not yet resolved.
     pub lon_idx: u8,
 }
 
@@ -211,9 +211,9 @@ impl AggKind {
 
 // ─── Field index constants ────────────────────────────────────────────────────
 
-/// Plan 19.2-01 (D-01): sentinel value for `AggOpDescriptor.field_idx` when
-/// the op has no field (Count, Ratio, HourOfDayHistogram, DowHourHistogram)
-/// or when resolution has not yet been performed.
+/// Sentinel value for `AggOpDescriptor.field_idx` when the op has no field
+/// (Count, Ratio, HourOfDayHistogram, DowHourHistogram) or when resolution
+/// has not yet been performed.
 ///
 /// Using `u8::MAX` (255) as sentinel keeps the value fitting in a byte while
 /// leaving 0..=254 for actual indices. Since Beava limits events to ≤8 inline
@@ -222,18 +222,16 @@ pub const FIELD_IDX_NONE: u8 = u8::MAX;
 
 // ─── ExtractedFields ─────────────────────────────────────────────────────────
 
-/// Plan 19.2-01 (D-01): pre-extracted field values for one event, indexed
-/// by `AggOpDescriptor.field_idx`. Length matches
-/// `AggregationDescriptor.field_names`. Built ONCE per event at apply-loop
-/// entry; consumed by every per-feature update call.
+/// Pre-extracted field values for one event, indexed by
+/// `AggOpDescriptor.field_idx`. Length matches `AggregationDescriptor.field_names`.
+/// Built ONCE per event at apply-loop entry; consumed by every per-feature update call.
 ///
-/// SmallVec inline capacity = 16 (Plan 19.4-02): covers fraud-team's per-source
-/// union (~12 fields max for the TxnByUser cluster) without spilling. Pre-19.4-02
-/// cap was 8; per `19.3-FLAMEGRAPH.md §2` the rows labelled
-/// `RawVec::with_capacity_in` + `RawVecInner::reserve` together at ~4.0% inclusive
-/// on the apply hot path were 99% from this SmallVec spilling on every Txn event
-/// (~530 ns/event of allocator traffic). Cap widening eliminates the heap spill;
-/// the apply path stays inline-only for fraud-team's per-source field union.
+/// SmallVec inline capacity = 16: covers fraud-team's per-source union (~12 fields
+/// max for the TxnByUser cluster) without spilling. Earlier cap was 8 — flamegraph
+/// showed `RawVec::with_capacity_in` + `RawVecInner::reserve` together at ~4.0%
+/// inclusive on the apply hot path, 99% from this SmallVec spilling on every Txn
+/// event (~530 ns/event of allocator traffic). Cap widening eliminates the heap
+/// spill; the apply path stays inline-only for fraud-team's per-source field union.
 pub type ExtractedFields<'a> = smallvec::SmallVec<[Option<&'a crate::row::Value>; 16]>;
 
 // ─── AggOpDescriptor ─────────────────────────────────────────────────────────
@@ -261,30 +259,29 @@ pub struct AggOpDescriptor {
     /// `agg_where::evaluate_where_predicate` at apply time.
     /// None = unconditional update (backwards-compatible with Plan 05-01).
     pub where_expr: Option<std::sync::Arc<crate::expr::Expr>>,
-    /// Phase 8 — bounded-buffer size parameter for `first_n`, `last_n`, `lag`,
+    /// Bounded-buffer size parameter for `first_n`, `last_n`, `lag`,
     /// `time_since_last_n`. `None` for ops that don't take an `n` param.
     pub n: Option<u32>,
-    /// Phase 9 — required for decay ops (`AggKind::requires_half_life()`); ignored otherwise.
+    /// Required for decay ops (`AggKind::requires_half_life()`); ignored otherwise.
     pub half_life_ms: Option<u64>,
-    /// Phase 9 — required for `BurstCount`; ignored otherwise.
+    /// Required for `BurstCount`; ignored otherwise.
     pub sub_window_ms: Option<u64>,
-    /// Phase 9 — defaults to 3.0 for `OutlierCount`; ignored otherwise.
+    /// Defaults to 3.0 for `OutlierCount`; ignored otherwise.
     pub sigma: Option<f64>,
-    /// Plan 10-05: per-op sketch construction params (k, q, fpr, capacity).
-    /// None for non-sketch ops.
+    /// Per-op sketch construction params (k, q, fpr, capacity). None for non-sketch ops.
     pub sketch_params: Option<SketchParams>,
-    /// Phase 11 extended params (optional; None-valued for non-Phase-11 ops).
+    /// Extended params for buffer + geo operators (None-valued for other ops).
     pub ext: AggExtParams,
-    /// Plan 19.2-01 (D-01): pre-resolved index into the apply-loop's
-    /// `ExtractedFields` array. Populated by `Registry::resolve_field_indices`
-    /// at `apply_registration` time. Default = `FIELD_IDX_NONE`; client-supplied
-    /// JSON omits this field (resolved server-side only).
-    /// Not serialized: `AggOpDescriptor` is not a serde type; `field_idx` is
-    /// computed server-side at registration and never transported over the wire.
+    /// Pre-resolved index into the apply-loop's `ExtractedFields` array.
+    /// Populated by `Registry::resolve_field_indices` at `apply_registration` time.
+    /// Default = `FIELD_IDX_NONE`; client-supplied JSON omits this field
+    /// (resolved server-side only). Not serialized: `AggOpDescriptor` is not a
+    /// serde type; `field_idx` is computed server-side at registration and never
+    /// transported over the wire.
     pub field_idx: u8,
-    /// Plan 19.4-04 (D-02): per-agg-feature mapping from the agg's local field
-    /// positions (i.e. `field_idx`, also `agg.field_names` index) to the
-    /// per-source-event `apply_field_names` union indices.
+    /// Per-agg-feature mapping from the agg's local field positions (i.e.
+    /// `field_idx`, also `agg.field_names` index) to the per-source-event
+    /// `apply_field_names` union indices.
     ///
     /// Populated by `Registry::resolve_field_indices_for_agg_mut*` at register
     /// time (alongside `field_idx`). Empty for features with no declared field
@@ -398,25 +395,20 @@ pub struct OutlierCountOp {
 
 /// Live per-(feature, entity) aggregation state. Enum dispatch; no Box<dyn>.
 ///
-/// AGG-CORE-01..09 per Phase 5 D-01; AGG-DECAY/VEL/Z added Phase 9.
-///
-/// Phase 11 (D-08) originally chose unboxed-large variants for the buffer/geo
-/// ops, accepting ~600 B per `AggOp` slot to avoid per-event box indirection.
-/// Phase 12.9 reversed this 2026-05-03 after the r8g maxcard bench measured
-/// fraud-team at ~22 KB/entity (3× the CLAUDE.md 7 KB budget). The 7
-/// fat-payload variants — `SeasonalDeviation`, `HourOfDayHistogram`,
-/// `EventTypeMix`, `GeoVelocity`, `GeoSpread`, `GeoDistance`,
-/// `DistanceFromHome` — are now `Box`-wrapped, mirroring the pattern Phase 10
-/// sketches and `WindowedOp` already use. `size_of::<AggOp>()` dropped from
-/// 600 B to ~72 B (8× shrink); per-event update path measured within ±5% on
-/// the small/tcp regression-gate (Plan 12.9-02). Match arms below auto-deref
-/// through `Box::DerefMut`, so dispatch sites stay unchanged.
+/// Phase 12.9: the 7 fat-payload variants — `SeasonalDeviation`,
+/// `HourOfDayHistogram`, `EventTypeMix`, `GeoVelocity`, `GeoSpread`,
+/// `GeoDistance`, `DistanceFromHome` — are `Box`-wrapped (mirroring sketch
+/// variants and `WindowedOp`). The earlier unboxed layout pushed fraud-team
+/// to ~22 KB/entity (3× the CLAUDE.md 7 KB budget); boxing dropped
+/// `size_of::<AggOp>()` from 600 B to ~72 B (8× shrink) with per-event update
+/// within ±5% on the small/tcp regression-gate. Match arms auto-deref through
+/// `Box::DerefMut`, so dispatch sites stay unchanged.
 ///
 /// CI tripwire: `crates/beava-core/tests/per_entity_size_dump.rs::aggop_size_within_cap`
 /// asserts `size_of::<AggOp>() <= 80`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AggOp {
-    // ── Phase 5 ──────────────────────────────────────────────────────────
+    // ── Core scalar ──────────────────────────────────────────────────────────
     Count(CountState),
     Sum(SumState),
     Avg(AvgState),
@@ -425,7 +417,7 @@ pub enum AggOp {
     Variance(VarianceState),
     StdDev(VarianceState),
     Ratio(RatioState),
-    // ── Phase 10: sketches (Plan 10-05) ───────────────────────────────────
+    // ── Sketches ───────────────────────────────────────────────
     /// AGG-SKETCH-01
     CountDistinct(Box<CountDistinctStateWrap>),
     /// AGG-SKETCH-02
@@ -438,33 +430,33 @@ pub enum AggOp {
     Entropy(Box<EntropyStateWrap>),
     /// AGG-CORE-09: any op wrapped in 64-bucket event-time tumbling
     Windowed(Box<WindowedOp>),
-    // ── Phase 8: point/ordinal ────────────────────────────────────────────────
+    // ── Point / ordinal ────────────────────────────────────────────────
     First(FirstState),
     Last(LastState),
     FirstN(FirstNState),
     LastN(LastNState),
     Lag(LagState),
-    // ── Phase 8: recency markers ──────────────────────────────────────────────
+    // ── Recency markers ──────────────────────────────────────────────
     FirstSeen(SeenState),
     LastSeen(SeenState),
     Age(SeenState),
     HasSeen(SeenState),
     TimeSince(SeenState),
     TimeSinceLastN(TimeSinceLastNState),
-    // ── Phase 8: streak ───────────────────────────────────────────────────────
+    // ── Streak ───────────────────────────────────────────────────────
     Streak(StreakState),
     MaxStreak(StreakState),
     NegativeStreak(NegativeStreakState),
-    // ── Phase 8: windowed recency (lifetime-state) ────────────────────────────
+    // ── Windowed recency (lifetime-state) ────────────────────────────
     FirstSeenInWindow(FirstSeenInWindowState),
-    // ── Phase 9: decay ────────────────────────────────────────────────────
+    // ── Decay ────────────────────────────────────────────────────
     Ewma(EwmaOp),
     EwVar(EwVarOp),
     EwZScore(EwZScoreOp),
     DecayedSum(DecayedSumOp),
     DecayedCount(DecayedCountOp),
     Twa(TwaState),
-    // ── Phase 9: velocity ─────────────────────────────────────────────────
+    // ── Velocity ─────────────────────────────────────────────────
     RateOfChange(RateOfChangeState),
     InterArrivalStats(InterArrivalStatsState),
     BurstCount(BurstCountOp),
@@ -473,9 +465,9 @@ pub enum AggOp {
     TrendResidual(TrendResidualState),
     OutlierCount(OutlierCountOp),
     ValueChangeCount(ValueChangeCountState),
-    // ── Phase 9: entity z-score ───────────────────────────────────────────
+    // ── Entity z-score ───────────────────────────────────────────
     ZScore(ZScoreState),
-    // ── Phase 11 (D-08 all windowless in v0) ─────────────────────────────────
+    // ── Buffer + geo (always windowless in v0) ───────────────────────
     Histogram(HistogramState),
     HourOfDayHistogram(Box<HourOfDayHistogramState>),
     DowHourHistogram(DowHourHistogramState),
@@ -495,12 +487,12 @@ impl AggOp {
     /// If `desc.window_ms.is_some()`, wraps the inner op in `WindowedOp`.
     /// Otherwise returns the lifetime (windowless) variant.
     ///
-    /// Phase 11 (D-08): buffer/geo operators are always windowless in v0; the
-    /// register-time compiler rejects `window=...` for those op names.
+    /// Buffer/geo operators are always windowless in v0; the register-time
+    /// compiler rejects `window=...` for those op names.
     pub fn new(desc: &AggOpDescriptor) -> Self {
-        // Phase 5 + Phase 10 sketches support Windowed wrap. Phase 8/9/11 ops
-        // are lifetime-only. `FirstSeenInWindow` carries window_ms as a
-        // lifetime parameter (NOT a tumbling-bucket window).
+        // Core + sketch ops support Windowed wrap. Point/recency/decay/velocity/
+        // buffer/geo ops are lifetime-only. `FirstSeenInWindow` carries
+        // window_ms as a lifetime parameter (NOT a tumbling-bucket window).
         if let Some(window_ms) = desc.window_ms {
             if matches!(desc.kind, AggKind::FirstSeenInWindow) {
                 return AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(window_ms));
@@ -512,18 +504,18 @@ impl AggOp {
                     desc.sketch_params.clone().unwrap_or_default(),
                 )));
             }
-            // Phase 8/9/11 ops with a window= silently fall through to lifetime
+            // Lifetime-only ops with a window= silently fall through to lifetime
             // construction (compile-time validation should have rejected this).
         }
-        // Lifetime construction: inline because Phase 8/9 ops need extra
-        // descriptor fields (n, half_life_ms, sub_window_ms, sigma) that
+        // Inline rather than calling `new_lifetime` because lifetime ops need
+        // extra descriptor fields (n, half_life_ms, sub_window_ms, sigma) that
         // `new_lifetime` (used by sketch bucket init) doesn't carry.
         AggOp::new_lifetime_full(desc)
     }
 
     /// Full-descriptor lifetime construction. Used by `AggOp::new` for the
-    /// windowless path. Honors Phase 8 `n`, Phase 9 `half_life_ms` /
-    /// `sub_window_ms` / `sigma`, and Phase 10 sketch params.
+    /// windowless path. Honors `n`, `half_life_ms`, `sub_window_ms`, `sigma`,
+    /// and sketch params.
     pub fn new_lifetime_full(desc: &AggOpDescriptor) -> Self {
         let sp_default = SketchParams::default();
         let sp = desc.sketch_params.as_ref().unwrap_or(&sp_default);
@@ -536,13 +528,13 @@ impl AggOp {
             AggKind::Variance => AggOp::Variance(VarianceState::default()),
             AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
             AggKind::Ratio => AggOp::Ratio(RatioState::default()),
-            // Phase 8 — point/ordinal
+            // Point/ordinal
             AggKind::First => AggOp::First(FirstState::default()),
             AggKind::Last => AggOp::Last(LastState::default()),
             AggKind::FirstN => AggOp::FirstN(FirstNState::new(desc.n.unwrap_or(1))),
             AggKind::LastN => AggOp::LastN(LastNState::new(desc.n.unwrap_or(1))),
             AggKind::Lag => AggOp::Lag(LagState::new(desc.n.unwrap_or(1))),
-            // Phase 8 — recency markers
+            // Recency markers
             AggKind::FirstSeen => AggOp::FirstSeen(SeenState::default()),
             AggKind::LastSeen => AggOp::LastSeen(SeenState::default()),
             AggKind::Age => AggOp::Age(SeenState::default()),
@@ -551,15 +543,15 @@ impl AggOp {
             AggKind::TimeSinceLastN => {
                 AggOp::TimeSinceLastN(TimeSinceLastNState::new(desc.n.unwrap_or(1)))
             }
-            // Phase 8 — streak
+            // Streak
             AggKind::Streak => AggOp::Streak(StreakState::default()),
             AggKind::MaxStreak => AggOp::MaxStreak(StreakState::default()),
             AggKind::NegativeStreak => AggOp::NegativeStreak(NegativeStreakState::default()),
-            // Phase 8 — windowed recency
+            // Windowed recency
             AggKind::FirstSeenInWindow => {
                 AggOp::FirstSeenInWindow(FirstSeenInWindowState::new(desc.window_ms.unwrap_or(0)))
             }
-            // Phase 9 decay
+            // Decay
             AggKind::Ewma => AggOp::Ewma(EwmaOp {
                 state: EwmaState::default(),
                 half_life_ms: desc.half_life_ms.unwrap_or(1),
@@ -581,7 +573,7 @@ impl AggOp {
                 half_life_ms: desc.half_life_ms.unwrap_or(1),
             }),
             AggKind::Twa => AggOp::Twa(TwaState::default()),
-            // Phase 9 velocity
+            // Velocity
             AggKind::RateOfChange => AggOp::RateOfChange(RateOfChangeState::default()),
             AggKind::InterArrivalStats => {
                 AggOp::InterArrivalStats(InterArrivalStatsState::default())
@@ -599,7 +591,7 @@ impl AggOp {
             }),
             AggKind::ValueChangeCount => AggOp::ValueChangeCount(ValueChangeCountState::default()),
             AggKind::ZScore => AggOp::ZScore(ZScoreState::default()),
-            // Phase 10 — sketches
+            // Sketches
             AggKind::CountDistinct => AggOp::CountDistinct(Box::default()),
             AggKind::Percentile => {
                 let mut s = PercentileStateWrap::default();
@@ -620,7 +612,7 @@ impl AggOp {
                 AggOp::BloomMember(Box::new(BloomMemberStateWrap::with_params(cap, fpr)))
             }
             AggKind::Entropy => AggOp::Entropy(Box::default()),
-            // Phase 11 — buffer + geo
+            // Buffer + geo
             AggKind::Histogram => AggOp::Histogram(HistogramState::new(
                 desc.ext.buckets.clone().unwrap_or_default(),
             )),
@@ -673,7 +665,7 @@ impl AggOp {
             AggKind::Variance => AggOp::Variance(VarianceState::default()),
             AggKind::StdDev => AggOp::StdDev(VarianceState::default()),
             AggKind::Ratio => AggOp::Ratio(RatioState::default()),
-            // Phase 10 — sketches (only path that carries `sketch_params`).
+            // Sketches (only path that carries `sketch_params`).
             AggKind::CountDistinct => AggOp::CountDistinct(Box::default()),
             AggKind::Percentile => {
                 let mut s = PercentileStateWrap::default();
@@ -694,9 +686,9 @@ impl AggOp {
                 AggOp::BloomMember(Box::new(BloomMemberStateWrap::with_params(cap, fpr)))
             }
             AggKind::Entropy => AggOp::Entropy(Box::default()),
-            // Phase 8 + Phase 9 + Phase 11 ops never reach this path — they aren't
-            // wrapped in WindowedOp (the only caller of `new_lifetime`).
-            // For safety, delegate to `new_lifetime_full` with a default
+            // Lifetime-only ops (point / recency / streak / decay / velocity / buffer / geo)
+            // never reach this path — they aren't wrapped in WindowedOp (the only caller of
+            // `new_lifetime`). For safety, delegate to `new_lifetime_full` with a default
             // descriptor so this stays correct if a future caller appears.
             other => AggOp::new_lifetime_full(&AggOpDescriptor {
                 kind: other,
@@ -705,7 +697,7 @@ impl AggOp {
         }
     }
 
-    /// Returns true iff the op is a Phase 5 core op that supports the 64-bucket
+    /// Returns true iff the op is a core scalar op that supports the 64-bucket
     /// Windowed wrap. Used by serialization/debugging helpers; keep crate-public.
     #[allow(dead_code)]
     pub(crate) fn is_core(&self) -> bool {
@@ -726,7 +718,7 @@ impl AggOp {
     ///
     /// - `field`: the field to aggregate over (None for Count/Ratio and for
     ///   buffer/geo ops which carry their own field refs in state)
-    /// - `where_matched`: pre-evaluated predicate result (Plan 05-02 wires this
+    /// - `where_matched`: pre-evaluated predicate result (the apply path wires this
     ///   from an Expr evaluator; here callers set it directly)
     pub fn update(&mut self, row: &Row, now_ms: i64, field: Option<&str>, where_matched: bool) {
         match self {
@@ -744,25 +736,25 @@ impl AggOp {
             AggOp::BloomMember(s) => s.update(row, now_ms, field, where_matched),
             AggOp::Entropy(s) => s.update(row, now_ms, field, where_matched),
             AggOp::Windowed(w) => w.update(row, now_ms, field, where_matched),
-            // Phase 8 — point/ordinal
+            // Point/ordinal
             AggOp::First(s) => s.update(row, now_ms, field, where_matched),
             AggOp::Last(s) => s.update(row, now_ms, field, where_matched),
             AggOp::FirstN(s) => s.update(row, now_ms, field, where_matched),
             AggOp::LastN(s) => s.update(row, now_ms, field, where_matched),
             AggOp::Lag(s) => s.update(row, now_ms, field, where_matched),
-            // Phase 8 — recency markers
+            // Recency markers
             AggOp::FirstSeen(s)
             | AggOp::LastSeen(s)
             | AggOp::Age(s)
             | AggOp::HasSeen(s)
             | AggOp::TimeSince(s) => s.update(row, now_ms, field, where_matched),
             AggOp::TimeSinceLastN(s) => s.update(row, now_ms, field, where_matched),
-            // Phase 8 — streak
+            // Streak
             AggOp::Streak(s) | AggOp::MaxStreak(s) => s.update(row, now_ms, field, where_matched),
             AggOp::NegativeStreak(s) => s.update(row, now_ms, field, where_matched),
-            // Phase 8 — windowed recency
+            // Windowed recency
             AggOp::FirstSeenInWindow(s) => s.update(row, now_ms, field, where_matched),
-            // Phase 9 decay
+            // Decay
             AggOp::Ewma(op) => op
                 .state
                 .update(row, now_ms, field, where_matched, op.half_life_ms),
@@ -782,7 +774,7 @@ impl AggOp {
                     .update(row, now_ms, field, where_matched, op.half_life_ms)
             }
             AggOp::Twa(s) => s.update(row, now_ms, field, where_matched),
-            // Phase 9 velocity
+            // Velocity
             AggOp::RateOfChange(s) => s.update(row, now_ms, field, where_matched),
             AggOp::InterArrivalStats(s) => s.update(row, now_ms, field, where_matched),
             AggOp::BurstCount(op) => {
@@ -795,7 +787,7 @@ impl AggOp {
             AggOp::OutlierCount(op) => op.state.update(row, now_ms, field, where_matched, op.sigma),
             AggOp::ValueChangeCount(s) => s.update(row, now_ms, field, where_matched),
             AggOp::ZScore(s) => s.update(row, now_ms, field, where_matched),
-            // ── Phase 11 ────────────────────────────────────────────────
+            // ── Buffer + geo ─────────────────────────────────────────────
             AggOp::Histogram(s) => s.update(row, field, where_matched),
             AggOp::HourOfDayHistogram(s) => s.update(now_ms, where_matched),
             AggOp::DowHourHistogram(s) => s.update(now_ms, where_matched),
@@ -846,7 +838,7 @@ impl AggOp {
         }
     }
 
-    /// Plan 19.2-01 (D-01): apply-loop fast-path using a pre-extracted field value.
+    /// Apply-loop fast-path using a pre-extracted field value.
     ///
     /// This is the hot-path entry point for non-windowed ops. Rather than
     /// calling `Row::get(field)` once per feature (as `update_with_row` does),
@@ -861,9 +853,9 @@ impl AggOp {
     /// `where_expr` still evaluates against `row` — expression predicates may
     /// reference multiple fields and cannot be pre-extracted in the same way.
     ///
-    /// Plan 19.2-05 (D-04b): `field_idx` and `extracted` are passed through so
-    /// `EventTypeMix` can call its `update_at` fast-path (consuming the pre-extracted
-    /// Value directly, avoiding the `row.get(fname)` scan that `update()` pays).
+    /// `field_idx` and `extracted` are passed through so `EventTypeMix` can call
+    /// its `update_at` fast-path (consuming the pre-extracted Value directly,
+    /// avoiding the `row.get(fname)` scan that `update()` pays).
     #[allow(clippy::too_many_arguments)]
     pub fn update_with_extracted(
         &mut self,
@@ -894,7 +886,7 @@ impl AggOp {
         );
     }
 
-    /// Plan 19.3-02 (D-04): pre-where-evaluated sibling of `update_with_extracted`.
+    /// Pre-where-evaluated sibling of `update_with_extracted`.
     ///
     /// Body is identical to `update_with_extracted` minus the `where_expr`
     /// evaluation block — the caller has already computed `where_matched`
@@ -903,11 +895,10 @@ impl AggOp {
     ///      outer dispatcher).
     ///   2. `WindowedOp::update_at` (per-bucket dispatch — `where_matched` was
     ///      computed once at the outer level; per-bucket re-evaluation is
-    ///      forbidden per Plan 19.3-02 R4 mitigation).
+    ///      forbidden — predicate evaluation must happen exactly once per event).
     ///
     /// The Windowed arm here calls `WindowedOp::update_at`, NOT `update_with_row`,
-    /// so the pre-extraction protocol crosses the WindowedOp wrapper boundary
-    /// (Phase 19.3-A core deliverable).
+    /// so the pre-extraction protocol crosses the WindowedOp wrapper boundary.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_with_extracted_no_where(
         &mut self,
@@ -922,8 +913,8 @@ impl AggOp {
         where_matched: bool,
     ) {
         match self {
-            // Phase 19.3-A: Windowed dispatches to update_at (NOT update_with_row).
-            // The pre-extraction protocol crosses the WindowedOp wrapper boundary.
+            // Windowed dispatches to update_at (NOT update_with_row): the
+            // pre-extraction protocol crosses the WindowedOp wrapper boundary.
             AggOp::Windowed(w) => {
                 w.update_at(
                     extracted,
@@ -946,8 +937,8 @@ impl AggOp {
             AggOp::Streak(s) | AggOp::MaxStreak(s) => s.update(row, now_ms, field, where_matched),
             AggOp::NegativeStreak(s) => s.update(row, now_ms, field, where_matched),
             AggOp::FirstSeenInWindow(s) => s.update(row, now_ms, field, where_matched),
-            // Geo ops: Plan 19.2-06 (D-01) — use index-based fast path when lat_idx is
-            // resolved; fall back to row-based update when lat_idx == FIELD_IDX_NONE.
+            // Geo ops: index-based fast path when lat_idx is resolved; fall
+            // back to row-based update when lat_idx == FIELD_IDX_NONE.
             AggOp::GeoVelocity(s) => {
                 if lat_idx != FIELD_IDX_NONE {
                     s.update_at(extracted, lat_idx, lon_idx, now_ms, where_matched)
@@ -1012,10 +1003,10 @@ impl AggOp {
             AggOp::ValueChangeCount(s) => s.update(row, now_ms, field, where_matched),
             AggOp::ZScore(s) => s.update(row, now_ms, field, where_matched),
             AggOp::SeasonalDeviation(s) => s.update(row, now_ms, field, where_matched),
-            // Phase 11 structural outputs using row-based field access — fall back.
+            // Structural outputs using row-based field access — fall back.
             AggOp::Histogram(s) => s.update(row, field, where_matched),
-            // Plan 19.2-05 (D-04b): EventTypeMix migrated to update_at, consuming
-            // the pre-extracted Value from the ExtractedFields array. No row.get scan.
+            // EventTypeMix consumes the pre-extracted Value from the ExtractedFields
+            // array directly via update_at — no row.get scan on the hot path.
             AggOp::EventTypeMix(s) => s.update_at(extracted, field_idx, now_ms, where_matched),
             AggOp::MostRecentN(s) => s.update(row, field, where_matched),
             AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
@@ -1059,33 +1050,33 @@ impl AggOp {
             AggOp::BloomMember(s) => s.query(),
             AggOp::Entropy(s) => s.query(),
             AggOp::Windowed(w) => w.query(query_time_ms),
-            // Phase 8 — point/ordinal
+            // Point/ordinal
             AggOp::First(s) => s.query(),
             AggOp::Last(s) => s.query(),
             AggOp::FirstN(s) => s.query(),
             AggOp::LastN(s) => s.query(),
             AggOp::Lag(s) => s.query(),
-            // Phase 8 — recency markers (each variant projects a different aspect of SeenState)
+            // Recency markers (each variant projects a different aspect of SeenState)
             AggOp::FirstSeen(s) => s.query_first_seen(),
             AggOp::LastSeen(s) => s.query_last_seen(),
             AggOp::Age(s) => s.query_age(query_time_ms),
             AggOp::HasSeen(s) => s.query_has_seen(),
             AggOp::TimeSince(s) => s.query_time_since(query_time_ms),
             AggOp::TimeSinceLastN(s) => s.query(query_time_ms),
-            // Phase 8 — streak (Streak returns current; MaxStreak returns max-seen)
+            // Streak (Streak returns current; MaxStreak returns max-seen)
             AggOp::Streak(s) => s.query_current(),
             AggOp::MaxStreak(s) => s.query_max(),
             AggOp::NegativeStreak(s) => s.query(),
-            // Phase 8 — windowed recency
+            // Windowed recency
             AggOp::FirstSeenInWindow(s) => s.query(query_time_ms),
-            // Phase 9 decay
+            // Decay
             AggOp::Ewma(op) => op.state.query(),
             AggOp::EwVar(op) => op.state.query_variance(),
             AggOp::EwZScore(op) => op.state.query(),
             AggOp::DecayedSum(op) => op.state.query(),
             AggOp::DecayedCount(op) => op.state.query(),
             AggOp::Twa(s) => s.query(),
-            // Phase 9 velocity
+            // Velocity
             AggOp::RateOfChange(s) => s.query(),
             AggOp::InterArrivalStats(s) => s.query(),
             AggOp::BurstCount(op) => op.state.query(),
@@ -1095,7 +1086,7 @@ impl AggOp {
             AggOp::OutlierCount(op) => op.state.query(),
             AggOp::ValueChangeCount(s) => s.query(),
             AggOp::ZScore(s) => s.query(),
-            // Phase 11
+            // Buffer + geo
             AggOp::Histogram(s) => s.query(),
             AggOp::HourOfDayHistogram(s) => s.query(),
             AggOp::DowHourHistogram(s) => s.query(),
@@ -1111,15 +1102,14 @@ impl AggOp {
     }
 }
 
-// (Phase 11's `is_windowable_core` removed during merge — `AggKind::
-// supports_windowed_wrap()` is the canonical predicate, also covers Phase 10
-// sketches.)
+// `AggKind::supports_windowed_wrap()` is the canonical predicate covering
+// core scalar + sketch ops.
 
 // ─── output_type_for ─────────────────────────────────────────────────────────
 
 /// Register-time output type inference.
 ///
-/// Used by Plan 05-03 schema propagator to infer the output FieldType of an
+/// Used by the schema propagator to infer the output FieldType of an
 /// aggregation feature without running any events.
 ///
 /// Rules:
@@ -1154,7 +1144,7 @@ pub fn output_type_for(
                     field: field.to_string(),
                 })
         }
-        // Phase 8 — point ops returning JSON-array string (D-07)
+        // Point ops returning JSON-array string
         AggKind::FirstN | AggKind::LastN => {
             // Validate the field exists for register-time error parity
             let field = desc
@@ -1168,13 +1158,13 @@ pub fn output_type_for(
             }
             Ok(FieldType::Str)
         }
-        // Phase 8 — recency markers
+        // Recency markers
         AggKind::FirstSeen | AggKind::LastSeen => Ok(FieldType::Datetime),
         AggKind::Age | AggKind::TimeSince | AggKind::TimeSinceLastN => Ok(FieldType::I64),
         AggKind::HasSeen | AggKind::FirstSeenInWindow => Ok(FieldType::Bool),
-        // Phase 8 — streak family
+        // Streak family
         AggKind::Streak | AggKind::MaxStreak | AggKind::NegativeStreak => Ok(FieldType::I64),
-        // Phase 9 — all decay/velocity/z ops emit F64 except integer counters.
+        // Decay / velocity / z ops emit F64 except integer counters.
         AggKind::Ewma
         | AggKind::EwVar
         | AggKind::EwZScore
@@ -1203,17 +1193,17 @@ pub fn output_type_for(
                     field: field.to_string(),
                 })
         }
-        // Phase 11: structured outputs have no FieldType representation — they
-        // appear only as aggregation feature outputs (Value::List / Value::Map).
-        // The schema propagator treats these as FieldType::Str for placeholder
-        // naming (no downstream derivation can consume them as scalars in v0).
+        // Structured outputs have no FieldType representation — they appear only
+        // as aggregation feature outputs (Value::List / Value::Map). The schema
+        // propagator treats these as FieldType::Str for placeholder naming
+        // (no downstream derivation can consume them as scalars in v0).
         AggKind::Histogram
         | AggKind::HourOfDayHistogram
         | AggKind::DowHourHistogram
         | AggKind::EventTypeMix
         | AggKind::MostRecentN
         | AggKind::ReservoirSample => Ok(FieldType::Str),
-        // Scalar Phase 11 outputs
+        // Scalar buffer/geo outputs
         AggKind::SeasonalDeviation
         | AggKind::GeoVelocity
         | AggKind::GeoDistance
@@ -1488,7 +1478,7 @@ mod tests {
 
     // ── Determinism guard ─────────────────────────────────────────────────
 
-    // Plan 10-05: AggKind has 13 variants (8 core + 5 sketch).
+    // AggKind has 13 variants (8 core + 5 sketch).
     #[test]
     fn agg_kind_has_sketch_variants() {
         use AggKind::*;
@@ -1526,10 +1516,10 @@ mod tests {
         );
     }
 
-    // Plan 19.4-02 (D-01) Task 2.a RED: ExtractedFields inline cap must hold
-    // fraud-team's per-source union (~12 fields, max 16 with headroom) without
-    // spilling to the heap. Per `19.3-FLAMEGRAPH.md §2` SmallVec[8] currently
-    // spills on every Txn event, costing ~530 ns/event of allocator traffic.
+    // ExtractedFields inline cap must hold fraud-team's per-source union
+    // (~12 fields, max 16 with headroom) without spilling to the heap.
+    // Earlier SmallVec[8] sizing spilled on every Txn event, costing
+    // ~530 ns/event of allocator traffic.
     #[test]
     fn extracted_fields_inline_cap_holds_fraud_team_union_size() {
         let mut e: super::ExtractedFields<'static> = Default::default();
@@ -1538,14 +1528,13 @@ mod tests {
         }
         assert!(
             !e.spilled(),
-            "ExtractedFields spilled at len=12; inline cap is too small for fraud-team union (need >=12, ideally 16). \
-             See `19.3-FLAMEGRAPH.md §2` and `19.4-CONTEXT.md` D-01."
+            "ExtractedFields spilled at len=12; inline cap is too small for fraud-team union (need >=12, ideally 16)."
         );
     }
 
     #[test]
     fn extracted_fields_inline_cap_at_least_16() {
-        // Stronger invariant: cap is >= 16 (matches CONTEXT D-02 union sizing).
+        // Stronger invariant: cap is >= 16 (matches per-source union sizing).
         let mut e: super::ExtractedFields<'static> = Default::default();
         for _ in 0..16 {
             e.push(None);

@@ -566,8 +566,8 @@ impl FirstNState {
     }
 
     pub fn query(&self) -> Value {
-        // Phase 13.5.2: return as Value::List (parses to a Python list at the
-        // wire boundary) matching the modern pattern used by ReservoirSample.
+        // Return as Value::List (parses to a Python list at the wire
+        // boundary) matching the pattern used by ReservoirSample.
         Value::List(self.values.clone())
     }
 }
@@ -624,13 +624,13 @@ impl LastNState {
     }
 
     pub fn query(&self) -> Value {
-        // Phase 13.5.2: return as Value::List (parses to a Python list at the
-        // wire boundary) matching the modern pattern used by ReservoirSample.
+        // Return as Value::List (parses to a Python list at the wire
+        // boundary) matching the pattern used by ReservoirSample.
         Value::List(self.values.iter().cloned().collect())
     }
 }
 
-// ─── LagState (Phase 8) ───────────────────────────────────────────────────────
+// ─── LagState ─────────────────────────────────────────────────────────────────
 
 /// AGG-POINT-05: Returns the field value `n` events ago. `lag(field, 1)` is
 /// the previous event's value; `lag(field, 2)` is the one before that, etc.
@@ -923,9 +923,9 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Bytes(b) => serde_json::Value::String(format!("0x{}", hex::encode_lower(b))),
         Value::Datetime(t) => serde_json::Value::Number((*t).into()),
         Value::Json(j) => j.clone(),
-        // Phase 11 structured outputs: List/Map are agg-only outputs and
-        // shouldn't normally appear in JSON-projected scalars; render
-        // recursively in case they leak in.
+        // Structured outputs: List/Map are agg-only outputs and shouldn't
+        // normally appear in JSON-projected scalars; render recursively in
+        // case they leak in.
         Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(m) => serde_json::Value::Object(
             m.iter()
@@ -948,11 +948,11 @@ mod hex {
     }
 }
 
-// ─── Sketch wrappers (Plan 10-05) ─────────────────────────────────────────────
+// ─── Sketch wrappers ──────────────────────────────────────────────────────────
 
-/// Plan 19.2-02 (D-02b): FxHasher for HLL input. HLL's `mix64` post-processes
-/// the input hash for distribution, repairing FxHasher's weaker statistical
-/// properties (Heule et al. 2013 — standard HLL recommendation). Saves
+/// FxHasher for HLL input. HLL's `mix64` post-processes the input hash for
+/// distribution, repairing FxHasher's weaker statistical properties
+/// (Heule et al. 2013 — standard HLL recommendation). Saves
 /// ~25-45 ns per call vs `ahash::AHasher::default()`.
 ///
 /// Public for `tests/hasher_optimization.rs`; not a stable API.
@@ -968,13 +968,13 @@ pub fn hash_value_for_hll(v: &Value) -> u64 {
         Value::Bytes(b) => b.hash(&mut h),
         Value::Null => 0u64.hash(&mut h),
         Value::Json(j) => j.to_string().hash(&mut h),
-        // Phase 11: structured outputs hashed by their JSON projection.
+        // Structured outputs hashed by their JSON projection.
         Value::List(_) | Value::Map(_) => value_to_json(v).to_string().hash(&mut h),
     }
     h.finish()
 }
 
-/// Plan 19.2-05 (D-04b): String view of a `Value` for use as Entropy / Bloom key.
+/// String view of a `Value` for use as Entropy / Bloom key.
 ///
 /// Returns `Cow::Borrowed(s.as_str())` for `Value::Str` — zero allocation when
 /// the input is already a `CompactString`. Returns `Cow::Owned(...)` for all
@@ -992,7 +992,7 @@ pub fn value_to_key_string(v: &Value) -> Option<std::borrow::Cow<'_, str>> {
         Value::Null => None,
         Value::Bytes(_) => None,
         Value::Json(_) => None,
-        // Phase 11: structured outputs aren't sane keys; drop.
+        // Structured outputs aren't sane keys; drop.
         Value::List(_) | Value::Map(_) => None,
     }
 }
@@ -1137,7 +1137,7 @@ impl TopKStateWrap {
             Value::Bool(b) => TopKValue::Bool(*b),
             Value::Datetime(ms) => TopKValue::Int(*ms),
             Value::Bytes(_) | Value::Null | Value::Json(_) => return,
-            // Phase 11 structured outputs aren't legal TopK keys; drop.
+            // Structured outputs aren't legal TopK keys; drop.
             Value::List(_) | Value::Map(_) => return,
         };
         self.inner.insert(tkv);
@@ -1215,7 +1215,7 @@ impl BloomMemberStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
+        // Cow::as_ref() → &str; no alloc when Cow::Borrowed.
         self.inner.insert(s.as_ref());
         self.n_inserts = self.n_inserts.saturating_add(1);
     }
@@ -1229,7 +1229,7 @@ impl BloomMemberStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
+        // Cow::as_ref() → &str; no alloc when Cow::Borrowed.
         self.inner.insert(s.as_ref());
         self.n_inserts = self.n_inserts.saturating_add(1);
     }
@@ -1245,9 +1245,9 @@ static ENTROPY_CATEGORIES_CAPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// AGG-SKETCH-05: entropy wrapper.
 ///
-/// Plan 19.2-06 (D-05a): adds `max_categories` cap (drop-new policy) and a
-/// process-global Prometheus counter `beava_entropy_categories_capped_total`
-/// that increments each time a new category is silently dropped.
+/// Carries a `max_categories` cap (drop-new policy) and a process-global
+/// Prometheus counter `beava_entropy_categories_capped_total` that
+/// increments each time a new category is silently dropped.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntropyStateWrap {
     pub inner: EntropyHistogram,
@@ -1315,8 +1315,8 @@ impl EntropyStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
-        // Plan 19.2-06 (D-05a): drop-new guard applied via insert_guarded.
+        // Cow::as_ref() → &str; no alloc when Cow::Borrowed. Drop-new guard
+        // applied via insert_guarded.
         self.insert_guarded(s.as_ref());
     }
 
@@ -1329,8 +1329,8 @@ impl EntropyStateWrap {
         let Some(s) = value_to_key_string(v) else {
             return;
         };
-        // Plan 19.2-05 (D-04b): Cow::as_ref() → &str; no alloc when Cow::Borrowed.
-        // Plan 19.2-06 (D-05a): drop-new guard applied via insert_guarded.
+        // Cow::as_ref() → &str; no alloc when Cow::Borrowed. Drop-new guard
+        // applied via insert_guarded.
         self.insert_guarded(s.as_ref());
     }
 
@@ -1339,18 +1339,16 @@ impl EntropyStateWrap {
     }
 }
 
-// ─── Plan 12.8-06: process-static counters for memory-governance metrics ─────
+// ─── Phase 12.8 memory-governance metric counters ────────────────────────────
 //
-// Mirrors the `EntropyStateWrap::categories_capped_count` pattern (above). Each
+// Mirrors the `EntropyStateWrap::categories_capped_count` pattern. Each
 // counter is a stateless wrapper around a single `AtomicU64` with `.inc()` /
 // `.count()` on it. Apply-side writes use `Relaxed` ordering (counters are
 // monotonic and commutative; no causal dependency on other state); admin-side
 // reads via `/metrics` use `Relaxed` for the same reason.
 //
-// Per Plan 06 frontmatter `must_haves.truths[3]`:
-//   "Counter increments are inline in the apply hot path with bounded cost
-//    (≤ 5 ns per metric increment via atomic ordering Relaxed); never lock;
-//    never allocate"
+// Counter increments are inline in the apply hot path with bounded cost
+// (≤ 5 ns per metric increment via Relaxed atomic; never lock; never allocate).
 //
 // The counters live in `beava-core` (NOT in `beava-server`) so the apply-path
 // call sites in `agg_apply.rs` (cold-eviction inc) and `agg_windowed.rs`
@@ -1358,7 +1356,7 @@ impl EntropyStateWrap {
 // crate. `crates/beava-server/src/http_admin.rs::metrics_handler` reads via
 // `.count()` for the Prometheus exposition.
 
-/// Plan 12.8-06: counts cold-TTL eviction firings on the apply path.
+/// Counts cold-TTL eviction firings on the apply path.
 ///
 /// Incremented by `agg_apply.rs::apply_event_to_aggregations` when
 /// `AggStateTable::evict_entity_by_shape_if_cold` returns `true` (i.e. the
@@ -1380,7 +1378,7 @@ impl ColdEntityEvictionCounter {
     }
 }
 
-/// Plan 12.8-06: counts trailing-bucket evictions on windowed operators.
+/// Counts trailing-bucket evictions on windowed operators.
 ///
 /// Incremented by `agg_windowed.rs::WindowedOp::evict_oldest_bucket` (the apply
 /// hot path that fires when `self.buckets.len() >= self.max_buckets` and a new
@@ -1399,7 +1397,7 @@ impl BucketReclaimCounter {
     }
 }
 
-/// Plan 12.8-06: process-static snapshot of total resident entity count.
+/// Process-static snapshot of total resident entity count.
 ///
 /// Updated by the apply path (`apply_shard.rs::dispatch_push_sync`) post-update
 /// — sums `AggStateTable::entity_count()` across all state tables and stores
@@ -1410,8 +1408,7 @@ impl BucketReclaimCounter {
 /// rather than an `Arc<AtomicUsize>` plumbed through `AdminState` — consistent
 /// with the existing `EntropyStateWrap::categories_capped_count` pattern and
 /// avoids modifying the `BoundAdminServer::bind(...)` signature for v0.
-/// Per-source labels (the eventual plumb-via-Arc upgrade) are deferred to
-/// v0.0.x per Plan 06 frontmatter `must_haves.truths[5]`.
+/// Per-source labels (the eventual plumb-via-Arc upgrade) are deferred.
 ///
 /// We use `AtomicU64` (not `AtomicUsize`) for portability — `usize` may be
 /// 32-bit on edge-deployed targets; entity counts above 4 billion are

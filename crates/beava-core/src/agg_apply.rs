@@ -13,12 +13,12 @@
 //! registry state, prior agg state)`.  No wall-clock reads.  No random sources.
 //! Safe for WAL replay (SC4).
 //!
-//! ## Why `event_id: u64` is in the signature now (Phase 5)
+//! ## Why `event_id: u64` is in the signature
 //!
-//! Phase 6 WAL will pass the stable event identifier from the WAL record (see
-//! D-08 + `memory/project_stateful_architecture.md`).  The parameter is threaded
-//! through here so Phase 6 does not need to change the signature of every caller.
-//! In Phase 5 it is ignored (prefixed `_event_id`).  Dev-endpoint callers pass a
+//! WAL replay passes the stable event identifier from the WAL record. The
+//! parameter is threaded through so the WAL replay path doesn't need to
+//! change the signature of every caller. Currently ignored on the live
+//! apply path (prefixed `_event_id`); dev-endpoint callers pass a
 //! monotonic counter (0, 1, 2, …).
 
 use crate::agg_op::{AggKind, ExtractedFields, FIELD_IDX_NONE};
@@ -102,9 +102,8 @@ pub fn per_kind_latest() -> &'static PerKindSnapshot {
     })
 }
 
-/// Plan 19.4-04 (D-02) Task 4.4.b: test-only legacy oracle implementing a
-/// structurally DIFFERENT path from production for the bit-identity
-/// regression test (Task 4.4.a).
+/// Test-only legacy oracle implementing a structurally DIFFERENT path
+/// from production for the bit-identity regression test.
 ///
 /// Three INDEPENDENT codepath differences from `apply_event_to_aggregations`:
 ///   1. Allocates a fresh `ExtractedFields` (`SmallVec::new()`) PER DESCRIPTOR
@@ -115,9 +114,9 @@ pub fn per_kind_latest() -> &'static PerKindSnapshot {
 ///      per-desc rebuild — NOT via the
 ///      `feat.descriptor.field_idx_into_event_extracted` union remap.
 ///
-/// These differences mean the f64::to_bits() comparison in Task 4.4.a
-/// exercises an INDEPENDENT codepath, not the same code with different inputs
-/// — so a passing test verifies the hoist preserves state semantics, not a
+/// These differences mean the f64::to_bits() comparison exercises an
+/// INDEPENDENT codepath, not the same code with different inputs — so a
+/// passing test verifies the hoist preserves state semantics, not a
 /// tautology.
 ///
 /// Reuses the same state surface as production (StateTables, EntityKeyShape,
@@ -142,7 +141,7 @@ pub(crate) fn legacy_apply_event_to_aggregations(
     let mut shape_cache: Vec<Option<Option<EntityKeyShape>>> = Vec::new();
 
     for desc in descs {
-        // Plan 19.2-03 (D-04): build EntityKeyShape once per cluster_id.
+        // Build EntityKeyShape once per cluster_id.
         let cluster_idx = desc.cluster_id as usize;
         if shape_cache.len() <= cluster_idx {
             shape_cache.resize_with(cluster_idx + 1, || None);
@@ -286,12 +285,10 @@ pub fn apply_event_to_aggregations(
     let descs = registry.compiled_aggregations_for_source(source_name);
     let t_registry = t0.map(|t| t.elapsed());
 
-    // Plan 19.4-04 (D-02) Task 4.3.b: hoist ExtractedFields build above the
-    // descriptor loop. The per-event field-union (apply_field_names) is
-    // populated at register-time by apply_registration; the apply loop
-    // pre-extracts ONCE per event (instead of D times for D descriptors as in
-    // the pre-19.4-04 per-desc rebuild scaffolding from
-    // `19.3-COST-MODEL.md §4`).
+    // Hoist ExtractedFields build above the descriptor loop. The per-event
+    // field-union (apply_field_names) is populated at register-time by
+    // apply_registration; the apply loop pre-extracts ONCE per event
+    // (instead of D times for D descriptors).
     //
     // The `'a` lifetime of `ExtractedFields<'a>` is bound to `&row`'s lifetime,
     // which lives for the duration of this function — so a stack-allocated
@@ -300,8 +297,8 @@ pub fn apply_event_to_aggregations(
     // a field (apply_field_names is empty), the hoisted slice is empty and
     // each feature's pre_val branch falls through to None.
     //
-    // SmallVec inline cap = 16 from Plan 19.4-02 — covers fraud-team's
-    // ~12-field union without spilling on the warm path.
+    // SmallVec inline cap = 16 covers fraud-team's ~12-field union without
+    // spilling on the warm path.
     let event_extracted: ExtractedFields = if descs.is_empty() {
         // Fast path: no aggs on this source. Source EventDescriptor lookup
         // would be wasted; skip the build (the descriptor loop body never
@@ -325,8 +322,7 @@ pub fn apply_event_to_aggregations(
             }
         }
     };
-    // Plan 19.4-04 (D-02) Task 4.3: instrumentation site moved here from
-    // the per-desc loop body. Increment counts once per event (not D times),
+    // Instrumentation site: increment counts once per event (not D times),
     // verifying the hoist eliminates per-desc rebuild scaffolding.
     #[cfg(test)]
     extracted_build_count_increment();
@@ -339,12 +335,12 @@ pub fn apply_event_to_aggregations(
     let mut desc_count: u32 = 0;
 
     // Per-op-kind timing accumulator (only populated when trace is on).
-    // Phase 19 debug: extends the agg trace to break the `features` loop into
-    // per-AggKind buckets. Dumps with the trace line so callers can see which
-    // operator family dominates apply time on a given pipeline.
+    // Breaks the `features` loop into per-AggKind buckets and dumps with
+    // the trace line so callers can see which operator family dominates
+    // apply time on a given pipeline.
     let mut per_kind: Vec<(crate::agg_op::AggKind, std::time::Duration, u32)> = Vec::new();
 
-    // Plan 19.2-03 (D-04): cluster dispatch cache.
+    // Cluster dispatch cache.
     //
     // Aggregations that share the same group_keys signature share a cluster_id
     // (assigned at register-time). We build EntityKeyShape ONCE per cluster_id
@@ -371,14 +367,14 @@ pub fn apply_event_to_aggregations(
         desc_count += 1;
         let t_a = t0.map(|t| t.elapsed());
 
-        // Phase 13.5.2: apply this derivation's chain ops (with_columns / select
-        // / drop / rename / cast / fillna) to the source row before evaluating
-        // the aggregation. Falls back to the raw source row (zero overhead) when
-        // no chain is registered — the common case for direct event→table aggs.
-        // Required for `bv.lit('web')` constant-column flows where the where
-        // predicate or feature field references a column added upstream by an
-        // `@bv.event def`-decorated derivation (Phase 13.5.2 D-01/D-02 contract).
-        // Chain ops `Filter` may drop a row → skip this desc when that fires.
+        // Apply this derivation's chain ops (with_columns / select / drop /
+        // rename / cast / fillna) to the source row before evaluating the
+        // aggregation. Falls back to the raw source row (zero overhead)
+        // when no chain is registered — the common case for direct
+        // event→table aggs. Required for `bv.lit('web')` constant-column
+        // flows where the where predicate or feature field references a
+        // column added upstream by an `@bv.event def`-decorated derivation.
+        // Chain `Filter` ops may drop a row → skip this desc when that fires.
         let chain_opt = registry.compiled_chain(&desc.node_name);
         let chain_row_storage: Option<crate::row::Row> = match chain_opt.as_ref() {
             Some(c) => match c.apply(row.clone()) {
@@ -389,7 +385,7 @@ pub fn apply_event_to_aggregations(
         };
         let agg_row: &crate::row::Row = chain_row_storage.as_ref().unwrap_or(row);
 
-        // Plan 19.2-03 (D-04): build EntityKeyShape once per cluster_id.
+        // Build EntityKeyShape once per cluster_id.
         let cluster_idx = desc.cluster_id as usize;
         if shape_cache.len() <= cluster_idx {
             shape_cache.resize_with(cluster_idx + 1, || None);
@@ -410,13 +406,12 @@ pub fn apply_event_to_aggregations(
 
         let t_b = t0.map(|t| t.elapsed());
 
-        // Plan 18-16 Task 16.2: O(1) array index by `agg_id` (assigned at
-        // register-time). Replaces the prior `entry(node_name.clone())` hash
-        // lookup + per-push String allocation. Server-side register handler
-        // resizes `state_tables` after each registration, but tests/admin
-        // paths sometimes call apply_event_to_aggregations directly without
-        // going through that handler — so guard with a lazy resize here.
-        // Branch is cheap (len compare; predicted not-taken in steady state).
+        // O(1) array index by `agg_id` (assigned at register-time). Server-side
+        // register handler resizes `state_tables` after each registration,
+        // but tests/admin paths sometimes call apply_event_to_aggregations
+        // directly without going through that handler — so guard with a
+        // lazy resize here. Branch is cheap (len compare; predicted
+        // not-taken in steady state).
         let agg_idx = desc.agg_id as usize;
         if state_tables.len() <= agg_idx {
             state_tables.resize_with(agg_idx + 1, crate::agg_state_table::AggStateTable::new);
@@ -424,18 +419,18 @@ pub fn apply_event_to_aggregations(
         let table = &mut state_tables[agg_idx];
         let t_c = t0.map(|t| t.elapsed());
 
-        // Plan 12.8-03 D-01/D-04: cold-TTL eviction check (FRESH state on
-        // resurrect). Skipped when source has no cold_after_ms — single
-        // Option::is_some branch, ~1 ns. When set, costs 1 HashMap lookup
-        // (~10-15 ns warm-path) + comparison; on cold-eviction, drops the
-        // entity's Vec<AggOp> + sidecar entry so the next
+        // Phase 12.8 memory-governance: cold-TTL eviction check (FRESH
+        // state on resurrect). Skipped when source has no cold_after_ms —
+        // single Option::is_some branch, ~1 ns. When set, costs 1 HashMap
+        // lookup (~10-15 ns warm-path) + comparison; on cold-eviction,
+        // drops the entity's Vec<AggOp> + sidecar entry so the next
         // `get_or_init_by_shape` call below allocates a fresh row.
         if let Some(ttl_ms) = cold_after_ms {
             let evicted = table.evict_entity_by_shape_if_cold(shape, now_ms as u64, ttl_ms);
-            // Plan 12.8-06: increment process-static cold-entity-eviction
-            // counter on eviction firing. Read by the admin sidecar's /metrics
-            // handler for `beava_cold_entity_evictions_total` (UNLABELED v0
-            // — per-source labels deferred to v0.0.x per Plan 06 Step 3).
+            // Increment process-static cold-entity-eviction counter on
+            // eviction firing. Read by the admin sidecar's /metrics handler
+            // for `beava_cold_entity_evictions_total` (UNLABELED v0
+            // — per-source labels deferred).
             if evicted {
                 crate::agg_state::ColdEntityEvictionCounter::inc();
             }
@@ -444,13 +439,12 @@ pub fn apply_event_to_aggregations(
         let entity_row = table.get_or_init_by_shape(shape, &desc);
         let t_d = t0.map(|t| t.elapsed());
 
-        // Plan 19.4-04 (D-02) Task 4.3.b: ExtractedFields hoisted above this
-        // loop. We still need to remap each feature's `field_idx` (which
-        // indexes into `agg.field_names`, the per-agg list) into the per-event
-        // `event_extracted` slice (indexed by the per-source
-        // `apply_field_names` union). The remap mapping is
-        // `feat.descriptor.field_idx_into_event_extracted` — populated at
-        // register-time by `resolve_field_indices_for_agg_mut*`.
+        // ExtractedFields is hoisted above this loop. We still need to remap
+        // each feature's `field_idx` (which indexes into `agg.field_names`,
+        // the per-agg list) into the per-event `event_extracted` slice
+        // (indexed by the per-source `apply_field_names` union). The remap
+        // mapping is `feat.descriptor.field_idx_into_event_extracted` —
+        // populated at register-time by `resolve_field_indices_for_agg_mut*`.
         for (i, feat) in desc.features.iter().enumerate() {
             let op_t0 = if trace {
                 Some(std::time::Instant::now())
@@ -476,10 +470,9 @@ pub fn apply_event_to_aggregations(
                         // Mapping absent or sentinel — fall back to per-row
                         // lookup by name (slow path; reachable when
                         // apply_field_names was empty at resolver time, OR
-                        // when the field was added by chain ops (Phase 13.5.2)
-                        // and isn't in the source-event apply_field_names
-                        // union). Use `agg_row` so chain-added fields are
-                        // visible.
+                        // when the field was added by chain ops and isn't
+                        // in the source-event apply_field_names union).
+                        // Use `agg_row` so chain-added fields are visible.
                         feat.descriptor
                             .field
                             .as_deref()
@@ -487,10 +480,10 @@ pub fn apply_event_to_aggregations(
                     }
                 }
             } else {
-                // Phase 13.5.2: when field_idx is FIELD_IDX_NONE but the agg
-                // does declare a `field` name, the field is likely added by
-                // a chain op (with_columns/cast/rename/fillna) — not in the
-                // source event schema, so the resolver couldn't assign a
+                // When field_idx is FIELD_IDX_NONE but the agg does declare
+                // a `field` name, the field is likely added by a chain op
+                // (with_columns/cast/rename/fillna) — not in the source
+                // event schema, so the resolver couldn't assign a
                 // field_idx. Fall back to per-row lookup against agg_row so
                 // chain-added fields like `rate` (`with_columns(rate=...)`)
                 // are visible to the agg's value-bearing ops (mean / sum /
@@ -525,9 +518,9 @@ pub fn apply_event_to_aggregations(
             feat_updates += 1;
         }
 
-        // Plan 12.8-03 D-01: record arrival time AFTER applying the event so
-        // the sidecar reflects the most-recent successful update. Only paid
-        // when the source opts in via cold_after_ms. The post-eviction
+        // Record arrival time AFTER applying the event so the sidecar
+        // reflects the most-recent successful update. Only paid when the
+        // source opts in via cold_after_ms. The post-eviction
         // `get_or_init_by_shape` call above either reused the warm row or
         // allocated a fresh one — either way, this entity is now warm at
         // `now_ms`, so the sidecar must be (re)stamped here.
@@ -568,10 +561,10 @@ pub fn apply_event_to_aggregations(
             per_kind_str,
         );
 
-        // Plan 19.2-07 (D-07): snapshot per_kind data for /debug/op-cost.
-        // Written once per traced event under the mutex. Mutex contention is
-        // negligible: writes at most once per event (trace-gated), reads at
-        // HTTP scrape rate (~1 Hz from /debug/op-cost).
+        // Snapshot per_kind data for /debug/op-cost. Written once per
+        // traced event under the mutex. Mutex contention is negligible:
+        // writes at most once per event (trace-gated), reads at HTTP
+        // scrape rate (~1 Hz from /debug/op-cost).
         //
         // D-06 compliance: we use `now_ms` (the event's logical time,
         // already passed in as the canonical time source) instead of a
@@ -1245,16 +1238,16 @@ mod registry_source_tests {
         );
     }
 
-    // ── Plan 19.4-04 (D-02) Task 4.3.a — ExtractedFields per-event-build test ──
+    // ── ExtractedFields per-event-build test ──
 
-    /// Plan 19.4-04 (D-02) Task 4.3.a RED: ExtractedFields must be built once
-    /// per event, not D-times per descriptor. With D=2 derivations on the Txn
-    /// source the pre-hoist count is 2*N (per-desc rebuild fires twice per
-    /// event); the post-hoist count is N (single per-event hoist).
+    /// ExtractedFields must be built once per event, not D-times per
+    /// descriptor. With D=2 derivations on the Txn source, the pre-hoist
+    /// count is 2*N (per-desc rebuild fires twice per event); the
+    /// post-hoist count is N (single per-event hoist).
     ///
-    /// To force a meaningful RED state (not a tautology with D=1), this test
-    /// registers TWO derivations on the same Txn source. RED state: count == 2N.
-    /// GREEN state (Task 4.3.b after the hoist lands): count == N.
+    /// To force a meaningful test (not a tautology with D=1), this test
+    /// registers TWO derivations on the same Txn source. Pre-hoist count
+    /// would be 2N; post-hoist count is N.
     #[test]
     fn extracted_fields_built_once_per_event_not_per_desc() {
         use crate::agg_descriptor::{AggregationDescriptor, NamedAggOp};
@@ -1364,18 +1357,18 @@ mod registry_source_tests {
         );
     }
 
-    // ── Plan 19.4-04 (D-02) Task 4.4 — Bit-identity regression test ──────────
+    // ── Bit-identity regression test ─────────────────────────────────────────
 
-    /// Plan 19.4-04 (D-02) Task 4.4.a RED: bit-identical state cross-check
-    /// between (a) the production hoisted apply path and (b) the legacy
-    /// per-desc-rebuild oracle on a deterministic 14-feature event sequence.
+    /// Bit-identical state cross-check between (a) the production hoisted
+    /// apply path and (b) the legacy per-desc-rebuild oracle on a
+    /// deterministic 14-feature event sequence.
     ///
-    /// Per CONTEXT D-02 acceptance, the new event-level hoist must produce
-    /// bit-identical state vs a structurally-different legacy path so the
-    /// f64::to_bits() strict equality is meaningful (not a tautology that
-    /// rubber-stamps whatever code ships).
+    /// The event-level hoist must produce bit-identical state vs a
+    /// structurally-different legacy path so the f64::to_bits() strict
+    /// equality is meaningful (not a tautology that rubber-stamps
+    /// whatever code ships).
     ///
-    /// The legacy oracle (Task 4.4.b) MUST exhibit at least three INDEPENDENT
+    /// The legacy oracle MUST exhibit at least three INDEPENDENT
     /// codepath differences from production:
     ///   1. Allocates a fresh `ExtractedFields::new()` per descriptor (no
     ///      reuse, no thread_local — different allocation pattern).

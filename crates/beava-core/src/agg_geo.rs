@@ -1,13 +1,13 @@
-//! Phase 11 geo aggregation operators (AGG-GEO-01..06).
+//! Geo aggregation operators (AGG-GEO-01..06).
 //!
 //! Distance computations use the `haversine` crate (great-circle / spherical
 //! Earth, mean radius 6371 km). Cell encoding uses an equirectangular grid
-//! `(floor(lat*precision), floor(lon*precision))` per CONTEXT D-02 — keeps
-//! the dep surface small for v0; can swap to `h3o` in v0.1.
+//! `(floor(lat*precision), floor(lon*precision))` — keeps the dep surface
+//! small for v0; can swap to `h3o` in v0.1.
 //!
-//! D-06 invariants: no wall-clock reads, no rand. All state transitions are a
-//! pure function of `(row, now_ms, prior state)`.
-//! D-08 (Phase 11 CONTEXT): all operators are lifetime / windowless in v0.
+//! Determinism invariants: no wall-clock reads, no rand. All state
+//! transitions are a pure function of `(row, now_ms, prior state)`.
+//! All operators are lifetime / windowless in v0.
 //!
 //! Each geo state owns its `lat_field` / `lon_field` name (captured at register
 //! time) so the apply loop does not need to thread the descriptor params
@@ -34,7 +34,7 @@ fn read_lat_lon(row: &Row, lat_field: &str, lon_field: &str) -> Option<(f64, f64
     Some((lat, lon))
 }
 
-/// Plan 19.2-06 (D-01): read lat/lon from a pre-extracted field array using
+/// Read lat/lon from a pre-extracted field array using
 /// index-based access, avoiding the `row.get(name)` linear scan.
 ///
 /// `lat_idx` and `lon_idx` are indices into `extracted` resolved at
@@ -105,7 +105,7 @@ impl GeoVelocityState {
         self.apply(lat, lon, now_ms);
     }
 
-    /// Plan 19.2-06 (D-01): index-based fast path — reads lat/lon from
+    /// Index-based fast path — reads lat/lon from
     /// `extracted[lat_idx]` / `extracted[lon_idx]` without a name-keyed scan.
     pub fn update_at(
         &mut self,
@@ -178,7 +178,7 @@ impl GeoDistanceState {
         self.apply(lat, lon);
     }
 
-    /// Plan 19.2-06 (D-01): index-based fast path.
+    /// Index-based fast path consuming pre-extracted lat/lon.
     pub fn update_at(
         &mut self,
         extracted: &ExtractedFields<'_>,
@@ -211,7 +211,7 @@ impl GeoDistanceState {
 
 /// RMS dispersion (km) of observed events around the running mean centre.
 ///
-/// Phase 19.1.2-01 rewrite: replaced O(n)-per-push samples-Vec walk with
+/// Replaced O(n)-per-push samples-Vec walk with
 /// Welford online second-moment accumulators (O(1) update, O(1) query).
 /// Spec evolution: query value changed from "max distance from running mean"
 /// to "RMS dispersion = sqrt(var_lat_km² + var_lon_km²)" using a local-mean-
@@ -255,7 +255,7 @@ impl GeoSpreadState {
         self.apply(lat, lon);
     }
 
-    /// Plan 19.2-06 (D-01): index-based fast path.
+    /// Index-based fast path consuming pre-extracted lat/lon.
     pub fn update_at(
         &mut self,
         extracted: &ExtractedFields<'_>,
@@ -353,7 +353,7 @@ impl DistanceFromHomeState {
         self.apply(lat, lon);
     }
 
-    /// Plan 19.2-06 (D-01): index-based fast path.
+    /// Index-based fast path consuming pre-extracted lat/lon.
     pub fn update_at(
         &mut self,
         extracted: &ExtractedFields<'_>,
@@ -464,7 +464,7 @@ mod tests {
 
     // ── GeoSpreadState ───────────────────────────────────────────────────────
 
-    // Phase 19.1.2-01: GeoSpread now returns RMS dispersion (km), not max distance.
+    // GeoSpread returns RMS dispersion (km), not max distance.
     // The 4 corners of a unit square at lat 0 happen to coincide between the two
     // semantics (~78.7 km), so this test is preserved as a smoke baseline that
     // exercises both old & new code paths to the same number.
@@ -485,7 +485,7 @@ mod tests {
         assert!((d - 78.7).abs() < 1.0, "expected ~78.7 km, got {d}");
     }
 
-    // Phase 19.1.2-01 RED tests — Welford RMS semantics.
+    // Welford RMS semantics tests.
 
     /// New contract: variance is undefined for n<2; query returns Null.
     /// Old contract returned F64(0.0) for n=1 (max_km init = 0). RED.

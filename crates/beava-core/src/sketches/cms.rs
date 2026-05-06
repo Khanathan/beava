@@ -84,8 +84,8 @@ impl TopKValue {
     }
 
     pub fn hash64(&self) -> u64 {
-        // Plan 19.2-02 (D-02a): use process-static RandomState instead of
-        // per-call AHasher::default() — saves ~30-50 ns per call.
+        // Use process-static RandomState instead of per-call
+        // AHasher::default() — saves ~30-50 ns per call.
         crate::sketches::ahash_random_state().hash_one(self)
     }
 }
@@ -202,9 +202,9 @@ pub struct TopKHeap {
     k: usize,
     /// Root-at-0 binary min-heap of (count, value).
     heap: Vec<(u64, TopKValue)>,
-    /// Plan 22-04 O(log k) optimization: value → position in `heap`.
-    /// Reconstructed lazily on first mutation after deserialize via
-    /// `ensure_index` (the `index_ready` flag tracks freshness).
+    /// O(log k) optimization: value → position in `heap`. Reconstructed
+    /// lazily on first mutation after deserialize via `ensure_index`
+    /// (the `index_ready` flag tracks freshness).
     #[serde(skip)]
     index: ahash::AHashMap<TopKValue, usize>,
     #[serde(skip, default)]

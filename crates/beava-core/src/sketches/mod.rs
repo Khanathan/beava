@@ -1,4 +1,4 @@
-//! Phase 10 sketches submodule. Plans 10-01..10-04 land child modules.
+//! Sketch operators (HLL, CMS, BloomFilter, DDSketch, TopK, Entropy).
 
 pub mod bloom;
 pub mod cms;
@@ -10,7 +10,7 @@ pub mod retracting_ring;
 pub mod top_k;
 pub mod uddsketch;
 
-/// Plan 19.2-02 (D-02a): process-static `ahash::RandomState` for the hot path.
+/// Process-static `ahash::RandomState` for the hot path.
 ///
 /// Initialized once at first call via `OnceLock`; subsequent calls return the
 /// same reference. Amortizes the seed-lookup cost: `build_hasher()` on this
@@ -24,10 +24,11 @@ pub mod uddsketch;
 /// explicitly NOT provided, which is correct: single-tenant fraud workloads are
 /// not an adversarial HashDoS surface.
 ///
-/// Mirrors the Phase 18 `OnceLock` env-var caching pattern in `agg_apply.rs`.
+/// Mirrors the Phase 18 hand-rolled-runtime `OnceLock` env-var caching pattern
+/// in `agg_apply.rs`.
 ///
 /// Consumers: `sketches::bloom`, `sketches::cms` (non-HLL), `sketches::entropy`,
-/// `sketches::top_k`. CountDistinct/HLL uses FxHasher instead (D-02b).
+/// `sketches::top_k`. CountDistinct/HLL uses FxHasher instead.
 pub fn ahash_random_state() -> &'static ahash::RandomState {
     static RS: std::sync::OnceLock<ahash::RandomState> = std::sync::OnceLock::new();
     RS.get_or_init(ahash::RandomState::new)
@@ -41,9 +42,9 @@ mod tests {
     }
 }
 
-/// Plan 10-06: cross-sketch bincode round-trip proptests covering all 5 state
-/// types (BloomFilter, EntropyHistogram, CountDistinctState, PercentileState,
-/// TopKState) with arbitrary insertion sequences. Locks the SC2 contract:
+/// Cross-sketch bincode round-trip proptests covering all 5 state types
+/// (BloomFilter, EntropyHistogram, CountDistinctState, PercentileState,
+/// TopKState) with arbitrary insertion sequences. Locks the contract that
 /// snapshot serialization round-trips deterministically.
 #[cfg(test)]
 mod proptest_round_trip {
@@ -54,7 +55,7 @@ mod proptest_round_trip {
     use proptest::prelude::*;
 
     fn hash_str(s: &str) -> u64 {
-        // Plan 19.2-02 (D-02a): use process-static RandomState.
+        // Use process-static RandomState.
         crate::sketches::ahash_random_state().hash_one(s)
     }
 

@@ -1,12 +1,12 @@
 //! OpNode enum: the 9 transformation operators that can appear in a derivation's `ops` list.
 //!
-//! Phase 2 stores these verbatim — no execution, no expression parsing.
-//! Phase 4 evaluates Filter/Select/etc. server-side.
-//! Phase 5 resolves GroupBy.agg.op against the operator catalogue.
+//! The validator parses these, the schema propagator types them, and the
+//! apply-path executor evaluates them. `GroupBy` is resolved against the
+//! operator catalogue at register time.
 //!
-//! **Phase 12.6 (2026-04-30):** `Join` (with its `JoinType` enum) and `Union`
-//! variants permanently removed per `project_redis_shaped_no_event_time_ever`
-//! commitment. Reviving either requires explicit user override + a new ADR.
+//! **Phase 12.7 events-only:** `Join` (with its `JoinType` enum) and `Union`
+//! variants are permanently removed. Reviving either requires explicit user
+//! override + a new ADR.
 //! The register-time validator emits structured error codes
 //! (`feature_removed_no_joins_v0` / `feature_removed_no_unions_v0`) for stale
 //! Python SDK fixtures or hand-rolled JSON DAGs that include `{"op":"join"}`
@@ -62,15 +62,14 @@ pub enum OpNode {
         defaults: BTreeMap<String, serde_json::Value>,
     },
 
-    /// Group by keys and apply aggregations. Phase 5 executes.
+    /// Group by keys and apply aggregations.
     GroupBy {
         keys: Vec<String>,
         agg: BTreeMap<String, AggSpec>,
     },
-    // Phase 12.6 (2026-04-30): Join + Union variants permanently removed
-    // per project_redis_shaped_no_event_time_ever. JSON-prelude shim
-    // `register_validate::pre_check_removed_ops` rejects stale fixtures
-    // with structured error codes feature_removed_no_joins_v0 /
+    // Phase 12.7 events-only: Join + Union variants permanently removed.
+    // JSON-prelude shim `register_validate::pre_check_removed_ops` rejects
+    // stale fixtures with structured error codes feature_removed_no_joins_v0 /
     // feature_removed_no_unions_v0.
 }
 
@@ -212,9 +211,8 @@ mod tests {
         assert_eq!(back, op);
     }
 
-    // Tests 5 (Join round-trip) and 6 (Union round-trip) deleted in Phase 12.6
-    // Plan 04 — joins and unions permanently removed per
-    // project_redis_shaped_no_event_time_ever (2026-04-30). The new
+    // Tests for Join + Union round-trips were deleted when those variants
+    // were permanently removed (Phase 12.7 events-only). The
     // join_op_unknown_variant_after_phase_12_6_removal and
     // union_op_unknown_variant_after_phase_12_6_removal tests below pin the
     // post-removal contract.
