@@ -24,7 +24,7 @@ jobs:
   fmt:
     name: cargo fmt --check
     runs-on: ubuntu-latest
-timeout-minutes: 5
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,7 +35,7 @@ timeout-minutes: 5
   clippy:
     name: cargo clippy (all-targets, -D warnings)
     runs-on: ubuntu-latest
-timeout-minutes: 10
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,7 +51,7 @@ timeout-minutes: 10
   test:
     name: cargo nextest run
     runs-on: ubuntu-latest
-timeout-minutes: 15
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,7 +67,7 @@ timeout-minutes: 15
   python:
     name: Python SDK (${{ matrix.python-version }})
     runs-on: ubuntu-latest
-timeout-minutes: 15
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
