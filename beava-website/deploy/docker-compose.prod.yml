@@ -2,8 +2,12 @@ name: beava-website
 
 services:
   beava:
-    image: beava:next
-    pull_policy: never
+    # Tracks the rolling :edge tag built by .github/workflows/publish-edge-image.yml
+    # on every push to main. `pull_policy: always` ensures `docker compose up -d`
+    # picks up new images without manual intervention. Pin to :sha-<commit> for
+    # production rollbacks.
+    image: beavadev/beava:edge
+    pull_policy: always
     container_name: beava-website-beava
     restart: unless-stopped
     volumes:
