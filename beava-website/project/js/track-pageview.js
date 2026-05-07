@@ -10,19 +10,30 @@
   function send() {
     if (sent) return;
     sent = true;
-    var body = JSON.stringify({ path: path, dwell_ms: Math.round(performance.now() - startedAt) });
-    try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon('/api/push/PageView', new Blob([body], { type: 'application/json' }));
-      } else {
-        fetch('/api/push/PageView', {
-          method: 'POST',
-          body: body,
-          headers: { 'Content-Type': 'application/json' },
-          keepalive: true,
-        });
-      }
-    } catch (_) { /* drop on the floor; tracker must never block UX */ }
+    var dwellMs = Math.round(performance.now() - startedAt);
+
+    // Per-path payload (for PageView, keyed by path).
+    var perPath = JSON.stringify({ path: path, dwell_ms: dwellMs });
+    // Site-wide payload (for SiteMetrics, keyed by bucket="site" → one global row).
+    var siteWide = JSON.stringify({ bucket: 'site', path: path, dwell_ms: dwellMs });
+
+    function fire(url, body) {
+      try {
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+        } else {
+          fetch(url, {
+            method: 'POST',
+            body: body,
+            headers: { 'Content-Type': 'application/json' },
+            keepalive: true,
+          });
+        }
+      } catch (_) { /* drop on the floor; tracker must never block UX */ }
+    }
+
+    fire('/api/push/PageView', perPath);
+    fire('/api/push/SiteMetrics', siteWide);
   }
 
   // pagehide is more reliable than unload on mobile/Safari.
