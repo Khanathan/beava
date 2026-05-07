@@ -1,5 +1,0 @@
-# Aliases for common short URLs.
-/quickstart       /docs/quickstart/         301
-/operators        /docs/operators/          301
-/wire             /docs/wire-spec/          301
-/api              /docs/http-api/           301

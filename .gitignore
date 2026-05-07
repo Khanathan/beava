@@ -115,3 +115,32 @@ secrets/
 
 # Beava runtime data dir (post-12.9 convention)
 .beava/
+
+# === v2/greenfield cleanup: untrack legacy + personal artifacts ===
+# Launch / pitch / outreach drafts — kept locally, not in public OSS repo
+/LAUNCH*.md
+/BLOG-*.md
+/SENDO-*.md
+/realtime-pain-points.*
+
+# v1 design / governance docs (superseded; kept local only)
+/DESIGN-V2.md
+/MAINTAINERS.md
+/GOVERNANCE.md
+
+# Misc one-offs not part of the public tree
+/demo.py
+/beava.png
+
+# Legacy v1 top-level trees — workspace lives in crates/ now; tests under
+# python/tests/ + crates/*/tests/; benches under crates/*/benches/.
+/src/
+/tests/
+/benches/
+/benchmark/
+
+# Local-only marketing / website / design work
+/launch/
+/site/
+/beava-design-system/
+/beava-website/
