@@ -666,7 +666,7 @@ Phase 13.0 (design contract + spec docs)  ✅ CLOSED 2026-05-03 (PASS)
 **Success criteria (umbrella):**
 1. All sub-phases 13.0–13.8 ✅ closed
 2. `pip install beava && python -c "import beava as bv; bv.demo('adtech')"` works on a fresh machine
-3. `docker run -p 7380:7380 beava/beava` works (curl-only quickstart succeeds)
+3. `docker run -p 7380:7380 beavadev/beava` works (curl-only quickstart succeeds)
 4. `npm install @beava/sdk` works in TypeScript
 5. `go get github.com/beava-io/beava-go` works in Go
 6. CI green on `v2/greenfield` + 3 SDK repos
@@ -1148,7 +1148,7 @@ Wave 6 — Workstream-F closure (depends on all above):
 - ~~PyPI multi-arch wheels~~ (Plan 01 DEFERRED to v0.0.x; reactivates when PyPI approves)
 - ~~npm: `@beava/sdk`~~ (Plan 02 DEFERRED to v0.0.1)
 - ~~Go module: `github.com/beava-dev/beava/sdk/go`~~ (Plan 03 DEFERRED to v0.0.1)
-- Docker Hub + ghcr.io (Plan 04): multi-arch manifest at `beava/beava:v0.0.0` and `ghcr.io/beava-dev/beava:v0.0.0`
+- Docker Hub + ghcr.io (Plan 04): multi-arch manifest at `beavadev/beava:v0.0.0` and `ghcr.io/beava-dev/beava:v0.0.0`
 - `curl | sh` installer (Plan 04a): `github.com/beava-dev/beava/releases/latest/download/install.sh`
 - Homebrew tap auto-bump (Plan 04b): `github.com/beava-dev/homebrew-beava` (already created)
 - `release.yml` multi-channel orchestrator (Plan 08; PyPI/npm/Go steps removed for v0.0.0; binary-only)
@@ -1160,7 +1160,7 @@ Wave 6 — Workstream-F closure (depends on all above):
 
 **Success criteria (Python-only v0.0.0):**
 1. `pip install git+https://github.com/beava-dev/beava.git@v0.0.0#subdirectory=python` works on Python 3.10+ (with git installed); `python -c "import beava as bv; print(bv.demo('fraud'))"` succeeds
-2. `docker run -p 8080:8080 -p 8081:8081 beava/beava:v0.0.0` works
+2. `docker run -p 8080:8080 -p 8081:8081 beavadev/beava:v0.0.0` works
 3. `brew install beava-dev/beava/beava` works
 4. `curl https://beava.dev/install.sh | sh` works (Linux + macOS)
 5. v0.0.0 GitHub Release published with server binaries + changelog

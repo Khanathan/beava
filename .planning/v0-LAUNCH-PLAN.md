@@ -145,7 +145,7 @@ Per `.planning/phases/13.8-packaging-and-ga-tag/`. Ships unchanged; runs after 1
 
 **Manual prereqs (from earlier HANDOFF.json — non-blocking 13.7.6/13.7.7):**
 
-- Claim Docker Hub `beava` namespace
+- Use existing Docker Hub `beavadev` namespace (already claimed)
 - Generate Docker Hub access token + set `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` GitHub secrets
 - Claim npm org `beava` at https://www.npmjs.com/org/create
 - Generate npm token OR set up Trusted Publishers (preferred per Plan 13.8-02 D-05)

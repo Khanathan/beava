@@ -18,7 +18,7 @@ Think **Redis for stateful streaming features**, with 50+ purpose-built aggregat
 # Server
 brew install beava-dev/beava/beava           # macOS
 # or: curl https://beava.dev/install.sh | sh # Linux + macOS
-# or: docker run -p 8080:8080 -p 8081:8081 beava/beava
+# or: docker run -p 8080:8080 -p 8081:8081 beavadev/beava
 
 beava --data-dir ./.beava/                   # in another terminal
 
