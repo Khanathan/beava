@@ -5,41 +5,29 @@
 ## pip (recommended)
 
 ```bash
-pip install tally
+pip install beava
 ```
-
-> **Pre-release naming.** The PyPI package is currently published as `tally`
-> (the project's repo codename). The `beava` package name is reserved for the
-> v0.0.0 GA cut. Once GA ships, `pip install beava` becomes the canonical
-> command. Until then, install `tally` and import as `import beava as bv`
-> (the import name is already `beava`).
 
 The Python SDK ships with the server binary embedded. `bv.App()` discovers and runs it on an ephemeral port. This is what you want for development, tests, and most production deployments.
 
 ## Docker
 
 ```bash
-docker run -p 6400:6400 ghcr.io/beava-dev/beava:latest
+docker run -p 8080:8080 ghcr.io/beava-dev/beava:latest
 ```
 
-Push and query against `:6400`. Mount a volume at `/data` to persist the WAL and snapshots.
+Push and query against `:8080`. Mount a volume at `/data` to persist the WAL and snapshots.
 
 ## Homebrew (macOS, Linux)
 
 ```bash
 brew install beava-dev/tap/beava
-beava serve --port 6400
+beava -c beava.yaml      # binds 127.0.0.1:8080 by default (admin :8090)
 ```
 
-## Static binary
-
-Download the prebuilt binary for your platform from the [releases page](https://github.com/beava-dev/beava/releases) — about 14 MB, no runtime dependencies.
-
-```bash
-curl -L https://github.com/beava-dev/beava/releases/latest/download/beava-$(uname -s)-$(uname -m) -o beava
-chmod +x beava
-./beava serve --port 6400
-```
+The binary takes a single YAML config (default `./beava.yaml`); ports come
+from `listen_addr` / `admin_addr` keys, or env vars
+`BEAVA_LISTEN_ADDR` / `BEAVA_ADMIN_ADDR`. There is no `serve` subcommand.
 
 ## Verify
 

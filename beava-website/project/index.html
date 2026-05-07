@@ -82,19 +82,19 @@
     );
 
     // ------------------------------------------------------------------
-    // Install tabs — brew (default) / curl / docker
+    // Install tabs — pip (default) / docker / brew
     // ------------------------------------------------------------------
     const InstallTabs = () => {
-      const [tab, setTab] = React.useState('brew');
+      const [tab, setTab] = React.useState('pip');
       const snippets = {
-        brew:   'brew install beava',
-        curl:   'curl -fsSL beava.dev/install.sh | sh',
-        docker: 'docker run -p 8080:8080 beava/beava:latest',
+        pip:    'pip install beava',
+        docker: 'docker run -p 8080:8080 ghcr.io/beava-dev/beava:latest',
+        brew:   'brew install beava-dev/tap/beava',
       };
       return (
         <div>
           <div className="code-tabs">
-            {['brew','curl','docker'].map(t => (
+            {['pip','docker','brew'].map(t => (
               <button key={t} onClick={() => setTab(t)} className={tab === t ? 'active' : ''}>
                 {t}
               </button>
