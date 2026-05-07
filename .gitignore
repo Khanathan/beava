@@ -154,3 +154,23 @@ secrets/
 
 # Examples deferred from public OSS for now
 /examples/
+
+# Legacy v1 Python SDK (`tally`) and its deprecation-contract tests.
+# `python/beava/` is the v2 SDK and ships standalone; tally is dead weight.
+/python/tally/
+/python/tests/test_client.py
+/python/tests/test_fork_unit.py
+/python/tests/test_get_multi_e2e.py
+/python/tests/test_operators.py
+/python/tests/test_protocol.py
+/python/tests/test_suggest_config_cli.py
+/python/tests/test_ttl_defaults.py
+/python/tests/test_v0_col.py
+/python/tests/test_v0_dag.py
+/python/tests/test_v0_decorators.py
+/python/tests/test_v0_public_surface.py
+/python/tests/test_v0_register_roundtrip.py
+/python/tests/test_v0_schema.py
+/python/tests/test_v0_serialize.py
+/python/tests/test_v0_stateless_ops.py
+/python/tests/test_v0_validate.py
