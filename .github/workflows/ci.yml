@@ -24,7 +24,7 @@ jobs:
   fmt:
     name: cargo fmt --check
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,7 +35,7 @@ jobs:
   clippy:
     name: cargo clippy (all-targets, -D warnings)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,7 +51,7 @@ jobs:
   test:
     name: cargo nextest run
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,7 +67,7 @@ jobs:
   python:
     name: Python SDK (${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -95,7 +95,22 @@ jobs:
         working-directory: python
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest pytest-timeout
+          python -m pip install -e . pytest pytest-timeout ruff mypy
+
+      - name: ruff check
+        working-directory: python
+        # Ruff config lives in python/pyproject.toml [tool.ruff]. Fast,
+        # zero-config gate; failure means the diff brought in a lint
+        # regression that the existing codebase doesn't have.
+        run: ruff check .
+
+      - name: mypy --strict
+        working-directory: python
+        # Strict mode per python/pyproject.toml [tool.mypy]. Advisory for
+        # now (continue-on-error) — drop the flag once the codebase is
+        # green. Removing it is a one-liner; the gate stays wired.
+        continue-on-error: true
+        run: mypy beava
 
       - name: Run pytest (v0 acceptance suite via pyproject testpaths)
         working-directory: python

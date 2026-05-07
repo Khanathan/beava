@@ -1,14 +1,23 @@
-# Beava
+<p align="center">
+  <a href="https://beava.dev">
+    <img src="beava-design-system/project/assets/readme-banner.png" alt="beava" width="100%"/>
+  </a>
+</p>
 
-A real-time feature server. Push events over HTTP or TCP, declare features in Python, query them at sub-millisecond latency.
-
-[![CI](https://github.com/beava-dev/beava/actions/workflows/ci.yml/badge.svg)](https://github.com/beava-dev/beava/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/beava-dev/beava.svg)](https://github.com/beava-dev/beava/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/beava-dev/beava/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/beava-dev/beava/ci.yml?branch=main&label=build" alt="build"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-7ca84a" alt="license Apache-2.0"/></a>
+  <a href="https://beava.dev"><img src="https://img.shields.io/badge/site-beava.dev-3a6a8a" alt="site beava.dev"/></a>
+  <a href="https://beava.dev/docs"><img src="https://img.shields.io/badge/docs-beava.dev%2Fdocs-3a6a8a" alt="docs"/></a>
+  <a href="https://discord.gg/Jnx89PN9"><img src="https://img.shields.io/badge/chat-discord-7ca84a" alt="discord"/></a>
+  <a href="https://github.com/beava-dev/beava/releases/latest"><img src="https://img.shields.io/github/v/release/beava-dev/beava?include_prereleases&label=release&color=d97757" alt="release"/></a>
+</p>
 
 ---
 
-Beava is a single-binary feature server for fraud detection, ad-tech, and behavioral analytics. Push events in over HTTP or TCP; Beava tracks per-entity features (counters, velocities, distances, rates, distributions) updated atomically on every event; your application queries them at sub-millisecond latency to power live scoring rules.
+A real-time feature server. Push events over HTTP or TCP, declare features in Python, query them at sub-millisecond latency.
+
+beava is a single-binary feature server for fraud detection, ad-tech, and behavioral analytics. Push events in over HTTP or TCP; beava tracks per-entity features (counters, velocities, distances, rates, distributions) updated atomically on every event; your application queries them at sub-millisecond latency to power live scoring rules.
 
 Think **Redis for stateful streaming features**, with 50+ purpose-built aggregation primitives instead of do-it-yourself Lua scripts.
 
@@ -55,11 +64,11 @@ That's it. **No broker, no ETL, no schema registry, no separate stream / batch p
 
 Full walkthrough: [beava.dev/docs](https://beava.dev/docs).
 
-## Why Beava
+## Why beava
 
 Replaces Postgres triggers + Redis counters + the cron job that heals drift. Same pipeline from laptop to production.
 
-**Performance:** 684,812 sustained events/sec on a single Apple-M4 core[^1] — simple-fraud pipeline, TCP transport, msgpack wire, parallel=16, 60s sustained run. Run multiple Beava instances for higher throughput (Redis-cluster style; no in-process sharding).
+**Performance:** 684,812 sustained events/sec on a single Apple-M4 core[^1] — simple-fraud pipeline, TCP transport, msgpack wire, parallel=16, 60s sustained run. Run multiple beava instances for higher throughput (Redis-cluster style; no in-process sharding).
 
 **Memory:** ~7 KB per entity for a rich 30-feature pack → ~700 GB for 100M entities. Size your box; in-memory only — no SSD overflow.
 
@@ -69,7 +78,7 @@ Replaces Postgres triggers + Redis counters + the cron job that heals drift. Sam
 
 ## Wire surface
 
-Beava binds two listeners:
+beava binds two listeners:
 
 - **HTTP/JSON on `127.0.0.1:8080`** — curl-compatible debugging path. See [docs/http-api](https://beava.dev/docs/http-api).
 - **Framed TCP on `127.0.0.1:8081`** — sub-millisecond fast-path. JSON or msgpack content. See [docs/wire-spec](https://beava.dev/docs/wire-spec).
@@ -136,4 +145,29 @@ No TLS in v0 — terminate at nginx, Envoy, or Cloudflare if you need it. No aut
 - [crates/beava-bench/README.md](crates/beava-bench/README.md) — benchmark harness, reproduce the numbers
 - [examples/](examples/) — vertical demos in Python
 
-[Apache 2.0](LICENSE) · [CHANGELOG](CHANGELOG.md) · [SECURITY](SECURITY.md) · [CONTRIBUTING](CONTRIBUTING.md)
+## Community & open-source commitment
+
+[The open-source project should be the real system](https://beava.dev/docs/vision/open-source/) — something
+you can clone, run, test, operate, and trust as your use case grows. A managed
+beava service can remove operational burden later, but the open-source binary is
+the real product. TiDB-style commitment to open source. Apache-2.0, no
+open-core lock-in.
+
+Six concrete commitments (also tracked on the [open-source vision page](https://beava.dev/docs/vision/open-source/)):
+
+| Commitment | Where it lives |
+|---|---|
+| **Public RFCs** | [RFC index](https://beava.dev/docs/community/rfcs/) — RFC-001 through RFC-009 (tiered storage, table ingestion, joins, OOO events, replay, online migration, retention, latency-vs-throughput, HA) |
+| **Weekly dev calls** | [Schedule + summaries](https://beava.dev/docs/community/dev-calls/) |
+| **Practical examples** | [examples/](examples/) — fraud, ad-tech, ecommerce vertical demos |
+| **Reproducible benchmarks** | [crates/beava-bench/README.md](crates/beava-bench/README.md) + [methodology](https://beava.dev/docs/vision/benchmarks/) — workload shape, hardware, durability mode, repro command |
+| **Clear contribution paths** | [CONTRIBUTING.md](CONTRIBUTING.md) (build/test/PR), [GOVERNANCE.md](GOVERNANCE.md) (who decides, what stays Apache-2.0 forever), [MAINTAINERS.md](MAINTAINERS.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
+| **Transparent infrastructure** | This repo: full source, full WAL/snapshot/durability path, full benchmark harness — no managed-only features in v0 |
+
+Other ways in:
+
+- **GitHub Discussions:** [github.com/beava-dev/beava/discussions](https://github.com/beava-dev/beava/discussions) — questions, design ideas, "is this a bug?"
+- **Discord:** [discord.gg/Jnx89PN9](https://discord.gg/Jnx89PN9) — drop-in chat with maintainers
+- **Security reports:** [SECURITY.md](SECURITY.md) — private disclosure to `hoang@beava.dev`
+
+[Apache 2.0](LICENSE) · [CHANGELOG](CHANGELOG.md) · [SECURITY](SECURITY.md) · [CONTRIBUTING](CONTRIBUTING.md) · [GOVERNANCE](GOVERNANCE.md) · [MAINTAINERS](MAINTAINERS.md) · [CODE_OF_CONDUCT](CODE_OF_CONDUCT.md)
