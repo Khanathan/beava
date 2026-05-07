@@ -176,18 +176,19 @@
                 .catch(() => null)
             ));
             if (cancelled) return;
-            let bestIdx = 0, bestHits = 0, dwellSum = 0, dwellCount = 0;
+            let bestIdx = 0, bestHits = 0;
             reads.forEach((r, i) => {
               if (!r || !r.features) return;
               const v1h = r.features.views_1h || 0;
               if (v1h > bestHits) { bestHits = v1h; bestIdx = i; }
-              if (r.features.median_dwell_1h) { dwellSum += r.features.median_dwell_1h; dwellCount++; }
             });
             setTopPageIdx(bestIdx);
             setTopPageHits(bestHits);
-            const avgDwell = dwellCount ? dwellSum / dwellCount : 0;
-            setDwellMs(avgDwell);
-            setDwellSeries(s => [...s.slice(1), avgDwell]);
+            // Median dwell: read directly off the top page's feature — no
+            // averaging-of-medians (that's not how medians compose).
+            const topMedian = (reads[bestIdx] && reads[bestIdx].features && reads[bestIdx].features.median_dwell_1h) || 0;
+            setDwellMs(topMedian);
+            setDwellSeries(s => [...s.slice(1), topMedian]);
           } catch (_) { /* keep previous values on transient failure */ }
         };
         refresh();
@@ -204,7 +205,7 @@
       return (
         <div style={{ position: 'relative' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14 }}>
-            <MetricCard label="Median time on page · Last hour" value={dwellNum} unit={dwellUnit}
+            <MetricCard label="Median time on top page · Last hour" value={dwellNum} unit={dwellUnit}
               sparkData={dwellSeries} sparkColor="var(--accent)"
               mascot={{ src: '/assets/mascot-work-pose.svg', size: 84, top: 4, right: 10, rotate: -4 }}/>
             <MetricCard label="Pages viewed · Today" value={pvNum} unit={pvUnit}
