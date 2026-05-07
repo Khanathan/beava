@@ -17,6 +17,8 @@
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
   <script type="text/babel" src="/js/Shared.jsx"></script>
+  <script type="text/babel" src="/js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="/js/_shared/SiteFooter.jsx"></script>
 
   <script type="text/babel">
     // ==================================================================
@@ -324,10 +326,7 @@ app.register(LoginAttempt, IpSignals, UserSignals)`;
 
     const App = () => (
       <>
-        <Banner id="cloud-waitlist-v1">
-          beava cloud · managed from $50/mo · self-host is always free · join the waitlist
-        </Banner>
-        <Nav active="guide"/>
+        <SiteHeader active="guide" maxWidth={1200}/>
         <ComingSoonBanner/>
         <RecipeHero/>
         <Problem/>
@@ -335,7 +334,7 @@ app.register(LoginAttempt, IpSignals, UserSignals)`;
         <RegisterAndQuery/>
         <WhatYouGet/>
         <NextSteps/>
-        <Footer/>
+        <SiteFooter/>
       </>
     );
     ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
