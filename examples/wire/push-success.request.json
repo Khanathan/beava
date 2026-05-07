@@ -1,9 +1,0 @@
-{
-  "fields": {
-    "user_id": "alice",
-    "card_id": "card_001",
-    "amount": 42.50,
-    "merchant": "amazon",
-    "ip": "203.0.113.42"
-  }
-}

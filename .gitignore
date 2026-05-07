@@ -151,3 +151,6 @@ secrets/
 # SDKs deferred from public OSS for now (Python SDK ships under python/)
 /sdk/go/
 /sdk/typescript/
+
+# Examples deferred from public OSS for now
+/examples/

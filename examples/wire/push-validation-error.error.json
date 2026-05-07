@@ -1,5 +1,0 @@
-{
-  "code": "schema_mismatch",
-  "path": "fields.amount",
-  "message": "Field 'amount' has type str; expected f64. Cast or fix at the source — string-to-f64 coercion is not supported in v0 for this field type."
-}

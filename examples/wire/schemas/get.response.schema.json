@@ -1,8 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://beava.dev/schemas/get.response.schema.json",
-  "title": "OP_GET response body",
-  "description": "Row-shape: a flat dict of feature_name → value. Cold-start (no events for the requested key) returns {} — NOT an error. Feature values are ints, floats, strings, booleans, or null depending on the op's return type.",
-  "type": "object",
-  "additionalProperties": true
-}

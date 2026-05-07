@@ -1,9 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://beava.dev/schemas/reset.request.schema.json",
-  "title": "OP_RESET request body",
-  "description": "Empty body. OP_RESET (0x0040) wipes all in-memory state and truncates the WAL. Destructive — call only on a beava instance bound to test data. Per Phase 13.0 Q7 the opcode value is 0x0040, leaving 0x0030-0x003F reserved for future direct-feature-write opcodes.",
-  "type": "object",
-  "properties": {},
-  "unevaluatedProperties": false
-}

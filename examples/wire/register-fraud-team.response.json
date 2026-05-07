@@ -1,7 +1,0 @@
-{
-  "status": "ok",
-  "registry_version": 1,
-  "added": ["Txn", "UserTxnFeatures"],
-  "removed": [],
-  "changed": []
-}

@@ -1,7 +1,0 @@
-{
-  "requests": [
-    { "table": "UserTxnFeatures", "key": "alice" },
-    { "table": "UserTxnFeatures", "key": "bob" },
-    { "table": "CardTxnFeatures", "key": "card_001", "features": ["tx_count_1h"] }
-  ]
-}
