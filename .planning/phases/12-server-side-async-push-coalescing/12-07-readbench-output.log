@@ -1,7 +1,0 @@
-  features: ['txn_count_24h', 'sum_amount_24h', 'avg_amount_24h']
-  spawning beava: /Users/petrpan26/work/tally/target/release/beava --config /var/folders/m2/s1yp9jkj11b68p2mgcr3thw80000gn/T/beava-readbench-29s_eq18/beava-readbench.yaml
-  /register OK
-  warmup: 1000 events pushed in 0.2s (439 distinct keys)
-beava-readbench: requests=1000 errors=0 wall_clock_ms=320 requests_per_sec=3129 key_features_per_sec=93860
-beava-readbench: latency_p50_us=1150 p95_us=1497 p99_us=1807
-READBENCH_CSV,crates/beava-bench/configs/fraud-team.json,1000,0,320,3129,93860,1150,1497,1807

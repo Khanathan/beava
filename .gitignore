@@ -56,11 +56,8 @@ benchmark/**/results/
 .DS_Store
 Thumbs.db
 
-# Claude Code: ignore everything except the shipped /beava skill
-.claude/*
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/beava/
+# Claude Code (excluded from public OSS repo)
+/.claude/
 
 # MCP server config (personal, points to local gbrain instance)
 .mcp.json
@@ -144,3 +141,13 @@ secrets/
 /site/
 /beava-design-system/
 /beava-website/
+
+# Internal-only tooling and planning state (kept local, not in public OSS)
+/.planning/
+/.agents/
+/CLAUDE.md
+/scripts/
+
+# SDKs deferred from public OSS for now (Python SDK ships under python/)
+/sdk/go/
+/sdk/typescript/

@@ -1,3 +1,0 @@
-{"level":"info-0","ts":"2026-05-05T21:57:03-04:00","logger":"trufflehog","msg":"running source","source_manager_worker_id":"qpGAE","with_units":true}
-{"level":"info-0","ts":"2026-05-05T21:57:03-04:00","logger":"trufflehog","msg":"scanning repo","source_manager_worker_id":"qpGAE","unit_kind":"dir","unit":"/var/folders/m2/s1yp9jkj11b68p2mgcr3thw80000gn/T/trufflehog-63238-127389799","repo":"file:///Users/petrpan26/work/tally"}
-{"level":"info-0","ts":"2026-05-05T21:57:08-04:00","logger":"trufflehog","msg":"finished scanning","chunks":40990,"bytes":222210705,"verified_secrets":0,"unverified_secrets":0,"scan_duration":"7.113192208s","trufflehog_version":"3.95.2","verification_caching":{"Hits":0,"Misses":0,"HitsWasted":0,"AttemptsSaved":0,"VerificationTimeSpentMS":0}}
