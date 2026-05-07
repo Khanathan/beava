@@ -1,20 +1,20 @@
 //! POST /register endpoint — parse, validate, diff, install, respond.
 //!
-//! Pipeline (8 steps):
+//! Pipeline:
 //! 1. Content-Type check → 415
 //! 2. JSON parse → 400
 //! 3. Snapshot current registry for validation + diff
 //! 4. validate_payload → 400
-//! 5. compute_diff
-//! 6. Conflict (diff.changed != []) → 409
-//! 7. No-op (diff.added == []) → 200 same version
-//! 8. Additive install → 200 new version
+//! 5. classify_register_diff (apply_shard's pre-flight has already
+//!    pre-removed any descriptor whose shape would change with force=true,
+//!    or returned 409 force_required without force; destructive entries
+//!    here are an invariant violation → 503)
+//! 6. No-op (no NewDescriptor entries in additive) → 200 same version
+//! 7. Additive install → 200 new version
 
 use beava_core::{
-    register_validate::validate_payload,
-    register_validate::ErrorCode,
-    registry::Registry,
-    registry_diff::{compute_diff, ConflictDetail, PayloadNode},
+    register_validate::validate_payload, register_validate::ErrorCode, registry::Registry,
+    registry_diff::PayloadNode,
 };
 use beava_persistence::{PersistError, RecordType, WalSink};
 use serde::{Deserialize, Serialize};
@@ -133,11 +133,6 @@ pub enum RegisterError {
         path: String,
         reason: String,
     },
-    Conflict {
-        code: &'static str, // "registration_conflict"
-        message: &'static str,
-        diff: ResponseDiff,
-    },
     UnsupportedMediaType {
         code: &'static str, // "unsupported_media_type"
         path: String,
@@ -145,15 +140,13 @@ pub enum RegisterError {
     },
 }
 
-#[derive(Debug, Serialize)]
-pub struct ResponseDiff {
-    pub added: Vec<String>,
-    pub removed: Vec<String>, // always [] in v0
-    pub changed: Vec<ConflictDetail>,
-}
-
 /// Transport-agnostic register outcome — HTTP's response builder and the TCP
 /// frame encoder both consume it.
+///
+/// Destructive-change detection lives in apply_shard's pre-flight
+/// (`register_check_force_required`); without `force=true` it returns a
+/// 409 `force_required` envelope before this module's outcome enum is
+/// constructed. This enum carries only the post-pre-flight outcomes.
 #[derive(Debug)]
 pub enum RegisterOutcome {
     /// Additive install succeeded; version bumped.
@@ -186,13 +179,10 @@ pub enum RegisterOutcome {
         #[allow(dead_code)]
         all_errors_count: usize,
     },
-    /// compute_diff found changed descriptors. 409.
-    Conflict {
-        version: u64,
-        added: Vec<String>,
-        changed: Vec<ConflictDetail>,
-    },
-    /// WAL append for the `RegistryBump` record failed. 503.
+    /// WAL append for the `RegistryBump` record failed, OR apply_shard's
+    /// pre-flight invariant was violated (destructive entries reached
+    /// `execute_register_inner` despite `register_check_force_required`'s
+    /// gate). 503.
     WalUnavailable { version: u64 },
 }
 
@@ -252,23 +242,47 @@ async fn execute_register_inner(
         validated.into_parts();
     let registered_descriptors: Vec<String> = nodes.iter().map(|n| n.name().to_string()).collect();
 
-    let diff = compute_diff(&current_snapshot, &nodes);
+    // Use the new (Phase 13.4 Plan 06) categorized diff. apply_shard's
+    // force-handling block pre-removes every existing descriptor the
+    // payload would change (destructive + additive-against-existing,
+    // when force=true) BEFORE this function runs. By the time we get
+    // here, classify against the post-pre-removal snapshot should never
+    // produce destructive entries — every remaining diff is additive
+    // (NewDescriptor) or already_present (exact match).
+    let diff = beava_core::register_validate::classify_register_diff(&current_snapshot, &nodes);
 
-    if !diff.changed.is_empty() {
+    // Invariant check: apply_shard's force-handling block pre-removes every
+    // descriptor whose shape would change before this function is called.
+    // If destructive entries reach here, the caller bypassed apply_shard
+    // (or its pre-flight has a bug) — surface as WalUnavailable (503) so
+    // operators see a noisy server-side error rather than a silent no-op.
+    if !diff.destructive.is_empty() {
         warn!(
-            kind = "register.conflict",
+            kind = "register.preflight_invariant_violated",
             version = current_snapshot.version,
-            changed = ?diff.changed.iter().map(|c| &c.name).collect::<Vec<_>>(),
-            "register conflict"
+            destructive = ?diff.destructive,
+            "execute_register saw destructive entries — apply_shard pre-flight should have pre-removed them; refusing to mutate"
         );
-        return RegisterOutcome::Conflict {
+        return RegisterOutcome::WalUnavailable {
             version: current_snapshot.version,
-            added: diff.added,
-            changed: diff.changed,
         };
     }
 
-    if diff.added.is_empty() {
+    // Net-new descriptors are entries with `kind: new_descriptor`. Other
+    // additive variants (NewField, NewAgg) shouldn't appear here in normal
+    // flow — apply_shard pre-removes their target descriptor with
+    // force=true so they re-land here as NewDescriptor against the
+    // post-removal snapshot.
+    let added: Vec<String> = diff
+        .additive
+        .iter()
+        .filter_map(|e| match e {
+            beava_core::registry_diff::DiffEntry::NewDescriptor { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+
+    if added.is_empty() {
         info!(
             kind = "register.noop",
             version = current_snapshot.version,
@@ -324,14 +338,14 @@ async fn execute_register_inner(
     info!(
         kind = "register.success",
         version = new_version,
-        added = ?diff.added,
+        added = ?added,
         already_present_count = diff.already_present.len(),
         "register succeeded"
     );
     RegisterOutcome::Success {
         version: new_version,
         registered_descriptors,
-        added: diff.added,
+        added,
         already_present: diff.already_present,
     }
 }
@@ -432,25 +446,6 @@ fn map_outcome_to_response(outcome: RegisterOutcome) -> (u16, serde_json::Value)
                 registry_version: version,
             };
             (400, to_json_value(body))
-        }
-        RegisterOutcome::Conflict {
-            version,
-            added,
-            changed,
-        } => {
-            let body = RegisterErrorBody {
-                error: RegisterError::Conflict {
-                    code: "registration_conflict",
-                    message: "Registration would change or remove existing descriptors",
-                    diff: ResponseDiff {
-                        added,
-                        removed: vec![],
-                        changed,
-                    },
-                },
-                registry_version: version,
-            };
-            (409, to_json_value(body))
         }
         RegisterOutcome::WalUnavailable { version } => {
             let body = serde_json::json!({

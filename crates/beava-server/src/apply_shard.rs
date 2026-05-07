@@ -261,12 +261,35 @@ impl ApplyShard {
                     };
                 }
 
-                // `force=true` on a destructive payload: pre-remove the
-                // conflicting descriptors so the apply path treats them
-                // as new. `execute_register_with_wal` then emits a
-                // single `RegistryBump` capturing the new payload's
-                // nodes (and bumps `registry_version`).
-                if force && !diff.destructive.is_empty() {
+                // `force=true` carries the explicit "drop existing state and
+                // replace fully" intent for any descriptor that already
+                // exists in the registry. We pre-remove every existing
+                // descriptor that the new payload would change before
+                // invoking `execute_register_with_wal`, which delegates
+                // installation to `Registry::apply_registration` (silently
+                // skips descriptors already present by name). Without
+                // pre-removal, an additive change against an existing
+                // descriptor (e.g. NewField on an existing event source)
+                // would no-op silently. Two reasons we can't gate solely
+                // on `diff.destructive`:
+                //
+                //   1. `classify_register_diff` classifies new fields on
+                //      an existing event source and new aggregations in
+                //      an existing block as `additive`, not destructive.
+                //      Pre-removal must cover them too — otherwise their
+                //      target descriptor stays put with the old shape.
+                //
+                //   2. `NewDescriptor` is the only additive variant we
+                //      skip — it's genuinely-new (not in current
+                //      registry), so there's nothing to pre-remove.
+                //
+                // Pre-removal drops compiled chains, aggregations, feature
+                // index entries, and accumulated state for the named
+                // descriptors. That state loss is the documented `force=true`
+                // semantic; callers who want to add a field without losing
+                // state should send the request without `force` (additive
+                // path is allowed by `register_check_force_required`).
+                if force {
                     let mut to_remove: Vec<String> = Vec::new();
                     for entry in &diff.destructive {
                         match entry {
@@ -297,12 +320,31 @@ impl ApplyShard {
                             _ => {}
                         }
                     }
+                    // Additive-against-existing: the descriptor already
+                    // exists, so `apply_registration` would skip-if-present
+                    // and silently drop the new field/agg. Pre-remove here
+                    // so the new shape lands as a clean add.
+                    for entry in &diff.additive {
+                        match entry {
+                            beava_core::registry_diff::DiffEntry::NewField { event, .. } => {
+                                to_remove.push(event.clone());
+                            }
+                            beava_core::registry_diff::DiffEntry::NewAgg { table, .. } => {
+                                to_remove.push(table.clone());
+                            }
+                            // `NewDescriptor` is genuinely-new — not in
+                            // current registry, nothing to pre-remove.
+                            _ => {}
+                        }
+                    }
                     to_remove.sort();
                     to_remove.dedup();
-                    self.state
-                        .dev_agg
-                        .registry
-                        .force_remove_descriptors(&to_remove);
+                    if !to_remove.is_empty() {
+                        self.state
+                            .dev_agg
+                            .registry
+                            .force_remove_descriptors(&to_remove);
+                    }
                 }
 
                 // Register is cold path: delegate to the async WAL-backed
