@@ -139,11 +139,14 @@
     );
 
     const TOP_PAGES = [
+      '/',
+      '/docs/',
+      '/docs/install/',
       '/docs/get-started/quickstart/',
       '/docs/concepts/streams/',
-      '/docs/get-started/',
       '/docs/community/rfcs/',
       '/docs/vision/why-beava/',
+      '/guide/',
     ];
 
     const LiveMetrics = () => {
@@ -188,7 +191,7 @@
           } catch (_) { /* keep previous values on transient failure */ }
         };
         refresh();
-        const id = setInterval(refresh, 5000);
+        const id = setInterval(refresh, 1000);
         return () => { cancelled = true; clearInterval(id); };
       }, []);
 
