@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 24px 28px; }
+  .swatch {
+    flex: 1; min-width: 0;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--border); background: #fff;
+    display: flex; flex-direction: column;
+  }
+  .chip { height: 44px; display:flex; align-items:center; justify-content:center; font-family: var(--font-mono); font-size: 11px; font-weight:600; }
+  .wash { height: 32px; }
+  .meta { padding: 6px 10px 8px; }
+  .meta .name { font-size: 11.5px; font-weight: 600; color: var(--fg1); }
+  .meta .hex { font-size: 10px; font-family: var(--font-mono); color: var(--fg3); }
+</style>
+</head><body>
+  <div class="row">
+    <div class="swatch">
+      <div class="chip" style="background:#4a7a3a;color:#fff">✓</div>
+      <div class="wash" style="background:#e5edd9"></div>
+      <div class="meta"><div class="name">Success</div><div class="hex">#4a7a3a · #e5edd9</div></div>
+    </div>
+    <div class="swatch">
+      <div class="chip" style="background:#c98a1e;color:#fff">!</div>
+      <div class="wash" style="background:#fbecc6"></div>
+      <div class="meta"><div class="name">Warn</div><div class="hex">#c98a1e · #fbecc6</div></div>
+    </div>
+    <div class="swatch">
+      <div class="chip" style="background:#a6351f;color:#fff">×</div>
+      <div class="wash" style="background:#f4d9d0"></div>
+      <div class="meta"><div class="name">Danger</div><div class="hex">#a6351f · #f4d9d0</div></div>
+    </div>
+    <div class="swatch">
+      <div class="chip" style="background:#3a6a8a;color:#fff">i</div>
+      <div class="wash" style="background:#dbe6ee"></div>
+      <div class="meta"><div class="name">Info</div><div class="hex">#3a6a8a · #dbe6ee</div></div>
+    </div>
+  </div>
+</body></html>

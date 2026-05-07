@@ -1,0 +1,128 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>DocsPageHeader</title>
+<style>
+  body { padding: 24px 28px; }
+  .stack { display: flex; flex-direction: column; gap: 26px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 0 0 10px; letter-spacing: 0.02em; }
+
+  .page-header {
+    padding: 0 0 22px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .crumbs {
+    font-family: var(--font-sans); font-size: 12.5px; color: var(--fg3);
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .crumbs a { color: var(--fg3); text-decoration: none; }
+  .crumbs a:hover { color: var(--accent); }
+  .crumbs .sep { color: var(--border-strong); }
+  .crumbs .cur { color: var(--fg1); font-weight: 500; }
+
+  .eyebrow {
+    font-family: var(--font-sans); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--accent); margin: 0 0 10px;
+  }
+
+  .page-header h1 {
+    font-family: var(--font-serif); font-weight: 700;
+    font-size: 38px; line-height: 1.05; letter-spacing: -0.02em;
+    color: var(--fg1); margin: 0 0 10px;
+    max-width: 22ch;
+    font-feature-settings: "liga" on, "calt" on;
+  }
+  .page-header .lede {
+    font-family: var(--font-sans); font-size: 15px; line-height: 1.6;
+    color: var(--fg2); margin: 0; max-width: 60ch;
+  }
+
+  .meta-strip {
+    display: flex; align-items: center; gap: 14px;
+    margin-top: 16px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--fg3);
+  }
+  .meta-strip .dot { color: var(--border-strong); }
+  .meta-strip .pill {
+    font-family: var(--font-sans); font-weight: 500; font-size: 11.5px;
+    padding: 2px 9px; border-radius: 999px;
+    background: var(--beava-paper); border: 1px solid var(--border);
+    color: var(--fg2);
+  }
+  .meta-strip .pill.live { background: var(--beava-success-wash); border-color: #cfdcbd; color: var(--beava-success); }
+
+  /* split variant — header with mascot or kicker on the right */
+  .page-header.split {
+    display: grid; grid-template-columns: 1fr auto; gap: 32px;
+    align-items: end;
+  }
+  .page-header.split .right {
+    font-family: var(--font-mono); font-size: 12px; color: var(--fg3);
+    text-align: right; padding-bottom: 6px;
+  }
+  .page-header.split .right .ver {
+    color: var(--fg1); font-weight: 600;
+  }
+</style>
+</head><body>
+  <div class="stack">
+
+    <div>
+      <div class="label">// default · breadcrumbs + eyebrow + h1 + lede</div>
+      <div class="page-header">
+        <div class="crumbs">
+          <a href="#">Docs</a><span class="sep">/</span>
+          <a href="#">Operators</a><span class="sep">/</span>
+          <span class="cur">Rolling counters</span>
+        </div>
+        <div class="eyebrow">Operator · sliding window</div>
+        <h1>Rolling counters</h1>
+        <div class="lede">Sliding time windows over any event stream. Define one with a key and a window, push events at it, and ask “how many in the last N seconds?” in sub-millisecond time.</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">// with meta strip — last updated, status, version</div>
+      <div class="page-header">
+        <div class="crumbs">
+          <a href="#">Docs</a><span class="sep">/</span>
+          <a href="#">Reference</a><span class="sep">/</span>
+          <span class="cur">HTTP API</span>
+        </div>
+        <div class="eyebrow">Reference</div>
+        <h1>HTTP API</h1>
+        <div class="lede">Every operator is reachable over HTTP. This page lists endpoints, request shapes, and response codes.</div>
+        <div class="meta-strip">
+          <span class="pill live">● stable</span>
+          <span class="pill">v0.14</span>
+          <span class="dot">·</span>
+          <span>Last updated 2026-04-28</span>
+          <span class="dot">·</span>
+          <span>~6 min read</span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">// split · with right-aligned kicker</div>
+      <div class="page-header split">
+        <div>
+          <div class="crumbs">
+            <a href="#">Docs</a><span class="sep">/</span>
+            <span class="cur">Introduction</span>
+          </div>
+          <div class="eyebrow">Start here</div>
+          <h1>What beava is, and what it isn't.</h1>
+          <div class="lede">A concrete tour of the project, the operators, and the specific tradeoffs that make beava deliberately different from the streaming priesthood.</div>
+        </div>
+        <div class="right">
+          <div class="ver">v0.14.2</div>
+          <div>released 2026-04-22</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body></html>

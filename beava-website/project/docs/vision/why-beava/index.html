@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Why beava · beava docs</title>
+  <meta name="description" content="The vision for beava. Stream processing should not require a platform team. Real-time features should feel like application code.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'gap', label: 'The gap we felt' },
+      { id: 'stack', label: 'The existing stack' },
+      { id: 'bet', label: 'The beava bet' },
+      { id: 'name', label: 'Why the name?' },
+      { id: 'next', label: 'Read on' },
+    ];
+    const quote = {borderLeft:'3px solid var(--accent)', paddingLeft:14, color:'var(--fg2)', margin:'14px 0', fontStyle:'italic'};
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Why beava"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Vision</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Why beava</span>
+            </div>
+
+            <h1>Why beava</h1>
+
+            <h2 id="gap">The gap we felt</h2>
+            <p className="bv-lede">We are developers who have built and used real-time data systems ourselves, and we kept feeling the same gap: powerful infrastructure, but an inaccessible developer experience.</p>
+            <p>Many systems are open, source-available, or have a community edition, but the path from first clone to a production application-serving workflow can still feel unclear or platform-heavy.</p>
+            <p>For this class of use case, developers should be able to start smaller.</p>
+            <p>Turning fresh events into features for personalization, ranking, recommendations, fraud detection, bidding, or agentic state should begin as something you can run, test, and understand locally. It should not require a large deployment plan or a dedicated platform team before the first pipeline becomes useful.</p>
+            <p><strong>Stream processing should not require a platform team.</strong></p>
+
+            <h2 id="stack">The existing stack is powerful, but heavy</h2>
+            <p>The common real-time stack often separates the problem across many systems:</p>
+            <ul>
+              <li>An event bus for ingestion.</li>
+              <li>A stream processor for computation.</li>
+              <li>A serving database for low-latency reads.</li>
+              <li>A feature store or custom service for access patterns.</li>
+              <li>Glue code to connect everything.</li>
+            </ul>
+            <p>This architecture can be the right answer for large teams and complex platforms. But it is often too much for an application team that wants to test a real-time feature idea quickly.</p>
+            <p>beava starts from a different question:</p>
+            <blockquote style={quote}>What if fresh, windowed, queryable state could start as application code?</blockquote>
+
+            <h2 id="bet">The beava bet</h2>
+            <p>beava is our attempt to make this infrastructure accessible from day one.</p>
+            <p>The open-source project should be the real system: small enough to start with, clear enough to reason about, and serious enough to grow with the use case.</p>
+            <p>A managed service can remove operational burden later, but the core experience should begin with developers being able to clone beava, run it, define features, test pipelines, and understand the behavior of the system they are using.</p>
+            <p>In short, <strong>real-time features should feel like application code</strong>.</p>
+
+            <h2 id="name">Why the name?</h2>
+            <p>Because the beaver does the same job we do.</p>
+            <p>It works hard. It lives next to streams. It spends its life processing them &mdash; pulling material out, shaping it, building dams that hold state where state needs to be held. The whole life cycle is stream processing.</p>
+            <p>And like the animal, the project is built to be useful to its community first. <strong>We want to make something the streaming community actually uses every day.</strong></p>
+            <p>The cofounder also discovered that beavers are unintentionally hilarious:</p>
+
+            <div style={{
+              position: 'relative',
+              maxWidth: 560,
+              margin: '20px 0 8px',
+              borderRadius: 14,
+              overflow: 'hidden',
+              border: '1px solid var(--border)',
+              boxShadow: 'var(--shadow-sm)',
+              aspectRatio: '16 / 9',
+            }}>
+              <iframe
+                src="https://www.youtube-nocookie.com/embed/w4FB9Omjn94?start=1&rel=0"
+                title="Beavers building a dam"
+                loading="lazy"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allowFullScreen
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0 }}
+              />
+            </div>
+            <p style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', margin: '0 0 14px' }}>
+              The mascot was sold from there.
+            </p>
+
+            <h2 id="next">Read on</h2>
+            <ul>
+              <li><a href="/docs/get-started/quickstart/">Quickstart</a> — build a feature in 60 seconds.</li>
+              <li><a href="/docs/concepts/streams/">Concepts: streams</a> — the foundation primitive.</li>
+              <li><a href="/docs/vision/non-goals/">Non-goals and tradeoffs</a> — what we're <em>not</em> trying to be.</li>
+              <li><a href="/docs/vision/benchmarks/">Benchmarks</a> — what one binary actually does.</li>
+              <li><a href="/docs/vision/open-source/">Open-source commitment</a> — Apache 2.0, forever.</li>
+              <li><a href="/docs/operators/">Operator catalog</a> — every aggregation primitive.</li>
+            </ul>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/vision/why-beava/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>beava — log DAG</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--beava-cream);
+    color: var(--beava-brown-ink);
+    font-family: var(--font-sans);
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  .stage {
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 40%, #fff8e8 0%, var(--beava-cream) 70%);
+    overflow: hidden;
+  }
+
+  .scene {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1440px;
+    height: 860px;
+    transform-origin: 0 0;
+  }
+
+  /* ---------- Title ---------- */
+  .titlebar {
+    position: absolute;
+    top: 28px; left: 36px;
+    width: 720px;
+    z-index: 30;
+  }
+  .titlebar .eyebrow {
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--beava-orange);
+    display: block; margin-bottom: 6px;
+  }
+  .titlebar h1 {
+    font-family: var(--font-serif);
+    font-size: 32px; font-weight: 600;
+    line-height: 1.05; letter-spacing: -0.02em;
+    margin: 0 0 4px;
+    color: var(--beava-brown-ink);
+  }
+  .titlebar h1 em {
+    font-style: italic; color: var(--beava-orange);
+  }
+  .titlebar p {
+    font-size: 13px; line-height: 1.5;
+    color: var(--beava-brown-mid);
+    margin: 0; max-width: 700px;
+  }
+
+  /* ---------- DAG board ---------- */
+  .board {
+    position: absolute;
+    top: 150px; bottom: 36px;
+    left: 36px; right: 392px;
+    background: var(--beava-paper);
+    border: 1px solid var(--beava-rule);
+    border-radius: var(--r-xl);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+  .board::before {
+    /* subtle dot grid */
+    content: "";
+    position: absolute; inset: 0;
+    background-image:
+      radial-gradient(circle, rgba(58,42,31,.10) 1px, transparent 1.4px);
+    background-size: 24px 24px;
+    background-position: 0 0;
+    opacity: .55;
+    pointer-events: none;
+  }
+
+  /* Board header strip */
+  .board-head {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 44px;
+    border-bottom: 1px solid var(--beava-rule);
+    background: rgba(255,255,255,0.6);
+    display: flex; align-items: center; gap: 12px;
+    padding: 0 16px;
+    z-index: 10;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--beava-brown-dark);
+    backdrop-filter: blur(6px);
+  }
+  .board-head .traffic {
+    display: flex; gap: 6px;
+  }
+  .board-head .traffic span {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--beava-rule);
+    border: 1px solid var(--border-strong);
+  }
+  .board-head .traffic span:nth-child(1) { background: #d97a3e; border-color: #b85c20; }
+  .board-head .traffic span:nth-child(2) { background: #d3b860; border-color: #a8881e; }
+  .board-head .traffic span:nth-child(3) { background: #7fa066; border-color: #4a7a3a; }
+  .board-head .label {
+    color: var(--beava-brown-dark);
+    font-weight: 600;
+  }
+  .board-head .live {
+    margin-left: auto;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--beava-success);
+  }
+  .board-head .live .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--beava-success);
+    box-shadow: 0 0 0 0 rgba(74,122,58,.5);
+    animation: pulse 1.6s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(74,122,58,.5); }
+    70%  { box-shadow: 0 0 0 8px rgba(74,122,58,0); }
+    100% { box-shadow: 0 0 0 0 rgba(74,122,58,0); }
+  }
+
+  /* Canvas area inside board */
+  .canvas {
+    position: absolute;
+    inset: 44px 0 0 0;
+  }
+
+  /* DAG SVG sits on top of dot grid */
+  .dag-svg {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    overflow: visible;
+    z-index: 2;
+  }
+
+  /* ---------- Nodes ---------- */
+  .node {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    background: #ffffff;
+    border: 1.5px solid var(--beava-brown-dark);
+    border-radius: 14px;
+    padding: 10px 14px;
+    box-shadow: var(--shadow-pop);
+    z-index: 5;
+    font-family: var(--font-mono);
+    min-width: 150px;
+  }
+  .node .kind {
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--beava-orange);
+    margin-bottom: 4px;
+  }
+  .node .name {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--beava-brown-ink);
+  }
+  .node .meta {
+    display: block;
+    font-size: 11px;
+    color: var(--beava-brown-mid);
+    margin-top: 4px;
+  }
+  .node--source { border-color: var(--beava-orange); }
+  .node--source .kind { color: var(--beava-orange); }
+  .node--xform  { border-color: var(--beava-brown-dark); }
+  .node--xform  .kind { color: var(--beava-brown-dark); }
+  .node--agg {
+    background: var(--beava-orange-wash);
+    border-color: var(--beava-orange);
+    min-width: 230px;
+  }
+  .node--agg .kind { color: var(--beava-orange); }
+  .node--sink {
+    background: var(--beava-success-wash);
+    border-color: var(--beava-success);
+  }
+  .node--sink .kind { color: var(--beava-success); }
+
+  .node .icon {
+    position: absolute;
+    top: -10px; left: -10px;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 1.5px solid currentColor;
+    display: grid; place-items: center;
+    font-size: 11px;
+    font-family: var(--font-sans);
+    font-weight: 700;
+    color: var(--beava-brown-dark);
+  }
+  .node--source .icon { color: var(--beava-orange); }
+  .node--agg .icon { color: var(--beava-orange); background: #fff; }
+  .node--sink .icon { color: var(--beava-success); }
+
+  /* Aggregation node has a live count */
+  .node--agg .count {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed rgba(184,92,32,.4);
+  }
+  .node--agg .count .v {
+    font-family: var(--font-serif);
+    font-size: 28px; font-weight: 700;
+    line-height: 1;
+    color: var(--beava-orange);
+    font-variant-numeric: tabular-nums;
+  }
+  .node--agg .count .k {
+    font-size: 10px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--beava-brown-mid);
+  }
+
+  /* small chip badge for numeric meta */
+  .chip {
+    display: inline-block;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--beava-brown-dark);
+    background: var(--beava-paper);
+    border: 1px solid var(--beava-rule);
+    border-radius: 999px;
+    padding: 1px 6px;
+    margin-left: 4px;
+  }
+
+  /* Node "pulse" when a packet arrives */
+  .node.flash {
+    animation: nodeFlash 480ms var(--ease-out);
+  }
+  @keyframes nodeFlash {
+    0%   { box-shadow: var(--shadow-pop), 0 0 0 0 rgba(184,92,32,.45); }
+    50%  { box-shadow: var(--shadow-pop), 0 0 0 10px rgba(184,92,32,0); }
+    100% { box-shadow: var(--shadow-pop), 0 0 0 0 rgba(184,92,32,0); }
+  }
+
+  /* ---------- Edges ---------- */
+  .edge {
+    fill: none;
+    stroke: var(--beava-brown-dark);
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    opacity: .7;
+  }
+  .edge--dashed {
+    stroke-dasharray: 4 4;
+    opacity: .55;
+  }
+  .edge-glow {
+    fill: none;
+    stroke: var(--beava-orange);
+    stroke-width: 2;
+    stroke-linecap: round;
+    opacity: 0;
+  }
+  .edge-tick {
+    /* small markers along edges */
+    fill: var(--beava-orange);
+  }
+
+  /* ---------- Beaver carriers (along edges) ---------- */
+  .carrier {
+    position: absolute;
+    top: 0; left: 0;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 8;
+    will-change: transform;
+  }
+  .carrier .body {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px 4px 4px;
+    background: #ffffff;
+    border: 1.5px solid var(--beava-brown-dark);
+    border-radius: 999px;
+    box-shadow: var(--shadow-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--beava-brown-dark);
+    transform-origin: left center;
+  }
+  .carrier .body .em {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--beava-orange);
+    color: #fff;
+    display: grid; place-items: center;
+    font-size: 14px;
+    overflow: hidden;
+    border: 1.5px solid var(--beava-brown-dark);
+  }
+  .carrier .body .em img {
+    width: 100%; height: 100%; object-fit: cover;
+    transform: scale(1.6) translateY(2px);
+  }
+  .carrier .body .log {
+    width: 26px; height: 8px;
+    border-radius: 4px;
+    background: linear-gradient(180deg, #b07a4a, #8a5c34);
+    border: 1px solid #4a2f1c;
+    position: relative;
+    box-shadow: inset 0 -1px 0 rgba(0,0,0,.2);
+  }
+  .carrier .body .log::after {
+    content: "";
+    position: absolute;
+    right: -2px; top: -1px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #c89160, #6b4326);
+    border: 1px solid #4a2f1c;
+  }
+  .carrier .body .id {
+    color: var(--beava-brown-mid);
+    font-size: 10px;
+  }
+
+  /* tiny bob */
+  .carrier .bob {
+    animation: cBob 1.2s ease-in-out infinite;
+  }
+  @keyframes cBob {
+    0%, 100% { transform: translateY(0)    rotate(-2deg); }
+    50%      { transform: translateY(-2px) rotate( 2deg); }
+  }
+
+  /* ---------- Side panels ---------- */
+  .side {
+    position: absolute;
+    top: 28px;
+    bottom: 36px;
+    right: 36px;
+    width: 336px;
+    z-index: 25;
+    display: flex; flex-direction: column;
+    gap: 14px;
+  }
+  .panel {
+    background: #ffffff;
+    border: 1px solid var(--beava-rule);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-md);
+    padding: 14px 16px;
+  }
+  .panel .head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .panel .eyebrow {
+    font-size: 11px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--beava-orange);
+  }
+  .panel .live {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--beava-success);
+  }
+  .panel .live .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--beava-success);
+    box-shadow: 0 0 0 0 rgba(74,122,58,.5);
+    animation: pulse 1.6s ease-out infinite;
+  }
+  .panel h3 {
+    font-family: var(--font-serif);
+    font-size: 18px; font-weight: 600;
+    margin: 0 0 8px;
+    color: var(--beava-brown-ink);
+  }
+
+  .stat-row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 6px 0;
+    border-top: 1px solid var(--beava-rule-soft);
+    font-family: var(--font-sans);
+  }
+  .stat-row:first-of-type { border-top: 0; padding-top: 2px; }
+  .stat-row .k {
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--beava-brown-mid);
+  }
+  .stat-row .v {
+    font-family: var(--font-mono);
+    font-size: 14px; font-weight: 600;
+    color: var(--beava-brown-ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .big {
+    display: flex; align-items: baseline; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .big .v {
+    font-family: var(--font-serif);
+    font-size: 44px; font-weight: 700; line-height: 1;
+    color: var(--beava-orange);
+    font-variant-numeric: tabular-nums;
+  }
+  .big .delta {
+    font-size: 12px; font-weight: 700;
+    color: var(--beava-success);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .spark {
+    width: 100%; height: 44px; display: block;
+    margin: 6px 0 4px;
+  }
+
+  /* Event feed */
+  .feed-list {
+    list-style: none;
+    margin: 0; padding: 0;
+    height: 132px;
+    overflow: hidden;
+    position: relative;
+    mask-image: linear-gradient(to bottom, transparent 0, black 12%, black 88%, transparent 100%);
+  }
+  .feed-row {
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    gap: 10px; align-items: center;
+    padding: 5px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--beava-brown-dark);
+    border-top: 1px dashed var(--beava-rule-soft);
+  }
+  .feed-row:first-child { border-top: 0; }
+  .feed-row .check { color: var(--beava-success); font-weight: 700; font-family: var(--font-sans); }
+  .feed-row .id { color: var(--beava-brown-mid); }
+  .feed-row .ms { color: var(--beava-brown-mid); font-size: 10px; }
+
+  /* Floating "+1" pings */
+  .ping {
+    position: absolute;
+    pointer-events: none;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--beava-orange);
+    background: #ffffff;
+    border: 1.5px solid var(--beava-orange);
+    border-radius: 999px;
+    padding: 2px 8px;
+    box-shadow: var(--shadow-sm);
+    z-index: 50;
+    opacity: 0;
+  }
+
+  /* Mini-bar */
+  .bars {
+    display: flex; align-items: flex-end;
+    height: 36px; gap: 2px;
+    margin: 4px 0 6px;
+  }
+  .bars div {
+    flex: 1;
+    background: var(--beava-orange);
+    border-radius: 2px 2px 0 0;
+    opacity: .85;
+    transition: height .25s var(--ease-out);
+  }
+</style>
+</head>
+<body class="beava">
+  <div class="stage">
+    <div class="scene" id="scene">
+
+      <div class="titlebar">
+        <span class="eyebrow">demo · log dag</span>
+        <h1>Beavers carry logs. <em>beava counts them.</em></h1>
+        <p>Each event walks the graph from source to sink. Operators along the way transform, filter, and aggregate — the rolling counter on the right ticks every time a log lands.</p>
+      </div>
+
+      <!-- Side panels -->
+      <div class="side">
+        <div class="panel">
+          <div class="head">
+            <span class="eyebrow">aggregation · 60s</span>
+            <span class="live"><span class="dot"></span>live</span>
+          </div>
+          <h3>log_deliveries</h3>
+          <div class="big">
+            <span class="v" id="bigCount">0</span>
+            <span class="delta" id="delta">+0%</span>
+          </div>
+          <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none">
+            <path d="M0,40 L300,40" stroke="var(--beava-rule)" stroke-width="1" fill="none"/>
+            <path id="sparkFill" d="" fill="rgba(184,92,32,0.14)"/>
+            <path id="sparkPath" d="" stroke="var(--beava-orange)" stroke-width="2" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
+          </svg>
+          <div class="stat-row"><span class="k">rate</span><span class="v"><span id="rate">0.0</span> logs/s</span></div>
+          <div class="stat-row"><span class="k">p95 latency</span><span class="v"><span id="p95">8</span> ms</span></div>
+          <div class="stat-row"><span class="k">window</span><span class="v">60s rolling</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="head">
+            <span class="eyebrow">downstream pile</span>
+            <span class="live" style="color:var(--beava-brown-mid);"><span class="dot" style="background:var(--beava-brown-mid);animation:none;"></span>tail</span>
+          </div>
+          <h3>@bv.table  log_pile</h3>
+          <div class="bars" id="bars"></div>
+          <div class="stat-row"><span class="k">total_logs</span><span class="v" id="totalLogs">0</span></div>
+          <div class="stat-row"><span class="k">last_seen</span><span class="v" id="lastSeen">—</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="head">
+            <span class="eyebrow">recent · log_deliveries</span>
+          </div>
+          <ul class="feed-list" id="feed"></ul>
+        </div>
+      </div>
+
+      <!-- DAG board -->
+      <div class="board">
+        <div class="board-head">
+          <div class="traffic"><span></span><span></span><span></span></div>
+          <span class="label">pipeline.toml · log_deliveries</span>
+          <span class="chip">v1.4.2</span>
+          <span class="live" style="margin-left:auto"><span class="dot"></span>running</span>
+        </div>
+
+        <div class="canvas" id="canvas">
+          <!-- SVG holds edges -->
+          <svg class="dag-svg" viewBox="0 0 1000 660" preserveAspectRatio="none" id="svg">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--beava-brown-dark)"/>
+              </marker>
+              <marker id="arrowAccent" viewBox="0 0 10 10" refX="9" refY="5"
+                      markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--beava-orange)"/>
+              </marker>
+            </defs>
+
+            <!-- Edges: drawn first so nodes overlap them -->
+            <!-- src1 -> filter -->
+            <path id="e1" class="edge" d="M150,140 C 240,140 280,260 360,260" marker-end="url(#arrow)"/>
+            <!-- src2 -> filter -->
+            <path id="e2" class="edge" d="M150,330 C 240,330 280,260 360,260" marker-end="url(#arrow)"/>
+            <!-- src3 -> map -->
+            <path id="e3" class="edge" d="M150,520 C 240,520 280,440 360,440" marker-end="url(#arrow)"/>
+            <!-- filter -> agg -->
+            <path id="e4" class="edge" d="M510,260 C 580,260 620,350 690,350" marker-end="url(#arrowAccent)" stroke="var(--beava-orange)" opacity=".85"/>
+            <!-- map -> agg -->
+            <path id="e5" class="edge" d="M510,440 C 580,440 620,350 690,350" marker-end="url(#arrowAccent)" stroke="var(--beava-orange)" opacity=".85"/>
+            <!-- agg -> sink -->
+            <path id="e6" class="edge" d="M870,330 C 905,330 905,200 940,200" marker-end="url(#arrow)"/>
+            <!-- agg -> table -->
+            <path id="e7" class="edge edge--dashed" d="M870,370 C 905,370 905,500 940,500" marker-end="url(#arrow)"/>
+          </svg>
+
+          <!-- Nodes — positions in CSS px relative to canvas (which the SVG also fills) -->
+          <div class="node node--source" style="left:80px; top:140px;">
+            <span class="icon">S</span>
+            <span class="kind">source · http</span>
+            <span class="name">/push/api</span>
+            <span class="meta">1.2k req/s <span class="chip">200 OK</span></span>
+          </div>
+          <div class="node node--source" style="left:80px; top:330px;">
+            <span class="icon">S</span>
+            <span class="kind">source · webhook</span>
+            <span class="name">/git/events</span>
+            <span class="meta">240 req/s <span class="chip">200 OK</span></span>
+          </div>
+          <div class="node node--source" style="left:80px; top:520px;">
+            <span class="icon">S</span>
+            <span class="kind">source · cron</span>
+            <span class="name">tick.5s</span>
+            <span class="meta">every 5s</span>
+          </div>
+
+          <div class="node node--xform" style="left:435px; top:260px;" id="nFilter">
+            <span class="icon">ƒ</span>
+            <span class="kind">filter</span>
+            <span class="name">size_cm &gt; 30</span>
+            <span class="meta">drop_rate <span class="chip">14%</span></span>
+          </div>
+          <div class="node node--xform" style="left:435px; top:440px;" id="nMap">
+            <span class="icon">M</span>
+            <span class="kind">map</span>
+            <span class="name">parse_log()</span>
+            <span class="meta">avg <span class="chip">2.1 ms</span></span>
+          </div>
+
+          <div class="node node--agg" style="left:780px; top:350px;" id="nAgg">
+            <span class="icon">Σ</span>
+            <span class="kind">aggregate · rolling</span>
+            <span class="name">count_by(log_id, 60s)</span>
+            <div class="count">
+              <span class="v" id="aggCount">0</span>
+              <span class="k">deliveries · 60s</span>
+            </div>
+          </div>
+
+          <div class="node node--sink" style="left:960px; top:200px;" id="nSink">
+            <span class="icon">→</span>
+            <span class="kind">sink · table</span>
+            <span class="name">log_pile</span>
+            <span class="meta">writes <span class="chip">42/s</span></span>
+          </div>
+          <div class="node node--sink" style="left:960px; top:500px;" id="nTable">
+            <span class="icon">→</span>
+            <span class="kind">sink · metrics</span>
+            <span class="name">prom.gauge</span>
+            <span class="meta">scrape <span class="chip">15s</span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- Auto-fit scene ----------
+    function fitScene() {
+      const scene = document.getElementById('scene');
+      const sw = scene.offsetWidth;
+      const sh = scene.offsetHeight;
+      const s = Math.min(window.innerWidth / sw, window.innerHeight / sh);
+      const tx = (window.innerWidth  - sw * s) / 2;
+      const ty = (window.innerHeight - sh * s) / 2;
+      scene.style.transform = `translate(${tx}px, ${ty}px) scale(${s})`;
+    }
+    window.addEventListener('resize', fitScene);
+    fitScene();
+
+    // ---------- DAG packet animation ----------
+    // Edge "routes": list of (path id, fromNode, toNode, durationMs)
+    const ROUTES = [
+      // primary trunk: src1 -> filter -> agg -> sink
+      [['e1','S1','nFilter',1300], ['e4','nFilter','nAgg',1500], ['e6','nAgg','nSink',1100]],
+      // src2 -> filter -> agg -> sink
+      [['e2','S2','nFilter',1300], ['e4','nFilter','nAgg',1500], ['e6','nAgg','nSink',1100]],
+      // src3 -> map -> agg -> table
+      [['e3','S3','nMap',1300],   ['e5','nMap','nAgg',1500],     ['e7','nAgg','nTable',1100]],
+      // src1 -> filter -> agg -> table
+      [['e1','S1','nFilter',1300], ['e4','nFilter','nAgg',1500], ['e7','nAgg','nTable',1100]],
+      // src3 -> map -> agg -> sink
+      [['e3','S3','nMap',1300],   ['e5','nMap','nAgg',1500],     ['e6','nAgg','nSink',1100]],
+    ];
+
+    const svg = document.getElementById('svg');
+    const canvas = document.getElementById('canvas');
+    const scene = document.getElementById('scene');
+
+    // Map svg viewBox to canvas pixel size: viewBox 1330x660. We will use getPointAtLength
+    // and convert via the SVG getCTM-aware approach: simplest is to assume the SVG fills
+    // the canvas, so: x_px = pt.x * (canvasWidth / viewBoxWidth); same for y.
+    function vb() {
+      // canvas width in scene-space = canvas.offsetWidth. SVG viewBox is 1000x660.
+      return {
+        scaleX: canvas.offsetWidth / 1000,
+        scaleY: canvas.offsetHeight / 660,
+      };
+    }
+
+    function rid() {
+      const a = 'abcdef0123456789';
+      let s = '';
+      for (let i = 0; i < 6; i++) s += a[(Math.random() * 16) | 0];
+      return s;
+    }
+    function nowStamp() {
+      const d = new Date();
+      const pad = n => String(n).padStart(2, '0');
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function flashNode(id) {
+      const n = document.getElementById(id);
+      if (!n) return;
+      n.classList.remove('flash');
+      void n.offsetWidth;
+      n.classList.add('flash');
+    }
+
+    // Spawn a beaver carrier that walks a multi-segment route
+    function spawnCarrier() {
+      const route = ROUTES[(Math.random() * ROUTES.length) | 0];
+      const id = rid();
+      const carrier = document.createElement('div');
+      carrier.className = 'carrier';
+      carrier.innerHTML = `
+        <div class="bob">
+          <div class="body">
+            <span class="em" title="beaver">🦫</span>
+            <span class="log"></span>
+            <span class="id">log_${id}</span>
+          </div>
+        </div>`;
+      canvas.appendChild(carrier);
+
+      const sc = vb();
+
+      // Walk segments sequentially
+      let segIdx = 0;
+      const startTime = performance.now();
+
+      function runSegment() {
+        if (segIdx >= route.length) {
+          carrier.remove();
+          // last segment ended → counts as a delivery into the sink
+          const lastTo = route[route.length - 1][2];
+          deliver(lastTo, id);
+          return;
+        }
+        const [edgeId, fromN, toN, dur] = route[segIdx];
+        const path = document.getElementById(edgeId);
+        const totalLen = path.getTotalLength();
+        const segStart = performance.now();
+
+        // At start of each segment after the first, flash the from-node
+        if (segIdx > 0) flashNode(fromN);
+
+        function step(t) {
+          const u = Math.min(1, (t - segStart) / dur);
+          const e = u; // linear feels right for conveyor; could ease
+          const len = e * totalLen;
+          const pt = path.getPointAtLength(len);
+          const x = pt.x * sc.scaleX;
+          const y = pt.y * sc.scaleY;
+          carrier.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+          if (u < 1) requestAnimationFrame(step);
+          else {
+            // segment done — flash arriving node
+            flashNode(toN);
+            segIdx++;
+            // tiny dwell pause inside node
+            setTimeout(runSegment, 90);
+          }
+        }
+        requestAnimationFrame(step);
+      }
+      runSegment();
+    }
+
+    // ---------- Aggregation state ----------
+    let totalCount = 0;
+    let buckets = new Array(12).fill(0);
+    const bigCountEl = document.getElementById('bigCount');
+    const aggCountEl = document.getElementById('aggCount');
+    const rateEl = document.getElementById('rate');
+    const p95El  = document.getElementById('p95');
+    const totalLogsEl = document.getElementById('totalLogs');
+    const lastSeenEl = document.getElementById('lastSeen');
+    const deltaEl = document.getElementById('delta');
+    const sparkPath = document.getElementById('sparkPath');
+    const sparkFill = document.getElementById('sparkFill');
+    const feedEl = document.getElementById('feed');
+    const barsEl = document.getElementById('bars');
+
+    // pile bars
+    const NB = 18;
+    for (let i = 0; i < NB; i++) {
+      const b = document.createElement('div');
+      b.style.height = '4px';
+      barsEl.appendChild(b);
+    }
+    const barEls = barsEl.querySelectorAll('div');
+    let nextBar = 0;
+
+    function makePing(sx, sy) {
+      // sx,sy in scene-coords (board origin offset already applied)
+      const p = document.createElement('div');
+      p.className = 'ping';
+      p.textContent = '+1';
+      p.style.left = sx + 'px';
+      p.style.top = sy + 'px';
+      scene.appendChild(p);
+      const start = performance.now();
+      // target = HUD bigCount approximate position in scene-space
+      const targetX = 1440 - 36 - 336 + 30;
+      const targetY = 28 + 90;
+      const dx = targetX - sx;
+      const dy = targetY - sy;
+      const dur = 700;
+      function step(t) {
+        const u = Math.min(1, (t - start) / dur);
+        const ease = 1 - Math.pow(1 - u, 3);
+        p.style.transform = `translate(${dx * ease}px, ${dy * ease}px) scale(${1 + 0.2 * ease})`;
+        p.style.opacity = u < 0.15 ? u / 0.15 : (u > 0.7 ? 1 - (u - 0.7) / 0.3 : 1);
+        if (u < 1) requestAnimationFrame(step);
+        else p.remove();
+      }
+      requestAnimationFrame(step);
+    }
+
+    function deliver(toNodeId, logId) {
+      totalCount++;
+      buckets[buckets.length - 1]++;
+
+      bigCountEl.textContent = totalCount.toLocaleString();
+      aggCountEl.textContent = totalCount.toLocaleString();
+      bigCountEl.animate([
+        { transform: 'scale(1)' },
+        { transform: 'scale(1.16)' },
+        { transform: 'scale(1)' }
+      ], { duration: 360, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+      aggCountEl.animate([
+        { transform: 'scale(1)' },
+        { transform: 'scale(1.18)' },
+        { transform: 'scale(1)' }
+      ], { duration: 360, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+
+      // pile bar
+      const bar = barEls[nextBar % NB];
+      const cur = parseFloat(bar.style.height) || 4;
+      bar.style.height = Math.min(34, cur + 4 + Math.random() * 3) + 'px';
+      nextBar++;
+
+      totalLogsEl.textContent = totalCount.toLocaleString();
+      lastSeenEl.textContent = '0s ago';
+
+      // feed
+      const ms = 5 + Math.floor(Math.random() * 10);
+      const li = document.createElement('li');
+      li.className = 'feed-row';
+      li.innerHTML = `<span class="check">✓</span>
+        <span><span class="id">log_</span>${logId}</span>
+        <span class="ms">${ms} ms · ${nowStamp()}</span>`;
+      feedEl.prepend(li);
+      while (feedEl.children.length > 12) feedEl.removeChild(feedEl.lastChild);
+
+      // p95 wobble
+      p95El.textContent = 6 + Math.floor(Math.random() * 7);
+
+      // ping from the sink/table node
+      const node = document.getElementById(toNodeId);
+      if (node) {
+        const board = document.querySelector('.board');
+        const r = node.getBoundingClientRect();
+        const br = scene.getBoundingClientRect();
+        // Convert to scene-space (undo current scale)
+        const scale = scene.getBoundingClientRect().width / scene.offsetWidth;
+        const sx = (r.left + r.width / 2 - br.left) / scale;
+        const sy = (r.top  + r.height / 2 - br.top)  / scale;
+        makePing(sx, sy);
+      }
+    }
+
+    // bucket tick
+    setInterval(() => {
+      buckets.shift(); buckets.push(0);
+      const sum = buckets.reduce((a,b) => a+b, 0);
+      const rate = sum / buckets.length;
+      rateEl.textContent = rate.toFixed(1);
+      const prev = parseFloat(deltaEl.dataset.prev) || rate;
+      const delta = rate === 0 ? 0 : Math.round(((rate - prev) / Math.max(prev, 0.1)) * 100);
+      deltaEl.dataset.prev = rate;
+      deltaEl.textContent = (delta >= 0 ? '+' : '') + delta + '%';
+      deltaEl.style.color = delta >= 0 ? 'var(--beava-success)' : 'var(--beava-danger)';
+
+      const W = 300, H = 44;
+      const max = Math.max(1, ...buckets);
+      const pts = buckets.map((v, i) => {
+        const x = (i / (buckets.length - 1)) * W;
+        const y = H - 4 - (v / max) * (H - 8);
+        return [x, y];
+      });
+      const d = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+      sparkPath.setAttribute('d', d);
+      sparkFill.setAttribute('d', d + ` L ${W},${H} L 0,${H} Z`);
+
+      // last_seen advance
+      const t = lastSeenEl.textContent;
+      const m = t.match(/^(\d+)s ago/);
+      if (m) {
+        const n = parseInt(m[1], 10) + 1;
+        lastSeenEl.textContent = n + 's ago';
+      }
+    }, 1000);
+
+    // Spawn carriers continuously, with overlap so the DAG always has motion
+    function loop() {
+      spawnCarrier();
+      const next = 700 + Math.random() * 700; // 700–1400 ms between spawns
+      setTimeout(loop, next);
+    }
+    // Stagger initial spawns
+    setTimeout(loop, 200);
+    setTimeout(loop, 900);
+    setTimeout(loop, 1600);
+
+    // initial sparkline baseline
+    const W = 300, H = 44;
+    sparkPath.setAttribute('d', `M0,${H-4} L${W},${H-4}`);
+  </script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Define a pipeline · beava docs</title>
+  <meta name="description" content="Streams describe events. Tables describe state. Together they form a beava pipeline. Feature owners should own feature logic.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'streams', label: 'Define events as streams' },
+      { id: 'tables', label: 'Define state as tables' },
+      { id: 'features', label: 'Think in features, not jobs' },
+      { id: 'ownership', label: 'Feature owners own logic' },
+      { id: 'good-table', label: 'What makes a good table?' },
+      { id: 'testing',    label: 'Test your pipeline' },
+      { id: 'go-deeper',  label: 'Go deeper' },
+    ];
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Define a pipeline"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Getting started</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Define a pipeline</span>
+            </div>
+
+            <h1>Define a pipeline</h1>
+
+            <p className="bv-lede">A beava pipeline is made of streams and tables. A <strong>stream</strong> describes the events your application sends to beava. A <strong>table</strong> describes the state beava maintains from those events.</p>
+
+            <p>This is the core beava mental model:</p>
+            <p><strong>Events come in. Tables stay fresh. Applications query by key.</strong></p>
+
+            <h2 id="streams">Define events as streams</h2>
+            <p>Use <code>@bv.event</code> to describe an event type:</p>
+            <Code lang="python">
+{`@bv.event
+class BidEvent:
+    user_id: str
+    campaign_id: str
+    publisher_id: str
+    ad_slot: str
+    event_type: str
+    price: float
+    ts: float`}
+            </Code>
+            <p>A stream should match something real in your application: a click, an impression, a bid request, a checkout event, a tool call, a workflow update, or a model feedback event.</p>
+            <p>Streams are the input side of beava.</p>
+
+            <h2 id="tables">Define state as tables</h2>
+            <p>Use <code>@bv.table</code> to define the state you want to maintain:</p>
+            <Code lang="python">
+{`@bv.table(key=("user_id", "campaign_id"))
+def UserCampaignFeatures(ev: BidEvent) -> bv.Table:
+    return ev.group_by("user_id", "campaign_id").agg(
+        imps_1h=bv.count(window="1h", where="_event.event_type == 'impression'"),
+        imps_24h=bv.count(window="24h", where="_event.event_type == 'impression'"),
+        spend_24h=bv.sum("price", window="24h", where="_event.event_type == 'win'"),
+    )`}
+            </Code>
+            <p>This table is keyed by <code>user_id</code> and <code>campaign_id</code>. Each key maintains its own rolling feature values.</p>
+
+            <h2 id="features">Think in features, not jobs</h2>
+            <p>Traditional stream processing often asks you to think in jobs, operators, deployment graphs, and infrastructure topology.</p>
+            <p>beava asks a simpler question:</p>
+            <p><strong>What fresh state does your application need by key?</strong></p>
+            <p>Once you know the answer, define the stream and the table.</p>
+
+            <h2 id="ownership">Feature owners should own feature logic</h2>
+            <p>The person who understands a feature should be able to define it, test it, and extend it.</p>
+            <p>With beava, feature logic lives close to application and ML code. The goal is to avoid a workflow where a feature owner writes a specification, hands it to a platform team, waits for an online implementation, and then tries to verify whether the online behavior matches the original intent.</p>
+            <p><strong>Feature owners should own feature logic.</strong></p>
+
+            <h2 id="good-table">What makes a good beava table?</h2>
+            <p>A good beava table usually has:</p>
+            <ul>
+              <li>A clear key.</li>
+              <li>A clear input stream.</li>
+              <li>A small set of features the application needs at decision time.</li>
+              <li>Windowed aggregations that are easy to reason about.</li>
+              <li>Tests that make the expected behavior obvious.</li>
+            </ul>
+            <p>Start with the feature your application actually needs. Add complexity only when the use case requires it.</p>
+
+            <h2 id="testing">Test your pipeline</h2>
+            <p>Before you push real traffic at it, drive the pipeline with a fixture and assert what comes out. <code>bv.test.fixture</code> spins up an in-process server, lets you push synthetic events, and exposes the same <code>get</code> / <code>batch_get</code> API you use in production:</p>
+            <Code lang="python">
+{`import beava as bv
+
+def test_user_clicks_counts_within_window():
+    with bv.test.fixture(Click, UserClicks) as f:
+        f.push("Click", {"user_id": "u_42"})
+        f.push("Click", {"user_id": "u_42"})
+        assert f.get("UserClicks", "u_42") == {"clicks_60s": 2}
+
+        f.advance_time(seconds=120)
+        f.push("Click", {"user_id": "u_42"})
+        assert f.get("UserClicks", "u_42") == {"clicks_60s": 1}`}
+            </Code>
+            <p>The fixture controls the clock with <code>f.advance_time(...)</code>, so you can write deterministic tests for windowed aggregations without sleeping. Run with <code>pytest</code>; no extra config required.</p>
+
+            <h2 id="go-deeper">Go deeper</h2>
+            <p>Pipelines are written in Python. The TypeScript and Go SDKs are <em>communicate-only</em> — they push events and query features against a pipeline that was registered from a Python file. We picked Python as the authoring surface so that the engineer who understands the feature can also ship it; the runtime is the same single binary regardless of which client language pushes events at it.</p>
+            <ul>
+              <li>The mental model: <a href="/docs/concepts/streams/">events</a> and <a href="/docs/concepts/tables/">tables</a>.</li>
+              <li><a href="/docs/operators/">The full operator catalog</a> — counts, sketches, recency, decay, velocity, geo. 54 ops in 7 families.</li>
+              <li><a href="/docs/sdk-api/python/">Python SDK reference</a> — every kwarg, every callable.</li>
+              <li>Talking to a server from another language: <a href="/docs/sdk-api/typescript/">TypeScript</a> · <a href="/docs/sdk-api/go/">Go</a>.</li>
+            </ul>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/get-started/define-a-pipeline/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

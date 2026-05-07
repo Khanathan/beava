@@ -1,0 +1,110 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>Card</title>
+<style>
+  body { padding: 24px 28px; }
+  .stack { display: flex; flex-direction: column; gap: 24px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+  /* base Card */
+  .card {
+    display: block;
+    padding: 18px 20px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    text-decoration: none;
+    box-shadow: 0 1px 2px rgba(26,23,20,0.04);
+    transition: border-color 200ms var(--ease-out), transform 200ms var(--ease-out), box-shadow 200ms var(--ease-out);
+    position: relative;
+  }
+  .card:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: 0 2px 4px rgba(26,23,20,0.04), 0 8px 20px rgba(26,23,20,0.08); }
+
+  .card .title {
+    font-family: var(--font-serif); font-weight: 600;
+    font-size: 18px; line-height: 1.25; letter-spacing: -0.01em;
+    color: var(--fg1); margin: 0 0 4px;
+  }
+  .card .desc {
+    font-family: var(--font-sans); font-size: 13px; line-height: 1.5;
+    color: var(--fg3); margin: 0;
+  }
+  .card .arrow {
+    position: absolute; top: 18px; right: 18px;
+    color: var(--accent); font-size: 14px;
+    opacity: 0; transform: translateX(-4px);
+    transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+  }
+  .card:hover .arrow { opacity: 1; transform: translateX(0); }
+
+  /* with eyebrow / kicker */
+  .card .kicker {
+    font-family: var(--font-sans); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg3); margin: 0 0 8px;
+  }
+  .card .kicker.accent { color: var(--accent); }
+
+  /* compact variant — for dense docs index */
+  .card.compact { padding: 14px 16px; border-radius: 12px; }
+  .card.compact .title { font-family: var(--font-sans); font-size: 14px; font-weight: 600; }
+  .card.compact .desc { font-size: 12.5px; }
+
+  /* iconed variant */
+  .card.iconed { padding-left: 64px; }
+  .card.iconed .ic {
+    position: absolute; left: 18px; top: 18px;
+    width: 34px; height: 34px; border-radius: 9px;
+    background: var(--beava-orange-wash); color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 0 0 8px; letter-spacing: 0.02em; }
+</style>
+</head><body>
+  <div class="stack">
+    <div>
+      <div class="label">// default · title + desc + href</div>
+      <div class="grid2">
+        <a class="card" href="#">
+          <div class="title">Rolling counters</div>
+          <div class="desc">Sliding time windows over any event stream. Sub-millisecond queries.</div>
+          <span class="arrow">→</span>
+        </a>
+        <a class="card" href="#">
+          <div class="title">Leaderboards</div>
+          <div class="desc">Top-N by any metric, always sorted, never stale.</div>
+          <span class="arrow">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">// with eyebrow</div>
+      <div class="grid2">
+        <a class="card" href="#">
+          <div class="kicker accent">Recipe</div>
+          <div class="title">Per-customer dashboards</div>
+          <div class="desc">Render a live entity dashboard from one push endpoint.</div>
+          <span class="arrow">→</span>
+        </a>
+        <a class="card" href="#">
+          <div class="kicker">Concept</div>
+          <div class="title">Why HTTP, not Kafka</div>
+          <div class="desc">The case for a single-binary feature server.</div>
+          <span class="arrow">→</span>
+        </a>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">// iconed · for feature/capability lists</div>
+      <a class="card iconed" href="#">
+        <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg></div>
+        <div class="title">Velocities</div>
+        <div class="desc">Rate-of-change over rolling windows. Detect surges without math.</div>
+        <span class="arrow">→</span>
+      </a>
+    </div>
+  </div>
+</body></html>

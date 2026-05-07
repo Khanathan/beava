@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tables · beava docs</title>
+  <meta name="description" content="A table is the state beava maintains from one or more streams. Product analytics can become product logic.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'what', label: 'What is a table?' },
+      { id: 'state', label: 'Tables are application state' },
+      { id: 'keys', label: 'Keys' },
+      { id: 'ownership', label: 'Tables and ownership' },
+    ];
+    const quote = {borderLeft:'3px solid var(--accent)', paddingLeft:14, color:'var(--fg2)', margin:'14px 0', fontStyle:'italic'};
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Tables"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Concepts</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Tables</span>
+            </div>
+
+            <h1>Tables</h1>
+
+            <p className="bv-lede">A table is the state beava maintains from one or more streams. Tables define how events are grouped, aggregated, and windowed over time.</p>
+
+            <h2 id="what">What is a table?</h2>
+            <Code lang="python">
+{`@bv.table(key="user_id")
+def UserActivityFeatures(ev: UserEvent) -> bv.Table:
+    return ev.group_by("user_id").agg(
+        clicks_1h=bv.count(window="1h", where="_event.event_type == 'click'"),
+        views_1h=bv.count(window="1h", where="_event.event_type == 'view'"),
+    )`}
+            </Code>
+            <p>A table answers the question:</p>
+            <blockquote style={quote}>What state should my application be able to query by key?</blockquote>
+
+            <h2 id="state">Tables are application state</h2>
+            <p>Tables are not only analytics outputs. They are operational state that applications can use directly.</p>
+            <p>A table might represent:</p>
+            <ul>
+              <li>User behavior over the last hour.</li>
+              <li>Campaign spend today.</li>
+              <li>Publisher quality over the last 24 hours.</li>
+              <li>Fraud velocity over the last 10 minutes.</li>
+              <li>Agent tool usage in the current workflow.</li>
+              <li>Product demand in the current session.</li>
+            </ul>
+            <p><strong>Product analytics can become product logic.</strong></p>
+
+            <h2 id="keys">Keys</h2>
+            <p>Every table has a key. The key defines how state is stored and queried.</p>
+            <p>Examples:</p>
+            <Code lang="python">{`@bv.table(key="user_id")`}</Code>
+            <Code lang="python">{`@bv.table(key=("user_id", "campaign_id"))`}</Code>
+            <p>Choose the key that matches the decision your application needs to make.</p>
+            <p>If a recommender needs user state, key by <code>user_id</code>. If an ads system needs frequency caps per user and campaign, key by <code>(user_id, campaign_id)</code>.</p>
+
+            <h2 id="ownership">Tables and ownership</h2>
+            <p>Tables should be easy for feature owners to read and test.</p>
+            <p>The person who understands the feature should be able to understand the table definition.</p>
+            <p><strong>Real-time features should feel like application code.</strong></p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/concepts/tables/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

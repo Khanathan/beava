@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Benchmarks · beava docs</title>
+  <meta name="description" content="Benchmarks should be public, reproducible, and workload-specific. Freshness is the benchmark that matters most.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'principles', label: 'Public and reproducible' },
+      { id: 'current', label: 'Current benchmark direction' },
+      { id: 'report', label: 'What we plan to report' },
+      { id: 'why', label: 'Why freshness matters' },
+    ];
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Benchmarks"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Vision</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Benchmarks</span>
+            </div>
+
+            <h1>Benchmarks</h1>
+
+            <h2 id="principles">Benchmarks should be public and reproducible</h2>
+            <p className="bv-lede">Benchmarks should be public, reproducible, and workload-specific. beava’s goal is not to claim one number for every use case. The goal is to show that a single-node runtime can handle serious application workloads before teams need distributed coordination.</p>
+            <p><strong>Freshness is the benchmark that matters most.</strong></p>
+            <p>When a new event becomes queryable quickly enough, it can change the architecture of the application.</p>
+
+            <h2 id="current">Current benchmark direction</h2>
+            <p>In current reproducible benchmarks:</p>
+            <ul>
+              <li>A single beava node reaches <strong>600k events/sec</strong> on a smaller workload.</li>
+              <li>A single beava node reaches <strong>100k events/sec</strong> on a heavier fraud-style workload with many sketches.</li>
+            </ul>
+            <p>These numbers should always be understood in terms of workload shape and hardware. Event size, aggregation type, number of windows, number of keys, sketches, durability settings, and query mix all matter.</p>
+
+            <h2 id="report">What we plan to report</h2>
+            <p>As the project matures, benchmark reports should include:</p>
+            <ul>
+              <li>Hardware and cloud instance type.</li>
+              <li>CPU, memory, and storage details.</li>
+              <li>Workload shape.</li>
+              <li>Event schema.</li>
+              <li>Number of streams.</li>
+              <li>Number of tables.</li>
+              <li>Number of keys.</li>
+              <li>Aggregation types.</li>
+              <li>Window sizes.</li>
+              <li>Sketch usage.</li>
+              <li>Durability settings.</li>
+              <li>Write throughput.</li>
+              <li>Read throughput.</li>
+              <li>Read latency.</li>
+              <li>Write latency.</li>
+              <li>Write-to-read freshness.</li>
+              <li>p50, p95, and p99 metrics.</li>
+            </ul>
+
+            <h2 id="why">Why freshness matters</h2>
+            <p>A fast read path is useful. But if the state is stale, the application still makes decisions from old information.</p>
+            <p>beava cares about write-to-read freshness because many modern application decisions happen while the user, bid, transaction, workflow, or agent session is still active.</p>
+            <p><strong>Low-latency reads are useful; low-latency freshness changes the architecture.</strong></p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/vision/benchmarks/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>Footer</title>
+<style>
+  body { padding: 0; width: 700px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 22px 28px 8px; letter-spacing: 0.02em; }
+
+  footer.beava-footer {
+    background: var(--bg-alt);
+    border-top: 1px solid var(--border);
+    padding: 44px 28px 28px;
+  }
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 1.6fr repeat(3, 1fr);
+    gap: 28px;
+    margin-bottom: 32px;
+  }
+
+  .brand-col .lockup {
+    display: flex; align-items: center; gap: 9px; margin-bottom: 10px;
+  }
+  .brand-col .lockup img { width: 28px; height: 28px; }
+  .brand-col .lockup span {
+    font-family: var(--font-serif); font-weight: 700;
+    font-size: 20px; letter-spacing: -0.01em; color: var(--fg1);
+  }
+  .brand-col p {
+    font-family: var(--font-sans); font-size: 13px; line-height: 1.55;
+    color: var(--fg3); margin: 0 0 12px; max-width: 28ch;
+  }
+  .brand-col .meta {
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3);
+  }
+
+  .col .heading {
+    font-family: var(--font-sans); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg3); margin: 0 0 12px;
+  }
+  .col ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 7px; }
+  .col li a {
+    font-family: var(--font-sans); font-size: 13.5px;
+    color: var(--fg2); text-decoration: none;
+    transition: color 150ms var(--ease-out);
+  }
+  .col li a:hover { color: var(--accent); }
+  .col li a .ext {
+    font-family: var(--font-mono); font-size: 11px; color: var(--fg3);
+    margin-left: 6px;
+  }
+
+  .footer-bottom {
+    border-top: 1px solid var(--border);
+    padding-top: 18px;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 10px;
+  }
+  .footer-bottom .legal {
+    font-family: var(--font-sans); font-size: 12px; color: var(--fg3);
+  }
+  .footer-bottom .legal a { color: var(--fg3); text-decoration: none; }
+  .footer-bottom .legal a:hover { color: var(--accent); text-decoration: underline; }
+  .footer-bottom .legal .sep { margin: 0 8px; color: var(--border-strong); }
+
+  .footer-bottom .social { display: flex; gap: 12px; align-items: center; }
+  .footer-bottom .social a {
+    width: 28px; height: 28px; border-radius: 7px;
+    background: #fff; border: 1px solid var(--border);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--fg2);
+    transition: border-color 150ms var(--ease-out), color 150ms var(--ease-out);
+  }
+  .footer-bottom .social a:hover { border-color: var(--accent); color: var(--accent); }
+
+  .status {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11.5px;
+    color: var(--beava-success);
+    padding: 3px 9px; border-radius: 999px;
+    background: var(--beava-success-wash); border: 1px solid #cfdcbd;
+  }
+  .status .dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--beava-success);
+    box-shadow: 0 0 0 0 var(--beava-success);
+    animation: pulse 1.6s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(74,122,58,0.4); }
+    100% { box-shadow: 0 0 0 8px rgba(74,122,58,0); }
+  }
+</style>
+</head><body>
+
+  <div class="label">// site-wide footer · 4-col + bottom bar with status</div>
+
+  <footer class="beava-footer">
+    <div class="footer-grid">
+      <div class="col brand-col">
+        <div class="lockup">
+          <img src="../assets/logo-mark.png" alt="">
+          <span>beava</span>
+        </div>
+        <p>Open-source feature server for real-time features. One binary. No Kafka.</p>
+        <div class="meta">Apache 2.0 · made by a small team in&nbsp;public</div>
+      </div>
+
+      <div class="col">
+        <div class="heading">Product</div>
+        <ul>
+          <li><a href="#">Features</a></li>
+          <li><a href="#">Docs</a></li>
+          <li><a href="#">Changelog</a></li>
+          <li><a href="#">Roadmap</a></li>
+          <li><a href="#">Pricing</a></li>
+        </ul>
+      </div>
+
+      <div class="col">
+        <div class="heading">Learn</div>
+        <ul>
+          <li><a href="#">Field guide</a></li>
+          <li><a href="#">Recipes</a></li>
+          <li><a href="#">Reference</a></li>
+          <li><a href="#">Talks &amp; videos</a></li>
+        </ul>
+      </div>
+
+      <div class="col">
+        <div class="heading">Community</div>
+        <ul>
+          <li><a href="#">GitHub<span class="ext">↗</span></a></li>
+          <li><a href="#">Discord<span class="ext">↗</span></a></li>
+          <li><a href="#">RFCs</a></li>
+          <li><a href="#">Brand kit</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <div class="legal">
+        © 2026 beava labs · beava.dev
+        <span class="sep">·</span>
+        <a href="#">Privacy</a>
+        <span class="sep">·</span>
+        <a href="#">Terms</a>
+        <span class="sep">·</span>
+        <span class="status"><span class="dot"></span>all systems normal</span>
+      </div>
+      <div class="social">
+        <a href="#" title="GitHub"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.26-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.39.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg></a>
+        <a href="#" title="Discord"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.27 5.33A18.4 18.4 0 0 0 14.7 4l-.2.4a17 17 0 0 1 4.13 1.27 14 14 0 0 0-9.26 0A17 17 0 0 1 13.5 4.4L13.3 4a18.4 18.4 0 0 0-4.57 1.33C5.84 9.5 5.06 13.55 5.45 17.55a18.6 18.6 0 0 0 5.55 2.78l.45-.6a12 12 0 0 1-1.92-.93l.4-.3a13 13 0 0 0 11.14 0l.4.3c-.6.36-1.24.67-1.92.93l.45.6a18.6 18.6 0 0 0 5.55-2.78c.45-4.62-.7-8.65-2.28-12.22zM9.7 15.4c-1.04 0-1.9-.95-1.9-2.12s.84-2.13 1.9-2.13 1.92.95 1.9 2.13c0 1.17-.84 2.12-1.9 2.12zm6.6 0c-1.04 0-1.9-.95-1.9-2.12s.84-2.13 1.9-2.13 1.92.95 1.9 2.13c0 1.17-.86 2.12-1.9 2.12z"/></svg></a>
+        <a href="#" title="X"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18 3h3l-7.5 8.6L22 21h-6.8l-5.3-6.5L3.7 21H1l8-9.2L1.4 3h7l4.8 6 5-6z"/></svg></a>
+      </div>
+    </div>
+  </footer>
+
+</body></html>

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Non-goals and tradeoffs · beava docs</title>
+  <meta name="description" content="What beava is deliberately not. Start with one box, push it far, scale when needed. Simple should not mean unserious.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'not', label: 'What beava is not' },
+      { id: 'list', label: 'Non-goals' },
+      { id: 'single', label: 'Single-node first' },
+      { id: 'scale', label: 'Scaling deliberately' },
+    ];
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Non-goals and tradeoffs"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Vision</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Non-goals and tradeoffs</span>
+            </div>
+
+            <h1>Non-goals and tradeoffs</h1>
+
+            <h2 id="not">What beava is not trying to be</h2>
+            <p className="bv-lede">A good system should be clear about what it is not trying to do. beava is early, and we want to make tradeoffs deliberately.</p>
+            <p><strong>Simple should not mean unserious.</strong></p>
+
+            <h2 id="list">Non-goals</h2>
+            <ul>
+              <li><strong>beava is not trying to replace every streaming system.</strong> It is focused on application-facing event processing, real-time features, and fresh queryable state.</li>
+              <li><strong>beava is not trying to hide complexity behind magic.</strong> The goal is to make the system understandable enough that developers can reason about what happens when events arrive.</li>
+              <li><strong>beava is not only a feature store.</strong> Feature serving is one important use case, but the broader goal is to turn recent events into operational state for applications and agents.</li>
+              <li><strong>beava is not trying to force distributed coordination into the first user experience.</strong> A strong single-node path should carry many workloads before the system asks users to operate a distributed deployment.</li>
+              <li><strong>beava is not trying to make the managed service the only serious path.</strong> The open-source project should be useful, understandable, and production-oriented on its own.</li>
+            </ul>
+
+            <h2 id="single">Single-node first</h2>
+            <p>beava starts with a serious single-node path.</p>
+            <p>Modern cloud machines can hold a lot of memory, and one well-designed node can go much further than many teams expect.</p>
+            <p>In current reproducible benchmarks, a single beava node reaches 600k events/sec on a smaller workload and 100k events/sec on a heavier fraud-style workload with many sketches.</p>
+            <p>This does not mean one node solves every problem. It means teams should be able to start with one node, push it far, and scale when the use case actually needs it.</p>
+            <p><strong>Start with one box. Push it far. Scale when needed.</strong></p>
+
+            <h2 id="scale">Scaling deliberately</h2>
+            <p>beava will grow toward more deployment modes over time.</p>
+            <p>The goal is to add scaling paths without making the starting experience harder.</p>
+            <p>Distributed systems are powerful, but they come with operational cost. beava should introduce that complexity only when it makes the system more useful.</p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/vision/non-goals/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

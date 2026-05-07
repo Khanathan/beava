@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chapter 1: How TikTok's For You feed actually works — beava field guide</title>
+  <link rel="stylesheet" href="styles/colors_and_type.css">
+  <link rel="stylesheet" href="styles/site.css">
+  <link rel="icon" href="assets/mascot-mark-geometric.png">
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="js/Shared.jsx"></script>
+
+  <script type="text/babel">
+    const Hero = () => (
+      <header style={{ background: 'var(--beava-orange-wash)', borderBottom: '1px solid var(--border)', padding: '72px 28px 88px', position: 'relative', overflow: 'hidden' }}>
+        <div className="ch-hero-mascot" style={{ position: 'absolute', right: 'max(24px, calc(50% - 540px))', top: 24, opacity: 1, transform: 'rotate(4deg)', pointerEvents: 'none' }}>
+          <img src="assets/mascot-work-pose.svg" width={380} height={380} style={{ maxWidth: '38vw', height: 'auto' }}/>
+        </div>
+        <div style={{ maxWidth: 760, margin: '0 auto', position: 'relative' }}>
+          <div style={{ fontFamily: 'var(--font-accent)', fontWeight: 700, fontSize: 64, color: 'var(--accent)', lineHeight: 0.9, transform: 'rotate(-2deg)', display: 'inline-block', margin: '0 0 14px' }}>
+            Chapter 1
+          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--fg3)', marginBottom: 14 }}>
+            beava field guide &middot; 14 min read
+          </div>
+          <h1 style={{ fontFamily: 'var(--font-serif)', fontWeight: 600, fontSize: 'clamp(38px, 5.2vw, 60px)', lineHeight: 1.05, letterSpacing: '-0.02em', color: 'var(--fg1)', margin: '0 0 22px', textWrap: 'pretty' }}>
+            How TikTok's For You feed actually works
+          </h1>
+          <p style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 22, lineHeight: 1.45, color: 'var(--fg2)', margin: 0, maxWidth: 620, textWrap: 'pretty' }}>
+            At the heart of every personalization system is one ugly little data structure. In 14 minutes and 3 curl commands, you'll have one.
+          </p>
+          <div style={{ marginTop: 28, display: 'flex', gap: 14, alignItems: 'center' }}>
+            <div style={{ width: 44, height: 44, borderRadius: 999, background: '#fff', border: '1px solid var(--border)', color: 'var(--accent)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15 }}>SR</div>
+            <div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600, color: 'var(--fg1)' }}>Sam Rosen</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)' }}>Launch day &middot; 2026</div>
+            </div>
+          </div>
+        </div>
+      </header>
+    );
+
+    const Article = () => (
+      <article className="prose" style={{ padding: '56px 28px 40px' }}>
+        <p style={{ fontFamily: 'var(--font-serif)', fontSize: 22, lineHeight: 1.55, color: 'var(--fg1)', margin: '0 0 28px', fontStyle: 'italic' }}>
+          Here's the secret: nobody at TikTok knows why you liked that cat video. The algorithm doesn't either. What the algorithm <em>does</em> know is that 2,400 people whose watch histories look a lot like yours also liked it. That's the whole trick.
+        </p>
+
+        <Callout eyebrow="WHAT WE'RE BUILDING" mascot="work-pose">
+          A recency-weighted table that answers "what's this user into lately?" in microseconds. Twelve lines of Python. Same data structure that runs the feed on a billion phones.
+        </Callout>
+
+        <p>The mechanism behind that sentence is, in engineering terms, almost embarrassingly simple. You keep, for every user, a rolling count of which tags they've engaged with in the last hour, day, and week. You keep, for every video, a rolling count of which <em>kinds of users</em> have engaged with it. At serve time, you do some cheap dot-product-ish math between those two vectors, sort, and send the top 10.</p>
+
+        <p>Everything else — the "AI", the "graph", the mystical language model nobody at TikTok will confirm exists — is a refinement. The load-bearing primitive is <strong>rolling counters, keyed by entity, aggregated at multiple time windows</strong>.</p>
+
+        <blockquote>
+          <p>At the heart of every "AI feed" you've ever seen is one ugly little data structure: a map from (user_id, tag_id) to a short list of counts at different windows.</p>
+        </blockquote>
+
+        <h2>The toy version</h2>
+
+        <p>Let's build it. You run one instance of beava locally:</p>
+
+        <pre className="code-well">
+<span className="cmt">$ </span><span style={{color:'var(--fg1)'}}>brew install beava &amp;&amp; beava -c beava.yaml</span>{'\n'}
+<span className="cmt"># listening on :8080 · 14 MB binary · 62ms cold start</span>
+        </pre>
+
+        <p>You define two streams — one for watches, one for the items themselves — and a single rolling-count feature keyed on the pair <code>(user_id, tag_id)</code>:</p>
+
+        <pre className="code-well">
+<span className="kw">import</span> beava <span className="kw">as</span> bv{'\n'}{'\n'}
+<span className="fn">@bv.stream</span>{'\n'}
+<span className="kw">class</span> <span className="ty">Watch</span>:{'\n'}
+{'    '}user_id: <span className="ty">str</span>{'\n'}
+{'    '}video_id: <span className="ty">str</span>{'\n'}
+{'    '}watch_seconds: <span className="ty">float</span>{'\n'}{'\n'}
+<span className="fn">@bv.table</span>(key=[<span className="str">"user_id"</span>, <span className="str">"tag"</span>]){'\n'}
+<span className="kw">def</span> <span className="fn">UserTagAffinity</span>(w: Watch):{'\n'}
+{'    '}<span className="kw">for</span> tag <span className="kw">in</span> tags_of(w.video_id):{'\n'}
+{'        '}<span className="kw">yield</span> &#123;<span className="str">"user_id"</span>: w.user_id, <span className="str">"tag"</span>: tag&#125;.<span className="fn">agg</span>({'\n'}
+{'            '}weight_1h  = bv.<span className="fn">sum</span>(w.watch_seconds, window=<span className="str">"1h"</span>),{'\n'}
+{'            '}weight_24h = bv.<span className="fn">sum</span>(w.watch_seconds, window=<span className="str">"24h"</span>),{'\n'}
+{'            '}weight_7d  = bv.<span className="fn">sum</span>(w.watch_seconds, window=<span className="str">"7d"</span>),{'\n'}
+{'        '}){'\n'}
+        </pre>
+
+        <p>That's ~12 lines. It is, up to scaling and spectacular tuning, the same data structure that runs the feed on a billion phones.</p>
+
+        <h2>Why this is the thing</h2>
+
+        <p>The interesting property of this representation isn't what it computes — anyone can sum numbers. It's what you can <em>ask</em> of it, cheaply, at serve time. "Give me every tag this user has watched more than 60 seconds of in the last hour." That's a range scan over one key prefix. A Postgres index could do it in principle, but Postgres would also try to transactionally commit every watch event, and your feed would be powered by a database on fire.</p>
+
+        <p>beava's job is to hold exactly this: a pile of small counts, keyed however you want, queried at microsecond latency. It is not a database. It is not a queue. It is a specialized cache for the shape of question personalization systems ask.</p>
+
+        <Callout eyebrow="THE TRICK" mascot="geometric">
+          <strong>You don't need a graph database.</strong> Every few years a well-funded startup arrives to tell you your feed needs one. It does not. A graph database is what you reach for when the <em>structure</em> of the relationship matters — friend-of-a-friend, shortest path, cycles. Feeds don't care about any of that. They care about rolling counts.
+        </Callout>
+
+        <h2>What the LLMs are for</h2>
+
+        <p>This will surprise some people: the language models are not the recommender. They're the <em>tagger</em>. An LLM (or more commonly, a smaller model trained for the task) watches a video and produces ~20 tags — "bearded man", "woodworking", "ASMR", "plane", "shavings", "satisfying". Those tags go into the stream. The recommender is the boring, old, unreasonably effective thing above.</p>
+
+        <p>This matters for implementation. The LLM runs <em>asynchronously</em>, at video-upload time, and writes its output as an event. The hot path — the thing that has to answer "what video next?" in 40ms for a billion users — never calls an LLM. It does dot products against a rolling-counter table.</p>
+
+        <h2>The part nobody mentions</h2>
+
+        <p>Here is the thing that every talk about recommender systems glosses over: <strong>this breaks in interesting ways</strong>. A cold user has no counts. A cold video has no engagement. A viral video has so much engagement that the rolling counter saturates and stops being informative. Every real system spends most of its complexity budget handling these edge cases.</p>
+
+        <p>beava has no opinions about any of that. It gives you the primitive — "here is the counter, fast, at any window" — and leaves the policy to you. This is a feature: you can change your cold-start behavior without waking up a streaming platform's on-call engineer.</p>
+
+        <Callout eyebrow="HEADS UP" mascot="pose-3" tint="warm">
+          <strong>What beava will <em>not</em> do for you.</strong> It won't debounce the same watch submitted twice. It won't join your event stream to your users table. It won't decide that 60 seconds of passive watching means less than 20 seconds of active replay. Those are decisions. beava is for the mechanical part underneath the decisions.
+        </Callout>
+
+        <h2>Try it — 3 curl commands</h2>
+
+        <p>Assuming you ran <code>beava -c beava.yaml</code> above and wrote that pipeline to <code>pipeline.py</code>, register it and push some events:</p>
+
+        <pre className="code-well">
+<span className="cmt"># 1. Register the pipeline</span>{'\n'}
+<span className="kw">curl</span> -X POST localhost:8080/pipelines -d @pipeline.py{'\n'}{'\n'}
+<span className="cmt"># 2. Send a watch</span>{'\n'}
+<span className="kw">curl</span> -X POST localhost:8080/events/Watch \<br/>
+{'  '}-H <span className="str">'content-type: application/json'</span> \<br/>
+{'  '}-d <span className="str">{`'{"user_id":"u1","video_id":"v_abc","watch_seconds":42}'`}</span>{'\n'}{'\n'}
+<span className="cmt"># 3. Ask what this user cares about in the last hour</span>{'\n'}
+<span className="kw">curl</span> localhost:8080/features/UserTagAffinity?user_id=u1{'\n'}
+<span className="cmt">{`# => [{"tag":"woodworking","weight_1h":42.0,...}, ...]`}</span>
+        </pre>
+
+        <p>That's it. That's the whole For You feed, minus ten thousand engineers refining the edge cases.</p>
+
+        <h2>What's next in this field guide</h2>
+
+        <p>Chapter 2 will show the fraud version of the same primitive — the 18-line card-abuse detector a friend at a fintech ran in production. Chapter 3 will get into rate limits, which are just counters with a threshold. Chapter 4 will do leaderboards, which are counters with a sort order. Chapter 5 will explain, with minimal hand-waving, why the binary is 14 MB instead of 1.4 GB.</p>
+
+        <p>Every chapter is a small, complete, working thing you can run on your laptop. We believe the best way to learn a primitive is to use it for something ridiculous.</p>
+
+        <div style={{ marginTop: 56, padding: '28px 32px', background: 'var(--beava-paper)', border: '1px solid var(--border)', borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 320px' }}>
+            <div style={{ fontFamily: 'var(--font-accent)', fontSize: 22, fontWeight: 700, color: 'var(--accent)', transform: 'rotate(-1.5deg)', display: 'inline-block', lineHeight: 1, marginBottom: 6 }}>
+              speaking of which →
+            </div>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, lineHeight: 1.3, color: 'var(--fg1)', fontWeight: 600, letterSpacing: '-0.01em' }}>
+              Go feed the beaver. He runs on the exact primitive in this chapter.
+            </div>
+          </div>
+          <Button variant="primary" size="lg" icon={<Icon name="arrow" size={16}/>} href="index.html#top">Feed the beaver</Button>
+        </div>
+
+        <div style={{ marginTop: 48, paddingTop: 28, borderTop: '1px solid var(--border)', display: 'flex', gap: 14, alignItems: 'center' }}>
+          <div style={{ width: 48, height: 48, borderRadius: 999, background: 'var(--beava-orange-wash)', color: 'var(--accent)', display: 'grid', placeItems: 'center', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 17 }}>SR</div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 600, color: 'var(--fg1)' }}>Sam Rosen</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)' }}>Maintainer. Writes the field guide. Mostly in airport lounges.</div>
+          </div>
+          <a href="index.html" style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--accent)', textDecoration: 'none', padding: '8px 14px', border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }}>← back home</a>
+        </div>
+      </article>
+    );
+
+    const Page = () => (
+      <>
+        <Nav active="guide"/>
+        <Hero/>
+        <Article/>
+        <Footer/>
+      </>
+    );
+    ReactDOM.createRoot(document.getElementById('root')).render(<Page/>);
+  </script>
+</body>
+</html>

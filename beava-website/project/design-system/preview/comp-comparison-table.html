@@ -1,0 +1,159 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>ComparisonTable</title>
+<style>
+  body { padding: 28px 32px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 0 0 14px; letter-spacing: 0.02em; }
+
+  .compare-wrap {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+  }
+
+  table.compare {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-sans);
+    table-layout: fixed;
+  }
+
+  /* ---------- header row ---------- */
+  table.compare thead th {
+    background: var(--bg-alt);
+    font-family: var(--font-sans);
+    font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg3);
+    text-align: left;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  table.compare thead th.row-head { width: 30%; }
+  table.compare thead th.us {
+    color: var(--accent);
+    background: var(--beava-orange-wash);
+    border-left: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
+    border-right: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
+  }
+
+  /* ---------- body rows ---------- */
+  table.compare tbody td {
+    padding: 14px 18px;
+    border-top: 1px solid var(--border);
+    vertical-align: top;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg2);
+  }
+  table.compare tbody tr:nth-child(odd) td { background: color-mix(in oklab, var(--beava-paper) 55%, #fff); }
+  table.compare tbody td.row-label {
+    font-weight: 600;
+    color: var(--fg1);
+    font-size: 13.5px;
+  }
+
+  /* highlighted "us" column — vertical band that runs the full table */
+  table.compare td.us {
+    background: var(--beava-orange-wash);
+    border-left: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
+    border-right: 1px solid color-mix(in oklab, var(--accent) 25%, var(--border));
+    color: var(--fg1);
+  }
+  table.compare tbody tr:nth-child(odd) td.us {
+    background: color-mix(in oklab, var(--beava-orange-wash) 80%, #fff);
+  }
+
+  /* ---------- value chips ---------- */
+  .v {
+    display: inline-flex; align-items: baseline; gap: 7px;
+    font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+    line-height: 1.4;
+  }
+  .v .ic {
+    flex-shrink: 0; width: 14px; height: 14px;
+    border-radius: 999px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-weight: 700; font-size: 10px;
+    color: #fff; line-height: 1;
+    transform: translateY(2px);
+  }
+  .v.yes  .ic { background: var(--beava-success); }
+  .v.yes  .ic::before { content: "✓"; }
+  .v.no   .ic { background: var(--border-strong); color: var(--fg2); }
+  .v.no   .ic::before { content: "—"; font-size: 11px; }
+  .v.meh  .ic { background: var(--beava-warn); }
+  .v.meh  .ic::before { content: "~"; transform: translateY(-1px); }
+
+  .v.yes  { color: var(--fg1); }
+  .v.no   { color: var(--fg3); }
+  .v.meh  { color: var(--beava-brown-dark); }
+
+  .v .note {
+    display: block;
+    font-family: var(--font-sans);
+    font-size: 11.5px; color: var(--fg3);
+    font-weight: 400;
+    margin-top: 3px;
+  }
+  .v.text { font-family: var(--font-mono); font-size: 12.5px; }
+</style>
+</head><body>
+
+  <div class="label">// alternatives table — introduction page</div>
+
+  <div class="compare-wrap">
+    <table class="compare">
+      <thead>
+        <tr>
+          <th class="row-head"></th>
+          <th class="us">beava</th>
+          <th>Kafka + Flink</th>
+          <th>Materialize</th>
+          <th>Redis</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="row-label">Binaries to run</td>
+          <td class="us"><span class="v yes"><span class="ic"></span>1</span></td>
+          <td><span class="v no"><span class="ic"></span>3+</span></td>
+          <td><span class="v meh"><span class="ic"></span>1<span class="note">+ external storage</span></span></td>
+          <td><span class="v yes"><span class="ic"></span>1</span></td>
+        </tr>
+        <tr>
+          <td class="row-label">HTTP push &amp; query</td>
+          <td class="us"><span class="v yes"><span class="ic"></span>native</span></td>
+          <td><span class="v no"><span class="ic"></span>none</span></td>
+          <td><span class="v meh"><span class="ic"></span>SQL only</span></td>
+          <td><span class="v meh"><span class="ic"></span>RESP</span></td>
+        </tr>
+        <tr>
+          <td class="row-label">Rolling-window operators</td>
+          <td class="us"><span class="v yes"><span class="ic"></span>built-in</span></td>
+          <td><span class="v yes"><span class="ic"></span>via Flink SQL</span></td>
+          <td><span class="v yes"><span class="ic"></span>built-in</span></td>
+          <td><span class="v no"><span class="ic"></span>DIY</span></td>
+        </tr>
+        <tr>
+          <td class="row-label">Memory at 1M entities</td>
+          <td class="us"><span class="v yes"><span class="ic"></span>~300 MB</span></td>
+          <td><span class="v meh"><span class="ic"></span>~6 GB</span></td>
+          <td><span class="v meh"><span class="ic"></span>~1.2 GB</span></td>
+          <td><span class="v yes"><span class="ic"></span>~400 MB</span></td>
+        </tr>
+        <tr>
+          <td class="row-label">Cold start</td>
+          <td class="us"><span class="v yes"><span class="ic"></span>&lt; 1 s</span></td>
+          <td><span class="v no"><span class="ic"></span>~30 s</span></td>
+          <td><span class="v meh"><span class="ic"></span>~5 s</span></td>
+          <td><span class="v yes"><span class="ic"></span>&lt; 1 s</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</body></html>

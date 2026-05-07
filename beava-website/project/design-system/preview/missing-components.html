@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Missing components · beava design system</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<link rel="icon" href="../assets/mascot-mark-geometric.png">
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+
+  .page { max-width: 1080px; margin: 0 auto; padding: 56px 32px 120px; }
+
+  .header {
+    display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: end;
+    padding-bottom: 28px; border-bottom: 1px solid var(--border); margin-bottom: 40px;
+  }
+  .eyebrow { font-family: var(--font-sans); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin: 0 0 12px; }
+  h1 { font-family: var(--font-serif); font-weight: 700; font-size: 56px; line-height: 1.02; letter-spacing: -0.02em; margin: 0 0 14px; max-width: 18ch; }
+  h1 em { color: var(--accent); }
+  .lede { font-family: var(--font-sans); font-size: 16px; line-height: 1.6; color: var(--fg2); margin: 0; max-width: 60ch; }
+  .header img { width: 130px; height: 130px; }
+
+  .toc {
+    margin-bottom: 48px; padding: 16px 18px;
+    background: var(--beava-paper); border: 1px solid var(--border); border-radius: 12px;
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 24px;
+    font-family: var(--font-sans); font-size: 13.5px;
+  }
+  .toc a { color: var(--fg2); text-decoration: none; display: flex; gap: 10px; align-items: baseline; padding: 4px 0; }
+  .toc a:hover { color: var(--accent); }
+  .toc a .n { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); width: 22px; }
+
+  section.comp { margin-bottom: 64px; scroll-margin-top: 24px; }
+  section.comp .h-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
+  section.comp h2 {
+    font-family: var(--font-serif); font-weight: 600; font-size: 30px; line-height: 1.15; letter-spacing: -0.01em;
+    margin: 0;
+  }
+  section.comp h2 .n { font-family: var(--font-accent); font-weight: 700; color: var(--accent); font-size: 22px; margin-right: 10px; transform: rotate(-3deg); display: inline-block; }
+  section.comp .where { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); }
+  section.comp .api {
+    margin: 14px 0 18px;
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+    color: var(--fg2);
+    padding: 10px 14px; background: var(--beava-paper);
+    border: 1px solid var(--border); border-radius: 10px;
+  }
+  section.comp .api .k { color: var(--code-keyword); }
+  section.comp .api .s { color: var(--code-string); }
+  section.comp .api .c { color: var(--code-comment); }
+
+  /* embedded preview frame */
+  .frame {
+    border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    background: var(--bg); box-shadow: var(--shadow-sm);
+  }
+  .frame .frame-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px; background: var(--bg-alt);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3);
+  }
+  .frame .frame-head .dots { display: flex; gap: 5px; }
+  .frame .frame-head .dots span { width: 9px; height: 9px; border-radius: 999px; background: var(--border-strong); }
+  .frame iframe { display: block; width: 100%; border: 0; background: var(--bg); }
+
+  .footnote {
+    margin-top: 80px; padding-top: 28px; border-top: 1px solid var(--border);
+    font-family: var(--font-sans); font-size: 13px; color: var(--fg3);
+    display: flex; justify-content: space-between; gap: 16px;
+  }
+  .footnote a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body class="beava">
+  <div class="page">
+
+    <header class="header">
+      <div>
+        <div class="eyebrow">Promotion candidates · ten components</div>
+        <h1>The missing pieces, <em>promoted.</em></h1>
+        <p class="lede">Each of these started as inlined CSS in one or two pages. This sheet drafts the unified component, picks an API, and shows it in beava’s visual vocabulary — cream surfaces, warm shadows, sentence case, sparing orange.</p>
+      </div>
+      <img src="../assets/mascot-work-pose.svg" alt="">
+    </header>
+
+    <nav class="toc" aria-label="Components">
+      <a href="#docs-toc"><span class="n">01</span><span>DocsTOC</span></a>
+      <a href="#card"><span class="n">02</span><span>Card</span></a>
+      <a href="#stat-grid"><span class="n">03</span><span>StatGrid / StatCard</span></a>
+      <a href="#comparison-table"><span class="n">04</span><span>ComparisonTable</span></a>
+      <a href="#anti-claim-badge"><span class="n">05</span><span>AntiClaimBadge</span></a>
+      <a href="#docs-page-header"><span class="n">06</span><span>DocsPageHeader</span></a>
+      <a href="#rfc-row"><span class="n">07</span><span>RFCRow</span></a>
+      <a href="#commitment-card"><span class="n">08</span><span>CommitmentCard</span></a>
+      <a href="#oss-vs-commercial"><span class="n">09</span><span>OssVsCommercial</span></a>
+      <a href="#footer"><span class="n">10</span><span>Footer</span></a>
+    </nav>
+
+    <section class="comp" id="docs-toc">
+      <div class="h-row">
+        <h2><span class="n">01</span>DocsTOC</h2>
+        <span class="where">used on: every docs page</span>
+      </div>
+      <div class="api"><span class="k">&lt;DocsTOC</span> <span class="k">items</span>=<span class="s">{[{ id, label, sub? }]}</span> <span class="k">activeId</span>=<span class="s">"define"</span> <span class="k">editHref</span>=<span class="s">"…"</span> <span class="k">/&gt;</span> &nbsp;<span class="c">// items prop replaces the hardcoded array</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-docs-toc.html</span></div>
+        <iframe src="comp-docs-toc.html" style="height:460px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="card">
+      <div class="h-row">
+        <h2><span class="n">02</span>Card</h2>
+        <span class="where">used on: docs index, community commitments, feature lists</span>
+      </div>
+      <div class="api"><span class="k">&lt;Card</span> <span class="k">title</span> <span class="k">desc</span> <span class="k">href</span> <span class="k">kicker?</span> <span class="k">icon?</span> <span class="k">size</span>=<span class="s">"default | compact"</span> <span class="k">/&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-card.html</span></div>
+        <iframe src="comp-card.html" style="height:540px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="stat-grid">
+      <div class="h-row">
+        <h2><span class="n">03</span>StatGrid / StatCard</h2>
+        <span class="where">used on: performance page, intro page</span>
+      </div>
+      <div class="api"><span class="k">&lt;StatGrid</span> <span class="k">size</span>=<span class="s">"lg | md | loose"</span><span class="k">&gt;</span><br>&nbsp;&nbsp;<span class="k">&lt;StatCard</span> <span class="k">label</span>=<span class="s">"P99 query"</span> <span class="k">value</span>=<span class="s">"0.8"</span> <span class="k">unit</span>=<span class="s">"ms"</span> <span class="k">delta</span>=<span class="s">{{ dir: 'down', text: '12% wk/wk' }}</span> <span class="k">/&gt;</span><br><span class="k">&lt;/StatGrid&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-stat-grid.html</span></div>
+        <iframe src="comp-stat-grid.html" style="height:600px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="comparison-table">
+      <div class="h-row">
+        <h2><span class="n">04</span>ComparisonTable</h2>
+        <span class="where">used on: introduction page (alternatives table)</span>
+      </div>
+      <div class="api"><span class="k">&lt;ComparisonTable</span> <span class="k">columns</span>=<span class="s">{[{ id:'beava', label:'beava', us:true }, …]}</span> <span class="k">rows</span>=<span class="s">{[{ label, cells:{ id: { kind:'yes|no|meh', text, note } } }]}</span> <span class="k">/&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-comparison-table.html</span></div>
+        <iframe src="comp-comparison-table.html" style="height:420px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="anti-claim-badge">
+      <div class="h-row">
+        <h2><span class="n">05</span>AntiClaimBadge</h2>
+        <span class="where">used on: hero · part of beava’s voice</span>
+      </div>
+      <div class="api"><span class="k">&lt;AntiClaimBadge&gt;</span><span class="s">JVM</span><span class="k">&lt;/AntiClaimBadge&gt;</span> &nbsp;<span class="c">// or &lt;AntiClaimRow items={['JVM','Kafka','Flink']} variant="solid|default|strike" /&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-anti-claim-badge.html</span></div>
+        <iframe src="comp-anti-claim-badge.html" style="height:460px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="docs-page-header">
+      <div class="h-row">
+        <h2><span class="n">06</span>DocsPageHeader</h2>
+        <span class="where">used on: every doc page</span>
+      </div>
+      <div class="api"><span class="k">&lt;DocsPageHeader</span> <span class="k">breadcrumb</span>=<span class="s">{[…]}</span> <span class="k">eyebrow</span>=<span class="s">"Operator · sliding window"</span> <span class="k">title</span>=<span class="s">"Rolling counters"</span> <span class="k">lede</span>=<span class="s">"…"</span> <span class="k">meta?</span>=<span class="s">{{ status, version, updated, readTime }}</span> <span class="k">/&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-docs-page-header.html</span></div>
+        <iframe src="comp-docs-page-header.html" style="height:700px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="rfc-row">
+      <div class="h-row">
+        <h2><span class="n">07</span>RFCRow</h2>
+        <span class="where">used on: community page, intro RFC cards</span>
+      </div>
+      <div class="api"><span class="k">&lt;RFCList&gt;</span><span class="k">&lt;RFCRow</span> <span class="k">id</span>=<span class="s">"RFC-0014"</span> <span class="k">title</span> <span class="k">desc</span> <span class="k">status</span>=<span class="s">"draft|review|accepted|shipped"</span> <span class="k">href</span> <span class="k">/&gt;</span><span class="k">&lt;/RFCList&gt;</span> &nbsp;<span class="c">// or layout="cards"</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-rfc-row.html</span></div>
+        <iframe src="comp-rfc-row.html" style="height:600px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="commitment-card">
+      <div class="h-row">
+        <h2><span class="n">08</span>CommitmentCard</h2>
+        <span class="where">used on: community page, candidate for home</span>
+      </div>
+      <div class="api"><span class="k">&lt;CommitmentCard</span> <span class="k">icon</span>=<span class="s">{&lt;Icon name="github"/&gt;}</span> <span class="k">title</span>=<span class="s">"The core stays open"</span> <span class="k">body</span>=<span class="s">"…"</span> <span class="k">linkText</span>=<span class="s">"Read the license"</span> <span class="k">href</span> <span class="k">/&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-commitment-card.html</span></div>
+        <iframe src="comp-commitment-card.html" style="height:480px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="oss-vs-commercial">
+      <div class="h-row">
+        <h2><span class="n">09</span>OssVsCommercial</h2>
+        <span class="where">used on: community page</span>
+      </div>
+      <div class="api"><span class="k">&lt;OssVsCommercial</span> <span class="k">left</span>=<span class="s">{{ kicker, title, lede, bullets, cta, price }}</span> <span class="k">right</span>=<span class="s">{{ … }}</span> <span class="k">/&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-oss-vs-commercial.html</span></div>
+        <iframe src="comp-oss-vs-commercial.html" style="height:460px"></iframe>
+      </div>
+    </section>
+
+    <section class="comp" id="footer">
+      <div class="h-row">
+        <h2><span class="n">10</span>Footer</h2>
+        <span class="where">used on: every page (replace inline footer)</span>
+      </div>
+      <div class="api"><span class="k">&lt;Footer</span> <span class="k">columns</span>=<span class="s">{[{ heading, links: [{ label, href, external? }] }]}</span> <span class="k">status</span>=<span class="s">{{ kind:'ok|degraded', text }}</span> <span class="k">social</span>=<span class="s">{[…]}</span> <span class="k">/&gt;</span></div>
+      <div class="frame">
+        <div class="frame-head"><span class="dots"><span></span><span></span><span></span></span><span>preview/comp-footer.html</span></div>
+        <iframe src="comp-footer.html" style="height:380px"></iframe>
+      </div>
+    </section>
+
+    <div class="footnote">
+      <span>Each preview is a self-contained file in <code>preview/</code> — open standalone to see the bare component.</span>
+      <a href="../README.md">Back to design system →</a>
+    </div>
+
+  </div>
+</body>
+</html>

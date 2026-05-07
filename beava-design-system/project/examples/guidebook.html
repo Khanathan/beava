@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The Real-Time Feature Guidebook · beava</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { background: var(--bg); color: var(--fg1); margin: 0; }
+
+  /* ============= nav ============= */
+  .announce { background: var(--fg1); color: var(--bg); font-family: var(--font-sans); font-size: 13px; text-align: center; padding: 10px 20px; position: relative; }
+  .announce .em { color: var(--beava-orange-glow); }
+  .announce a { color: var(--beava-orange-glow); text-decoration: underline; text-underline-offset: 3px; margin-left: 4px; }
+  .announce .x { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: var(--fg3); background: transparent; border: 0; cursor: pointer; font-size: 16px; }
+
+  .nav { display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto; padding: 18px 28px; border-bottom: 1px solid var(--border); }
+  .nav .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-serif); font-weight: 700; font-size: 22px; color: var(--fg1); text-decoration: none; letter-spacing: -0.01em; }
+  .nav .brand img { width: 28px; height: 28px; }
+  .nav .links { display: flex; gap: 26px; }
+  .nav .links a { font-family: var(--font-sans); font-size: 14px; color: var(--fg2); text-decoration: none; font-weight: 500; }
+  .nav .links a.active { color: var(--accent); }
+  .nav .star { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); background: var(--bg); border: 1px solid var(--border); padding: 5px 12px; border-radius: 999px; }
+
+  /* ============= container ============= */
+  .container { max-width: 1040px; margin: 0 auto; padding: 48px 28px 120px; }
+
+  /* ============= hero ============= */
+  .guide-hero {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    gap: 48px;
+    align-items: start;
+    padding: 20px 40px 0;
+  }
+  .eyebrow { font-family: var(--font-sans); font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.16em; color: var(--accent); margin-bottom: 18px; }
+  .guide-hero h1 {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 72px;
+    line-height: 1.02;
+    letter-spacing: -0.02em;
+    color: var(--fg1);
+    margin: 0 0 26px;
+    max-width: 16ch;
+    font-feature-settings: "liga" on, "calt" on;
+  }
+  .guide-hero .sub {
+    font-family: var(--font-sans);
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--fg2);
+    margin: 0 0 36px;
+    max-width: 56ch;
+  }
+  .guide-hero .sub b { color: var(--fg1); font-weight: 600; }
+  .guide-hero .mascot {
+    width: 220px;
+    height: 220px;
+    background-image: url('../assets/mascot-pose-3.png');
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    transform: translateY(4px);
+  }
+
+  /* progress */
+  .progress { max-width: 56ch; }
+  .pr-meta { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .pr-label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); letter-spacing: 0.06em; text-transform: uppercase; }
+  .pr-count { font-family: var(--font-mono); font-size: 12px; color: var(--fg2); }
+  .pr-count b { color: var(--fg1); font-weight: 600; }
+  .track { height: 4px; background: #e8dcc1; border-radius: 999px; overflow: hidden; position: relative; }
+  .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 16.67%; background: var(--accent); border-radius: 999px; }
+
+  /* ============= section divider ============= */
+  .section-head {
+    margin: 72px 40px 20px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-head .eyebrow-sec { font-family: var(--font-sans); font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent); margin: 0; }
+  .section-head .count { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); }
+
+  /* ============= chapter stack ============= */
+  .chapters { display: grid; gap: 14px; padding: 0 40px; }
+
+  a.chapter {
+    display: grid;
+    grid-template-columns: 1fr 170px;
+    gap: 24px;
+    align-items: center;
+    background: var(--beava-paper);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 32px 36px;
+    text-decoration: none;
+    color: inherit;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 160ms, transform 160ms, box-shadow 160ms;
+  }
+  a.chapter:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 8px 20px -10px rgba(184,92,32,0.28); }
+
+  a.chapter .num-row { display: inline-flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  a.chapter .num {
+    font-family: var(--font-accent);
+    font-weight: 700;
+    font-size: 24px;
+    color: var(--accent);
+    line-height: 1;
+    transform: rotate(-2deg);
+    display: inline-block;
+  }
+  a.chapter .arrow { font-family: var(--font-mono); color: var(--accent); font-size: 20px; transition: transform 160ms; }
+  a.chapter:hover .arrow { transform: translateX(4px); }
+
+  a.chapter h3 {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 32px;
+    line-height: 1.15;
+    letter-spacing: -0.01em;
+    color: var(--fg1);
+    margin: 0 0 10px;
+    max-width: 22ch;
+  }
+  a.chapter .meta {
+    font-family: var(--font-sans);
+    font-size: 14.5px;
+    line-height: 1.55;
+    color: var(--fg2);
+    margin: 0 0 14px;
+    max-width: 56ch;
+  }
+  a.chapter .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  a.chapter .tag {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--fg3);
+    background: #fff;
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    border-radius: 999px;
+    letter-spacing: 0.02em;
+  }
+  a.chapter .tag.interactive { color: var(--beava-success); background: #f2f7ee; border-color: #cfe0c7; }
+  a.chapter .tag.interactive::before { content: "● "; }
+  a.chapter .tag.time { color: var(--accent); background: var(--beava-orange-wash); border-color: #f1d8c2; }
+
+  a.chapter .mascot { width: 170px; height: 170px; background-size: contain; background-repeat: no-repeat; background-position: right center; align-self: stretch; }
+  a.chapter .mascot--pose3 { background-image: url('../assets/mascot-pose-3.png'); }
+  a.chapter .mascot--work { background-image: url('../assets/mascot-work-pose.svg'); }
+  a.chapter .mascot--pose2 { background-image: url('../assets/mascot-pose-2.svg'); }
+
+  /* completed indicator */
+  a.chapter.done { background: linear-gradient(to right, rgba(74,122,58,0.04), var(--beava-paper) 30%); }
+  a.chapter .check {
+    position: absolute;
+    top: 28px;
+    right: 28px;
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    background: var(--beava-success);
+    color: #fff;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  /* locked */
+  a.chapter.locked { opacity: 0.55; cursor: default; }
+  a.chapter.locked:hover { border-color: var(--border); transform: none; box-shadow: none; }
+  a.chapter.locked .arrow { color: var(--fg3); }
+  a.chapter.locked h3 { color: var(--fg2); }
+
+  /* ============= appendix / cookbook section ============= */
+  .cook {
+    margin: 72px 40px 0;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    padding: 32px 36px;
+  }
+  .cook-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+  .cook-head h2 {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 32px;
+    letter-spacing: -0.01em;
+    color: var(--fg1);
+    margin: 0;
+  }
+  .cook-head .note { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); }
+  .cook > .sub { font-family: var(--font-sans); font-size: 14.5px; color: var(--fg2); line-height: 1.55; margin: 0 0 24px; max-width: 60ch; }
+  .recipes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .recipe {
+    border: 1px solid var(--border-inset);
+    border-radius: 12px;
+    padding: 16px 18px;
+    text-decoration: none;
+    color: inherit;
+    background: var(--bg);
+    transition: border-color 140ms;
+  }
+  .recipe:hover { border-color: var(--accent); }
+  .recipe .tag-line { display: flex; gap: 8px; margin-bottom: 8px; }
+  .recipe .cat { font-family: var(--font-mono); font-size: 10.5px; color: var(--accent); background: var(--beava-orange-wash); border: 1px solid #f1d8c2; padding: 2px 8px; border-radius: 999px; letter-spacing: 0.03em; }
+  .recipe .lines { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); background: #fff; border: 1px solid var(--border-inset); padding: 2px 8px; border-radius: 999px; }
+  .recipe .title { font-family: var(--font-serif); font-weight: 600; font-size: 19px; line-height: 1.3; color: var(--fg1); margin: 0 0 4px; }
+  .recipe .desc { font-family: var(--font-sans); font-size: 13.5px; line-height: 1.5; color: var(--fg2); margin: 0; }
+
+  /* ============= footer CTA ============= */
+  .foot-cta {
+    margin: 72px 40px 0;
+    padding: 40px 48px;
+    background: radial-gradient(ellipse at 80% 50%, rgba(184,92,32,0.08), transparent 60%), var(--beava-orange-wash);
+    border: 1px solid #f1d8c2;
+    border-radius: 18px;
+    display: grid;
+    grid-template-columns: 1fr 160px;
+    gap: 32px;
+    align-items: center;
+    overflow: hidden;
+  }
+  .foot-cta .kicker { font-family: var(--font-accent); font-weight: 700; font-size: 20px; color: var(--accent); transform: rotate(-2deg); display: inline-block; margin-bottom: 4px; }
+  .foot-cta h3 { font-family: var(--font-serif); font-weight: 700; font-size: 34px; line-height: 1.05; letter-spacing: -0.02em; margin: 4px 0 12px; color: var(--fg1); max-width: 18ch; }
+  .foot-cta h3 em { font-style: italic; color: var(--accent); font-family: var(--font-serif); }
+  .foot-cta p { font-family: var(--font-sans); font-size: 14.5px; color: var(--fg2); line-height: 1.55; margin: 0 0 18px; max-width: 52ch; }
+  .foot-cta .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .foot-cta .cta { font-family: var(--font-sans); font-weight: 600; font-size: 13.5px; color: #fff; background: var(--accent); border: 0; border-radius: 10px; padding: 10px 18px; display: inline-flex; align-items: center; gap: 7px; text-decoration: none; cursor: pointer; }
+  .foot-cta .cta-ghost { font-family: var(--font-sans); font-weight: 600; font-size: 13.5px; color: var(--accent); background: #fff; border: 1px solid #f1d8c2; border-radius: 10px; padding: 10px 18px; display: inline-flex; align-items: center; gap: 7px; text-decoration: none; cursor: pointer; }
+  .foot-cta .mascot { width: 160px; height: 160px; background-image: url('../assets/mascot-pose-2.svg'); background-size: contain; background-repeat: no-repeat; background-position: center; transform: rotate(-3deg); }
+
+  /* ============= site footer ============= */
+  .site-footer { max-width: 1200px; margin: 80px auto 0; padding: 40px 28px 28px; border-top: 1px solid var(--border); display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 40px; font-family: var(--font-sans); }
+  .site-footer .col-brand .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-serif); font-weight: 700; font-size: 20px; color: var(--fg1); margin-bottom: 12px; }
+  .site-footer .col-brand .brand img { width: 24px; height: 24px; }
+  .site-footer .col-brand p { font-size: 13px; color: var(--fg3); line-height: 1.6; margin: 0; max-width: 28ch; }
+  .site-footer .col h4 { font-family: var(--font-sans); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg3); font-weight: 600; margin: 0 0 12px; }
+  .site-footer .col a { display: block; font-size: 13.5px; color: var(--fg2); text-decoration: none; margin-bottom: 7px; }
+  .site-footer .col a:hover { color: var(--accent); }
+  .site-footer .bottom { grid-column: 1 / -1; margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--border-inset); font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3); display: flex; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+  <div class="announce">
+    ☁️ <span class="em">beava cloud</span> · managed from $50/mo · self-host is always free · <a href="#">join the waitlist →</a>
+    <button class="x">×</button>
+  </div>
+
+  <div class="nav">
+    <a href="#" class="brand"><img src="../assets/mascot-mark-geometric.png" alt=""/>beava</a>
+    <div class="links">
+      <a href="#" class="active">Guide</a>
+      <a href="#">Docs</a>
+      <a href="#">Community</a>
+    </div>
+    <div class="star">8.2k ★</div>
+  </div>
+
+  <div class="container">
+
+    <!-- ============= HERO ============= -->
+    <section class="guide-hero">
+      <div>
+        <div class="eyebrow">The real-time feature guidebook</div>
+        <h1>How to build the live features your product actually needs.</h1>
+        <p class="sub">Start with <b>Chapter 1</b> — a 10-minute interactive build that turns into a per-customer analytics dashboard. Then pick the recipe that matches your day job: fraud, personalization, anomaly detection, attribution, or geospatial ETA. <b>beava is the implementation; streaming is the subject.</b></p>
+
+        <div class="progress">
+          <div class="pr-meta">
+            <span class="pr-label">your progress</span>
+            <span class="pr-count"><b>1</b> / 6 chapters</span>
+          </div>
+          <div class="track"><div class="fill"></div></div>
+        </div>
+      </div>
+      <div class="mascot"></div>
+    </section>
+
+    <!-- ============= CORE CHAPTERS ============= -->
+    <div class="section-head">
+      <h2 class="eyebrow-sec">Core chapters · read in order</h2>
+      <span class="count">~1h total · interactive</span>
+    </div>
+
+    <div class="chapters">
+
+      <a href="#" class="chapter done">
+        <div>
+          <div class="num-row"><span class="num">Chapter 1</span><span class="arrow">→</span></div>
+          <h3>Per-customer analytics dashboard</h3>
+          <p class="meta">A 10-minute interactive build. Meet beava, write your first pipeline, then watch a real dashboard update live as you push events.</p>
+          <div class="tags">
+            <span class="tag interactive">interactive</span>
+            <span class="tag time">10 min</span>
+            <span class="tag">basics</span>
+          </div>
+        </div>
+        <div class="mascot mascot--pose3"></div>
+        <div class="check">✓</div>
+      </a>
+
+      <a href="#" class="chapter">
+        <div>
+          <div class="num-row"><span class="num">Chapter 2</span><span class="arrow">→</span></div>
+          <h3>Rolling windows, late events, and the two knobs that matter</h3>
+          <p class="meta">The mental model for windows, grace periods, and out-of-order data — explained with one counter and one very confused clock.</p>
+          <div class="tags">
+            <span class="tag interactive">interactive</span>
+            <span class="tag time">15 min</span>
+            <span class="tag">concept</span>
+          </div>
+        </div>
+        <div class="mascot mascot--work"></div>
+      </a>
+
+      <a href="#" class="chapter">
+        <div>
+          <div class="num-row"><span class="num">Chapter 3</span><span class="arrow">→</span></div>
+          <h3>Sketches without tears: HLL, Count-Min, and when to stop caring</h3>
+          <p class="meta">Three sketches, their memory curves, and the one rule that tells you which to reach for. Interactive memory estimator included.</p>
+          <div class="tags">
+            <span class="tag interactive">interactive</span>
+            <span class="tag time">12 min</span>
+            <span class="tag">concept</span>
+          </div>
+        </div>
+        <div class="mascot mascot--pose3"></div>
+      </a>
+
+      <a href="#" class="chapter">
+        <div>
+          <div class="num-row"><span class="num">Chapter 4</span><span class="arrow">→</span></div>
+          <h3>Joining two streams without a Kafka chaperone</h3>
+          <p class="meta">Enrich one event with another — order + user, click + impression — in a single table definition. The join you hoped SQL could do.</p>
+          <div class="tags">
+            <span class="tag interactive">interactive</span>
+            <span class="tag time">18 min</span>
+            <span class="tag">recipe</span>
+          </div>
+        </div>
+        <div class="mascot mascot--pose2"></div>
+      </a>
+
+      <a href="#" class="chapter">
+        <div>
+          <div class="num-row"><span class="num">Chapter 5</span><span class="arrow">→</span></div>
+          <h3>Serving at scale: one binary, one million users, one core</h3>
+          <p class="meta">The operational chapter. P99 budgets, RAM sizing, crash-restart, backups, and the "do I need two of these?" checklist.</p>
+          <div class="tags">
+            <span class="tag interactive">interactive</span>
+            <span class="tag time">14 min</span>
+            <span class="tag">operate</span>
+          </div>
+        </div>
+        <div class="mascot mascot--work"></div>
+      </a>
+
+      <a href="#" class="chapter locked">
+        <div>
+          <div class="num-row"><span class="num">Chapter 6</span><span class="arrow">→</span></div>
+          <h3>Patterns in production: what 20 teams actually shipped</h3>
+          <p class="meta">Coming soon — a synthesized playbook from teams running beava in production. Fraud, personalization, rate limits, observability.</p>
+          <div class="tags">
+            <span class="tag">case studies</span>
+            <span class="tag">coming soon</span>
+          </div>
+        </div>
+        <div class="mascot mascot--pose3"></div>
+      </a>
+
+    </div>
+
+    <!-- ============= RECIPES / COOKBOOK ============= -->
+    <div class="cook">
+      <div class="cook-head">
+        <h2>Recipes</h2>
+        <span class="note">standalone · grep-friendly · ≤20 lines each</span>
+      </div>
+      <p class="sub">Finished the chapters? Start here instead. Each recipe is a single-file pipeline you can drop into a running beava. Pick by domain.</p>
+
+      <div class="recipes">
+        <a href="#" class="recipe">
+          <div class="tag-line"><span class="cat">fraud</span><span class="lines">18 lines</span></div>
+          <h4 class="title">Card-testing detection in 18 lines</h4>
+          <p class="desc">Two counters and a threshold — flag the attacker before the 11th decline.</p>
+        </a>
+        <a href="#" class="recipe">
+          <div class="tag-line"><span class="cat">growth</span><span class="lines">14 lines</span></div>
+          <h4 class="title">Activation funnel, per-cohort, live</h4>
+          <p class="desc">Every signup bucketed into a weekly cohort, each step measured without a nightly job.</p>
+        </a>
+        <a href="#" class="recipe">
+          <div class="tag-line"><span class="cat">personalization</span><span class="lines">22 lines</span></div>
+          <h4 class="title">"Seen but didn't click" recency score</h4>
+          <p class="desc">Demote items a user has impressed and skipped, without batching features overnight.</p>
+        </a>
+        <a href="#" class="recipe">
+          <div class="tag-line"><span class="cat">rate limit</span><span class="lines">9 lines</span></div>
+          <h4 class="title">Per-key sliding-window rate limit</h4>
+          <p class="desc">The cheapest, most correct rate limit you can ship — one counter, one `count(window=...)`.</p>
+        </a>
+        <a href="#" class="recipe">
+          <div class="tag-line"><span class="cat">anomaly</span><span class="lines">20 lines</span></div>
+          <h4 class="title">Z-score on 1-minute request volume</h4>
+          <p class="desc">Alert when traffic on any route drops 3σ below its own 7-day profile — no thresholds to tune.</p>
+        </a>
+        <a href="#" class="recipe">
+          <div class="tag-line"><span class="cat">geo</span><span class="lines">17 lines</span></div>
+          <h4 class="title">ETA from a stream of GPS pings</h4>
+          <p class="desc">Rolling distance-to-destination per driver, updated per ping, served as a feature.</p>
+        </a>
+      </div>
+    </div>
+
+    <!-- ============= CLOSING CTA ============= -->
+    <div class="foot-cta">
+      <div>
+        <span class="kicker">skip ahead if you like</span>
+        <h3>Or just install beava and <em>poke at it yourself.</em></h3>
+        <p>Every chapter links to a local-run variant. The in-browser sim is convenient but it's not the real thing — the real binary is 14 MB, starts in 62 ms, and answers `curl http://localhost:6400/health` in under 5.</p>
+        <div class="row">
+          <a href="#" class="cta">Install in 30s <span>→</span></a>
+          <a href="#" class="cta-ghost">Star on GitHub · 8.2k</a>
+        </div>
+      </div>
+      <div class="mascot"></div>
+    </div>
+
+  </div>
+
+  <!-- ============= SITE FOOTER ============= -->
+  <footer class="site-footer">
+    <div class="col col-brand">
+      <div class="brand"><img src="../assets/mascot-mark-geometric.png" alt=""/>beava</div>
+      <p>Apache 2.0. One binary. Made with too much coffee.</p>
+    </div>
+    <div class="col">
+      <h4>Product</h4>
+      <a href="#">Docs</a>
+      <a href="#">Changelog</a>
+      <a href="#">Roadmap</a>
+      <a href="#">Benchmarks</a>
+    </div>
+    <div class="col">
+      <h4>Learn</h4>
+      <a href="#">Guidebook</a>
+      <a href="#">Recipes</a>
+      <a href="#">Blog</a>
+      <a href="#">Reference</a>
+    </div>
+    <div class="col">
+      <h4>Community</h4>
+      <a href="#">GitHub</a>
+      <a href="#">Discord</a>
+      <a href="#">Talks</a>
+      <a href="#">Brand kit</a>
+    </div>
+    <div class="bottom">
+      <span>© 2026 beava labs · Apache 2.0 · not VC-funded, not your lord</span>
+      <span>beava.dev</span>
+    </div>
+  </footer>
+
+</body>
+</html>

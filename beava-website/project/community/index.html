@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Community · beava</title>
+  <meta name="description" content="Weekly dev meetup, public RFCs, GitHub Discussions. Built like TiDB / PingCAP — OSS engine fully featured, commercial scope explicit.">
+  <link rel="stylesheet" href="../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../styles/site.css">
+  <link rel="stylesheet" href="../styles/docs-kit.css">
+  <link rel="icon" href="../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+    /* page-local: tweak the marketing column to read like a doc */
+    .bv-marketing main { padding: 36px 0 80px; }
+    .bv-marketing h1 {
+      font-family: var(--font-serif); font-weight: 700;
+      font-size: 44px; line-height: 1.05; letter-spacing: -0.02em;
+      margin: 0 0 14px; color: var(--fg1);
+    }
+    .bv-marketing .bv-lede {
+      font-family: var(--font-sans); font-size: 16px; line-height: 1.65;
+      color: var(--fg2); margin: 0 0 30px; max-width: 60ch;
+    }
+    .bv-marketing h2 {
+      font-family: var(--font-serif); font-weight: 600;
+      font-size: 28px; line-height: 1.15; letter-spacing: -0.015em;
+      margin: 48px 0 14px; color: var(--fg1);
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+    }
+    .bv-marketing h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 36px; }
+    .bv-marketing p, .bv-marketing li {
+      font-family: var(--font-sans); font-size: 15.5px; line-height: 1.7;
+      color: var(--fg1); margin: 0 0 14px;
+    }
+    .bv-marketing a {
+      color: var(--accent); text-decoration: underline;
+      text-decoration-color: color-mix(in oklab, var(--accent) 35%, transparent);
+      text-underline-offset: 3px;
+    }
+    .bv-marketing a:hover { text-decoration-color: currentColor; }
+    .bv-marketing code {
+      font-family: var(--font-mono); font-size: 0.9em;
+      background: var(--beava-paper); border: 1px solid var(--border-inset);
+      padding: 1px 5px; border-radius: 4px;
+    }
+
+    /* commitment grid — local because /community/ doesn't import the heavier kit */
+    .commit-grid {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px;
+      margin: 0 0 22px;
+    }
+    @media (max-width: 720px) { .commit-grid { grid-template-columns: 1fr; } }
+    /* `.commit` is an `<a>` inside `.bv-content`, so we have to beat the
+       `.bv-content a { text-decoration: underline; }` cascade. */
+    .bv-content a.commit, a.commit {
+      display: block;
+      padding: 22px 22px 20px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      text-decoration: none !important;
+      transition: border-color 180ms var(--ease-out),
+                  box-shadow 180ms var(--ease-out),
+                  transform 180ms var(--ease-out),
+                  background 180ms var(--ease-out);
+      color: inherit;
+    }
+    .bv-content a.commit:hover, a.commit:hover {
+      border-color: var(--accent);
+      background: var(--beava-paper);
+      box-shadow: 0 6px 18px rgba(26,23,20,0.06);
+      transform: translateY(-1px);
+    }
+    .bv-content a.commit:hover .ic, a.commit:hover .ic {
+      background: var(--accent); color: #fff;
+    }
+    .bv-content a.commit:hover .more, a.commit:hover .more {
+      text-decoration: underline;
+      text-decoration-color: var(--accent);
+      text-underline-offset: 3px;
+    }
+    .bv-content a.commit *, a.commit * { text-decoration: none; }
+    .bv-content a.commit .ic, a.commit .ic { transition: background 180ms var(--ease-out), color 180ms var(--ease-out); }
+    .commit .ic {
+      width: 38px; height: 38px; border-radius: 11px;
+      background: var(--beava-orange-wash); color: var(--accent);
+      display: inline-flex; align-items: center; justify-content: center;
+      margin-bottom: 12px;
+    }
+    .commit h3 {
+      font-family: var(--font-serif); font-weight: 600;
+      font-size: 19px; line-height: 1.2; letter-spacing: -0.01em;
+      color: var(--fg1); margin: 0 0 6px;
+    }
+    .commit p {
+      font-family: var(--font-sans); font-size: 13.5px; line-height: 1.55;
+      color: var(--fg2); margin: 0 0 10px;
+    }
+    .commit .more {
+      font-family: var(--font-sans); font-weight: 600; font-size: 13px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../js/docs/DocsShared.jsx"></script>
+
+  <script type="text/babel">
+    const App = () => (
+      <>
+        <SiteHeader active="community"/>
+        <div className="bv-marketing">
+          <main style={{ maxWidth: 720, margin: '0 auto', padding: '36px 28px 80px' }}>
+
+            <div className="bv-crumbs">
+              <span className="bv-crumb-cur">Community</span>
+            </div>
+
+            <h1>Community</h1>
+            <p className="bv-lede">beava is built in the open. Weekly streamed dev meetups, public RFCs, GitHub Discussions. The model is TiDB and PingCAP: OSS engine fully featured, commercial scope explicit, no paywalls on basics.</p>
+
+            <h2 id="commitments">Four commitments, from launch day</h2>
+            <p>The contract you're signing up for when you depend on beava.</p>
+
+            <div className="commit-grid">
+              <a className="commit" href="https://github.com/beava-dev/beava/blob/main/LICENSE" target="_blank" rel="noopener">
+                <span className="ic">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.26-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.39.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+                </span>
+                <h3>The core stays open</h3>
+                <p>Apache 2.0, forever. No core-vs-enterprise split. If it ships in beava, you can run it.</p>
+                <span className="more">Read the license →</span>
+              </a>
+
+              <a className="commit" href="/docs/vision/benchmarks/">
+                <span className="ic">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                </span>
+                <h3>Performance is a feature</h3>
+                <p>P99 budgets are tracked in CI on every release. Regressions block merge. We don't ship slower beavas.</p>
+                <span className="more">See the benchmarks →</span>
+              </a>
+
+              <a className="commit" href="https://github.com/beava-dev/beava/tree/main/rfcs" target="_blank" rel="noopener">
+                <span className="ic">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>
+                </span>
+                <h3>Decisions in public</h3>
+                <p>Every meaningful change starts as an RFC on GitHub. You can read why, push back, or write your own.</p>
+                <span className="more">Browse RFCs →</span>
+              </a>
+
+              <a className="commit" href="#">
+                <span className="ic">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                </span>
+                <h3>Weekly dev meetup</h3>
+                <p>Every Thursday, livestreamed. Release update, technical deep-dive, Q&amp;A. Replays archived. Runs from launch day forward.</p>
+                <span className="more">Subscribe on YouTube →</span>
+              </a>
+            </div>
+
+            <h2 id="rfcs">RFCs in flight</h2>
+            <p>What we're actively designing toward. Each will get its own design doc in <code>beava-dev/beava/rfcs/</code>. Public discussion, public commits, public conclusion.</p>
+            <ul>
+              <li><strong>RFC-001</strong> — Tiered storage (RAM → SSD → S3). Spill cold state to disk and object storage. Hot path stays sub-ms.</li>
+              <li><strong>RFC-002</strong> — Table ingestion. Direct <code>app.upsert</code> and <code>app.delete</code> for static and slowly-changing state.</li>
+              <li><strong>RFC-003</strong> — Stream-to-table join. Join an event stream against a sibling table inside a pipeline. Snapshot read of the table side.</li>
+              <li><strong>RFC-004</strong> — Out-of-order events. Tolerate events that arrive late; revise v0's processing-time-only default.</li>
+              <li><strong>RFC-007</strong> — Event log retention. Keep raw events past the WAL window so a fresh node can replay the log to reconstruct itself.</li>
+              <li><strong>RFC-005</strong> — Event-log query and replay. Re-feed retained events for debug, A/B, training data.</li>
+              <li><strong>RFC-006</strong> — Online pipeline migration. Add features and modify windows without bouncing the process.</li>
+              <li><strong>RFC-008</strong> — Latency vs throughput tradeoffs. Opt-in tiers (client batching, early ack, lockless reads) for workloads that don't need strict atomicity.</li>
+              <li><strong>RFC-009</strong> — HA deployment. Active-passive WAL replication + automatic failover. Same single-node programming model; no more SPOF.</li>
+            </ul>
+            <p>Want one expedited? <a href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Open a Discussion</a> with your use case and the rough number of entities you'd run on it.</p>
+
+            <h2 id="commercial">Self-host vs cloud</h2>
+            <p>Like TiDB and PingCAP. The same engine you self-host runs in beava cloud. Commercial scope is explicit additional surface, not a feature gate.</p>
+            <p><strong>Always OSS</strong> — the engine, the DSL, all operational tooling, snapshot/restore, verification CLIs, sharding helpers, every aggregation primitive.</p>
+            <p><strong>Commercial (planned ~2027)</strong> — managed cloud, sync replication, cross-region async DR, SOC2 / SOX / PCI / HIPAA-attested deployments, single-tenant dedicated cloud, enterprise support with SLA.</p>
+
+            <h2 id="channels">Get in touch</h2>
+            <ul>
+              <li><strong>GitHub Discussions</strong> — primary channel. Tag your question, get an answer. <a href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">github.com/beava-dev/beava/discussions</a></li>
+              <li><strong>Security disclosures</strong> — <a href="mailto:hoang@beava.dev">hoang@beava.dev</a></li>
+              <li><strong>Casual chatter</strong> — <a href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Discord</a>. Drop in, ask anything, no setup.</li>
+            </ul>
+          </main>
+        </div>
+        <SiteFooter/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>

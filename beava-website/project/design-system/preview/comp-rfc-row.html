@@ -1,0 +1,134 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>RFCRow</title>
+<style>
+  body { padding: 24px 28px; }
+  .stack { display: flex; flex-direction: column; gap: 26px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 0 0 10px; letter-spacing: 0.02em; }
+
+  .rfc-list {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .rfc-row {
+    display: grid;
+    grid-template-columns: 84px 1fr auto;
+    gap: 18px;
+    align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    text-decoration: none;
+    transition: background 150ms var(--ease-out);
+  }
+  .rfc-row:last-child { border-bottom: 0; }
+  .rfc-row:hover { background: var(--beava-paper); }
+
+  .rfc-row .id {
+    font-family: var(--font-mono); font-weight: 600; font-size: 12px;
+    color: var(--fg3); letter-spacing: 0.02em;
+  }
+  .rfc-row .body { min-width: 0; }
+  .rfc-row .title {
+    font-family: var(--font-sans); font-weight: 600; font-size: 14px;
+    color: var(--fg1); margin: 0 0 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .rfc-row .desc {
+    font-family: var(--font-sans); font-size: 12.5px; line-height: 1.45;
+    color: var(--fg3); margin: 0;
+  }
+
+  .rfc-row .status {
+    font-family: var(--font-sans); font-weight: 500; font-size: 11.5px;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--beava-paper); border: 1px solid var(--border);
+    color: var(--fg3); white-space: nowrap;
+  }
+  .rfc-row .status.draft   { background: var(--beava-warn-wash); border-color: #ecd89a; color: #8b6312; }
+  .rfc-row .status.review  { background: var(--beava-info-wash); border-color: #cadae4; color: var(--beava-info); }
+  .rfc-row .status.accepted{ background: var(--beava-success-wash); border-color: #cfdcbd; color: var(--beava-success); }
+  .rfc-row .status.shipped { background: var(--beava-orange-wash); border-color: color-mix(in oklab, var(--accent) 30%, transparent); color: var(--accent); }
+
+  /* card variant — for intro page (3-up grid) */
+  .rfc-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .rfc-cards .rfc-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: #fff;
+    padding: 16px 18px;
+    align-items: start;
+  }
+  .rfc-cards .rfc-row:hover { background: #fff; border-color: var(--border-strong); }
+  .rfc-cards .top {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  }
+</style>
+</head><body>
+  <div class="stack">
+
+    <div>
+      <div class="label">// list · community page (default)</div>
+      <div class="rfc-list">
+        <a class="rfc-row" href="#">
+          <div class="id">RFC-0014</div>
+          <div class="body">
+            <div class="title">Backpressure on push endpoints</div>
+            <div class="desc">A 429 contract for clients pushing faster than the operator can ingest.</div>
+          </div>
+          <div class="status review">in review</div>
+        </a>
+        <a class="rfc-row" href="#">
+          <div class="id">RFC-0013</div>
+          <div class="body">
+            <div class="title">Rolling-window operators &lt; 1s</div>
+            <div class="desc">Bringing sub-second windows out of experimental into the stable surface.</div>
+          </div>
+          <div class="status draft">draft</div>
+        </a>
+        <a class="rfc-row" href="#">
+          <div class="id">RFC-0012</div>
+          <div class="body">
+            <div class="title">A typed schema language for events</div>
+            <div class="desc">Optional schemas with codegen for Go, TS, and Rust clients.</div>
+          </div>
+          <div class="status accepted">accepted</div>
+        </a>
+        <a class="rfc-row" href="#">
+          <div class="id">RFC-0011</div>
+          <div class="body">
+            <div class="title">Snapshots + cold-start hydration</div>
+            <div class="desc">A binary snapshot format so a fresh process is queryable in &lt; 1s.</div>
+          </div>
+          <div class="status shipped">shipped · v0.14</div>
+        </a>
+      </div>
+    </div>
+
+    <div>
+      <div class="label">// cards · introduction page</div>
+      <div class="rfc-cards">
+        <a class="rfc-row" href="#">
+          <div class="top">
+            <span class="id">RFC-0014</span>
+            <span class="status review">in review</span>
+          </div>
+          <div class="title">Backpressure on push endpoints</div>
+          <div class="desc">A 429 contract for clients pushing faster than the operator can ingest.</div>
+        </a>
+        <a class="rfc-row" href="#">
+          <div class="top">
+            <span class="id">RFC-0013</span>
+            <span class="status draft">draft</span>
+          </div>
+          <div class="title">Rolling windows &lt; 1s</div>
+          <div class="desc">Bringing sub-second windows out of experimental.</div>
+        </a>
+      </div>
+    </div>
+
+  </div>
+</body></html>

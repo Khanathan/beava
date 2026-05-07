@@ -1,0 +1,76 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 22px 24px; background: var(--bg); }
+  .wrap { display: flex; flex-direction: column; gap: 20px; }
+
+  /* ---------- Compact "ask claude" chip — inline in prose ---------- */
+  .ask-inline {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px 8px 10px;
+    background: var(--beava-orange-wash);
+    border: 1px solid #f1d8c2;
+    border-radius: 10px;
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    color: var(--fg1);
+    max-width: 100%;
+  }
+  .ask-inline .ic {
+    width: 22px; height: 22px; flex-shrink: 0;
+    background: var(--accent); color: #fff;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-accent); font-weight: 700; font-size: 15px;
+    line-height: 1; transform: rotate(-4deg);
+  }
+  .ask-inline code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: rgba(255,255,255,0.7); border: 1px solid #f1d8c2;
+    padding: 2px 7px; border-radius: 5px; color: var(--fg1);
+  }
+  .ask-inline .arrow { margin-left: auto; color: var(--accent); font-weight: 700; text-decoration: none; font-size: 13px; white-space: nowrap; }
+
+  /* ---------- Sidebar box — for "main" ask-claude moment, replaces the 3× card ---------- */
+  .ask-side {
+    display: grid; grid-template-columns: 44px 1fr auto;
+    gap: 14px; align-items: center;
+    padding: 14px 16px;
+    background: var(--beava-orange-wash);
+    border: 1px solid #f1d8c2;
+    border-radius: 12px;
+  }
+  .ask-side .avatar { width: 44px; height: 44px; background: var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #fff; font-family: var(--font-accent); font-weight: 700; font-size: 24px; line-height: 1; transform: rotate(-3deg); }
+  .ask-side .title { font-family: var(--font-accent); font-weight: 700; font-size: 18px; color: var(--accent); line-height: 1.1; margin-bottom: 2px; }
+  .ask-side .sub { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3); }
+  .ask-side .cmd { font-family: var(--font-mono); font-size: 12px; background: rgba(255,255,255,0.7); border: 1px solid #f1d8c2; padding: 4px 10px; border-radius: 6px; color: var(--fg1); white-space: nowrap; }
+
+  .legend { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: -8px; }
+  .note { font-family: var(--font-sans); font-size: 12px; color: var(--fg3); line-height: 1.5; padding: 12px 14px; background: var(--bg-alt); border: 1px dashed var(--border); border-radius: 10px; }
+  .note strong { color: var(--fg1); font-weight: 600; }
+</style>
+</head><body>
+  <div class="wrap">
+
+    <div class="legend">A — inline chip (1 line, use ≤3× per post)</div>
+    <div class="ask-inline">
+      <span class="ic">?</span>
+      <span>Or just ask Claude: <code>/beava estimate ram for this pipeline</code></span>
+      <a href="#" class="arrow">Install →</a>
+    </div>
+
+    <div class="legend">B — sidebar box (1× per post, for the main moment)</div>
+    <div class="ask-side">
+      <div class="avatar">?</div>
+      <div>
+        <div class="title">Or just ask Claude</div>
+        <div class="sub">/beava estimate ram for this pipeline at my scale</div>
+      </div>
+      <a href="#" class="cmd">Install skill →</a>
+    </div>
+
+    <div class="note">
+      <strong>Why this replaces the 3×-per-post block:</strong> the original block repeats a whole card (heading + code + explanation + CTA) every time it appears, which feels cluttered. Use <strong>A (inline chip)</strong> for mid-prose suggestions — 1 line, code shown, link at the end. Use <strong>B (sidebar box)</strong> ONCE per post at the natural "you could do this manually, but…" moment, with the longer explanation moved to the linked install page. Delete repeated blocks.
+    </div>
+  </div>
+</body></html>

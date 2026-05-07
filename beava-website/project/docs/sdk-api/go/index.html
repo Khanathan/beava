@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beava Go SDK — beava docs</title>
+<meta name="description" content="Beava — real-time feature server.">
+<link rel="canonical" href="https://beava.dev/docs/sdk-api/go/">
+<link rel="icon" href="/assets/mascot-mark-geometric.png">
+<link rel="stylesheet" href="/styles/colors_and_type.css">
+<link rel="stylesheet" href="/styles/site.css">
+<link rel="stylesheet" href="/styles/docs.css">
+<meta name="docs-source" content="docs/sdk-api/go.md">
+</head>
+<body class="beava docs-body">
+<header class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/assets/logo-mark.png" alt="" width="36" height="36"/><span>beava</span></a>
+    <ul class="nav-links">
+      <li><a href="/guide/">Guide</a></li>
+      <li><a href="/docs/" aria-current="page">Docs</a></li>
+      <li><a href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">GitHub</a></li>
+    </ul>
+    <div class="nav-search" id="search"></div>
+  </div>
+</header>
+<link rel="stylesheet" href="/_pagefind/pagefind-ui.css">
+<script src="/_pagefind/pagefind-ui.js" defer></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    if (window.PagefindUI) {
+      new PagefindUI({ element: '#search', showSubResults: true, resetStyles: false, showImages: false });
+    }
+  });
+</script>
+<div class="docs-shell">
+<nav class="docs-sidebar" aria-label="Docs navigation">
+  <div class="side-section">
+    <div class="side-title">Getting started</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/">Introduction</a></li>
+      <li><a class="side-link" href="/docs/quickstart/">Quickstart</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Wire &amp; API</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/wire-spec/">Wire spec</a></li>
+      <li><a class="side-link" href="/docs/http-api/">HTTP API</a></li>
+      <li><a class="side-link" href="/docs/schema-evolution/">Schema evolution</a></li>
+      <li><a class="side-link" href="/docs/error-codes/">Error codes</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">SDK references</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/sdk-api/shared/">Cross-language parity</a></li>
+      <li><a class="side-link" href="/docs/sdk-api/python/">Python SDK</a></li>
+      <li><a class="side-link" href="/docs/sdk-api/typescript/">TypeScript SDK</a></li>
+      <li><a class="side-link active" href="/docs/sdk-api/go/">Go SDK</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Pipeline DSL</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/pipeline-dsl/overview/">DSL overview</a></li>
+      <li><a class="side-link" href="/docs/pipeline-dsl/expressions/">Expressions</a></li>
+      <li><a class="side-link" href="/docs/pipeline-dsl/compilation-rules/">Compilation rules</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Operators</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/operators/">Operator catalog</a></li>
+      <li><a class="side-link" href="/docs/operators/cost-class/">Cost classes</a></li>
+      <li><a class="side-link" href="/docs/operators/core/">Core (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/sketch/">Sketch (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/point-ordinal/">Point/ordinal (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/recency/">Recency (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/decay/">Decay (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/velocity/">Velocity (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/buffer-geo/">Buffer &amp; geo (family)</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Concepts</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/concepts/events-vs-tables/">Events vs tables</a></li>
+      <li><a class="side-link" href="/docs/concepts/embed-mode/">Embed mode</a></li>
+      <li><a class="side-link" href="/docs/concepts/lifetime-aggregation/">Lifetime aggregation</a></li>
+      <li><a class="side-link" href="/docs/concepts/processing-time-only/">Processing-time only</a></li>
+      <li><a class="side-link" href="/docs/concepts/global-aggregation/">Global aggregation</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Architecture</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/architecture/single-thread-apply/">Single-thread apply</a></li>
+      <li><a class="side-link" href="/docs/architecture/mio-data-plane/">mio data plane</a></li>
+      <li><a class="side-link" href="/docs/architecture/wal-snapshot/">WAL + snapshot</a></li>
+      <li><a class="side-link" href="/docs/architecture/memory-budget/">Memory budget</a></li>
+      <li><a class="side-link" href="/docs/architecture/observability/">Observability</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Community</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Discussions</a></li>
+      <li><a class="side-link" href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="docs-main" data-pagefind-body>
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><span>Sdk Api</span><span class="crumb-sep">›</span><span class="crumb-cur">Beava Go SDK</span></nav>
+<article class="docs-prose">
+<h1>Beava Go SDK</h1>
+<blockquote>
+<p><strong>Status:</strong> Authoritative for v0. Documents the <strong>post-13.6 target</strong> Go SDK
+shape — Phase 13.6 implements the port. Cross-language semantics live in
+<a href="/docs/sdk-api/shared/">shared.md</a>; wire-level body shapes live in
+<a href="/docs/wire-spec/">docs/wire-spec.md</a>. Python is the canonical reference —
+see <a href="/docs/sdk-api/python/">python.md</a>.
+<strong>Last reviewed:</strong> 2026-05-03 (Phase 13.0).</p>
+</blockquote>
+<h2 id="overview" tabindex="-1"><a class="header-anchor" href="#overview" aria-hidden="true">#</a> Overview</h2>
+<p>The Beava Go SDK ships as the module <code>github.com/beava-io/beava-go</code>. It
+mirrors the <a href="/docs/sdk-api/python/">Python SDK</a> wire contract 1:1 (per
+<a href="/docs/sdk-api/shared/">shared.md</a>) but uses idiomatic Go conventions where the
+language demands them:</p>
+<ul>
+<li><strong>Context-aware methods</strong> — every wire-bound method takes
+<code>ctx context.Context</code> as its first argument. Cancellation propagates
+to the transport.</li>
+<li><strong>Explicit <code>error</code> returns</strong> — the second return value of every wire
+method. No exceptions, no panics.</li>
+<li><strong>Functional options</strong> — register/option flags (<code>force=true</code>,
+<code>dry_run=true</code>, <code>WithTimeout</code>, etc.) are passed via variadic
+<code>...Option</code>-style arguments rather than option-struct fields. Standard
+Go pattern; matches <code>grpc-go</code>, <code>cobra</code>, <code>chi</code>, and similar widely-used
+Go libraries.</li>
+<li><strong>Struct-tag field mapping</strong> — event-source schemas declared as Go
+structs with <code>beava:&quot;&lt;wire_field_name&gt;&quot;</code> tags.</li>
+<li><strong>53 op functions</strong> in PascalCase per Go convention (<code>beava.Count</code>,
+<code>beava.Sum</code>, <code>beava.Mean</code>, <code>beava.NUnique</code>, <code>beava.Quantile</code>) per
+<a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-002-polars-op-rename.md">ADR-002</a>.</li>
+</ul>
+<blockquote>
+<p><strong>Module:</strong> <code>github.com/beava-io/beava-go</code> — <strong>not yet published;
+coming v0.0.1.</strong> The Go SDK source ships in this repo (<code>sdk/go/</code>) and its
+test suite runs in CI on every commit, but the Go module proxy publication is
+part of the v0.0.1 cut. v0.0.0 is Python-only on the public package surface.
+To use the Go SDK before v0.0.1, build from the in-repo source. Once published,
+install via <code>go get github.com/beava-io/beava-go</code> and import as
+<code>import beava &quot;github.com/beava-io/beava-go&quot;</code>. The SDK targets Go
+1.22+ (modern context handling, slog).</p>
+</blockquote>
+<h2 id="module-structure" tabindex="-1"><a class="header-anchor" href="#module-structure" aria-hidden="true">#</a> Module structure</h2>
+<pre><code>github.com/beava-io/beava-go/
+├── beava.go             # public types: App, EventDescriptor, TableDescriptor, FeatureResult
+├── app.go               # App struct + methods
+├── events.go            # event builder + EventDescriptor + struct-tag parser
+├── table.go             # table builder + TableDescriptor (per ADR-001)
+├── agg.go               # 53 op functions
+├── col.go               # Col expression builder
+├── errors.go            # RegistrationError, BinaryNotFoundError
+├── wire.go              # frame codec, opcodes (CT_JSON only in v0)
+├── transport.go         # HTTP / TCP / Embed transports + URL-scheme dispatch
+├── beavatest/           # test helpers
+│   ├── fixture.go       # spawn embed-mode app
+│   └── assert.go        # AssertFeaturesEq
+└── go.mod
+</code></pre>
+<h2 id="app-struct" tabindex="-1"><a class="header-anchor" href="#app-struct" aria-hidden="true">#</a> App struct</h2>
+<pre><code class="language-go">package beava
+
+import &quot;context&quot;
+
+type App struct {
+    // unexported fields
+}
+
+func NewApp(ctx context.Context, url string, opts ...AppOption) (*App, error)
+
+// Wire-mapped methods
+func (a *App) Register(ctx context.Context, descriptors []Descriptor, opts ...RegisterOption) (*RegisterResult, error)
+func (a *App) Push(ctx context.Context, eventName string, fields map[string]any) (*PushResult, error)
+func (a *App) Get(ctx context.Context, table string, key any) (FeatureResult, error)
+func (a *App) BatchGet(ctx context.Context, requests []GetRequest) ([]FeatureResult, error)
+func (a *App) Reset(ctx context.Context) error
+func (a *App) Ping(ctx context.Context) (*PingResult, error)
+func (a *App) Close(ctx context.Context) error
+</code></pre>
+<p>Each public method maps 1:1 to a wire opcode:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Wire opcode</th>
+<th>Wire spec section</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>App.Register(...)</code></td>
+<td><code>OP_REGISTER</code> (<code>0x0001</code>)</td>
+<td><a href="/docs/wire-spec/#op_register-0x0001">wire-spec § OP_REGISTER</a></td>
+</tr>
+<tr>
+<td><code>App.Push(...)</code></td>
+<td><code>OP_PUSH</code> (<code>0x0010</code>)</td>
+<td><a href="/docs/wire-spec/#op_push-0x0010">wire-spec § OP_PUSH</a></td>
+</tr>
+<tr>
+<td><code>App.Get(...)</code></td>
+<td><code>OP_GET</code> (<code>0x0020</code>)</td>
+<td><a href="/docs/wire-spec/#op_get-0x0020">wire-spec § OP_GET</a></td>
+</tr>
+<tr>
+<td><code>App.BatchGet(...)</code></td>
+<td><code>OP_BATCH_GET</code> (<code>0x0024</code>)</td>
+<td><a href="/docs/wire-spec/#op_batch_get-0x0024">wire-spec § OP_BATCH_GET</a></td>
+</tr>
+<tr>
+<td><code>App.Reset(...)</code></td>
+<td><code>OP_RESET</code> (<code>0x0040</code>)</td>
+<td><a href="/docs/wire-spec/#op_reset-0x0040">wire-spec § OP_RESET</a></td>
+</tr>
+<tr>
+<td><code>App.Ping(...)</code></td>
+<td><code>OP_PING</code> (<code>0x0000</code>)</td>
+<td><a href="/docs/wire-spec/#op_ping-0x0000">wire-spec § OP_PING</a></td>
+</tr>
+<tr>
+<td><code>App.Close(...)</code></td>
+<td>(lifecycle)</td>
+<td>n/a — closes transport + terminates embed subprocess.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="newappctx-url-opts" tabindex="-1"><a class="header-anchor" href="#newappctx-url-opts" aria-hidden="true">#</a> <code>NewApp(ctx, url, opts...)</code></h3>
+<p>Constructor. URL controls transport selection per
+<a href="/docs/sdk-api/shared/#wire-transports">shared.md § Wire transports</a>:</p>
+<ul>
+<li><code>&quot;http://...&quot;</code> / <code>&quot;https://...&quot;</code> → HTTP/JSON transport.</li>
+<li><code>&quot;tcp://...&quot;</code> → custom-framed TCP transport.</li>
+<li><code>&quot;&quot;</code> (empty string) → embed mode; spawns local <code>beava</code> binary on
+ephemeral ports.</li>
+</ul>
+<p>The <code>ctx</code> here governs <strong>construction</strong> (binary discovery, embed-mode
+startup, initial connection); subsequent wire calls take their own
+context.</p>
+<p><strong>Functional options:</strong></p>
+<pre><code class="language-go">type AppOption func(*appConfig)
+
+func WithTimeout(d time.Duration) AppOption
+func WithBinaryPath(p string) AppOption     // override embed-mode binary discovery
+</code></pre>
+<p><strong>Returns:</strong> <code>(*App, error)</code>. Errors during embed-mode startup
+(<code>BinaryNotFoundError</code>, transport connect failure) are surfaced here.</p>
+<p><strong>Lifecycle pattern:</strong></p>
+<pre><code class="language-go">ctx := context.Background()
+app, err := beava.NewApp(ctx, &quot;&quot;)
+if err != nil {
+    log.Fatal(err)
+}
+defer app.Close(ctx)
+
+// ...
+</code></pre>
+<p><code>Close(ctx)</code> is idempotent. For embed-mode apps, <code>Close</code> also terminates
+the subprocess (SIGTERM, then SIGKILL after 5 seconds).</p>
+<h3 id="appregisterctx-descriptors-opts" tabindex="-1"><a class="header-anchor" href="#appregisterctx-descriptors-opts" aria-hidden="true">#</a> <code>App.Register(ctx, descriptors, opts...)</code></h3>
+<p><strong>Wire opcode:</strong> <code>OP_REGISTER</code> (<code>0x0001</code>).</p>
+<p>Validates the descriptor list locally, topo-sorts, and dispatches.</p>
+<p><strong>Args:</strong></p>
+<ul>
+<li><code>ctx</code>: standard <code>context.Context</code> for cancellation / timeouts.</li>
+<li><code>descriptors</code>: slice of <code>Descriptor</code> interface values (returned by
+<code>beava.NewEvent[T](...)</code>, <code>beava.NewTable(...)</code>, or chain expressions).</li>
+<li><code>opts ...RegisterOption</code>: functional options for <code>force</code> and <code>dry_run</code>.</li>
+</ul>
+<p><strong>Functional options:</strong></p>
+<pre><code class="language-go">func WithForce() RegisterOption
+func WithDryRun() RegisterOption
+</code></pre>
+<p>Usage:</p>
+<pre><code class="language-go">result, err := app.Register(ctx, descriptors, beava.WithForce(), beava.WithDryRun())
+</code></pre>
+<p><strong>Returns:</strong> <code>(*RegisterResult, error)</code> carrying
+<code>{Status, RegistryVersion, Added, Removed, Changed, Diff}</code> (all
+PascalCase Go field names; the transport translates wire JSON
+<code>snake_case</code> to PascalCase via field tags).</p>
+<pre><code class="language-go">type RegisterResult struct {
+    Status          string   `json:&quot;status&quot;`
+    RegistryVersion int64    `json:&quot;registry_version&quot;`
+    Added           []string `json:&quot;added,omitempty&quot;`
+    Removed         []string `json:&quot;removed,omitempty&quot;`
+    Changed         []string `json:&quot;changed,omitempty&quot;`
+}
+</code></pre>
+<p><strong>Errors:</strong> <code>*RegistrationError</code> carrying <code>Code</code>, <code>Path</code>, <code>Message</code>,
+<code>Errors []ValidationError</code>.</p>
+<h3 id="apppushctx-eventname-fields" tabindex="-1"><a class="header-anchor" href="#apppushctx-eventname-fields" aria-hidden="true">#</a> <code>App.Push(ctx, eventName, fields)</code></h3>
+<p><strong>Wire opcode:</strong> <code>OP_PUSH</code> (<code>0x0010</code>).</p>
+<p><strong>Args:</strong></p>
+<ul>
+<li><code>ctx</code>: context.</li>
+<li><code>eventName</code>: string matching a registered event source.</li>
+<li><code>fields</code>: <code>map[string]any</code>. Field types must match the registered
+schema; the SDK serialises into the wire-level JSON form.</li>
+</ul>
+<p><strong>Returns:</strong> <code>(*PushResult, error)</code> carrying <code>AckLsn</code> and
+<code>RegistryVersion</code>.</p>
+<h3 id="appgetctx-table-key" tabindex="-1"><a class="header-anchor" href="#appgetctx-table-key" aria-hidden="true">#</a> <code>App.Get(ctx, table, key)</code></h3>
+<p><strong>Wire opcode:</strong> <code>OP_GET</code> (<code>0x0020</code>).</p>
+<p><strong>Args:</strong></p>
+<ul>
+<li><code>ctx</code>: context.</li>
+<li><code>table</code>: name of a registered table.</li>
+<li><code>key</code>: <code>any</code> — string for single-key tables; <code>[]any</code> containing
+<code>[string | int64 | float64 | bool]</code> items for composite-key tables.</li>
+</ul>
+<p><strong>Returns:</strong> <code>(FeatureResult, error)</code> where
+<code>FeatureResult</code> is <code>map[string]any</code>. <strong>Cold-start</strong> returns an empty map
+(<code>map[string]any{}</code>) — not an error.</p>
+<pre><code class="language-go">row, err := app.Get(ctx, &quot;UserTxnFeatures&quot;, &quot;alice&quot;)
+// row is map[string]any{&quot;tx_count_1h&quot;: float64(7), &quot;tx_sum_1h&quot;: 312.45, ...}
+</code></pre>
+<p>For typed access, the user dereferences the map keys with type
+assertions. v0.1+ may add a generic codegen path that produces
+strongly-typed result structs.</p>
+<h3 id="appbatchgetctx-requests" tabindex="-1"><a class="header-anchor" href="#appbatchgetctx-requests" aria-hidden="true">#</a> <code>App.BatchGet(ctx, requests)</code></h3>
+<p><strong>Wire opcode:</strong> <code>OP_BATCH_GET</code> (<code>0x0024</code>).</p>
+<pre><code class="language-go">type GetRequest struct {
+    Table    string   `json:&quot;table&quot;`
+    Key      any      `json:&quot;key&quot;`
+    Features []string `json:&quot;features,omitempty&quot;`
+}
+
+func (a *App) BatchGet(ctx context.Context, requests []GetRequest) ([]FeatureResult, error)
+</code></pre>
+<p><strong>Returns:</strong> <code>([]FeatureResult, error)</code>. Per-entry cold-start is
+<code>map[string]any{}</code>. v0 has <strong>no partial success</strong> — any single bad
+entry returns the whole frame as an error.</p>
+<h3 id="appresetctx" tabindex="-1"><a class="header-anchor" href="#appresetctx" aria-hidden="true">#</a> <code>App.Reset(ctx)</code></h3>
+<p><strong>Wire opcode:</strong> <code>OP_RESET</code> (<code>0x0040</code>).</p>
+<p>Wipe state + WAL. <strong>Destructive — only call on a beava instance bound to
+test data.</strong></p>
+<p><strong>Returns:</strong> <code>error</code>.</p>
+<h3 id="apppingctx" tabindex="-1"><a class="header-anchor" href="#apppingctx" aria-hidden="true">#</a> <code>App.Ping(ctx)</code></h3>
+<p><strong>Wire opcode:</strong> <code>OP_PING</code> (<code>0x0000</code>).</p>
+<pre><code class="language-go">type PingResult struct {
+    ServerVersion   string `json:&quot;server_version&quot;`
+    RegistryVersion int64  `json:&quot;registry_version&quot;`
+}
+</code></pre>
+<h3 id="appclosectx" tabindex="-1"><a class="header-anchor" href="#appclosectx" aria-hidden="true">#</a> <code>App.Close(ctx)</code></h3>
+<p>Close transport (idempotent). For embed-mode apps, terminates the
+subprocess.</p>
+<h2 id="builder-api-event-table" tabindex="-1"><a class="header-anchor" href="#builder-api-event-table" aria-hidden="true">#</a> Builder API (event + table)</h2>
+<h3 id="event-source" tabindex="-1"><a class="header-anchor" href="#event-source" aria-hidden="true">#</a> Event source</h3>
+<pre><code class="language-go">type Txn struct {
+    UserID   string  `beava:&quot;user_id&quot;`
+    Amount   float64 `beava:&quot;amount&quot;`
+    Merchant string  `beava:&quot;merchant&quot;`
+    IP       *string `beava:&quot;ip&quot;`              // nullable per shared.md § Field types
+}
+
+txnDesc := beava.NewEvent[Txn](&quot;Txn&quot;,
+    beava.KeepEventsFor(&quot;30d&quot;),
+    beava.ColdAfter(&quot;1d&quot;),
+    beava.DedupeKey(&quot;trace_id&quot;, &quot;5m&quot;),
+)
+</code></pre>
+<p><code>beava.NewEvent[T]</code> is a generic constructor that reflects on <code>T</code> to
+extract the wire schema. The <code>beava:&quot;&lt;wire_field_name&gt;&quot;</code> struct tag
+overrides the default <code>snake_case</code>-of-<code>PascalCase</code> mapping; without the
+tag, <code>UserID</code> would default to <code>user_i_d</code> (Go's stdlib snake_case is
+imperfect for all-caps acronyms), so the explicit tag is recommended for
+fields with multi-letter abbreviations.</p>
+<p>Pointer types (<code>*string</code>, <code>*int64</code>) declare nullable fields per
+<a href="/docs/sdk-api/shared/#field-types">shared.md § Field types</a> — <code>Optional[T]</code>
+semantics.</p>
+<p><strong>Functional options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>beava.KeepEventsFor(window)</code></td>
+<td>Event-retention TTL (duration string).</td>
+</tr>
+<tr>
+<td><code>beava.ColdAfter(window)</code></td>
+<td>Per-source cold-entity TTL per V0-MEM-GOV-01.</td>
+</tr>
+<tr>
+<td><code>beava.DedupeKey(field, window)</code></td>
+<td>Idempotent-replay configuration.</td>
+</tr>
+</tbody>
+</table>
+<p>Reflection happens at descriptor-construction time, so any unsupported
+field type produces an error from <code>NewEvent</code> (returned via the chain;
+fluent-style <code>descriptor.Err()</code> accessor or <code>panic</code> — the choice is left
+to the 13.6 implementation).</p>
+<h3 id="event-derivation-function-form" tabindex="-1"><a class="header-anchor" href="#event-derivation-function-form" aria-hidden="true">#</a> Event derivation (function form)</h3>
+<pre><code class="language-go">bigTxn := txnDesc.Filter(beava.Col(&quot;amount&quot;).Gt(100))
+                 .Select(&quot;user_id&quot;, &quot;amount&quot;, &quot;merchant&quot;)
+</code></pre>
+<p>Method-receiver chains compose against the upstream descriptor.</p>
+<h3 id="table-aggregation-output-per-adr-001" tabindex="-1"><a class="header-anchor" href="#table-aggregation-output-per-adr-001" aria-hidden="true">#</a> Table (aggregation-output, per ADR-001)</h3>
+<pre><code class="language-go">userFeatures := beava.NewTable(&quot;UserTxnFeatures&quot;,
+    beava.WithKey(&quot;user_id&quot;),
+    beava.WithUpstream(txnDesc),
+    beava.WithAgg(map[string]beava.AggOp{
+        &quot;tx_count_1h&quot;:              beava.Count(beava.Window(&quot;1h&quot;)),
+        &quot;tx_sum_1h&quot;:                beava.Sum(&quot;amount&quot;, beava.Window(&quot;1h&quot;)),
+        &quot;tx_p99_1h&quot;:                beava.Quantile(&quot;amount&quot;, 0.99, beava.Window(&quot;1h&quot;)),
+        &quot;tx_unique_merchants_1h&quot;:   beava.NUnique(&quot;merchant&quot;, beava.Window(&quot;1h&quot;)),
+    }),
+)
+
+_, err := app.Register(ctx, []beava.Descriptor{txnDesc, userFeatures})
+</code></pre>
+<p><code>beava.NewTable(name, opts...)</code> returns a <code>TableDescriptor</code> populated
+only by upstream aggregation derivations per
+<a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-001-bv-table-partial-overturn.md">ADR-001</a>.
+Mutation paths (<code>Upsert</code> / <code>Delete</code> / <code>Retract</code>) are NOT exposed in v0.</p>
+<p><strong>Functional options:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>beava.WithKey(string | []string)</code></td>
+<td>Single-key or composite-key.</td>
+</tr>
+<tr>
+<td><code>beava.WithUpstream(Descriptor)</code></td>
+<td>Upstream event source or derivation.</td>
+</tr>
+<tr>
+<td><code>beava.WithAgg(map[string]AggOp)</code></td>
+<td>Named aggregation features.</td>
+</tr>
+</tbody>
+</table>
+<p>The composite-key form passes a slice:
+<code>beava.WithKey([]string{&quot;user_id&quot;, &quot;device_id&quot;})</code>.</p>
+<h2 id="pipeline-dsl" tabindex="-1"><a class="header-anchor" href="#pipeline-dsl" aria-hidden="true">#</a> Pipeline DSL</h2>
+<p>Method-chained API on <code>EventDescriptor</code> and <code>EventDerivation</code>:</p>
+<pre><code class="language-go">bigTxn := txnDesc.Filter(beava.Col(&quot;amount&quot;).Gt(100))
+                 .Select(&quot;user_id&quot;, &quot;amount&quot;, &quot;merchant&quot;)
+
+userBig := bigTxn.GroupBy(&quot;user_id&quot;).Agg(map[string]beava.AggOp{
+    &quot;count_big&quot;: beava.Count(beava.Window(&quot;1h&quot;)),
+})
+</code></pre>
+<p>PascalCase chain methods:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Returns</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>events.Filter(expr)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Keep rows where <code>expr</code> is True.</td>
+</tr>
+<tr>
+<td><code>events.Select(cols ...string)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Keep only the named fields.</td>
+</tr>
+<tr>
+<td><code>events.Drop(cols ...string)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Remove the named fields.</td>
+</tr>
+<tr>
+<td><code>events.Rename(mapping map[string]string)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Rename fields.</td>
+</tr>
+<tr>
+<td><code>events.WithColumns(mapping map[string]Expr)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Add or overwrite derived fields.</td>
+</tr>
+<tr>
+<td><code>events.Map(mapping map[string]Expr)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Alias for <code>WithColumns</code>.</td>
+</tr>
+<tr>
+<td><code>events.Cast(typeMap map[string]string)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Change field types.</td>
+</tr>
+<tr>
+<td><code>events.Fillna(defaults map[string]any)</code></td>
+<td><code>EventDerivation</code></td>
+<td>Replace null values.</td>
+</tr>
+<tr>
+<td><code>events.GroupBy(keys ...string)</code></td>
+<td><code>*GroupBy</code></td>
+<td>Start an aggregation pipeline.</td>
+</tr>
+<tr>
+<td><code>groupBy.Agg(features map[string]AggOp)</code></td>
+<td><code>Descriptor</code></td>
+<td>Emit named aggregation features.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="expression-dsl" tabindex="-1"><a class="header-anchor" href="#expression-dsl" aria-hidden="true">#</a> Expression DSL</h2>
+<pre><code class="language-go">beava.Col(&quot;amount&quot;).Gt(100)                                 // amount &gt; 100
+beava.Col(&quot;user_id&quot;).Eq(&quot;alice&quot;)                            // user_id == 'alice'
+beava.Col(&quot;amount&quot;).Gt(100).And(beava.Col(&quot;status&quot;).Eq(&quot;ok&quot;))
+beava.Col(&quot;amount&quot;).Gt(100).Or(beava.Col(&quot;vip&quot;))
+beava.Col(&quot;flag&quot;).Not()
+beava.Col(&quot;amount&quot;).IsNull()
+beava.Col(&quot;status&quot;).Cast(&quot;int&quot;)
+beava.Col(&quot;a&quot;).Add(beava.Col(&quot;b&quot;)).Mul(beava.Lit(2))
+beava.Lit(42)
+</code></pre>
+<p>PascalCase method names:</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Wire op</th>
+<th>Equivalent Python</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.Gt(other)</code></td>
+<td><code>&gt;</code></td>
+<td><code>&gt; other</code></td>
+</tr>
+<tr>
+<td><code>.Ge(other)</code></td>
+<td><code>&gt;=</code></td>
+<td><code>&gt;= other</code></td>
+</tr>
+<tr>
+<td><code>.Lt(other)</code></td>
+<td><code>&lt;</code></td>
+<td><code>&lt; other</code></td>
+</tr>
+<tr>
+<td><code>.Le(other)</code></td>
+<td><code>&lt;=</code></td>
+<td><code>&lt;= other</code></td>
+</tr>
+<tr>
+<td><code>.Eq(other)</code></td>
+<td><code>==</code></td>
+<td><code>== other</code></td>
+</tr>
+<tr>
+<td><code>.Ne(other)</code></td>
+<td><code>!=</code></td>
+<td><code>!= other</code></td>
+</tr>
+<tr>
+<td><code>.Add(other)</code></td>
+<td><code>+</code></td>
+<td><code>+ other</code></td>
+</tr>
+<tr>
+<td><code>.Sub(other)</code></td>
+<td><code>-</code></td>
+<td><code>- other</code></td>
+</tr>
+<tr>
+<td><code>.Mul(other)</code></td>
+<td><code>*</code></td>
+<td><code>* other</code></td>
+</tr>
+<tr>
+<td><code>.Div(other)</code></td>
+<td><code>/</code></td>
+<td><code>/ other</code></td>
+</tr>
+<tr>
+<td><code>.And(other)</code></td>
+<td><code>and</code></td>
+<td><code>&amp; other</code></td>
+</tr>
+<tr>
+<td><code>.Or(other)</code></td>
+<td><code>or</code></td>
+<td><code>| other</code></td>
+</tr>
+<tr>
+<td><code>.Not()</code></td>
+<td><code>not</code></td>
+<td><code>~</code></td>
+</tr>
+<tr>
+<td><code>.IsNull()</code></td>
+<td><code>(x == null)</code></td>
+<td><code>.isnull()</code></td>
+</tr>
+<tr>
+<td><code>.Cast(type)</code></td>
+<td><code>cast(x, type)</code></td>
+<td><code>.cast(type)</code></td>
+</tr>
+<tr>
+<td><code>.Alias(name)</code></td>
+<td>column-rename</td>
+<td><code>.alias(name)</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>beava.Col(name)</code> returns a <code>*Col</code> expression node;
+<code>beava.Lit(value)</code> returns a literal node. All chain methods compile to
+the same wire-level expression string per
+<a href="/docs/pipeline-dsl/expressions/"><code>docs/pipeline-dsl/expressions.md</code></a>
+(Plan 13.0-12 — forward reference).</p>
+<h2 id="bvsum-signature-q1-path-b-locked" tabindex="-1"><a class="header-anchor" href="#bvsum-signature-q1-path-b-locked" aria-hidden="true">#</a> bv.sum signature (Q1 Path B locked)</h2>
+<pre><code class="language-go">func Sum(field string, opts ...SumOption) AggOp
+
+func Window(s string) SumOption       // duration-string window
+func Where(expr Expr) SumOption       // optional filter expression
+</code></pre>
+<blockquote>
+<p><strong>Locked per Q1 Path B</strong> (<a href="https://github.com/beava-dev/beava/blob/main/.planning/phases/13.0-design-contract-spec-docs/13.0-CONTEXT.md">13.0-CONTEXT.md</a>).
+The Go <code>beava.Sum(field string, ...)</code> signature accepts a string column
+name <strong>only</strong>. Inline expressions are <strong>FORBIDDEN</strong>.</p>
+</blockquote>
+<pre><code class="language-go">// FORBIDDEN — Sum's first param is string, not Expr; this is a compile error.
+beava.Sum(beava.Col(&quot;flag&quot;).Cast(&quot;int&quot;), beava.Window(&quot;1h&quot;))   // ✗ does not compile
+
+// RECOMMENDED — two-stage WithColumns + Sum:
+userFraudCounts := beava.NewTable(&quot;UserFraudCounts&quot;,
+    beava.WithKey(&quot;user_id&quot;),
+    beava.WithUpstream(txnDesc.WithColumns(map[string]beava.Expr{
+        &quot;flag_int&quot;: beava.Col(&quot;is_fraud&quot;).Cast(&quot;int&quot;),
+    })),
+    beava.WithAgg(map[string]beava.AggOp{
+        &quot;c&quot;: beava.Sum(&quot;flag_int&quot;, beava.Window(&quot;1h&quot;)),
+    }),
+)
+</code></pre>
+<p>This narrowing applies symmetrically across the
+<a href="/docs/sdk-api/python/#bvsum-signature-q1-path-b-locked">Python SDK</a> and the
+<a href="/docs/sdk-api/typescript/#bvsum-signature-q1-path-b-locked">TypeScript SDK</a>. All
+three SDKs use string-only field args for <code>bv.sum</code> / <code>beava.Sum</code>.</p>
+<blockquote>
+<p><strong>See:</strong> <a href="/docs/pipeline-dsl/compilation-rules/"><code>docs/pipeline-dsl/compilation-rules.md</code></a>
+§ Boolean-sum recipe (Plan 13.0-12 — forward reference).</p>
+</blockquote>
+<h2 id="public-expression-literals-beavalit-per-adr-003" tabindex="-1"><a class="header-anchor" href="#public-expression-literals-beavalit-per-adr-003" aria-hidden="true">#</a> Public expression literals (<code>beava.Lit</code>) — per ADR-003</h2>
+<p>Per <a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md">ADR-003</a>, <code>beava.Lit(value)</code> is exposed as a public factory:</p>
+<pre><code class="language-go">func Lit(value any) Expr  // value: int64 | float64 | string | bool | nil
+</code></pre>
+<p>Use cases (mirror Python):</p>
+<pre><code class="language-go">// Constant column
+events.WithColumns(map[string]beava.Expr{
+    &quot;source&quot;: beava.Lit(&quot;web&quot;),
+})
+
+// Force float64 division
+events.WithColumns(map[string]beava.Expr{
+    &quot;rate&quot;: beava.Col(&quot;count&quot;).Div(beava.Lit(60.0)),
+})
+
+// Explicit literal in filter
+events.Filter(beava.Col(&quot;amount&quot;).Gt(beava.Lit(100)))
+</code></pre>
+<p>Implementation lands in Phase 13.6. Wire-level: literals are serialized via the existing expression-string path; no wire change.</p>
+<h2 id="global-aggregation-per-adr-003" tabindex="-1"><a class="header-anchor" href="#global-aggregation-per-adr-003" aria-hidden="true">#</a> Global aggregation — per ADR-003</h2>
+<p>Per <a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-003-global-aggregation-and-bv-lit.md">ADR-003</a>, the Go SDK ships first-class <strong>global aggregation</strong> mirroring the Python surface. Unlike Python (which uses <code>App.get</code> arity overloading) and TypeScript (which uses overloaded signatures), the Go SDK uses a <strong>separate method</strong> <code>App.GetGlobal(ctx, tableName)</code> per Go's typing convention favoring explicit method names over arity overloading.</p>
+<p>Declare a global table by passing nil/empty key cols to the table builder:</p>
+<pre><code class="language-go">type Click struct {
+    UserID string `beava:&quot;user_id&quot;`
+    Page   string `beava:&quot;page&quot;`
+}
+
+ClickEvent := beava.Event(beava.EventConfig{Name: &quot;Click&quot;, Sample: Click{}})
+
+TotalClicks := beava.Table(beava.TableConfig{
+    Name:    &quot;TotalClicks&quot;,
+    KeyCols: nil, // or []string{} → global table
+    Source:  ClickEvent,
+    Agg: map[string]beava.AggOp{
+        &quot;total&quot;: beava.Count(beava.Window(&quot;forever&quot;)),
+    },
+})
+
+ctx := context.Background()
+app, _ := beava.NewApp(ctx, &quot;embed://&quot;, nil)
+defer app.Close(ctx)
+
+_ = app.Register(ctx, []beava.Descriptor{ClickEvent, TotalClicks})
+_ = app.Push(ctx, &quot;Click&quot;, map[string]any{&quot;user_id&quot;: &quot;alice&quot;, &quot;page&quot;: &quot;/home&quot;})
+_ = app.Push(ctx, &quot;Click&quot;, map[string]any{&quot;user_id&quot;: &quot;bob&quot;, &quot;page&quot;: &quot;/home&quot;})
+
+result, _ := app.GetGlobal(ctx, &quot;TotalClicks&quot;)
+// result == map[string]any{&quot;total&quot;: int64(2)}, no key arg
+</code></pre>
+<p><strong>Method dispatch contract:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Table type</th>
+<th>Method</th>
+<th>Wire request</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-entity</td>
+<td><code>app.Get(ctx, tableName, key)</code></td>
+<td><code>{&quot;table&quot;: ..., &quot;key&quot;: &quot;alice&quot;}</code></td>
+</tr>
+<tr>
+<td>Global</td>
+<td><code>app.GetGlobal(ctx, tableName)</code></td>
+<td><code>{&quot;table&quot;: ..., &quot;key&quot;: &quot;&quot;}</code></td>
+</tr>
+</tbody>
+</table>
+<p>Calling <code>app.Get(ctx, globalTable, &quot;anyKey&quot;)</code> against a registered global table returns <code>map[string]any{}</code> (empty — matches the per-entity cold-start convention; the empty entity simply has no state). Calling <code>app.GetGlobal(ctx, perEntityTable)</code> is also accepted at the engine level (returns the empty entity's state) but is conceptually nonsensical — the Go SDK does NOT lock at register-time which method matches which table.</p>
+<p><strong>Three equivalent forms</strong> (all compile to wire-level <code>key: []</code>):</p>
+<pre><code class="language-go">ClickEvent.Agg(map[string]beava.AggOp{&quot;total&quot;: beava.Count(...)})        // shortest
+ClickEvent.GroupBy().Agg(map[string]beava.AggOp{&quot;total&quot;: beava.Count(...)}) // empty GroupBy
+beava.Table(beava.TableConfig{KeyCols: nil, ...})                          // explicit nil
+</code></pre>
+<p>Implementation deferred to Phase 13.6 (~75 LOC: <code>beava.Lit</code> factory + <code>events.GroupBy()</code> empty allowance + <code>events.Agg(...)</code> direct + table-builder no-<code>KeyCols</code> + <code>app.GetGlobal</code> method).</p>
+<h2 id="operator-catalog" tabindex="-1"><a class="header-anchor" href="#operator-catalog" aria-hidden="true">#</a> Operator catalog</h2>
+<p>The 53 op functions match the Python catalogue in PascalCase per Go
+convention (per <a href="https://github.com/beava-dev/beava/blob/main/.planning/decisions/ADR-002-polars-op-rename.md">ADR-002</a>
+Polars naming):</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>Ops (Go PascalCase)</th>
+<th>Doc</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Core (8)</td>
+<td>Count, Sum, Mean, Min, Max, Var, Std, Ratio</td>
+<td><a href="../operators/core/">docs/operators/core/</a></td>
+</tr>
+<tr>
+<td>Sketch (5)</td>
+<td>NUnique, Quantile, TopK, BloomMember, Entropy</td>
+<td><a href="../operators/sketch/">docs/operators/sketch/</a></td>
+</tr>
+<tr>
+<td>Point/ordinal (5)</td>
+<td>First, Last, FirstN, LastN, Lag</td>
+<td><a href="../operators/point-ordinal/">docs/operators/point-ordinal/</a></td>
+</tr>
+<tr>
+<td>Recency (10)</td>
+<td>FirstSeen, LastSeen, Age, HasSeen, TimeSince, TimeSinceLastN, Streak, MaxStreak, NegativeStreak, FirstSeenInWindow</td>
+<td><a href="../operators/recency/">docs/operators/recency/</a></td>
+</tr>
+<tr>
+<td>Decay (6)</td>
+<td>Ewma (alias Ema), Ewvar, EwZscore, DecayedSum, DecayedCount, Twa</td>
+<td><a href="../operators/decay/">docs/operators/decay/</a></td>
+</tr>
+<tr>
+<td>Velocity (9)</td>
+<td>RateOfChange, InterArrivalStats, BurstCount, DeltaFromPrev, Trend, TrendResidual, OutlierCount, ValueChangeCount, ZScore</td>
+<td><a href="../operators/velocity/">docs/operators/velocity/</a></td>
+</tr>
+<tr>
+<td>Bounded-buffer (7)</td>
+<td>Histogram, HourOfDayHistogram, DowHourHistogram, SeasonalDeviation, EventTypeMix, MostRecentN, ReservoirSample</td>
+<td><a href="../operators/buffer-geo/">docs/operators/buffer-geo/</a></td>
+</tr>
+<tr>
+<td>Geo (4)</td>
+<td>GeoVelocity, GeoDistance, GeoSpread, DistanceFromHome</td>
+<td><a href="../operators/buffer-geo/">docs/operators/buffer-geo/</a></td>
+</tr>
+</tbody>
+</table>
+<p>Total: 8+5+5+10+6+9+7+4 = <strong>54</strong> entries (53 unique + <code>Ema</code> alias).</p>
+<p>Each op accepts variadic functional options for kwargs:</p>
+<ul>
+<li><code>beava.Window(string)</code> — duration-string window for windowed ops.</li>
+<li><code>beava.Where(Expr)</code> — optional filter expression.</li>
+<li><code>beava.HalfLife(string)</code> — for decay ops.</li>
+<li><code>beava.SubWindow(string)</code> — for <code>BurstCount</code>.</li>
+<li><code>beava.Sigma(float64)</code> — for <code>OutlierCount</code>.</li>
+</ul>
+<p>Required positional args (typically <code>field</code> and op-specific params like
+<code>q</code> for <code>Quantile</code>) come first; everything else is functional options.</p>
+<blockquote>
+<p><strong>No deprecation aliases in Go.</strong> v0 is unreleased and Go users start
+with the new Polars names directly.</p>
+</blockquote>
+<h2 id="errors" tabindex="-1"><a class="header-anchor" href="#errors" aria-hidden="true">#</a> Errors</h2>
+<pre><code class="language-go">type RegistrationError struct {
+    Code    string
+    Path    string
+    Message string
+    Errors  []ValidationError
+}
+
+func (e *RegistrationError) Error() string {
+    return fmt.Sprintf(&quot;[%s] %s: %s&quot;, e.Code, e.Path, e.Message)
+}
+
+type BinaryNotFoundError struct {
+    Searched []string
+}
+
+func (e *BinaryNotFoundError) Error() string {
+    return fmt.Sprintf(&quot;beava binary not found in: %v&quot;, e.Searched)
+}
+
+type ValidationError struct {
+    Kind    string
+    Path    string
+    Message string
+}
+</code></pre>
+<p>The 9 valid <code>ValidationError.Kind</code> values are documented in
+<a href="/docs/sdk-api/shared/#validationerror-envelope">shared.md § ValidationError envelope</a>.</p>
+<p>Standard Go error-handling idioms apply:</p>
+<pre><code class="language-go">result, err := app.Register(ctx, descriptors)
+if err != nil {
+    var regErr *beava.RegistrationError
+    if errors.As(err, &amp;regErr) {
+        // structured handling
+        log.Printf(&quot;registration failed: code=%s path=%s&quot;, regErr.Code, regErr.Path)
+        for _, ve := range regErr.Errors {
+            log.Printf(&quot;  - %s&quot;, ve)
+        }
+    }
+    return err
+}
+</code></pre>
+<h2 id="test-helpers-beavatest" tabindex="-1"><a class="header-anchor" href="#test-helpers-beavatest" aria-hidden="true">#</a> Test helpers (<code>beavatest</code>)</h2>
+<pre><code class="language-go">package mypackage_test
+
+import (
+    &quot;context&quot;
+    &quot;testing&quot;
+
+    beava &quot;github.com/beava-io/beava-go&quot;
+    &quot;github.com/beava-io/beava-go/beavatest&quot;
+)
+
+type Txn struct {
+    UserID string `beava:&quot;user_id&quot;`
+}
+
+func TestCountPerUser(t *testing.T) {
+    ctx := context.Background()
+    app := beavatest.Fixture(t, beavatest.WithResetEach(true))
+
+    txnDesc := beava.NewEvent[Txn](&quot;Txn&quot;)
+    counts := beava.NewTable(&quot;Counts&quot;,
+        beava.WithKey(&quot;user_id&quot;),
+        beava.WithUpstream(txnDesc),
+        beava.WithAgg(map[string]beava.AggOp{
+            &quot;c&quot;: beava.Count(beava.Window(&quot;1h&quot;)),
+        }),
+    )
+
+    if _, err := app.Register(ctx, []beava.Descriptor{txnDesc, counts}); err != nil {
+        t.Fatal(err)
+    }
+
+    if _, err := app.Push(ctx, &quot;Txn&quot;, map[string]any{&quot;user_id&quot;: &quot;alice&quot;}); err != nil {
+        t.Fatal(err)
+    }
+
+    row, err := app.Get(ctx, &quot;Counts&quot;, &quot;alice&quot;)
+    if err != nil {
+        t.Fatal(err)
+    }
+
+    beavatest.AssertFeaturesEq(t, row, beava.FeatureResult{&quot;c&quot;: int64(1)})
+}
+</code></pre>
+<p><code>beavatest.Fixture(t, opts...)</code>:</p>
+<ul>
+<li>Returns a <code>*beava.App</code> configured for embed mode.</li>
+<li>Registers <code>t.Cleanup(func() { app.Close(ctx) })</code> so the subprocess
+terminates when the test ends.</li>
+<li><code>beavatest.WithResetEach(true)</code> — call <code>app.Reset(ctx)</code> between tests
+(standard Go testing pattern uses subtests + cleanup; this option
+pairs with table-driven tests).</li>
+</ul>
+<p><code>beavatest.AssertFeaturesEq(t, got, want)</code> — assertion helper using
+<code>testing.T.Errorf</code>. Tolerant of float near-equality (relative tolerance
+<code>1e-9</code>) for sketch-based ops like <code>Quantile</code> and <code>NUnique</code>.</p>
+<h2 id="versioning-compatibility" tabindex="-1"><a class="header-anchor" href="#versioning-compatibility" aria-hidden="true">#</a> Versioning + compatibility</h2>
+<ul>
+<li><strong>Go versions:</strong> Go 1.22+ (generics + modern context handling).</li>
+<li><strong>Wire compatibility:</strong> v0 SDK targets v0 server.</li>
+<li><strong>API stability:</strong> the public surface is <strong>frozen for v0</strong>. Adding new
+optional fields / functional options is non-breaking.</li>
+</ul>
+<h2 id="plan-level-traceability" tabindex="-1"><a class="header-anchor" href="#plan-level-traceability" aria-hidden="true">#</a> Plan-level traceability</h2>
+<p>This document is authored by Plan 13.0-04 (Wave 1). Downstream consumers:</p>
+<ul>
+<li><strong>Phase 13.6</strong> — Go SDK port reads this doc as the canonical surface;
+lands the v0-target shape (<code>github.com/beava-io/beava-go</code> v0.0.0).</li>
+<li><a href="/docs/sdk-api/shared/">shared.md</a> + <a href="/docs/sdk-api/python/">python.md</a> — cross-language parity
+references.</li>
+</ul>
+<p>For the full Phase 13.0 plan tree, see
+<a href="https://github.com/beava-dev/beava/blob/main/.planning/phases/13.0-design-contract-spec-docs/13.0-PLAN.md"><code>.planning/phases/13.0-design-contract-spec-docs/13.0-PLAN.md</code></a>.</p>
+
+</article>
+</main>
+<aside class="docs-toc" aria-label="On this page">
+  <div class="toc-title">On this page</div>
+  <ul class="toc-list">
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#module-structure">Module structure</a></li>
+      <li><a href="#app-struct">App struct</a></li>
+      <li><a href="#builder-api-event-table">Builder API (event + table)</a></li>
+      <li><a href="#pipeline-dsl">Pipeline DSL</a></li>
+      <li><a href="#expression-dsl">Expression DSL</a></li>
+      <li><a href="#bvsum-signature-q1-path-b-locked">bv.sum signature (Q1 Path B locked)</a></li>
+      <li><a href="#public-expression-literals-beavalit-per-adr-003">Public expression literals (beava.Lit) — per ADR-003</a></li>
+      <li><a href="#global-aggregation-per-adr-003">Global aggregation — per ADR-003</a></li>
+      <li><a href="#operator-catalog">Operator catalog</a></li>
+      <li><a href="#errors">Errors</a></li>
+      <li><a href="#test-helpers-beavatest">Test helpers (beavatest)</a></li>
+      <li><a href="#versioning-compatibility">Versioning + compatibility</a></li>
+      <li><a href="#plan-level-traceability">Plan-level traceability</a></li>
+  </ul>
+</aside>
+</div>
+<footer class="site-foot">
+  <div class="foot-inner">
+    <span>© 2026 beava labs · Apache 2.0</span>
+    <a href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</footer>
+</body>
+</html>

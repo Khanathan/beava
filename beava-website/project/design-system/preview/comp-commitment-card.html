@@ -1,0 +1,90 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>CommitmentCard</title>
+<style>
+  body { padding: 24px 28px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 0 0 10px; letter-spacing: 0.02em; }
+  .stack { display: flex; flex-direction: column; gap: 24px; }
+
+  .commitments {
+    display: grid; grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+
+  .commit {
+    display: block;
+    padding: 22px 22px 20px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    text-decoration: none;
+    transition: border-color 200ms var(--ease-out), transform 200ms var(--ease-out);
+    position: relative;
+  }
+  .commit:hover { border-color: var(--border-strong); }
+  .commit:hover .ic { background: var(--accent); color: #fff; }
+  .commit:hover .more { color: var(--accent-hover); gap: 8px; }
+
+  .commit .ic {
+    width: 40px; height: 40px; border-radius: 11px;
+    background: var(--beava-orange-wash); color: var(--accent);
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-bottom: 14px;
+    transition: background 200ms var(--ease-out), color 200ms var(--ease-out);
+  }
+  .commit h4 {
+    font-family: var(--font-serif); font-weight: 600;
+    font-size: 19px; line-height: 1.2; letter-spacing: -0.01em;
+    color: var(--fg1); margin: 0 0 6px;
+  }
+  .commit p {
+    font-family: var(--font-sans); font-size: 13.5px; line-height: 1.55;
+    color: var(--fg2); margin: 0 0 14px;
+  }
+  .commit .more {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-sans); font-weight: 600; font-size: 13px;
+    color: var(--accent);
+    transition: gap 200ms var(--ease-out), color 200ms var(--ease-out);
+  }
+</style>
+</head><body>
+
+  <div class="stack">
+    <div>
+      <div class="label">// 2-up grid · community page</div>
+      <div class="commitments">
+
+        <a class="commit" href="#">
+          <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.26-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.39.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z" fill="currentColor" stroke="none"/></svg></span>
+          <h4>The core stays open</h4>
+          <p>Apache 2.0, forever. We don’t plan a “core vs enterprise” split — if it ships in beava, you can run it.</p>
+          <span class="more">Read the license →</span>
+        </a>
+
+        <a class="commit" href="#">
+          <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg></span>
+          <h4>Performance is a feature</h4>
+          <p>P99 budgets are tracked in CI on every release. Regressions block merge — we don’t ship slower beavas.</p>
+          <span class="more">See the perf page →</span>
+        </a>
+
+        <a class="commit" href="#">
+          <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v6H4z"/><path d="M4 14h16v6H4z"/><path d="M8 7h.01M8 17h.01"/></svg></span>
+          <h4>Boring releases</h4>
+          <p>Every minor version ships with a migration note. No surprise breaking changes between patches.</p>
+          <span class="more">Read the changelog →</span>
+        </a>
+
+        <a class="commit" href="#">
+          <span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg></span>
+          <h4>Decisions in public</h4>
+          <p>Every meaningful change starts as an RFC on GitHub. You can read why, push back, or write your own.</p>
+          <span class="more">Browse RFCs →</span>
+        </a>
+
+      </div>
+    </div>
+  </div>
+
+</body></html>

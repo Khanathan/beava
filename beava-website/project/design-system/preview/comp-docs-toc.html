@@ -1,0 +1,99 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>DocsTOC</title>
+<style>
+  body { padding: 24px 28px; }
+  .frame {
+    display: grid; grid-template-columns: 1fr 220px;
+    gap: 32px; align-items: start;
+  }
+  /* fake content rail just to show the TOC in context */
+  .content { padding-top: 6px; }
+  .content .h2 { font-family: var(--font-serif); font-size: 22px; line-height: 1.15; color: var(--fg1); margin: 0 0 8px; letter-spacing: -0.01em; font-weight: 600; }
+  .content .lede { font-family: var(--font-sans); font-size: 13.5px; line-height: 1.6; color: var(--fg2); margin: 0 0 14px; }
+  .content .skel { height: 7px; border-radius: 3px; background: var(--beava-rule-soft); margin-bottom: 7px; }
+  .content .skel.s1 { width: 86%; }
+  .content .skel.s2 { width: 92%; }
+  .content .skel.s3 { width: 64%; }
+  .content .skel-h { height: 11px; border-radius: 3px; background: var(--border); margin: 18px 0 10px; width: 38%; }
+
+  .toc {
+    position: sticky; top: 0;
+    padding: 0 0 0 14px;
+    border-left: 1px solid var(--border);
+  }
+  .toc .kicker {
+    font-family: var(--font-sans); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg3); margin-bottom: 12px;
+  }
+  .toc ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 1px; }
+  .toc a {
+    display: block; padding: 5px 10px;
+    font-family: var(--font-sans); font-size: 13px; line-height: 1.4;
+    color: var(--fg3); text-decoration: none;
+    border-left: 2px solid transparent;
+    margin-left: -12px; padding-left: 12px;
+    transition: color 120ms var(--ease-out), border-color 120ms var(--ease-out);
+  }
+  .toc a:hover { color: var(--fg1); }
+  .toc li.sub a { padding-left: 24px; font-size: 12.5px; color: var(--fg3); }
+  .toc li.active a {
+    color: var(--accent); font-weight: 600;
+    border-left-color: var(--accent);
+  }
+  .toc li.sub.active a { color: var(--accent); }
+
+  .toc .footnote {
+    margin-top: 18px; padding-top: 14px;
+    border-top: 1px solid var(--border);
+    font-family: var(--font-sans); font-size: 12px; color: var(--fg3);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .toc .footnote a { padding: 0; border: 0; margin: 0; color: var(--accent); font-weight: 500; }
+  .toc .footnote a:hover { text-decoration: underline; }
+
+  /* prop docs strip below */
+  .props {
+    margin-top: 22px; padding: 12px 14px;
+    background: var(--beava-paper); border: 1px solid var(--border); border-radius: 10px;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg2); line-height: 1.7;
+  }
+  .props .k { color: var(--code-keyword); }
+  .props .s { color: var(--code-string); }
+  .props .c { color: var(--code-comment); }
+</style>
+</head><body>
+  <div class="frame">
+    <div class="content">
+      <div class="h2">Rolling counters</div>
+      <div class="lede">Rolling counters answer “how many of X have happened in the last N seconds?” — a primitive for rate limits, trending lists, and surge detection.</div>
+      <div class="skel s1"></div>
+      <div class="skel s2"></div>
+      <div class="skel s3"></div>
+      <div class="skel-h"></div>
+      <div class="skel s2"></div>
+      <div class="skel s1"></div>
+      <div class="skel s3"></div>
+    </div>
+    <nav class="toc" aria-label="On this page">
+      <div class="kicker">On this page</div>
+      <ul>
+        <li><a href="#what">What is a rolling counter?</a></li>
+        <li class="sub active"><a href="#define">Defining a counter</a></li>
+        <li class="sub"><a href="#push">Pushing events</a></li>
+        <li class="sub"><a href="#query">Querying</a></li>
+        <li><a href="#perf">Performance</a></li>
+        <li><a href="#caveats">Caveats</a></li>
+      </ul>
+      <div class="footnote">
+        <span>Edit this page on</span><a href="#">GitHub →</a>
+      </div>
+    </nav>
+  </div>
+
+  <div class="props">
+    <span class="c">// usage</span><br>
+    <span class="k">&lt;DocsTOC</span> <span class="k">items</span>=<span class="s">{[{ id, label, sub? }]}</span> <span class="k">activeId</span>=<span class="s">"define"</span> <span class="k">editHref</span>=<span class="s">"…"</span> <span class="k">/&gt;</span>
+  </div>
+</body></html>

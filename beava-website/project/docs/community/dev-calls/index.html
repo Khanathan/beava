@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weekly dev calls · beava docs</title>
+  <meta name="description" content="beava hosts a weekly dev call for contributors, users, and people exploring the project. Build beava with us.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'build', label: 'Build beava with us' },
+      { id: 'who', label: 'Who should join?' },
+      { id: 'summaries', label: 'Call summaries' },
+      { id: 'norm', label: 'Community norm' },
+    ];
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Weekly dev calls"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Community</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Weekly dev calls</span>
+            </div>
+
+            <h1>Weekly dev calls</h1>
+
+            <h2 id="build">Build beava with us</h2>
+            <p className="bv-lede">beava hosts a weekly dev call for contributors, users, and people exploring the project. The goal is to make development visible and make it easier for people to participate.</p>
+            <p>Join if you want to:</p>
+            <ul>
+              <li>Discuss RFCs.</li>
+              <li>Ask questions about the roadmap.</li>
+              <li>Share a use case.</li>
+              <li>Review benchmarks.</li>
+              <li>Talk through operational concerns.</li>
+              <li>Propose examples or integrations.</li>
+              <li>Understand what is changing next.</li>
+            </ul>
+
+            <h2 id="who">Who should join?</h2>
+            <p>You do not need to be a contributor to join.</p>
+            <p>The call is for anyone who feels the problem beava is trying to solve:</p>
+            <ul>
+              <li>Product engineers building real-time application logic.</li>
+              <li>ML engineers building fresh features.</li>
+              <li>Data engineers simplifying stream processing workflows.</li>
+              <li>Infra engineers thinking about deployment and operations.</li>
+              <li>Founders testing personalization, ranking, bidding, fraud, or agentic applications.</li>
+              <li>OSS contributors who want to help shape the project.</li>
+            </ul>
+            <p><strong>Stream processing should not require a platform team.</strong></p>
+            <p>If that sentence resonates, the dev call is for you.</p>
+
+            <h2 id="summaries">Call summaries</h2>
+            <p>Every call should have a short public summary.</p>
+            <p>Summaries help people catch up without attending every meeting.</p>
+            <p>A good summary should include:</p>
+            <ul>
+              <li>Main topics discussed.</li>
+              <li>Decisions made.</li>
+              <li>Open questions.</li>
+              <li>RFCs mentioned.</li>
+              <li>Follow-up tasks.</li>
+              <li>Links to relevant issues or pull requests.</li>
+            </ul>
+
+            <h2 id="norm">Community norm</h2>
+            <p>beava should be a project where people can learn in public.</p>
+            <p>Questions are welcome. Use cases are welcome. Operational concerns are welcome.</p>
+            <p>The best feedback often comes from people trying to use the system for something real.</p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/community/dev-calls/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

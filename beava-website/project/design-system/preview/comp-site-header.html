@@ -1,0 +1,140 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>SiteHeader</title>
+<style>
+  body { padding: 0; width: 700px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 16px 24px 8px; letter-spacing: 0.02em; }
+
+  /* ============================================================
+     Shared SiteHeader — used on marketing AND docs.
+     Anatomy:
+       brand (mascot + wordmark + version pill)
+       [optional: search]
+       nav links (with optional active dot)
+       right-end action (GitHub stars button)
+     The ONLY difference between marketing and docs is the
+     middle slot: marketing leaves it empty (links shift left);
+     docs drops the search input in.
+     ============================================================ */
+  .site-header {
+    height: 60px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 22px;
+    gap: 22px;
+    font-family: var(--font-sans);
+  }
+
+  .brand {
+    display: inline-flex; align-items: center; gap: 9px;
+    text-decoration: none; color: var(--fg1);
+  }
+  .brand img { width: 30px; height: 30px; }
+  .brand .wm {
+    font-family: var(--font-serif); font-weight: 700;
+    font-size: 22px; letter-spacing: -0.01em; line-height: 1;
+  }
+  .brand .v {
+    font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+    color: var(--accent);
+    background: var(--beava-orange-wash);
+    padding: 2px 6px; border-radius: 999px;
+    letter-spacing: 0.02em;
+  }
+
+  .search {
+    flex: 1; max-width: 340px;
+    margin: 0 auto;
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 32px; padding: 0 10px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--fg3); font-size: 13px;
+    cursor: text;
+  }
+  .search:hover { border-color: var(--border-strong); }
+  .search .ph { flex: 1; }
+  .search .kbd {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--fg3); background: var(--beava-paper);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 1px 6px; line-height: 1;
+  }
+
+  .links { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  .links a {
+    padding: 6px 10px; border-radius: 7px;
+    font-size: 13.5px; font-weight: 500;
+    color: var(--fg2); text-decoration: none;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .links a:hover { color: var(--fg1); background: var(--beava-paper); }
+  .links a.active { color: var(--fg1); }
+  .links a.active::after {
+    content: ""; width: 4px; height: 4px; border-radius: 999px;
+    background: var(--accent); margin-left: 2px;
+  }
+
+  .gh {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 30px; padding: 0 10px;
+    font-size: 12.5px; font-weight: 600; color: var(--fg1);
+    background: #fff;
+    border: 1px solid var(--border); border-radius: 8px;
+    text-decoration: none;
+    margin-left: 6px;
+  }
+  .gh:hover { border-color: var(--border-strong); }
+  .gh .star { color: var(--accent); }
+  .gh .num { font-family: var(--font-mono); font-size: 12px; color: var(--fg2); }
+
+  /* marketing-flavor: links left, no search, big GH button on right */
+  .site-header.marketing .links { margin-left: 12px; margin-right: auto; }
+</style>
+</head><body>
+
+  <div class="label">// marketing variant — no search, links sit on the left</div>
+  <header class="site-header marketing">
+    <a class="brand" href="#">
+      <img src="../assets/logo-mark.png" alt="">
+      <span class="wm">beava</span>
+      <span class="v">v0.14</span>
+    </a>
+    <nav class="links">
+      <a href="#">Guide</a>
+      <a href="#">Docs</a>
+      <a href="#">Community</a>
+    </nav>
+    <a class="gh" href="#">
+      <svg class="star" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.26-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.39.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+      <span class="num">8.2k</span>
+    </a>
+  </header>
+
+  <div class="label">// docs variant — same anatomy + search slot in the middle</div>
+  <header class="site-header docs">
+    <a class="brand" href="#">
+      <img src="../assets/logo-mark.png" alt="">
+      <span class="wm">beava</span>
+      <span class="v">v0.14</span>
+    </a>
+    <div class="search">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+      <span class="ph">Search the docs</span>
+      <span class="kbd">⌘K</span>
+    </div>
+    <nav class="links">
+      <a href="#" class="active">Docs</a>
+      <a href="#">Guide</a>
+      <a href="#">Community</a>
+    </nav>
+    <a class="gh" href="#">
+      <svg class="star" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.26-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.56 9.56 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.39.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+      <span class="num">8.2k</span>
+    </a>
+  </header>
+
+  <div style="height: 28px"></div>
+</body></html>

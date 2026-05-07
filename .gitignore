@@ -136,11 +136,14 @@ secrets/
 /benches/
 /benchmark/
 
-# Local-only marketing / website / design work
+# Local-only marketing / design work (deferred from public OSS)
 /launch/
 /site/
-/beava-design-system/
-/beava-website/
+
+# Conversation transcripts inside the website / design-system trees
+# (tracked source lives under project/, not chats/).
+/beava-website/chats/
+/beava-design-system/chats/
 
 # Internal-only tooling and planning state (kept local, not in public OSS)
 /.planning/

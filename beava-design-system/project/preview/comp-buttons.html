@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 28px 32px; }
+  .row { gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    font-family: var(--font-sans); font-weight: 600; font-size: 14px;
+    padding: 10px 18px; border-radius: 10px; border: 1px solid transparent;
+    cursor: pointer; transition: all 200ms cubic-bezier(0.22,1,0.36,1);
+    display: inline-flex; align-items: center; gap: 8px; line-height: 1;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #a04e16; }
+  .btn-secondary { background: #fff; color: var(--fg1); border-color: var(--border); }
+  .btn-secondary:hover { border-color: var(--border-strong); }
+  .btn-ghost { background: transparent; color: var(--fg1); }
+  .btn-ghost:hover { background: var(--beava-orange-wash); color: var(--accent); }
+  .btn-sm { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
+  .btn-lg { padding: 14px 22px; font-size: 16px; }
+  .arrow { transition: transform 200ms; }
+  .btn:hover .arrow { transform: translateX(2px); }
+  .label { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); width:100%; margin-top:4px; }
+</style>
+</head><body>
+  <div class="row">
+    <button class="btn btn-primary">Get started <span class="arrow">→</span></button>
+    <button class="btn btn-secondary">Read the docs</button>
+    <button class="btn btn-ghost">Learn more</button>
+  </div>
+  <div class="label" style="margin-top:18px">Sizes</div>
+  <div class="row" style="margin-top:8px">
+    <button class="btn btn-primary btn-sm">Small</button>
+    <button class="btn btn-primary">Default</button>
+    <button class="btn btn-primary btn-lg">Large</button>
+  </div>
+</body></html>

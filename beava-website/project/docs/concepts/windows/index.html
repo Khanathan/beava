@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Windows · beava docs</title>
+  <meta name="description" content="Windowed aggregations let beava maintain features over recent time ranges. Fresh state is usually windowed state.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'aggs', label: 'Windowed aggregations' },
+      { id: 'why', label: 'Why windows matter' },
+      { id: 'default', label: 'Straightforward by default' },
+      { id: 'testing', label: 'Testing windowed features' },
+    ];
+    const quote = {borderLeft:'3px solid var(--accent)', paddingLeft:14, color:'var(--fg2)', margin:'14px 0', fontStyle:'italic'};
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Windows"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Concepts</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Windows</span>
+            </div>
+
+            <h1>Windows</h1>
+
+            <p className="bv-lede">Windows let beava maintain features over recent time ranges.</p>
+
+            <h2 id="aggs">Windowed aggregations</h2>
+            <p>Examples:</p>
+            <ul>
+              <li>Count clicks in the last 10 minutes.</li>
+              <li>Sum spend in the last 1 hour.</li>
+              <li>Count impressions in the last 24 hours.</li>
+              <li>Track distinct users in the last 5 minutes.</li>
+              <li>Compute average price over the last day.</li>
+            </ul>
+            <Code lang="python">
+{`@bv.table(key="campaign_id")
+def CampaignFeatures(ev: BidEvent) -> bv.Table:
+    return ev.group_by("campaign_id").agg(
+        spend_1h=bv.sum("price", window="1h", where="_event.event_type == 'win'"),
+        wins_24h=bv.count(window="24h", where="_event.event_type == 'win'"),
+    )`}
+            </Code>
+            <p>Windows are one of the main ways beava turns raw events into useful state.</p>
+
+            <h2 id="why">Why windows matter</h2>
+            <p>Applications often care most about what happened recently.</p>
+            <p>A recommendation model may care about what a user clicked in the last hour. A fraud model may care about velocity in the last minute. A bidding system may care about pacing today and impressions in the last 24 hours. An agent may care about recent tool calls or workflow state.</p>
+            <p><strong>Fresh state is usually windowed state.</strong></p>
+
+            <h2 id="default">Straightforward by default</h2>
+            <p>beava’s goal is to make common windowed aggregation straightforward.</p>
+            <p>Developers should not need to build a full stream processing job just to express:</p>
+            <blockquote style={quote}>Count these events by key over this time range.</blockquote>
+            <p>The SDK should make windows feel like part of the feature definition.</p>
+
+            <h2 id="testing">Testing windowed features</h2>
+            <p>Windowed features should be testable.</p>
+            <p>A good test can push a sequence of events, advance time, and assert the expected aggregate values.</p>
+            <p>This matters because real-time feature bugs are often subtle. If feature owners can test the pipeline directly, they can move faster with more confidence.</p>
+            <p><strong>Feature owners should own feature logic.</strong></p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/concepts/windows/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

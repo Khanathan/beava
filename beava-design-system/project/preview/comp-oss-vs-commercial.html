@@ -1,0 +1,113 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<title>OssVsCommercial</title>
+<style>
+  body { padding: 24px 28px; }
+  .label { font-family: var(--font-mono); font-size: 11px; color: var(--fg3); margin: 0 0 10px; letter-spacing: 0.02em; }
+
+  .ovc {
+    display: grid; grid-template-columns: 1fr 1fr;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    position: relative;
+  }
+  /* hand-drawn gaegu hinge between columns */
+  .ovc::after {
+    content: "vs.";
+    position: absolute; left: 50%; top: 22px;
+    transform: translateX(-50%) rotate(-4deg);
+    font-family: var(--font-accent); font-weight: 700;
+    font-size: 22px; color: var(--accent);
+    background: #fff; padding: 0 8px;
+    line-height: 1;
+  }
+
+  .col { padding: 28px 26px 24px; }
+  .col + .col {
+    border-left: 1px solid var(--border);
+    background: var(--beava-paper);
+  }
+
+  .col .kicker {
+    font-family: var(--font-sans); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--fg3); margin: 0 0 8px;
+  }
+  .col.us .kicker { color: var(--accent); }
+  .col h3 {
+    font-family: var(--font-serif); font-weight: 600;
+    font-size: 22px; line-height: 1.15; letter-spacing: -0.01em;
+    color: var(--fg1); margin: 0 0 8px;
+  }
+  .col p {
+    font-family: var(--font-sans); font-size: 13.5px; line-height: 1.6;
+    color: var(--fg2); margin: 0 0 14px;
+  }
+
+  .col ul { list-style: none; padding: 0; margin: 0 0 16px; display: flex; flex-direction: column; gap: 8px; }
+  .col li {
+    font-family: var(--font-sans); font-size: 13px; line-height: 1.5;
+    color: var(--fg1);
+    padding-left: 22px; position: relative;
+  }
+  .col li::before {
+    content: "✓"; position: absolute; left: 0; top: 0;
+    font-family: var(--font-mono); font-weight: 700; font-size: 13px;
+    color: var(--beava-success);
+  }
+  .col.them li::before { content: "·"; font-size: 22px; line-height: 0.5; top: 7px; color: var(--fg3); }
+
+  .col .footer-link {
+    font-family: var(--font-sans); font-weight: 600; font-size: 13px;
+    color: var(--accent); text-decoration: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .col .footer-link:hover { color: var(--accent-hover); }
+  .col.them .footer-link { color: var(--fg3); }
+
+  .col .price {
+    font-family: var(--font-mono); font-size: 12px; color: var(--fg3);
+    margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .col.us .price strong { color: var(--accent); font-family: var(--font-sans); font-weight: 700; }
+  .col.them .price strong { color: var(--fg1); font-family: var(--font-sans); font-weight: 700; }
+</style>
+</head><body>
+
+  <div class="label">// community page · self-host vs cloud</div>
+  <div class="ovc">
+
+    <div class="col us">
+      <div class="kicker">Open source</div>
+      <h3>Self-host beava</h3>
+      <p>The whole project, free. One binary, your hardware, your terms.</p>
+      <ul>
+        <li>Apache 2.0 source, no telemetry</li>
+        <li>Every operator, every release</li>
+        <li>Community support on Discord + GitHub</li>
+        <li>Run wherever a Linux binary runs</li>
+      </ul>
+      <a class="footer-link" href="#">Install in 60 seconds →</a>
+      <div class="price"><strong>Free</strong> · forever</div>
+    </div>
+
+    <div class="col them">
+      <div class="kicker">Coming later · 2026</div>
+      <h3>beava cloud</h3>
+      <p>The same binary, run by us. For teams that want a managed option without changing the API.</p>
+      <ul>
+        <li>Same operators, same wire format</li>
+        <li>Backups, SSO, audit log</li>
+        <li>Multi-region failover</li>
+        <li>Email + Slack support</li>
+      </ul>
+      <a class="footer-link" href="#">Join the waitlist →</a>
+      <div class="price"><strong>From $0.10 / GB-hour</strong> · pay-as-you-go</div>
+    </div>
+
+  </div>
+
+</body></html>

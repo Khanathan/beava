@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open source commitment · beava docs</title>
+  <meta name="description" content="The open-source project should be the real system. TiDB-style commitment to open source. Transparent infrastructure builds trust.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'real', label: 'The real system' },
+      { id: 'managed', label: 'Open source and managed service' },
+      { id: 'tidb', label: 'TiDB-style inspiration' },
+      { id: 'community', label: 'Community' },
+    ];
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Open source commitment"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="#">Vision</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Open source commitment</span>
+            </div>
+
+            <h1>Open source commitment</h1>
+
+            <h2 id="real">The open-source project should be the real system</h2>
+            <p className="bv-lede">beava is being built with open source at the core of the project.</p>
+            <p>We believe infrastructure for real-time ML should be transparent, inspectable, and understandable by the people who run it.</p>
+            <p><strong>The open-source project should be the real system:</strong> something developers can clone, run, test, operate, and trust as their use case grows.</p>
+            <p>A managed beava service can make deployment, scaling, monitoring, and operations easier, but it should not be the only way to experience the real product.</p>
+
+            <h2 id="managed">Open source and managed service</h2>
+            <p>We do not see open source and managed service as opposing ideas.</p>
+            <p>A managed service should remove operational burden. It should help teams deploy faster, scale more easily, monitor the system, and reduce maintenance work.</p>
+            <p>But the core system behavior should remain understandable.</p>
+            <p>Users should be able to reason about the engine, the data model, the runtime behavior, and the tradeoffs of the system they are using.</p>
+
+            <h2 id="tidb">The TiDB-style inspiration</h2>
+            <p>We admire the TiDB-style commitment to open source, where source code and production-grade features are part of the project’s public identity, while managed services can still exist to remove operational burden.</p>
+            <p>beava should follow that spirit.</p>
+            <p>Open source should not be a limited demo of the real system. It should be the foundation people can build on with confidence.</p>
+            <p><strong>Transparent infrastructure builds trust.</strong></p>
+
+            <h2 id="community">Community</h2>
+            <p>We want beava to grow with its users through:</p>
+            <ul>
+              <li>Public RFCs.</li>
+              <li>Weekly dev calls.</li>
+              <li>Summaries from previous calls.</li>
+              <li>Practical examples.</li>
+              <li>Reproducible benchmarks.</li>
+              <li>Clear contribution paths.</li>
+            </ul>
+            <p>If beava is going to become useful infrastructure, it should be shaped by people building real systems.</p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/vision/open-source/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>

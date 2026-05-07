@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 24px 28px; }
+  .call {
+    padding: 16px 18px; border-radius: 12px;
+    border: 1px solid transparent; display: flex; gap: 12px;
+    font-family: var(--font-sans); font-size: 14px; line-height: 1.55;
+    margin-bottom: 10px;
+  }
+  .call .ic { flex-shrink:0; width:22px; height:22px; border-radius: 999px; display:flex; align-items:center; justify-content:center; font-family: var(--font-mono); font-weight:700; font-size:12px; color:#fff; margin-top: 1px; }
+  .call strong { display:block; margin-bottom:2px; color:var(--fg1); }
+  .call p { margin:0; color:var(--fg2); }
+  .note { background: var(--beava-info-wash); border-color: #cadae4; }
+  .note .ic { background: var(--beava-info); }
+  .tip  { background: var(--beava-success-wash); border-color: #cfdcbd; }
+  .tip  .ic { background: var(--beava-success); }
+  .warn { background: var(--beava-warn-wash); border-color: #ecd89a; }
+  .warn .ic { background: var(--beava-warn); }
+</style>
+</head><body>
+  <div class="call note"><span class="ic">i</span><div><strong>Note</strong><p>Feature keys are case-sensitive and cannot contain slashes.</p></div></div>
+  <div class="call tip"><span class="ic">✓</span><div><strong>Tip</strong><p>Pre-warm hot keys with <code style="font-family:var(--font-mono);font-size:12px">beava warm</code> before a traffic spike.</p></div></div>
+  <div class="call warn"><span class="ic">!</span><div><strong>Heads up</strong><p>Rolling windows &lt; 1s are experimental and may drift under load.</p></div></div>
+</body></html>

@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install — beava docs</title>
+<meta name="description" content="Beava — real-time feature server.">
+<link rel="canonical" href="https://beava.dev/docs/install/">
+<link rel="icon" href="/assets/mascot-mark-geometric.png">
+<link rel="stylesheet" href="/styles/colors_and_type.css">
+<link rel="stylesheet" href="/styles/site.css">
+<link rel="stylesheet" href="/styles/docs.css">
+<meta name="docs-source" content="docs/install.md">
+</head>
+<body class="beava docs-body">
+<header class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="/"><img src="/assets/logo-mark.png" alt="" width="36" height="36"/><span>beava</span></a>
+    <ul class="nav-links">
+      <li><a href="/guide/">Guide</a></li>
+      <li><a href="/docs/" aria-current="page">Docs</a></li>
+      <li><a href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">GitHub</a></li>
+    </ul>
+    <div class="nav-search" id="search"></div>
+  </div>
+</header>
+<link rel="stylesheet" href="/_pagefind/pagefind-ui.css">
+<script src="/_pagefind/pagefind-ui.js" defer></script>
+<script>
+  window.addEventListener('DOMContentLoaded', function () {
+    if (window.PagefindUI) {
+      new PagefindUI({ element: '#search', showSubResults: true, resetStyles: false, showImages: false });
+    }
+  });
+</script>
+<div class="docs-shell">
+<nav class="docs-sidebar" aria-label="Docs navigation">
+  <div class="side-section">
+    <div class="side-title">Getting started</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/">Introduction</a></li>
+      <li><a class="side-link" href="/docs/quickstart/">Quickstart</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Wire &amp; API</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/wire-spec/">Wire spec</a></li>
+      <li><a class="side-link" href="/docs/http-api/">HTTP API</a></li>
+      <li><a class="side-link" href="/docs/schema-evolution/">Schema evolution</a></li>
+      <li><a class="side-link" href="/docs/error-codes/">Error codes</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">SDK references</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/sdk-api/shared/">Cross-language parity</a></li>
+      <li><a class="side-link" href="/docs/sdk-api/python/">Python SDK</a></li>
+      <li><a class="side-link" href="/docs/sdk-api/typescript/">TypeScript SDK</a></li>
+      <li><a class="side-link" href="/docs/sdk-api/go/">Go SDK</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Pipeline DSL</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/pipeline-dsl/overview/">DSL overview</a></li>
+      <li><a class="side-link" href="/docs/pipeline-dsl/expressions/">Expressions</a></li>
+      <li><a class="side-link" href="/docs/pipeline-dsl/compilation-rules/">Compilation rules</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Operators</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/operators/">Operator catalog</a></li>
+      <li><a class="side-link" href="/docs/operators/cost-class/">Cost classes</a></li>
+      <li><a class="side-link" href="/docs/operators/core/">Core (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/sketch/">Sketch (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/point-ordinal/">Point/ordinal (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/recency/">Recency (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/decay/">Decay (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/velocity/">Velocity (family)</a></li>
+      <li><a class="side-link" href="/docs/operators/buffer-geo/">Buffer &amp; geo (family)</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Concepts</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/concepts/events-vs-tables/">Events vs tables</a></li>
+      <li><a class="side-link" href="/docs/concepts/embed-mode/">Embed mode</a></li>
+      <li><a class="side-link" href="/docs/concepts/lifetime-aggregation/">Lifetime aggregation</a></li>
+      <li><a class="side-link" href="/docs/concepts/processing-time-only/">Processing-time only</a></li>
+      <li><a class="side-link" href="/docs/concepts/global-aggregation/">Global aggregation</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Architecture</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="/docs/architecture/single-thread-apply/">Single-thread apply</a></li>
+      <li><a class="side-link" href="/docs/architecture/mio-data-plane/">mio data plane</a></li>
+      <li><a class="side-link" href="/docs/architecture/wal-snapshot/">WAL + snapshot</a></li>
+      <li><a class="side-link" href="/docs/architecture/memory-budget/">Memory budget</a></li>
+      <li><a class="side-link" href="/docs/architecture/observability/">Observability</a></li>
+    </ul>
+  </div>
+  <div class="side-section">
+    <div class="side-title">Community</div>
+    <ul class="side-list">
+      <li><a class="side-link" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Discussions</a></li>
+      <li><a class="side-link" href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+<main class="docs-main" data-pagefind-body>
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/docs/">Docs</a><span class="crumb-sep">›</span><span class="crumb-cur">Install</span></nav>
+<article class="docs-prose">
+<h1>Install</h1>
+<blockquote>
+<p>Pick one. They're the same binary.</p>
+</blockquote>
+<h2 id="pip-recommended" tabindex="-1"><a class="header-anchor" href="#pip-recommended" aria-hidden="true">#</a> pip (recommended)</h2>
+<pre><code class="language-bash">pip install tally
+</code></pre>
+<blockquote>
+<p><strong>Pre-release naming.</strong> The PyPI package is currently published as <code>tally</code>
+(the project's repo codename). The <code>beava</code> package name is reserved for the
+v0.0.0 GA cut. Once GA ships, <code>pip install beava</code> becomes the canonical
+command. Until then, install <code>tally</code> and import as <code>import beava as bv</code>
+(the import name is already <code>beava</code>).</p>
+</blockquote>
+<p>The Python SDK ships with the server binary embedded. <code>bv.App()</code> discovers and runs it on an ephemeral port. This is what you want for development, tests, and most production deployments.</p>
+<h2 id="docker" tabindex="-1"><a class="header-anchor" href="#docker" aria-hidden="true">#</a> Docker</h2>
+<pre><code class="language-bash">docker run -p 8080:8080 ghcr.io/beava-dev/beava:latest
+</code></pre>
+<p>Push and query against <code>:8080</code>. Mount a volume at <code>/data</code> to persist the WAL and snapshots.</p>
+<h2 id="homebrew-macos-linux" tabindex="-1"><a class="header-anchor" href="#homebrew-macos-linux" aria-hidden="true">#</a> Homebrew (macOS, Linux)</h2>
+<pre><code class="language-bash">brew install beava-dev/tap/beava
+beava -c beava.yaml      # binds 127.0.0.1:8080 by default (admin :8090)
+</code></pre>
+<p>The binary takes a single YAML config (default <code>./beava.yaml</code>); ports come
+from <code>listen_addr</code> / <code>admin_addr</code> keys, or env vars
+<code>BEAVA_LISTEN_ADDR</code> / <code>BEAVA_ADMIN_ADDR</code>. There is no <code>serve</code> subcommand.</p>
+<h2 id="static-binary" tabindex="-1"><a class="header-anchor" href="#static-binary" aria-hidden="true">#</a> Static binary</h2>
+<p>Download the prebuilt binary for your platform from the <a href="https://github.com/beava-dev/beava/releases">releases page</a> — about 14 MB, no runtime dependencies.</p>
+<pre><code class="language-bash">curl -L https://github.com/beava-dev/beava/releases/latest/download/beava-$(uname -s)-$(uname -m) -o beava
+chmod +x beava
+./beava -c beava.yaml
+</code></pre>
+<h2 id="verify" tabindex="-1"><a class="header-anchor" href="#verify" aria-hidden="true">#</a> Verify</h2>
+<pre><code class="language-bash">$ beava --version
+beava 0.0.0
+</code></pre>
+<p>Or from Python:</p>
+<pre><code class="language-python">import beava as bv
+print(bv.__version__)
+</code></pre>
+<h2 id="whats-next" tabindex="-1"><a class="header-anchor" href="#whats-next" aria-hidden="true">#</a> What's next</h2>
+<p><a href="/docs/get-started/quickstart/">Quickstart</a> — first feature in 60 seconds.</p>
+
+</article>
+</main>
+<aside class="docs-toc" aria-label="On this page">
+  <div class="toc-title">On this page</div>
+  <ul class="toc-list">
+      <li><a href="#pip-recommended">pip (recommended)</a></li>
+      <li><a href="#docker">Docker</a></li>
+      <li><a href="#homebrew-macos-linux">Homebrew (macOS, Linux)</a></li>
+      <li><a href="#static-binary">Static binary</a></li>
+      <li><a href="#verify">Verify</a></li>
+      <li><a href="#whats-next">What's next</a></li>
+  </ul>
+</aside>
+</div>
+<footer class="site-foot">
+  <div class="foot-inner">
+    <span>© 2026 beava labs · Apache 2.0</span>
+    <a href="https://github.com/beava-dev/beava" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</footer>
+</body>
+</html>

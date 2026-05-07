@@ -1,0 +1,282 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 24px; display: flex; flex-direction: column; gap: 32px; width: 860px; }
+  .legend { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+
+  /* Success palette — forest green, warm, already in tokens */
+  :root {
+    --celebrate:        var(--beava-success);       /* #4a7a3a */
+    --celebrate-wash:   var(--beava-success-wash);  /* #e5edd9 */
+    --celebrate-deep:   #3a5f2d;
+    --celebrate-rule:   #cfe0c7;
+  }
+
+  .title-stamp {
+    font-family: var(--font-sans);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--celebrate);
+  }
+
+  /* ---------- A. Compact celebration (drop-in replacement for current) ---------- */
+  .v-a {
+    background: var(--celebrate-wash);
+    border: 1px solid var(--celebrate-rule);
+    border-radius: 14px;
+    padding: 22px 26px;
+    display: grid;
+    grid-template-columns: 1fr 90px;
+    gap: 18px;
+    align-items: center;
+  }
+  .v-a .body p {
+    font-family: var(--font-serif);
+    font-size: 17px;
+    line-height: 1.55;
+    color: var(--fg1);
+    margin: 6px 0 0;
+    max-width: 58ch;
+    font-weight: 500;
+  }
+  .v-a .body p strong { color: var(--celebrate-deep); font-weight: 700; }
+  .v-a .mascot {
+    width: 90px; height: 90px;
+    background-image: url('../assets/mascot-pose-3.png');
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+    transform: rotate(4deg);
+  }
+
+  /* ---------- B. Stats receipt ---------- */
+  .v-b {
+    background: #fff;
+    border: 1.5px solid var(--celebrate);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .v-b .head {
+    background: var(--celebrate);
+    color: #fff;
+    padding: 14px 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .v-b .head .stamp {
+    font-family: var(--font-sans);
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .v-b .head .tag {
+    font-family: var(--font-accent);
+    font-weight: 700;
+    font-size: 22px;
+    line-height: 1;
+    transform: rotate(-4deg);
+  }
+  .v-b .body { padding: 18px 22px 22px; }
+  .v-b h3 {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 24px;
+    line-height: 1.15;
+    margin: 0 0 12px;
+    color: var(--fg1);
+  }
+  .v-b .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin: 16px 0;
+    padding: 14px 0;
+    border-top: 1px dashed var(--border);
+    border-bottom: 1px dashed var(--border);
+  }
+  .v-b .stat .n {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 30px;
+    color: var(--celebrate);
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+  .v-b .stat .l {
+    font-family: var(--font-sans);
+    font-size: 12px;
+    color: var(--fg3);
+    margin-top: 5px;
+    line-height: 1.3;
+  }
+  .v-b .foot {
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color: var(--fg2);
+    line-height: 1.55;
+    margin: 0;
+  }
+  .v-b .foot strong { color: var(--fg1); font-weight: 600; }
+
+  /* ---------- C. Achievement unlock (big moment) ---------- */
+  .v-c {
+    position: relative;
+    background:
+      radial-gradient(ellipse at 85% 50%, rgba(74,122,58,0.08), transparent 60%),
+      var(--celebrate-wash);
+    border: 1.5px dashed var(--celebrate);
+    border-radius: 18px;
+    padding: 28px 32px;
+    display: grid;
+    grid-template-columns: 1fr 140px;
+    gap: 24px;
+    align-items: center;
+    overflow: hidden;
+  }
+  .v-c::before {
+    content: "";
+    position: absolute;
+    left: -30px; top: -30px;
+    width: 90px; height: 90px;
+    border-radius: 999px;
+    background: repeating-conic-gradient(from 0deg, var(--celebrate) 0 10deg, transparent 10deg 20deg);
+    opacity: 0.08;
+    pointer-events: none;
+  }
+  .v-c .scribble {
+    font-family: var(--font-accent);
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--celebrate);
+    transform: rotate(-2deg);
+    display: inline-block;
+    margin-bottom: 4px;
+  }
+  .v-c h3 {
+    font-family: var(--font-serif);
+    font-weight: 700;
+    font-size: 34px;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin: 4px 0 12px;
+    color: var(--fg1);
+    max-width: 14ch;
+  }
+  .v-c h3 em {
+    font-style: italic;
+    color: var(--celebrate);
+    font-family: var(--font-serif);
+  }
+  .v-c .sub {
+    font-family: var(--font-sans);
+    font-size: 14.5px;
+    color: var(--fg2);
+    line-height: 1.55;
+    margin: 0 0 16px;
+    max-width: 52ch;
+  }
+  .v-c .sub strong { color: var(--fg1); font-weight: 600; }
+  .v-c .next { display: flex; gap: 10px; flex-wrap: wrap; }
+  .v-c .cta {
+    font-family: var(--font-sans); font-weight: 600; font-size: 13.5px;
+    color: #fff; background: var(--celebrate);
+    border: 0; border-radius: 10px;
+    padding: 10px 16px;
+    display: inline-flex; align-items: center; gap: 7px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .v-c .cta-ghost {
+    font-family: var(--font-sans); font-weight: 600; font-size: 13.5px;
+    color: var(--celebrate); background: transparent;
+    border: 1px solid var(--celebrate-rule); border-radius: 10px;
+    padding: 10px 16px;
+    display: inline-flex; align-items: center; gap: 7px;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .v-c .cta-ghost:hover { background: #fff; }
+  .v-c .mascot {
+    width: 140px; height: 140px;
+    background-image: url('../assets/mascot-pose-3.png');
+    background-size: contain; background-repeat: no-repeat; background-position: center;
+    transform: rotate(-3deg);
+    filter: drop-shadow(0 4px 12px rgba(74,122,58,0.15));
+  }
+
+  .why {
+    background: var(--bg-alt);
+    padding: 16px 20px;
+    border-radius: 10px;
+    border: 1px dashed var(--border);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    color: var(--fg2);
+    line-height: 1.6;
+  }
+  .why strong { color: var(--fg1); }
+  .why .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    background: var(--celebrate);
+    margin: 0 4px -1px;
+    vertical-align: baseline;
+  }
+</style>
+</head><body>
+
+  <div class="why">
+    <strong>Color rationale:</strong> end-of-post uses <span class="swatch"></span><strong>forest green</strong> (<code>--beava-success</code>, <code>#4a7a3a</code>) — already in the palette as the "live / shipped / success" semantic color. This keeps orange exclusively for <em>in-progress</em> moments (CTAs, Claude suggestions, live state). Green = "you did it."
+  </div>
+
+  <div>
+    <div class="legend">A · Compact celebration — drop-in replacement</div>
+    <div class="v-a">
+      <div class="body">
+        <div class="title-stamp">You built this</div>
+        <p>That grid above? That's <strong>live beava state</strong> rendered as a real dashboard — every event updates a user's card atomically, and the query re-fetches every 1.5s. The real server does the same thing at <strong>~3M events/sec/core</strong>.</p>
+      </div>
+      <div class="mascot"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="legend">B · Stats receipt — quantifies the reader's work</div>
+    <div class="v-b">
+      <div class="head">
+        <div class="stamp">You built this</div>
+        <div class="tag">nice ✦</div>
+      </div>
+      <div class="body">
+        <h3>A live 4-metric dashboard, in 22 lines of Python.</h3>
+        <div class="stats">
+          <div class="stat"><div class="n">4</div><div class="l">metrics maintained per user</div></div>
+          <div class="stat"><div class="n">22</div><div class="l">lines of pipeline code</div></div>
+          <div class="stat"><div class="n">1.5s</div><div class="l">UI refresh cadence</div></div>
+          <div class="stat"><div class="n">3M/s</div><div class="l">events per core, in prod</div></div>
+        </div>
+        <p class="foot">Every event you push updates a single user's card, <strong>atomically</strong>. The query above re-fetches every 1.5s so the UI stays fresh. Same binary, same code shape, in production.</p>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="legend">C · Achievement unlock — for hero posts / tutorials</div>
+    <div class="v-c">
+      <div>
+        <span class="scribble">← you shipped it</span>
+        <h3>Nice work. You just built a <em>live feature store</em>.</h3>
+        <p class="sub">Four metrics, per-user, maintained atomically, served over HTTP at <strong>~3M events/sec/core</strong>. Same code runs in prod. You didn't mock a thing.</p>
+        <div class="next">
+          <a href="#" class="cta">Deploy this <span>→</span></a>
+          <a href="#" class="cta-ghost">What's next?</a>
+        </div>
+      </div>
+      <div class="mascot"></div>
+    </div>
+  </div>
+
+</body></html>

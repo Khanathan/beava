@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="_card.css">
+<style>
+  body { padding: 0; margin: 0; width: 700px; height: 340px; background: var(--bg); position: relative; overflow: hidden; font-family: var(--font-sans); }
+  .frame { position:absolute; inset: 18px; background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 24px 28px; display:flex; gap: 22px; align-items:center; box-shadow: 0 2px 4px rgba(26,23,20,0.04), 0 8px 20px rgba(26,23,20,0.08); }
+  .left { flex: 1; }
+  .brand { font-family: var(--font-sans); font-weight: 700; font-size: 14px; color: var(--accent); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 10px; }
+  h1 { font-family: var(--font-serif); font-weight: 600; font-size: 34px; line-height: 1.1; letter-spacing: -0.02em; color: var(--fg1); margin: 0 0 10px; font-feature-settings: "ss01" on; }
+  p { font-size: 14px; color: var(--fg2); line-height: 1.55; margin: 0 0 14px; }
+  .url { font-family: var(--font-mono); font-size: 12px; color: var(--fg3); }
+  img { width: 180px; height: 180px; object-fit: contain; }
+</style>
+</head><body>
+  <div class="frame">
+    <div class="left">
+      <div class="brand">Field guide · Ch. 3</div>
+      <h1>Detecting fraud with rolling counters</h1>
+      <p>Replace 180 lines of window-function SQL with one operator. Here's a weekend experiment that actually shipped.</p>
+      <div class="url">beava.dev/learn/fraud-rolling-counters</div>
+    </div>
+    <img src="../assets/mascot-work-pose.svg" alt=""/>
+  </div>
+</body></html>

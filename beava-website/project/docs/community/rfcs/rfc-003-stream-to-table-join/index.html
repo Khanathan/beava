@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RFC-003 — Stream-to-table join · beava docs</title>
+  <meta name="description" content="Stream-to-table join inside a pipeline. Snapshot reads of a sibling table. Not a stream-stream join.">
+  <link rel="stylesheet" href="../../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../../styles/site.css">
+  <link rel="stylesheet" href="../../../../styles/docs-kit.css">
+  <link rel="icon" href="../../../../assets/mascot-mark-geometric.png">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+    .rfc-meta { display:inline-flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:11.5px; padding:3px 9px; border-radius:999px; border:1px solid var(--border); background:var(--beava-paper); color:var(--fg3); margin-bottom:12px; }
+    .rfc-meta .dot { width:6px; height:6px; border-radius:999px; background:var(--beava-warn); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'summary', label: 'Summary' },
+      { id: 'motivation', label: 'Motivation' },
+      { id: 'questions', label: 'Open questions' },
+    ];
+
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="RFC-003 — Stream-to-table join"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <a href="/docs/community/rfcs/">RFCs</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">RFC-003 — Stream-to-table join</span>
+            </div>
+
+            <h1>RFC-003 — Stream-to-table join</h1>
+            <span className="rfc-meta"><span className="dot"/>Status: Draft</span>
+
+            <h2 id="summary">Summary</h2>
+            <p className="bv-lede">Join an incoming event stream against a sibling table inside a pipeline. The table side is read as a snapshot of its current state at apply time. This is a <strong>stream-to-table join</strong> — distinct from stream-stream joins, which v0 doesn’t do.</p>
+
+            <h2 id="motivation">Motivation</h2>
+            <p>Real-time decisions often need static or slowly-changing context — user tier, account status, merchant category, allow/block list — on top of streaming aggregates. Today, teams either denormalize at push time (bloating every event with context) or query two stores app-side and stitch results in their own code. Both options push complexity onto the application.</p>
+            <p>A pipeline-level join keeps enrichment inside beava and inside the same transaction as the event apply.</p>
+            <p><strong>Real-time features should feel like application code</strong> — including the joins to context.</p>
+            <h2 id="questions">Open questions</h2>
+            <ul>
+              <li><strong>Snapshot semantics.</strong> Read-latest is the simplest and matches v0’s processing-time default. Other choices (read-at-event-time) re-open separate questions and probably belong in a different RFC.</li>
+              <li><strong>Missing key.</strong> Default value? Skip the event? Error? Per-call vs per-table policy.</li>
+              <li><strong>Chained joins.</strong> Can a join target another joined table? Cycle detection at register time.</li>
+              <li><strong>Performance contract.</strong> Join is on the hot path. Latency budget and cardinality limits for the table side.</li>
+              <li><strong>Failure mode.</strong> What happens when the table hasn’t been registered, or has been deleted? Register-time error vs runtime error.</li>
+              <li><strong>Boundary with stream-stream joins.</strong> Stream-to-table is a snapshot read against a key — single-sided, no temporal alignment, no buffering. Stream-stream joins are out of scope and should stay out of scope.</li>
+            </ul>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/Jnx89PN9" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/community/rfcs/rfc-003-stream-to-table-join/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+</body>
+</html>
