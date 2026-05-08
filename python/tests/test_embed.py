@@ -68,11 +68,60 @@ class TestDiscoverBinary:
         # Remove beava from PATH by patching shutil.which
         import beava._embed as embed_mod
 
-        monkeypatch.setattr(embed_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(
+            embed_mod.shutil, "which", lambda _name, *_a, **_k: None
+        )
         with pytest.raises(BinaryNotFoundError) as exc_info:
             discover_binary()
         msg = str(exc_info.value).lower()
         assert "install" in msg or "brew" in msg or "not found" in msg
+
+    def test_discover_binary_skips_shebang_script_on_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        beava_binary: Path,
+    ) -> None:
+        """When `shutil.which("beava")` returns a Python shim shebang script
+        (added by `pip install beava` via `[project.scripts]`), discovery
+        MUST fall through past it. Otherwise embed-mode invokes the shim,
+        which calls `discover_binary()` again, finds itself, and execs back
+        — infinite loop.
+
+        After skipping the shim, discovery falls through to the workspace
+        target/debug/beava (provided by the `beava_binary` fixture).
+        """
+        monkeypatch.delenv("BEAVA_BINARY", raising=False)
+
+        # Drop a fake `beava` shim that looks exactly like what
+        # `pip install -e .` produces from `[project.scripts]`: shebang
+        # pointing at python, then the entry-point loader code.
+        shim = tmp_path / "beava"
+        shim.write_text(
+            "#!/usr/bin/env python3\n"
+            "from beava._cli import main\n"
+            "if __name__ == '__main__':\n"
+            "    raise SystemExit(main())\n"
+        )
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+
+        import beava._embed as embed_mod
+
+        monkeypatch.setattr(
+            embed_mod.shutil, "which", lambda _name, *_a, **_k: str(shim)
+        )
+
+        found = discover_binary()
+        # Must NOT be the shim — that would create an exec loop.
+        assert found != shim, (
+            f"discover_binary returned the Python shim {shim}; "
+            "must skip shebang scripts and fall through to "
+            "target/debug/beava."
+        )
+        # Must be the real Rust binary from the workspace target.
+        assert found == beava_binary, (
+            f"expected fall-through to {beava_binary}, got {found}"
+        )
 
 
 class TestSpawnEmbeddedServer:
