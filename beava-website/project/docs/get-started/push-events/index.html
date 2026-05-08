@@ -67,31 +67,34 @@
 
             <h2 id="http">Push over HTTP</h2>
             <Code lang="bash">
-{`curl -X POST http://127.0.0.1:8080/push/UserEvent \\
+{`curl -X POST http://127.0.0.1:8080/push \\
   -H "Content-Type: application/json" \\
   -d '{
-    "user_id": "u123",
-    "item_id": "i456",
-    "event_type": "view",
-    "category": "sports",
-    "ts": 1777855797.778
+    "event": "UserEvent",
+    "data": {
+      "user_id": "u123",
+      "item_id": "i456",
+      "event_type": "view",
+      "category": "sports",
+      "ts": 1777855797.778
+    }
   }'`}
             </Code>
-            <p>The endpoint identifies the stream type. The JSON body contains the event fields.</p>
+            <p>The <code>event</code> field names the registered stream. The <code>data</code> object contains the event fields.</p>
 
-            <h2 id="tcp">Push over TCP</h2>
-            <p>For higher-throughput paths, beava can also accept events over TCP.</p>
-            <p>TCP push is useful when the application wants a lower-overhead path for committing events to beava.</p>
+            <h2 id="tcp">Push from Python</h2>
+            <p>Use <code>bv.App</code> for the higher-level path. The same client class handles HTTP and TCP transports — pick by URL scheme.</p>
             <Code lang="python">
-{`client = bv.Client("127.0.0.1:8080")
+{`import beava as bv
 
-client.push(UserEvent(
-    user_id="u123",
-    item_id="i456",
-    event_type="click",
-    category="sports",
-    ts=1777855797.778,
-))`}
+app = bv.App("http://127.0.0.1:8080")  # or "tcp://127.0.0.1:8081" for the framed TCP fast-path
+app.push("UserEvent", {
+    "user_id": "u123",
+    "item_id": "i456",
+    "event_type": "click",
+    "category": "sports",
+    "ts": 1777855797.778,
+})`}
             </Code>
 
             <h2 id="philosophy">Write path philosophy</h2>
@@ -107,14 +110,6 @@ client.push(UserEvent(
             <p>Durability is configurable. The default is the right answer for most workloads; the override exists when it isn’t.</p>
             <p><strong>beava is not trying to hide complexity behind magic.</strong></p>
             <p>It should be clear what happens when an event arrives.</p>
-
-            <h2 id="more">More on the write path</h2>
-            <ul>
-              <li><a href="/docs/wire-spec/">Wire spec</a> — frame format and opcodes if you're writing a new client.</li>
-              <li><a href="/docs/http-api/">HTTP API reference</a> — every route, every status code.</li>
-              <li><a href="/docs/sdk-api/python/">Python SDK</a> · <a href="/docs/sdk-api/typescript/">TypeScript SDK</a> · <a href="/docs/sdk-api/go/">Go SDK</a> — push from any of the three.</li>
-              <li><a href="/docs/error-codes/">Error codes</a> — what each rejection means.</li>
-            </ul>
 
             <div className="docs-help-callout">
               <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>

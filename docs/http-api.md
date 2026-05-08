@@ -139,7 +139,7 @@ schema-dependent state.
 **Curl example:**
 
 ```bash
-curl -X POST http://localhost:7380/register \
+curl -X POST http://localhost:8081/register \
   -H 'Content-Type: application/json' \
   -d @examples/wire/register-fraud-team.request.json
 ```
@@ -211,7 +211,7 @@ v0.1+ via the wire-level opcode `OP_PUSH_SYNC = 0x0011`.
 **Curl example:**
 
 ```bash
-curl -X POST http://localhost:7380/push \
+curl -X POST http://localhost:8081/push \
   -H 'Content-Type: application/json' \
   -d '{"event_name": "Txn", "fields": '"$(cat examples/wire/push-success.request.json | jq .fields)"'}'
 ```
@@ -220,7 +220,7 @@ Or, when the `event_name` is already inlined in the fixture (post-13.4
 fixtures bundle the field):
 
 ```bash
-curl -X POST http://localhost:7380/push \
+curl -X POST http://localhost:8081/push \
   -H 'Content-Type: application/json' \
   -d @examples/wire/push-success.request.json
 ```
@@ -288,7 +288,7 @@ the Redis-shaped contract: a cold key is just a key with no data, not a
 **Curl example:**
 
 ```bash
-curl -X POST http://localhost:7380/get \
+curl -X POST http://localhost:8081/get \
   -H 'Content-Type: application/json' \
   -d @examples/wire/get-found.request.json
 ```
@@ -353,7 +353,7 @@ re-issue with the bad request removed. Partial success is reserved for v0.1+.
 **Curl example:**
 
 ```bash
-curl -X POST http://localhost:7380/batch_get \
+curl -X POST http://localhost:8081/batch_get \
   -H 'Content-Type: application/json' \
   -d @examples/wire/batch_get-heterogeneous.request.json
 ```
@@ -408,7 +408,7 @@ Schema lives at
 **Curl example:**
 
 ```bash
-curl -X POST http://localhost:7380/reset \
+curl -X POST http://localhost:8081/reset \
   -H 'Content-Type: application/json' \
   -d @examples/wire/reset-request.json
 ```
@@ -416,7 +416,7 @@ curl -X POST http://localhost:7380/reset \
 Or, since the body is empty:
 
 ```bash
-curl -X POST http://localhost:7380/reset \
+curl -X POST http://localhost:8081/reset \
   -H 'Content-Type: application/json' \
   -d '{}'
 ```
@@ -466,7 +466,7 @@ feature schemas.
 **Curl example:**
 
 ```bash
-curl -X POST http://localhost:7380/ping \
+curl -X POST http://localhost:8081/ping \
   -H 'Content-Type: application/json' \
   -d @examples/wire/ping-request.json
 ```

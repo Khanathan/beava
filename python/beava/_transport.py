@@ -22,7 +22,7 @@ import json
 import socket
 import subprocess
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
@@ -321,15 +321,38 @@ class HttpTransport(Transport):
         )
 
     def send_ping(self) -> dict:  # type: ignore[type-arg]
-        """Always raises — HTTP has no ``/ping`` endpoint.
+        """``POST /ping`` → ``{"pong": True, "registry_version": <n>}``.
 
-        Use ``tcp://`` transport for liveness checks.
+        Verb-style liveness probe on the data plane (locked v0 surface).
+        Returns the bumped registry counter so SDK clients can use this
+        as a cheap cache-key invalidation / schema-evolution probe on
+        long-lived connections.
+
+        Returns:
+            ``{"pong": True, "registry_version": <int>}``.
 
         Raises:
-            NotImplementedError: Always.
+            RegistrationError: If the server returns a non-200 status
+                (defensively wrapped for callers that don't want to deal
+                with raw httpx exceptions).
         """
-        raise NotImplementedError(
-            "HTTP transport has no /ping endpoint; use tcp:// transport for ping"
+        r = self._client.post(
+            "/ping",
+            content=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        if r.status_code == 200:
+            return cast(dict, r.json())
+        try:
+            body = r.json()
+            error = body.get("error", {})
+        except Exception:
+            error = {"code": "unparseable_error", "message": r.text[:200]}
+        raise RegistrationError(
+            code=error.get("code", "unknown"),
+            path=error.get("path", ""),
+            message=error.get("reason") or error.get("message", ""),
+            errors=[],
         )
 
     def _http_get_single(self, feature: str, key: str) -> object:
@@ -817,7 +840,7 @@ def parse_url_to_transport(url: str | None) -> Transport:
         proc, _http_url, tcp_url, env = spawn_embedded_server()
         parsed = urllib.parse.urlparse(tcp_url)
         host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 7380
+        port = parsed.port or 8081
         tcp = TcpTransport(host=host, port=port)
         return EmbedTransport(tcp=tcp, proc=proc, spawn_env=env)
 
@@ -827,7 +850,7 @@ def parse_url_to_transport(url: str | None) -> Transport:
     if url.startswith("tcp://"):
         parsed = urllib.parse.urlparse(url)
         host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 7380
+        port = parsed.port or 8081
         return TcpTransport(host=host, port=port)
 
     raise ValueError(
@@ -864,7 +887,7 @@ def make_transport(
         proc, _http_url, tcp_url, env = spawn_embedded_server(test_mode=test_mode)
         parsed = urllib.parse.urlparse(tcp_url)
         host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 7380
+        port = parsed.port or 8081
         tcp = TcpTransport(host=host, port=port, timeout=timeout)
         return EmbedTransport(tcp=tcp, proc=proc, spawn_env=env)
 
@@ -874,7 +897,7 @@ def make_transport(
     if url.startswith("tcp://"):
         parsed = urllib.parse.urlparse(url)
         host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 7380
+        port = parsed.port or 8081
         return TcpTransport(host=host, port=port, timeout=timeout)
 
     raise ValueError(

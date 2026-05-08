@@ -78,12 +78,35 @@ class TestHttpTransportRegister:
         body = r.json()
         assert body["error"]["code"] == "unsupported_media_type"
 
-    def test_http_transport_ping_not_implemented(
+    def test_http_transport_ping_returns_pong_with_registry_version(
         self, beava_server: tuple[str, str]
     ) -> None:
-        """HttpTransport.send_ping() raises NotImplementedError (HTTP has no /ping in v0)."""
+        """HttpTransport.send_ping() returns {pong: True, registry_version: <n>}.
+
+        Locked v0 wire surface: ``POST /ping`` is a verb-style liveness probe
+        on the data plane, returning ``{"pong": true, "registry_version": <n>}``
+        so SDK clients can use it for cheap registry-version invalidation
+        (cache key, schema-evolution detection on long-lived connections).
+
+        After a successful register, registry_version increases by 1 —
+        verify the SDK propagates the bumped value. (Absolute pre-register
+        value is implementation-detail: in-process TestServer starts at 0,
+        subprocess spawn records an initial WAL bump and starts at 1; both
+        are valid. The contract is the +1 delta on register.)
+        """
         http_url, _ = beava_server
         with HttpTransport(http_url) as t:
-            with pytest.raises(NotImplementedError) as exc_info:
-                t.send_ping()
-        assert "tcp" in str(exc_info.value).lower() or "ping" in str(exc_info.value).lower()
+            pre = t.send_ping()
+            assert pre["pong"] is True, f"pre-register pong=True; got {pre}"
+            pre_version = pre["registry_version"]
+            assert isinstance(pre_version, int) and pre_version >= 0, (
+                f"pre-register registry_version must be non-negative int; got {pre}"
+            )
+
+            t.send_register(VALID_REGISTER_PAYLOAD)
+            post = t.send_ping()
+            assert post["pong"] is True, f"post-register pong=True; got {post}"
+            assert post["registry_version"] == pre_version + 1, (
+                f"post-register registry_version must bump by 1; "
+                f"pre={pre_version}, post={post['registry_version']}"
+            )

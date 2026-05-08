@@ -47,13 +47,9 @@ const LEGACY_PAGES = [
     content: `Chapter 1: from zero to a per-customer analytics dashboard. A 10-minute interactive
       build using beava's stream and table operators. Pedagogy first; reference second.`,
   },
-  {
-    url: '/guide/recipes/fraud/',
-    meta: { title: 'Fraud detection recipe', section: 'Guide' },
-    content: `Fraud recipe: real-time signals from velocity, geo, recency, and inter-arrival
-      operators. Build a fraud-team feature pack. Use bv.histogram, bv.rate_of_change,
-      bv.geo_distance, bv.streak.`,
-  },
+  // /guide/recipes/fraud/ existed at the time this list was authored
+  // but was deleted in 0d285744 ("drop broken internal links to
+  // deleted rendered docs"). Removed from the index list 2026-05-08.
   {
     url: '/field-guide-ch1.html',
     meta: { title: 'Field guide chapter 1', section: 'Field guide' },
@@ -87,11 +83,35 @@ async function main() {
   });
 
   // Index the rendered docs tree (static HTML with data-pagefind-body)
+  //
+  // KNOWN REGRESSION (2026-05-08): docs/**/*.html pages are React+Babel
+  // templates that use JSX `className` instead of HTML `class`, so
+  // Pagefind's HTML crawler can extract NOTHING from them. addDirectory
+  // reports the file count but page_count in the final index drops to
+  // ~0 from these pages. Net effect: docs/ is currently un-indexable.
+  //
+  // To fix: either (a) curated addCustomRecord entries per docs page
+  // matching the LEGACY_PAGES pattern below, or (b) introduce an SSR
+  // build step that renders the docs/* templates to real static HTML
+  // before this script runs. Tracked separately; not blocking SDK
+  // pages, which use real `class` attributes and ARE indexed correctly.
   const dirRes = await index.addDirectory({
     path: SITE_ROOT,
     glob: 'docs/**/*.html',
   });
   console.log(`addDirectory: ${dirRes.page_count} pages from project/docs/`);
+
+  // Index the SDK reference pages. These are hand-written HTML (not
+  // markdown-rendered) but the prose lives in plain elements inside
+  // `<main class="content" data-pagefind-body>`, so Pagefind's HTML
+  // parser picks them up directly. Sidebar / TOC / pager are mounted
+  // via React+Babel into divs OUTSIDE the data-pagefind-body main, so
+  // they're excluded from the index without further configuration.
+  const sdkRes = await index.addDirectory({
+    path: SITE_ROOT,
+    glob: 'sdk/**/*.html',
+  });
+  console.log(`addDirectory: ${sdkRes.page_count} pages from project/sdk/`);
 
   // Curated legacy entries
   for (const p of LEGACY_PAGES) {

@@ -166,7 +166,7 @@
             // beava-website/deploy/register_pipeline.py (the SDK file that IS
             // the inline example below).
             const sf = site || {};
-            const views = sf.page_views_today || 0;
+            const views = sf.page_views_24h || 0;
             const median = sf.median_dwell_1h || 0;
             // top_k returns a JSON array: [{value, count}, ...]. k=1 in
             // register_pipeline.py so top[0] is the only row.
@@ -196,7 +196,7 @@
             <MetricCard label="Median time on page · Last hour" value={dwellNum} unit={dwellUnit}
               sparkData={dwellSeries} sparkColor="var(--accent)"
               mascot={{ src: '/assets/mascot-work-pose.svg', size: 84, top: 4, right: 10, rotate: -4 }}/>
-            <MetricCard label="Pages viewed · Today" value={pvNum} unit={pvUnit}
+            <MetricCard label="Pages viewed · Last 24h" value={pvNum} unit={pvUnit}
               sparkData={pvSeries} sparkColor="var(--beava-info)"
               mascot={{ src: '/assets/logo-mark.png', size: 100, top: -2, right: 4, rotate: 4 }}/>
             <MetricCard big label="Top page · Last hour"
@@ -227,16 +227,15 @@
       );
     };
 
-    // Pre-release: pip / brew / docker-prebuilt all light up at v0.0.0.
-    // Until then, install paths go through GitHub.
+    // v0 install surface: brew (recommended) / pip / docker.
     const INSTALL_TABS = [
-      { id: 'pip',    label: 'pip',    cmd: 'pip install "git+https://github.com/beava-dev/beava.git#subdirectory=python"' },
-      { id: 'cargo',  label: 'cargo',  cmd: 'cargo install --git https://github.com/beava-dev/beava beava-server' },
+      { id: 'brew',   label: 'brew',   cmd: 'brew tap beava-dev/beava && brew install beava', recommended: true },
+      { id: 'pip',    label: 'pip',    cmd: 'pip install beava' },
       { id: 'docker', label: 'docker', cmd: 'docker run -p 8080:8080 beavadev/beava:edge' },
     ];
 
     const InstallTabs = () => {
-      const [tabId, setTabId] = React.useState('pip');
+      const [tabId, setTabId] = React.useState('brew');
       const [copied, setCopied] = React.useState(false);
       const tab = INSTALL_TABS.find(t => t.id === tabId);
       const copy = () => {
@@ -262,7 +261,18 @@
                   fontWeight: active ? 600 : 500,
                   color: active ? 'var(--fg1)' : 'var(--fg3)',
                   cursor: 'pointer',
-                }}>{t.label}</button>
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}>
+                  {t.label}
+                  {t.recommended && (
+                    <span style={{
+                      fontFamily: 'var(--font-sans)', fontSize: 9.5, fontWeight: 700,
+                      letterSpacing: '0.04em', textTransform: 'uppercase',
+                      color: 'var(--accent)', background: 'var(--beava-orange-wash)',
+                      padding: '1px 5px', borderRadius: 3,
+                    }}>recommended</span>
+                  )}
+                </button>
               );
             })}
           </div>
@@ -295,6 +305,30 @@
             Push events <span style={{ color: 'var(--border-strong)', margin: '0 4px' }}>·</span>
             Define pipelines <span style={{ color: 'var(--border-strong)', margin: '0 4px' }}>·</span>
             Query by key.
+          </div>
+          <div style={{ marginTop: 16, paddingLeft: 4 }}>
+            <div style={{
+              fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--fg3)',
+              fontWeight: 500, marginBottom: 6, letterSpacing: '0.01em',
+            }}>
+              Then see it work in 5 seconds:
+            </div>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 10,
+              padding: '8px 14px',
+              background: '#fff', border: '1px solid var(--accent)', borderRadius: 8,
+              fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--fg1)',
+              boxShadow: '0 0 0 3px rgba(184,92,32,0.08)',
+            }}>
+              <span style={{ color: 'var(--fg3)' }}>$</span>
+              <span style={{ fontWeight: 600 }}>beava quickstart</span>
+              <span style={{
+                fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--fg3)',
+                fontWeight: 500, marginLeft: 8,
+              }}>
+                — register, push 5 events, query, drop a Python file
+              </span>
+            </div>
           </div>
         </div>
       );
@@ -346,7 +380,7 @@
               fontWeight: 400, fontSize: 22, lineHeight: 1.45,
               color: 'var(--fg1)', margin: '0 0 36px',
               maxWidth: 560, textWrap: 'pretty',
-            }}>Personalization, fraud rules, live dashboards &mdash; in hours, not quarters.</p>
+            }}>Declare aggregations in Python, push events over HTTP, query computed features in sub-millisecond &mdash; single binary, no Kafka.</p>
             <InstallTabs/>
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
               <Button variant="primary" size="lg" href="/docs/" icon={<Icon name="arrow" size={16}/>}>Read the docs</Button>
@@ -393,6 +427,74 @@
         `}</style>
       </section>
     );
+
+    // ---------- PipelineOutput ----------
+    // Live-polled JSON output panel that closes the visual loop:
+    // 13-line site_metrics.py → POST /get → this JSON shape → the hero
+    // dashboard above. Shares the /api/get endpoint with LiveMetrics; an
+    // independent fetch on a 3s cadence (LiveMetrics polls every 1s for
+    // smooth ticking) — keeps the two displays decoupled if either
+    // fails. Falls back to a static seed shape on cold start so the
+    // panel always renders something representative.
+    const PipelineOutput = () => {
+      const SEED = {
+        median_dwell_1h: 6250.0,
+        page_views_24h: 14207,
+        top_page_1h: [{ value: '/', count: 412 }],
+      };
+      const [data, setData] = React.useState(null);
+      React.useEffect(() => {
+        let cancelled = false;
+        const refresh = async () => {
+          try {
+            const r = await fetch('/api/get', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ table: 'SiteMetrics', key: '' }),
+            });
+            if (cancelled || !r.ok) return;
+            const j = await r.json();
+            if (j && typeof j === 'object') setData(j);
+          } catch (_) { /* keep previous on transient failure */ }
+        };
+        refresh();
+        const id = setInterval(refresh, 3000);
+        return () => { cancelled = true; clearInterval(id); };
+      }, []);
+      const display = data || SEED;
+      const isLive = data !== null;
+      return (
+        <div style={{
+          marginTop: 18,
+          background: '#fff', border: '1px solid var(--border)',
+          borderRadius: 12, boxShadow: 'var(--shadow-sm)',
+          overflow: 'hidden',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '8px 14px', borderBottom: '1px solid var(--border)',
+            background: 'var(--beava-paper)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--fg2)' }}>
+              <span style={{ color: 'var(--fg3)' }}>→</span>
+              <span style={{ fontWeight: 600 }}>output</span>
+              <span style={{ color: 'var(--fg3)' }}>·</span>
+              <span style={{ color: 'var(--fg3)' }}>POST /get  {`{table:"SiteMetrics", key:""}`}</span>
+            </div>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 11, color: isLive ? 'var(--beava-success)' : 'var(--fg3)', whiteSpace: 'nowrap' }}>
+              <span style={{ width: 6, height: 6, borderRadius: 999, background: isLive ? 'var(--beava-success)' : 'var(--border-strong)' }}/>
+              {isLive ? 'live' : 'seed'}
+            </span>
+          </div>
+          <pre style={{
+            margin: 0, padding: '14px 18px',
+            fontFamily: 'var(--font-mono)', fontSize: 13, lineHeight: 1.55,
+            color: 'var(--code-fg)', background: 'var(--code-bg)',
+            border: 0, overflowX: 'auto',
+          }}>{JSON.stringify(display, null, 2)}</pre>
+        </div>
+      );
+    };
 
     // ---------- PipelineShowcase ----------
     const PipelineShowcase = () => {
@@ -447,14 +549,14 @@
 <span style={S.kw}>def</span> <span style={S.fn}>SiteMetrics</span>(e: <span style={S.ty}>PageView</span>):{'\n'}
 {'    '}<span style={S.kw}>return</span> e.<span style={S.fn}>agg</span>({'\n'}
 {'        '}<span style={{ background: 'rgba(184,92,32,0.10)', borderRadius: 3, padding: '0 2px' }}>median_dwell_1h</span>  = bv.<span style={S.fn}>quantile</span>(<span style={S.str}>"dwell_ms"</span>, q=<span style={S.num}>0.5</span>, window=<span style={S.str}>"1h"</span>),{'\n'}
-{'        '}<span style={{ background: 'rgba(58,106,138,0.10)', borderRadius: 3, padding: '0 2px' }}>page_views_today</span> = bv.<span style={S.fn}>count</span>(window=<span style={S.str}>"24h"</span>),{'\n'}
+{'        '}<span style={{ background: 'rgba(58,106,138,0.10)', borderRadius: 3, padding: '0 2px' }}>page_views_24h</span> = bv.<span style={S.fn}>count</span>(window=<span style={S.str}>"24h"</span>),{'\n'}
 {'        '}<span style={{ background: 'rgba(217,122,62,0.12)', borderRadius: 3, padding: '0 2px' }}>top_page_1h</span>      = bv.<span style={S.fn}>top_k</span>(<span style={S.str}>"path"</span>, k=<span style={S.num}>1</span>, window=<span style={S.str}>"1h"</span>),{'\n'}
 {'    '}){'\n'}
 {'\n'}
 bv.<span style={S.fn}>App</span>(<span style={S.str}>"0.0.0.0:8080"</span>).<span style={S.fn}>register</span>(<span style={S.ty}>PageView</span>, <span style={S.fn}>SiteMetrics</span>).<span style={S.fn}>serve</span>(){'\n'}
 {'\n'}
 <span style={S.cmt}># Query the global row — no key, just the table name.</span>{'\n'}
-bv.<span style={S.fn}>get</span>(<span style={S.str}>"SiteMetrics"</span>)  <span style={S.cmt}># → {`{median_dwell_1h: 6_250, views_today: 14_207, …}`}</span>{'\n'}
+bv.<span style={S.fn}>get</span>(<span style={S.str}>"SiteMetrics"</span>)  <span style={S.cmt}># → {`{median_dwell_1h: 6_250, views_24h: 14_207, …}`}</span>{'\n'}
 {'\n'}
 <span style={S.cmt}># Or over HTTP (the panel above is hitting this exact endpoint):</span>{'\n'}
 <span style={S.kw}>$</span> curl https://beava.dev/api/get -d '{`{"table":"SiteMetrics","key":""}`}'
@@ -462,7 +564,7 @@ bv.<span style={S.fn}>get</span>(<span style={S.str}>"SiteMetrics"</span>)  <spa
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0, borderTop: '1px solid var(--border)', background: '#fff' }}>
                 {[
                   { color: 'rgba(184,92,32,0.10)', dot: 'var(--accent)',             label: 'median_dwell_1h',  maps: 'Median time on page · 1h' },
-                  { color: 'rgba(58,106,138,0.10)', dot: 'var(--beava-info)',        label: 'page_views_today', maps: 'Pages viewed today' },
+                  { color: 'rgba(58,106,138,0.10)', dot: 'var(--beava-info)',        label: 'page_views_24h', maps: 'Page views (last 24h)' },
                   { color: 'rgba(217,122,62,0.12)', dot: 'var(--beava-orange-soft)', label: 'top_page_1h',      maps: 'Top page · this hour' },
                 ].map((row, i) => (
                   <div key={row.label} style={{ padding: '14px 18px', borderRight: i < 2 ? '1px solid var(--border)' : 'none', display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -477,6 +579,10 @@ bv.<span style={S.fn}>get</span>(<span style={S.str}>"SiteMetrics"</span>)  <spa
                 ))}
               </div>
             </div>
+            {/* D2 — output panel beside the code (live-polled /api/get
+                 result), closes the visual loop: 13 lines of source on
+                 top, the JSON shape they produce right below it. */}
+            <PipelineOutput/>
             <p style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--fg3)', margin: '20px 4px 0', textAlign: 'center', fontStyle: 'italic' }}>
               No tracking cookies, no fingerprinting. Anonymous session id per visit.
             </p>
@@ -595,12 +701,12 @@ bv.<span style={S.fn}>get</span>(<span style={S.str}>"SiteMetrics"</span>)  <spa
 
     const App = () => (
       <>
-        <SiteHeader/>
+        <SiteHeader maxWidth={1400}/>
         <Hero/>
         <PipelineShowcase/>
         <Pillars/>
         <FinalCTA/>
-        <SiteFooter/>
+        <SiteFooter maxWidth={1400}/>
       </>
     );
     ReactDOM.createRoot(document.getElementById('root')).render(<App/>);

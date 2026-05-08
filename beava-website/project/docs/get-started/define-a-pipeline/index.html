@@ -79,11 +79,11 @@ class BidEvent:
             <p>Use <code>@bv.table</code> to define the state you want to maintain:</p>
             <Code lang="python">
 {`@bv.table(key=("user_id", "campaign_id"))
-def UserCampaignFeatures(ev: BidEvent) -> bv.Table:
+def UserCampaignFeatures(ev: BidEvent):
     return ev.group_by("user_id", "campaign_id").agg(
-        imps_1h=bv.count(window="1h", where="_event.event_type == 'impression'"),
-        imps_24h=bv.count(window="24h", where="_event.event_type == 'impression'"),
-        spend_24h=bv.sum("price", window="24h", where="_event.event_type == 'win'"),
+        imps_1h=bv.count(window="1h", where=bv.col("event_type") == "impression"),
+        imps_24h=bv.count(window="24h", where=bv.col("event_type") == "impression"),
+        spend_24h=bv.sum("price", window="24h", where=bv.col("event_type") == "win"),
     )`}
             </Code>
             <p>This table is keyed by <code>user_id</code> and <code>campaign_id</code>. Each key maintains its own rolling feature values.</p>
@@ -128,12 +128,9 @@ def test_user_clicks_counts_within_window():
             <p>The fixture controls the clock with <code>f.advance_time(...)</code>, so you can write deterministic tests for windowed aggregations without sleeping. Run with <code>pytest</code>; no extra config required.</p>
 
             <h2 id="go-deeper">Go deeper</h2>
-            <p>Pipelines are written in Python. The TypeScript and Go SDKs are <em>communicate-only</em> — they push events and query features against a pipeline that was registered from a Python file. We picked Python as the authoring surface so that the engineer who understands the feature can also ship it; the runtime is the same single binary regardless of which client language pushes events at it.</p>
+            <p>Pipelines are written in Python. The engineer who understands the feature can also ship it; the runtime is a single binary that you talk to over HTTP.</p>
             <ul>
               <li>The mental model: <a href="/docs/concepts/streams/">events</a> and <a href="/docs/concepts/tables/">tables</a>.</li>
-              <li><a href="/docs/operators/">The full operator catalog</a> — counts, sketches, recency, decay, velocity, geo. 54 ops in 7 families.</li>
-              <li><a href="/docs/sdk-api/python/">Python SDK reference</a> — every kwarg, every callable.</li>
-              <li>Talking to a server from another language: <a href="/docs/sdk-api/typescript/">TypeScript</a> · <a href="/docs/sdk-api/go/">Go</a>.</li>
             </ul>
 
             <div className="docs-help-callout">
