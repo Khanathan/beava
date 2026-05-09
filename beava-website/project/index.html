@@ -227,15 +227,16 @@
       );
     };
 
-    // v0 install surface: brew (recommended) / pip / docker.
+    // v0 install surface: pip (recommended; wheel bundles the Rust
+    // server binary from v0.4.0 onward) / docker. Brew tap retired —
+    // collapsed to two paths so users see one clear primary path.
     const INSTALL_TABS = [
-      { id: 'brew',   label: 'brew',   cmd: 'brew tap beava-dev/beava && brew install beava', recommended: true },
-      { id: 'pip',    label: 'pip',    cmd: 'pip install beava' },
+      { id: 'pip',    label: 'pip',    cmd: 'pip install beava', recommended: true },
       { id: 'docker', label: 'docker', cmd: 'docker run -p 8080:8080 beavadev/beava:edge' },
     ];
 
     const InstallTabs = () => {
-      const [tabId, setTabId] = React.useState('brew');
+      const [tabId, setTabId] = React.useState('pip');
       const [copied, setCopied] = React.useState(false);
       const tab = INSTALL_TABS.find(t => t.id === tabId);
       const copy = () => {
@@ -295,7 +296,7 @@
             marginTop: 12, paddingLeft: 4,
             fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--fg3)', lineHeight: 1.5,
           }}>
-            ~14 MB <span style={{ color: 'var(--border-strong)' }}>·</span> macOS, Linux, Windows <span style={{ color: 'var(--border-strong)' }}>·</span> runs on 1 GB RAM <span style={{ color: 'var(--border-strong)' }}>·</span> scales to one big box
+            ~3 MB <span style={{ color: 'var(--border-strong)' }}>·</span> macOS, Linux <span style={{ color: 'var(--border-strong)' }}>·</span> runs on 1 GB RAM <span style={{ color: 'var(--border-strong)' }}>·</span> scales to one big box
           </div>
           <div style={{
             marginTop: 14, paddingLeft: 4,
