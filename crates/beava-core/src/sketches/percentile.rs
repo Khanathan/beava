@@ -99,6 +99,70 @@ impl PercentileState {
             PercentileState::Sketch { sketch } => sketch.estimated_bytes(),
         }
     }
+
+    /// Promote an Exact-mode state to Sketch in place. No-op if already a
+    /// Sketch.
+    fn promote_to_sketch(&mut self) {
+        if matches!(self, PercentileState::Sketch { .. }) {
+            return;
+        }
+        if let PercentileState::Exact { values, alpha0, .. } = self {
+            let mut sketch = UDDSketch::new(*alpha0, DEFAULT_MAX_BUCKETS);
+            for v in values.iter() {
+                sketch.insert(*v);
+            }
+            *self = PercentileState::Sketch { sketch };
+        }
+    }
+
+    /// Merge `other` into `self` so `self.quantile(q)` reflects the union
+    /// of values from both states. Used by the windowed-aggregation query
+    /// path so a windowed `quantile()` aggregates across all active
+    /// buckets instead of returning only the latest one's quantile.
+    pub fn merge(&mut self, other: &PercentileState) {
+        // If either side is sketch-mode, promote both to sketch and merge
+        // via UDDSketch::merge. Otherwise (Exact + Exact), append values
+        // and let any over-threshold accumulation promote at the end.
+        if matches!(other, PercentileState::Sketch { .. }) {
+            self.promote_to_sketch();
+        }
+
+        match (&mut *self, other) {
+            (
+                PercentileState::Exact { values: s, .. },
+                PercentileState::Exact { values: o, .. },
+            ) => {
+                s.extend(o.iter().copied());
+            }
+            (
+                PercentileState::Sketch { sketch: s_sk },
+                PercentileState::Sketch { sketch: o_sk },
+            ) => {
+                s_sk.merge(o_sk);
+            }
+            (
+                PercentileState::Sketch { sketch: s_sk },
+                PercentileState::Exact { values: o, .. },
+            ) => {
+                for v in o.iter() {
+                    s_sk.insert(*v);
+                }
+            }
+            (PercentileState::Exact { .. }, PercentileState::Sketch { .. }) => {
+                unreachable!("promote_to_sketch above ensures self is Sketch when other is Sketch")
+            }
+        }
+
+        // Post-merge: promote if Exact accumulated past threshold.
+        let need_promote = matches!(
+            self,
+            PercentileState::Exact { values, threshold, .. }
+                if values.len() > *threshold
+        );
+        if need_promote {
+            self.promote_to_sketch();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -174,5 +238,137 @@ mod tests {
         s.insert(1.0);
         let j = serde_json::to_string(&s).unwrap();
         assert!(j.contains("v0_percentile_exact"));
+    }
+
+    // ── merge ──────────────────────────────────────────────────────────
+    //
+    // Coverage gap: pre-fix the windowed query for percentile only read
+    // the latest active bucket — there was no merge primitive on
+    // PercentileState. These tests pin the new merge contract.
+
+    #[test]
+    fn merge_exact_plus_exact_unions_values() {
+        let mut a = PercentileState::new(256, 0.01);
+        let mut b = PercentileState::new(256, 0.01);
+        for v in 1..=10 {
+            a.insert(v as f64);
+        }
+        for v in 11..=20 {
+            b.insert(v as f64);
+        }
+        a.merge(&b);
+        // Combined values [1..=20]; median ≈ 10.5
+        let p50 = a.quantile(0.5).unwrap();
+        assert!(
+            (p50 - 10.5).abs() < 1.0,
+            "merged median should be ~10.5; got {p50}"
+        );
+        assert_eq!(a.mode_name(), "v0_percentile_exact");
+    }
+
+    #[test]
+    fn merge_exact_plus_exact_promotes_and_preserves_distribution() {
+        // Same risk shape as the TopK Exact-cutover test: a buggy
+        // Exact→Sketch promotion during merge could silently drop values
+        // and only the mode name would flip. Verify the merged-then-
+        // promoted state's quantile actually reflects the union.
+        //
+        // Threshold = 10 → combined 16 values must promote to UDDSketch.
+        let mut a = PercentileState::new(10, 0.01);
+        let mut b = PercentileState::new(10, 0.01);
+        for v in 1..=8 {
+            a.insert(v as f64);
+        }
+        for v in 9..=16 {
+            b.insert(v as f64);
+        }
+        // Both still Exact pre-merge (8 ≤ threshold 10 each).
+        assert_eq!(a.mode_name(), "v0_percentile_exact");
+        assert_eq!(b.mode_name(), "v0_percentile_exact");
+
+        a.merge(&b);
+
+        assert_eq!(
+            a.mode_name(),
+            "v0_percentile_uddsketch",
+            "combined size 16 must promote across threshold 10"
+        );
+        // p50 of [1..=16] is 8.5. UDDSketch tolerance is ~1% relative,
+        // but since the values are dense integers the post-promotion
+        // sketch should land within 10% of 8.5.
+        let p50 = a.quantile(0.5).unwrap();
+        assert!(
+            (p50 - 8.5).abs() / 8.5 < 0.10,
+            "merged p50 must reflect the union [1..=16] after promotion; got {p50}"
+        );
+        // p99 should also be close to 16 (max of the union).
+        let p99 = a.quantile(0.99).unwrap();
+        assert!(
+            (14.0..=17.0).contains(&p99),
+            "merged p99 must reflect ~max(union)=16 after promotion; got {p99}"
+        );
+    }
+
+    #[test]
+    fn merge_sketch_plus_sketch_uses_uddsketch_merge() {
+        let mut a = PercentileState::new(50, 0.01);
+        let mut b = PercentileState::new(50, 0.01);
+        for v in 1..=200 {
+            a.insert(v as f64);
+        }
+        for v in 201..=400 {
+            b.insert(v as f64);
+        }
+        assert_eq!(a.mode_name(), "v0_percentile_uddsketch");
+        assert_eq!(b.mode_name(), "v0_percentile_uddsketch");
+        a.merge(&b);
+        // Combined values [1..=400]; median ≈ 200.5 (within UDDSketch tolerance).
+        let p50 = a.quantile(0.5).unwrap();
+        let err = (p50 - 200.5).abs() / 200.5;
+        assert!(err < 0.05, "merged p50={p50} err={err}");
+    }
+
+    #[test]
+    fn merge_exact_plus_sketch_promotes_self() {
+        let mut a = PercentileState::new(256, 0.01);
+        for v in 1..=20 {
+            a.insert(v as f64);
+        }
+        let mut b = PercentileState::new(50, 0.01);
+        for v in 21..=200 {
+            b.insert(v as f64);
+        }
+        assert_eq!(a.mode_name(), "v0_percentile_exact");
+        assert_eq!(b.mode_name(), "v0_percentile_uddsketch");
+        a.merge(&b);
+        assert_eq!(a.mode_name(), "v0_percentile_uddsketch");
+        // Combined ~ [1..=200]; median ≈ 100.5
+        let p50 = a.quantile(0.5).unwrap();
+        assert!(
+            (p50 - 100.5).abs() / 100.5 < 0.1,
+            "merged p50 should be ~100.5; got {p50}"
+        );
+    }
+
+    #[test]
+    fn merge_sketch_plus_exact_folds_values() {
+        let mut a = PercentileState::new(50, 0.01);
+        for v in 1..=200 {
+            a.insert(v as f64);
+        }
+        let mut b = PercentileState::new(256, 0.01);
+        for v in 201..=300 {
+            b.insert(v as f64);
+        }
+        assert_eq!(a.mode_name(), "v0_percentile_uddsketch");
+        assert_eq!(b.mode_name(), "v0_percentile_exact");
+        a.merge(&b);
+        assert_eq!(a.mode_name(), "v0_percentile_uddsketch");
+        // Combined ~ [1..=300]; median ≈ 150.5
+        let p50 = a.quantile(0.5).unwrap();
+        assert!(
+            (p50 - 150.5).abs() / 150.5 < 0.1,
+            "merged p50 should be ~150.5; got {p50}"
+        );
     }
 }

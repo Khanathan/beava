@@ -153,6 +153,76 @@ impl CountDistinctState {
             CountDistinctState::Hll { sketch } => sketch.estimated_bytes(),
         }
     }
+
+    /// Promote `self` to `Hll` mode in place. No-op if already Hll.
+    fn promote_to_hll(&mut self) {
+        match self {
+            CountDistinctState::Hll { .. } => {}
+            CountDistinctState::ExactArray { values } => {
+                let mut hll = Hll::new();
+                for &h in values.iter() {
+                    hll.add_hash(h);
+                }
+                *self = CountDistinctState::Hll { sketch: hll };
+            }
+            CountDistinctState::HashSet { hashes } => {
+                let mut hll = Hll::new();
+                for &h in hashes.iter() {
+                    hll.add_hash(h);
+                }
+                *self = CountDistinctState::Hll { sketch: hll };
+            }
+        }
+    }
+
+    /// Merge `other` into `self` so `self.estimate()` reflects the
+    /// distinct-count of the union. Used by the windowed-aggregation
+    /// query path so a windowed `count_distinct` aggregates across all
+    /// active buckets instead of returning the latest one's estimate.
+    pub fn merge(&mut self, other: &CountDistinctState) {
+        // If either side is HLL, promote both to HLL and use Hll::merge —
+        // it's the only mode that doesn't expose per-element hashes
+        // (the sketch is lossy by design).
+        if matches!(other, CountDistinctState::Hll { .. }) {
+            self.promote_to_hll();
+        }
+        match (&mut *self, other) {
+            (CountDistinctState::Hll { sketch: s }, CountDistinctState::Hll { sketch: o }) => {
+                s.merge(o)
+            }
+            (CountDistinctState::Hll { sketch: s }, CountDistinctState::ExactArray { values }) => {
+                for &h in values.iter() {
+                    s.add_hash(h);
+                }
+            }
+            (CountDistinctState::Hll { sketch: s }, CountDistinctState::HashSet { hashes }) => {
+                for &h in hashes.iter() {
+                    s.add_hash(h);
+                }
+            }
+            // Self is non-HLL and other is non-HLL: feed other's hashes
+            // through `self.add_hash` so promotion thresholds fire as
+            // they would for inserts. `add_hash` mutably borrows self,
+            // and we already non-mutably borrowed other for the match;
+            // collect first to release that borrow.
+            (_, CountDistinctState::ExactArray { values }) => {
+                let collected: Vec<u64> = values.clone();
+                for h in collected {
+                    self.add_hash(h);
+                }
+            }
+            (_, CountDistinctState::HashSet { hashes }) => {
+                let collected: Vec<u64> = hashes.iter().copied().collect();
+                for h in collected {
+                    self.add_hash(h);
+                }
+            }
+            // (_, Hll) handled by the promote-then-fall-through above.
+            (_, CountDistinctState::Hll { .. }) => {
+                unreachable!("promote_to_hll above ensures self is Hll when other is Hll")
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -297,5 +367,168 @@ mod tests {
             err,
             est
         );
+    }
+
+    // ── merge ──────────────────────────────────────────────────────────
+    //
+    // Coverage gap: pre-fix the windowed query for count_distinct only
+    // read the latest active bucket (existing comment at the broken arm
+    // even called this out as "v0 simplification — future work"). These
+    // tests pin the new merge contract for all 9 mode-pair combinations
+    // (3 self-modes × 3 other-modes); the cross-mode cases collapse into
+    // the same code paths so we only exercise the representatives.
+
+    #[test]
+    fn merge_array_plus_array_unions() {
+        let mut a = CountDistinctState::new(1024);
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..5 {
+            a.add_hash(hash_str(&format!("a{i}")));
+        }
+        for i in 0..5 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        a.merge(&b);
+        assert_eq!(a.estimate(), 10, "10 distinct values across the union");
+    }
+
+    #[test]
+    fn merge_array_plus_array_deduplicates_overlap() {
+        let mut a = CountDistinctState::new(1024);
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..5 {
+            let h = hash_str(&format!("shared{i}"));
+            a.add_hash(h);
+            b.add_hash(h);
+        }
+        a.merge(&b);
+        assert_eq!(a.estimate(), 5, "overlapping hashes must dedupe");
+    }
+
+    #[test]
+    fn merge_array_plus_array_promotes_to_hashset_with_count_preserved() {
+        // The small cutover: ExactArray (cap 16) → HashSet during
+        // merge. a has 10 distinct; b has 10 distinct; combined 20 > 16
+        // must promote during the merge AND preserve every distinct
+        // value (HashSet mode reports exact count, so a buggy promotion
+        // that dropped values would surface immediately as a mismatched
+        // estimate).
+        let mut a = CountDistinctState::new(1024);
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..10 {
+            a.add_hash(hash_str(&format!("a{i}")));
+        }
+        for i in 0..10 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        // Both still ExactArray pre-merge (10 ≤ EXACT_THRESHOLD=16 each).
+        assert_eq!(a.mode_name(), "v0_count_distinct_exact_array");
+        assert_eq!(b.mode_name(), "v0_count_distinct_exact_array");
+
+        a.merge(&b);
+
+        assert_eq!(a.mode_name(), "v0_count_distinct_hash_set");
+        assert_eq!(
+            a.estimate(),
+            20,
+            "all 20 distinct values must survive the ExactArray→HashSet cutover"
+        );
+    }
+
+    #[test]
+    fn merge_promotes_through_thresholds_naturally_to_hll() {
+        // The bigger cutover: HashSet → HLL during merge. Both sides
+        // are already in HashSet mode pre-merge; their merge crosses
+        // HASH_THRESHOLD=1024 and the cutover must preserve approximate
+        // cardinality (within HLL's 5% tolerance).
+        let mut a = CountDistinctState::new(1024);
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..600 {
+            a.add_hash(hash_str(&format!("a{i}")));
+        }
+        for i in 0..600 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        assert_eq!(a.mode_name(), "v0_count_distinct_hash_set");
+        assert_eq!(b.mode_name(), "v0_count_distinct_hash_set");
+
+        a.merge(&b);
+
+        // Combined 1200 > HASH_THRESHOLD=1024 → promotes to HLL.
+        assert_eq!(a.mode_name(), "v0_count_distinct_hll");
+        let err = (a.estimate() as i64 - 1200).abs() as f64 / 1200.0;
+        assert!(
+            err < 0.05,
+            "merged HLL estimate must reflect 1200-union after cutover; err {err}"
+        );
+    }
+
+    #[test]
+    fn merge_hll_plus_hll_uses_hll_merge() {
+        let mut a = CountDistinctState::new(1024);
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..2000 {
+            a.add_hash(hash_str(&format!("a{i}")));
+        }
+        for i in 0..2000 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        assert_eq!(a.mode_name(), "v0_count_distinct_hll");
+        assert_eq!(b.mode_name(), "v0_count_distinct_hll");
+        a.merge(&b);
+        assert_eq!(a.mode_name(), "v0_count_distinct_hll");
+        let err = (a.estimate() as i64 - 4000).abs() as f64 / 4000.0;
+        assert!(err < 0.05, "merged HLL estimate err {err}");
+    }
+
+    #[test]
+    fn merge_hll_plus_array_promotes_other_through_hll_path() {
+        // Self is HLL; other is ExactArray. The (Hll, ExactArray) arm
+        // walks other's array and feeds each hash into self's Hll.
+        let mut a = CountDistinctState::new(1024);
+        for i in 0..2000 {
+            a.add_hash(hash_str(&format!("a{i}")));
+        }
+        assert_eq!(a.mode_name(), "v0_count_distinct_hll");
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..5 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        assert_eq!(b.mode_name(), "v0_count_distinct_exact_array");
+        a.merge(&b);
+        assert_eq!(a.mode_name(), "v0_count_distinct_hll");
+        let err = (a.estimate() as i64 - 2005).abs() as f64 / 2005.0;
+        assert!(err < 0.05, "merged HLL estimate err {err}");
+    }
+
+    #[test]
+    fn merge_array_plus_hll_promotes_self() {
+        // Self is ExactArray; other is HLL. Self gets promoted to HLL
+        // first, then merged via Hll::merge.
+        let mut a = CountDistinctState::new(1024);
+        for i in 0..5 {
+            a.add_hash(hash_str(&format!("a{i}")));
+        }
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..2000 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        assert_eq!(a.mode_name(), "v0_count_distinct_exact_array");
+        assert_eq!(b.mode_name(), "v0_count_distinct_hll");
+        a.merge(&b);
+        assert_eq!(a.mode_name(), "v0_count_distinct_hll");
+        let err = (a.estimate() as i64 - 2005).abs() as f64 / 2005.0;
+        assert!(err < 0.05, "merged HLL estimate err {err}");
+    }
+
+    #[test]
+    fn merge_into_empty_self_yields_other() {
+        let mut a = CountDistinctState::new(1024);
+        let mut b = CountDistinctState::new(1024);
+        for i in 0..5 {
+            b.add_hash(hash_str(&format!("b{i}")));
+        }
+        a.merge(&b);
+        assert_eq!(a.estimate(), 5);
     }
 }
