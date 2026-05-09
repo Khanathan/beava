@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "beava"
-version = "0.4.0"
+version = "0.0.0"
 requires-python = ">=3.10"
 description = "Beava: real-time feature server with composable streaming pipelines (Python SDK + bundled Rust server binary)."
 # Maturin's sdist refuses `..` paths (different from hatchling), so we
@@ -40,8 +40,8 @@ dev = ["pytest>=8,<9", "ruff>=0.5,<1", "mypy>=1.10,<2", "hypothesis>=6", "pytest
 
 [project.urls]
 Homepage = "https://beava.dev"
-Repository = "https://github.com/petrpan26/beava"
-Issues = "https://github.com/petrpan26/beava/issues"
+Repository = "https://github.com/beava-dev/beava"
+Issues = "https://github.com/beava-dev/beava/issues"
 
 [tool.maturin]
 # python-source = "." means pyproject.toml's directory (python/) is the
