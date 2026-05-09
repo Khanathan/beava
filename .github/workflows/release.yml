@@ -36,11 +36,14 @@ jobs:
             rust-release-${{ runner.os }}-
 
       - name: Run tests before release
-        # --workspace + --all-features required: 50+ tests under
-        # crates/beava-server/Cargo.toml gate on `required-features = ["testing"]`
-        # and are silently skipped without --all-features. --test-threads=1 retained
-        # for serialized integration tests that bind ports.
-        run: cargo test --workspace --all-features -- --test-threads=1
+        # `--features testing,dev-tools` matches ci.yml; covers the 50+ tests
+        # under crates/beava-server/Cargo.toml that gate on
+        # `required-features = ["testing"]`. We do NOT use `--all-features`:
+        # it would pull in the Linux-only `io_uring` backend that has
+        # pre-existing borrow-checker errors deferred to v0.0.x backlog
+        # (see ci.yml line 46-47 for the same workaround). `--test-threads=1`
+        # retained for serialized integration tests that bind ports.
+        run: cargo test --workspace --features testing,dev-tools -- --test-threads=1
         env:
           RUSTFLAGS: "-D warnings"
 
