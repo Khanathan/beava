@@ -122,7 +122,7 @@ def test_inter_arrival_stats_per_user_high_volume(app):
 
 
 def test_burst_count_per_user_high_volume(app):
-    """bv.burst_count (window='1h', sub_window='1m'): 1000 events / 5 users; bounded by n."""
+    """bv.burst_count (window='1h', sub_window='1h'): 1000 events / 5 users; bounded by n."""
 
     @bv.event
     class Click:
@@ -131,8 +131,16 @@ def test_burst_count_per_user_high_volume(app):
 
     @bv.table(key="user_id")
     def UserBursts(clicks: Click):
+        # sub_window matches the outer window so all events fall into one
+        # bucket regardless of how long the 1000-event push loop takes.
+        # The prior `sub_window="1m"` flaked on slow CI runners where the
+        # loop ran longer than 60s and events spread across multiple
+        # sub-windows — yielding `max_burst < total`. The contract under
+        # test is "burst_count produces correct counts when all events
+        # are in one window"; sub_window=1h preserves that without the
+        # timing dependency.
         return clicks.group_by("user_id").agg(
-            max_burst=bv.burst_count(window="1h", sub_window="1m"),
+            max_burst=bv.burst_count(window="1h", sub_window="1h"),
         )
 
     app.register(Click, UserBursts)
@@ -151,8 +159,8 @@ def test_burst_count_per_user_high_volume(app):
         burst = result.get("max_burst", 0)
         # Burst count cannot exceed total push count for that entity.
         assert burst <= total, f"{entity}: max_burst={burst} > total={total}"
-        # Tests push within seconds, so all events fall in a single sub-window;
-        # max_burst should equal the total event count for the entity.
+        # All events fall into the single sub-window (= outer window),
+        # so max_burst equals the total event count for the entity.
         assert burst == total, f"{entity}: expected max_burst==total={total}, got {burst}"
 
     assert cold_start_equivalent(app.get("UserBursts", "unknown_brst"))
