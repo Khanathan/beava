@@ -107,21 +107,98 @@ fi
 
 if [ -n "$in_env" ]; then
   printf "  target   : active Python env (\$VIRTUAL_ENV / \$CONDA_PREFIX)\n\n"
-  $PIP install --upgrade "$url"
+  PIP_USER_FLAG=""
 else
   printf "  target   : --user (~/.local on Linux, ~/Library/Python/<ver> on macOS)\n\n"
-  $PIP install --user --upgrade "$url"
+  PIP_USER_FLAG="--user"
+fi
+
+# Run pip; capture combined output so we can detect PEP 668 on failure
+# without losing the user-visible log line.
+log=$(mktemp 2>/dev/null) || log="/tmp/beava-install.$$.log"
+trap 'rm -f "$log"' EXIT
+
+# shellcheck disable=SC2086 # PIP_USER_FLAG intentionally word-split when set
+if $PIP install $PIP_USER_FLAG --upgrade "$url" >"$log" 2>&1; then
+  cat "$log"
+elif grep -q 'externally-managed-environment' "$log"; then
+  cat "$log"
+  if [ -n "${BEAVA_NO_BREAK_SYSTEM:-}" ]; then
+    printf >&2 "\nbeava installer: pip refused due to PEP 668 (system-managed Python).\n"
+    printf >&2 "  BEAVA_NO_BREAK_SYSTEM is set — not retrying. Either:\n"
+    printf >&2 "    1. Unset BEAVA_NO_BREAK_SYSTEM and re-run, or\n"
+    printf >&2 "    2. Install into a venv:\n"
+    printf >&2 "         python3 -m venv ~/.beava-venv\n"
+    printf >&2 "         source ~/.beava-venv/bin/activate\n"
+    printf >&2 "         curl -fsSL .../scripts/install.sh | sh\n"
+    exit 1
+  fi
+  printf "\nbeava installer: pip refused (PEP 668 system-managed Python).\n"
+  printf "  Retrying with --break-system-packages (still scoped to %s).\n" \
+    "$([ -n "$PIP_USER_FLAG" ] && echo "--user / ~/.local" || echo "the active env")"
+  printf "  Set BEAVA_NO_BREAK_SYSTEM=1 to opt out next time.\n\n"
+  # shellcheck disable=SC2086
+  $PIP install $PIP_USER_FLAG --break-system-packages --upgrade "$url" || exit 1
+else
+  cat "$log" >&2
+  exit 1
+fi
+
+# ─── PATH auto-add (idempotent) ──────────────────────────────────────
+# When installing outside an env, append the user-scripts dir to PATH
+# in the user's shell rc. Mirrors what bun / pixi / rustup / uv do.
+# Inside a venv/conda env the env's bin/ is already on PATH from
+# `activate`, so this is skipped.
+#
+# Skip entirely with BEAVA_NO_PATH_UPDATE=1.
+if [ -z "$in_env" ] && [ -z "${BEAVA_NO_PATH_UPDATE:-}" ]; then
+  py_cmd=""
+  if have python3; then py_cmd=python3
+  elif have python; then py_cmd=python
+  fi
+
+  user_bin=""
+  if [ -n "$py_cmd" ]; then
+    user_bin=$($py_cmd -c 'import sysconfig; print(sysconfig.get_paths(scheme="posix_user")["scripts"])' 2>/dev/null || true)
+  fi
+
+  if [ -n "$user_bin" ] && ! echo ":$PATH:" | grep -q ":$user_bin:"; then
+    case "${SHELL:-}" in
+      */zsh)  rc="$HOME/.zshrc" ;;
+      */bash)
+        # bash on macOS reads .bash_profile; on Linux reads .bashrc for
+        # interactive non-login shells (the common terminal case).
+        if [ "$os" = "Darwin" ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi
+        ;;
+      */fish) rc="$HOME/.config/fish/config.fish" ;;
+      *)      rc="$HOME/.profile" ;;
+    esac
+
+    if [ -f "$rc" ] && grep -qF '# added by beava installer' "$rc"; then
+      : # already added in a prior install run — don't duplicate
+    else
+      mkdir -p "$(dirname "$rc")"
+      {
+        printf '\n# added by beava installer\n'
+        case "${SHELL:-}" in
+          */fish) printf 'set -gx PATH %s $PATH\n' "$user_bin" ;;
+          *)      printf 'export PATH="%s:$PATH"\n' "$user_bin" ;;
+        esac
+      } >> "$rc"
+      printf "\nbeava installer: added %s to PATH in %s\n" "$user_bin" "$rc"
+      printf "  Open a new shell, or run:  source %s\n" "$rc"
+    fi
+  fi
 fi
 
 # ─── post-install message ─────────────────────────────────────────────
-beava_bin="$($PIP show beava 2>/dev/null | grep -E '^Location:' | awk '{print $2}')"
 printf "\n"
 printf "beava installed.\n"
 printf "  Try it:    beava --help\n"
 printf "  Quickstart: https://beava.dev/docs/quickstart\n"
 printf "\n"
 if ! have beava; then
-  printf "Note: ~/.local/bin (or your Python user-scripts dir) may not be on \$PATH.\n"
-  printf "  Add it to your shell rc (e.g. ~/.zshrc):\n"
-  printf "    export PATH=\"\$HOME/.local/bin:\$PATH\"\n"
+  printf "Note: %s may not be on \$PATH yet for this shell.\n" "${user_bin:-the Python user-scripts dir}"
+  printf "  Open a new shell, or add it manually to your shell rc:\n"
+  printf "    export PATH=\"%s:\$PATH\"\n" "${user_bin:-\$HOME/.local/bin}"
 fi
