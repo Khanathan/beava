@@ -89,13 +89,29 @@ fi
 printf "beava installer: downloading and installing\n"
 printf "  platform : %s-%s\n" "$os" "$arch"
 printf "  wheel    : %s\n" "$(basename "$url")"
-printf "\n"
 
-# `--user` puts the binary at ~/.local/bin/beava (Linux) or
-# ~/Library/Python/<ver>/bin/beava (macOS). Either way, the user's
-# shell PATH usually picks it up. If it doesn't, --user prints the
-# install location for the user to add manually.
-$PIP install --user --upgrade "$url"
+# Detect whether the active Python is inside a virtualenv / conda env.
+# `pip install --user` is rejected inside venvs ("User site-packages
+# are not visible in this virtualenv"), so we install into the env
+# itself when one is active. Outside any env, `--user` keeps the
+# install isolated to ~/.local rather than touching system site-packages
+# (and avoids PEP 668 on system-managed Pythons).
+in_env=""
+if [ -n "${VIRTUAL_ENV:-}" ] || [ -n "${CONDA_PREFIX:-}" ]; then
+  in_env=1
+elif command -v python3 >/dev/null 2>&1; then
+  if python3 -c 'import sys; raise SystemExit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+    in_env=1
+  fi
+fi
+
+if [ -n "$in_env" ]; then
+  printf "  target   : active Python env (\$VIRTUAL_ENV / \$CONDA_PREFIX)\n\n"
+  $PIP install --upgrade "$url"
+else
+  printf "  target   : --user (~/.local on Linux, ~/Library/Python/<ver> on macOS)\n\n"
+  $PIP install --user --upgrade "$url"
+fi
 
 # ─── post-install message ─────────────────────────────────────────────
 beava_bin="$($PIP show beava 2>/dev/null | grep -E '^Location:' | awk '{print $2}')"
