@@ -7,14 +7,14 @@ const PILLARS = [
   {
     kicker: '01',
     title: 'Replaces Redis + Lua',
-    body: 'No more 200-line Lua scripts maintaining counters. beava is the table.',
+    body: 'No more 200-line Lua scripts maintaining counters. Beava is the table.',
     foot: 'redis-cli → bv.get(...)',
   },
   {
     kicker: '02',
     title: 'No streaming stack',
     body: 'No Kafka, no Flink, no Schema Registry. One Go binary, one HTTP port.',
-    foot: '~14 MB · single binary',
+    foot: '~4 MB · single binary',
   },
   {
     kicker: '03',

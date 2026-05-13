@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roadmap · beava docs</title>
+  <meta name="description" content="What we're building next, in the open. Each item is a planned change with a sketch of the design and the open questions.">
+  <link rel="stylesheet" href="../../../styles/colors_and_type.css">
+  <link rel="stylesheet" href="../../../styles/site.css">
+  <link rel="stylesheet" href="../../../styles/docs-kit.css">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png"><link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16.png"><link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png"><link rel="shortcut icon" href="/assets/favicon.ico">
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--fg1); font-family: var(--font-sans); }
+  </style>
+</head>
+<body class="beava">
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="../../../js/_shared/SiteHeader.jsx"></script>
+  <script type="text/babel" src="../../../js/_shared/SiteFooter.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsShared.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsSidebar.jsx"></script>
+  <script type="text/babel" src="../../../js/docs/DocsTOC.jsx"></script>
+
+  <script type="text/babel">
+    const TOC = [
+      { id: 'shape', label: 'What we are building, in the open' },
+      { id: 'active', label: 'Planned items' },
+      { id: 'process', label: 'Roadmap, not RFCs' },
+    ];
+    const App = () => (
+      <>
+        <SiteHeader active="docs" search maxWidth={1400}/>
+        <div className="bv-docs-shell">
+          <DocsSidebar active="Roadmap"/>
+
+          <main className="bv-content">
+            <div className="bv-crumbs">
+              <a href="/docs/">Docs</a>
+              <span className="bv-crumb-sep">/</span>
+              <span className="bv-crumb-cur">Roadmap</span>
+            </div>
+
+            <h1>Roadmap</h1>
+
+            <h2 id="shape">What we are building, in the open</h2>
+            <p className="bv-lede">A short list of the next big changes we expect to make to beava. Each item is a sketch — the shape of the change, why it matters, and the open questions — written down so you can see what we're thinking and push back early.</p>
+            <p><strong>The open-source project should be the real system</strong>, and that means design should happen in the open whenever possible.</p>
+
+            <h2 id="active">Planned items</h2>
+            <p>Comments and counter-proposals are welcome on each one. None of these have shipped; expect the design to shift as we learn.</p>
+            <ul>
+              <li><a href="/docs/community/roadmap/001-tiered-storage/"><strong>Tiered storage</strong></a> (RAM → SSD → S3). Spill cold state to disk and object storage. Hot path stays sub-ms.</li>
+              <li><a href="/docs/community/roadmap/002-table-ingestion/"><strong>Table ingestion</strong></a>. Direct <code>app.upsert</code> and <code>app.delete</code> for static and slowly-changing state.</li>
+              <li><a href="/docs/community/roadmap/003-stream-to-table-join/"><strong>Stream-to-table join</strong></a>. Join an event stream against a sibling table inside a pipeline. Snapshot read of the table side.</li>
+              <li><a href="/docs/community/roadmap/004-out-of-order-events/"><strong>Out-of-order events</strong></a>. Tolerate events that arrive late; revise v0's processing-time-only default.</li>
+              <li><a href="/docs/community/roadmap/005-event-log-query-replay/"><strong>Event-log query and replay</strong></a>. Re-feed retained events for debug, A/B, training data. (Depends on event-log retention.)</li>
+              <li><a href="/docs/community/roadmap/006-online-pipeline-migration/"><strong>Online pipeline migration</strong></a>. Add features and modify windows without bouncing the process.</li>
+              <li><a href="/docs/community/roadmap/007-event-log-retention/"><strong>Event log retention</strong></a>. Keep raw events past the WAL window so a fresh node can replay the log to reconstruct itself.</li>
+              <li><a href="/docs/community/roadmap/008-latency-vs-throughput/"><strong>Latency vs throughput tradeoffs</strong></a>. Opt-in tiers (client batching, early ack, lockless reads) for workloads that don't need strict atomicity.</li>
+              <li><a href="/docs/community/roadmap/009-ha-deployment/"><strong>HA deployment for single-node beava</strong></a>. Active-passive WAL replication and automatic failover. Keeps the single-node programming model; eliminates the SPOF.</li>
+            </ul>
+
+            <h2 id="process">Roadmap, not RFCs</h2>
+            <p>These items aren't formal RFCs — there's no review process, no approval, no template. They're roadmap items written down so the design is visible before the code lands. When the project is big enough that external contributors are proposing design changes, we'll graduate to a real RFC process. Until then, the bar is much lower: a maintainer wrote down what they were planning to build.</p>
+
+            <div className="docs-help-callout">
+              <img src="/assets/mascot-work-pose.svg" alt="" width="72" height="72" className="docs-help-mascot"/>
+              <div className="docs-help-body">
+                <div className="docs-help-kicker">Stuck on this one?</div>
+                <p className="docs-help-text">Half the answers in our docs started as someone asking "is this a bug?" out loud. Drop into Discussions — a maintainer is usually around.</p>
+                <div className="docs-help-actions">
+                  <a className="docs-help-cta-primary" href="https://github.com/beava-dev/beava/discussions" target="_blank" rel="noopener">Ask on GitHub →</a>
+                  <a className="docs-help-cta-ghost" href="https://discord.gg/J5trwbCYpS" target="_blank" rel="noopener">Ask on Discord</a>
+                </div>
+              </div>
+            </div>
+
+
+            <Pager auto/>
+          </main>
+
+          <DocsTOC items={TOC} editHref="https://github.com/beava-dev/beava-website/edit/main/project/docs/community/roadmap/index.html"/>
+        </div>
+        <SiteFooter maxWidth={1400}/>
+      </>
+    );
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+  <script src="/scripts/docs-headings.js" defer></script>
+  <script src="/js/track-pageview.js" defer></script>
+</body>
+</html>
