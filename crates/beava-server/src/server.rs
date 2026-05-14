@@ -1588,7 +1588,6 @@ fn run_mio_event_loop(
     let n_workers = io_threads_override
         .map(|n| n.max(1))
         .unwrap_or_else(default_io_threads);
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Single MPSC for parsed `RingItem`s: every worker clones the sender;
     // apply owns the receiver. 16384 capacity gives ~4× headroom over
@@ -1615,7 +1614,7 @@ fn run_mio_event_loop(
             read_tx: read_tx.clone(),
             write_rx,
             new_client_rx,
-            stop: Arc::clone(&stop),
+            stop: Arc::clone(&shutdown),
             apply_waker: Some(Arc::clone(&apply_waker)),
             tcp_max_frame_bytes,
         };
@@ -1915,9 +1914,10 @@ fn run_mio_event_loop(
         );
     }
 
-    stop.store(true, AOrdering::Release);
     for w in &workers {
-        w.stop();
+        if let Err(error) = w.waker().wake() {
+            tracing::error!(%error, "failed to wake worker")
+        }
     }
     for w in workers {
         w.join();
