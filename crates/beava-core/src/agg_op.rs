@@ -926,8 +926,12 @@ impl AggOp {
         match self {
             // Windowed dispatches to update_at (NOT update_with_row): the
             // pre-extraction protocol crosses the WindowedOp wrapper boundary.
+            // pre_val is threaded through (already resolved by the outer
+            // apply-loop via the agg-local → union-index remap); the windowed
+            // arm must NOT re-extract using field_idx, which is agg-local.
             AggOp::Windowed(w) => {
                 w.update_at(
+                    pre_val,
                     extracted,
                     field_idx,
                     lat_idx,
@@ -1016,9 +1020,11 @@ impl AggOp {
             AggOp::SeasonalDeviation(s) => s.update(row, now_ms, field, where_matched),
             // Structural outputs using row-based field access — fall back.
             AggOp::Histogram(s) => s.update(row, field, where_matched),
-            // EventTypeMix consumes the pre-extracted Value from the ExtractedFields
-            // array directly via update_at — no row.get scan on the hot path.
-            AggOp::EventTypeMix(s) => s.update_at(extracted, field_idx, now_ms, where_matched),
+            // EventTypeMix consumes the dispatcher-resolved pre_val — same
+            // contract as the Sum/Avg/Min/Max/TopK arms below. Re-extracting
+            // from extracted[field_idx] would silently read the wrong slot
+            // whenever the agg-local idx differs from the union idx.
+            AggOp::EventTypeMix(s) => s.update_at(pre_val, where_matched),
             AggOp::MostRecentN(s) => s.update(row, field, where_matched),
             AggOp::ReservoirSample(s) => s.update(row, field, where_matched),
             // Field-bearing ops with update_pre — hot path.

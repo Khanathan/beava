@@ -13,7 +13,6 @@
 //! deterministic xorshift seeded from `items_seen`).
 //! D-08 (Phase 11 CONTEXT): all operators are lifetime / windowless in v0.
 
-use crate::agg_op::{ExtractedFields, FIELD_IDX_NONE};
 use crate::row::{Row, Value};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -378,24 +377,18 @@ impl EventTypeMixState {
     /// `Option<&Value>` from the apply-loop's `ExtractedFields` array (Plan
     /// 19.2-01). Avoids the `row.get(field)` linear scan that `update()` pays.
     ///
-    /// `field_idx` = `FIELD_IDX_NONE` → no-op (fieldless invocation).
-    /// `extracted.get(field_idx)` returning `None` or `Some(None)` → no-op
-    /// (field not present in this event).
-    pub fn update_at(
-        &mut self,
-        extracted: &ExtractedFields,
-        field_idx: u8,
-        _now_ms: i64,
-        where_matched: bool,
-    ) {
+    /// `pre_val` = `None` → no-op (field not present in this event, or the
+    /// outer dispatcher resolved no value via the agg-local → union-index
+    /// remap). The pre_val is supplied by the apply-loop dispatcher
+    /// (`AggOp::update_with_extracted_no_where`); this method must not
+    /// re-extract from `extracted[field_idx]` — `field_idx` is agg-local
+    /// while `extracted` is union-indexed, and the two only coincide by
+    /// accident.
+    pub fn update_at(&mut self, pre_val: Option<&Value>, where_matched: bool) {
         if !where_matched {
             return;
         }
-        if field_idx == FIELD_IDX_NONE {
-            return;
-        }
-        // Borrow the pre-extracted Value pointer — no row.get scan.
-        let v = match extracted.get(field_idx as usize).copied().flatten() {
+        let v = match pre_val {
             Some(v) => v,
             None => return,
         };
