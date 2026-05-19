@@ -3,9 +3,10 @@
 | Field | Value |
 |---|---|
 | **Status** | Draft |
-| **Author** | [Khanh Doan](https://github.com/Khanathan) |
-| **Date** | 2026-05-18 |
-| **Related Issue** | [Issue #56 (narrowed scope)](https://github.com/beava-dev/beava/issues/56) |
+| **Author** | KD |
+| **Date** | 2026-05-16 |
+| **Target release** | v0.1 |
+| **Supersedes** | Issue #56 (narrowed scope) |
 
 ---
 
@@ -33,9 +34,9 @@
 8. [End-to-end use case](#8-end-to-end-use-case)
 9. [Rationale and alternatives](#9-rationale-and-alternatives)
    - 9.1 [Why not new `Expr` / `Literal` variants](#91-why-not-new-expr--literal-variants)
-   - 9.2 [Why defer list builtins + nested types together](#92-why-defer-list-builtins--nested-types-together)
-   - 9.3 [Why defer runtime-mutable sets](#93-why-defer-runtime-mutable-sets)
-   - 9.4 [The §D-04 anchor](#94-the-d-04-anchor)
+   - 9.2 [Why defer list builtins + nested types together](#93-why-defer-list-builtins--nested-types-together)
+   - 9.3 [Why defer runtime-mutable sets](#94-why-defer-runtime-mutable-sets)
+   - 9.4 [The §D-04 anchor](#95-the-d-04-anchor)
 10. [Drawbacks](#10-drawbacks)
 11. [Future work](#11-future-work)
 12. [References](#12-references)
@@ -344,8 +345,11 @@ rejects everything else.
 
 **Accepted**:
 
-1. **`if`/`elif`/`else`** where every branch ends `return <expr>`.
-   → nested `bv.if_else(...)`.
+1. **`if`/`elif`/`else` chains.** Each branch body is a sequence
+   of zero or more local assigns followed by either `return <expr>`
+   (terminates that path) or fall-through (binding state merges
+   into the post-if continuation per #3). The whole chain lowers
+   to nested `bv.if_else(...)`.
 
    ```python
    @bv.expr
@@ -361,11 +365,13 @@ rejects everything else.
    §5.6 — asymmetry is intentional (loud error or correct code,
    never silent miscompile).
 
-3. **Local assignments** before the terminal return —
-   inline-substituted into the lowered `_Expr` tree (no
-   `Expr::Let`, no evaluator environment frame). The translator
-   maintains a `dict[str, _Expr]`; each `ast.Name` reference is
-   replaced with the bound subtree at rewrite time.
+3. **Local assignments** — accepted at the function-body top
+   level AND inside `if`/`elif`/`else` branches. Inline-substituted
+   into the lowered `_Expr` tree (no `Expr::Let`, no evaluator
+   environment frame). The translator maintains a **stack of
+   binding dicts** (one per lexical scope: pushed on branch entry,
+   popped + merged on branch exit); each `ast.Name` reference
+   resolves to the innermost-bound subtree at rewrite time.
 
    ```python
    @bv.expr
@@ -375,50 +381,80 @@ rejects everything else.
        return country_risk + amount_risk
    ```
 
-   **Scope rule**: assignments are only accepted at the
-   function-body top level, before the terminal `return` or
-   `if`/`elif`/`else` chain. Per #1, every if-branch is
-   single-expression-`return`-only — no per-branch assigns. The
-   pattern below is **rejected** (`expr_unsupported_if_branch`):
+   **Per-branch assigns + reassignment.** Each branch enters with
+   a clone of its parent scope's dict and mutates it locally. At
+   the join (after the if-chain), bindings converge via **loose
+   carry-over**:
+
+   | Pattern | Lowering |
+   |---|---|
+   | Name assigned in *every* branch | `y = bv.if_else(c₁, t₁, bv.if_else(c₂, t₂, …))` — merged subtree replaces post-if references |
+   | Name assigned in *some* branches AND bound in outer scope | Unmodified branches contribute the outer binding into the merge |
+   | Name assigned in *some* branches AND no outer binding (**non-converging**) | Reject — `expr_branch_local_binding` |
+   | Branch ends in `return` | That branch is terminal; post-if continuation wraps into the surviving (not-taken) arm |
+
+   A **missing `else:`** (Python AST `orelse=[]`) counts the same
+   as an explicit `else:` branch that doesn't assign — it's
+   treated as an empty branch that the clone-from-parent step
+   gave the outer bindings to, and it participates in the merge
+   accordingly. So `if c: y = a` (no else) with an outer `y = 0`
+   merges to `y = bv.if_else(c, a, 0)`; the same shape with no
+   outer `y` is non-converging.
 
    ```python
-   if x > 0:
-       y = x * 2          # per-branch assign — rejected
-       return y + 1
-   else:
-       return 0
+   # all branches assign → simple merge
+   if c: y = a
+   else: y = b
+   return y + 1                # → y = bv.if_else(c, a, b); return y + 1
+
+   # outer y + asymmetric branch → loose carry-over rescues
+   y = 0
+   if c: y = a
+   return y + 1                # → y = bv.if_else(c, a, 0); return y + 1
+
+   # early return → post-if continuation wraps into the not-taken arm
+   if c: return early_value
+   y = x * 2
+   return y + 1                # → bv.if_else(c, early_value, (x * 2) + 1)
+
+   # non-converging — rejected
+   if c: y = a
+   return y + 1                # ← y unbound on else path
    ```
 
-   Workaround: lift the binding to the top level, or fold it
-   into the returned expression.
+   **Sequential reassignment** within any scope (`y = a; y = y + 1`)
+   updates the active dict in place; later RHS sees the prior
+   binding. Works identically at top level and inside a branch.
 
-   **Sequential reassignment** (`x = …; x = x + 1`) is allowed
-   — the dict is updated in place; later RHS sees the prior
-   binding.
+   **Augmented assigns** (`x += 1`, `-=`, `*=`, `/=`, `%=`) desugar
+   to `x = x <op> rhs` in a pre-rewrite `ast.NodeTransformer` pass,
+   then flow through normal assign analysis.
 
    **Rejected forms** (each with a structured error):
    - Tuple / list unpacking (`a, b = …`) — `expr_bad_assign_target`.
    - Attribute / subscript targets (`c.x = …`, `c[0] = …`) —
      `expr_bad_assign_target` ("row mutation not allowed").
-   - Augmented assigns (`x += 1`) — `expr_unsupported_python_op`
-     ("use `x = x + 1`").
+   - Walrus (`y := …`) — `expr_unsupported_python_op`
+     ("use a separate `y = …` statement before the expression").
    - Reference before assignment — `expr_unknown_name`.
-   - **Convergent branch-local bindings** — a name assigned only
-     in some if-branches and read after the if. Rejected with
-     `expr_branch_local_binding`, pointer at `bv.if_else(c, a, b)`.
-     The one case that would genuinely need `Expr::Let`; the
-     workaround pushes the branching down to a single
-     `bv.if_else` and keeps the binding at top level.
+   - **Non-converging branch assigns** — name assigned in some
+     branches with no outer binding to carry over. Rejected with
+     `expr_branch_local_binding`. The error cites the assigning
+     branch(es), the post-if read site, and the missing branch
+     (or "no outer binding") via the same file/line/source-text
+     infrastructure used for `expr_recursive_call` (see "Error
+     message format" below). Workaround: add `else: y = …`, or
+     bind `y` before the if to provide a carry-over default.
 
    **Trade-off vs `Expr::Let`**: inline substitution duplicates
-   the bound subtree per reference. A 200-char subexpression
-   referenced 8 times grows the wire payload from ~400 B to ~1.6 KB
-   — bounded and paid only at registration; scalar-per-row eval
-   cost is dwarfed by deserialize and per-event allocation.
-   `Expr::Let` promotion is §11 future work, triggered by
-   register-payload >100 KB from duplicated subexprs. (Most likely not an issue 
-   in most use cases unless subexpression is ridiculously large and referenced
-   many times)
+   the bound subtree per reference. Branch-merge amplifies this:
+   a merged `y = bv.if_else(c, a, b)` referenced 8 times after
+   the join produces 8 copies of the merged subtree on the wire.
+   Bounded at registration; scalar-per-row eval cost is dwarfed
+   by deserialize and per-event allocation. `Expr::Let` promotion
+   is §11 future work, triggered by register-payload >100 KB
+   from duplicated subexprs. (Unlikely in most use cases unless
+   subexpressions are large and referenced many times.)
 
 4. **`is None` / `is not None` checks** — four accepted shapes:
    `x is None`, `x is not None`, `None is x`, `None is not x`.
@@ -461,9 +497,177 @@ rejects everything else.
 
 **Rejected at decoration time** (with structured `RegistrationError`
 + source line): `for`/`while`, nested defs/classes/lambdas,
-`try`/`except`/`with`/`raise`, unpacking, augmented assigns,
-attribute/subscript targets, `import`, `is`/`is not` on non-`None`
-operands.
+`try`/`except`/`with`/`raise`, unpacking, attribute/subscript
+targets, walrus (`:=`), `import` (local inside an @bv.expr body),
+`is`/`is not` on non-`None` operands, and **direct self-recursion**
+— any `Call` in the rewritten body whose `func` is an `ast.Name`
+matching the def name → `expr_recursive_call`, pointing at the
+offending call line. (Augmented assigns `+=` etc. are accepted
+via the pre-rewrite desugar pass — see #3.)
+
+Direct-only via static check; `if`/`elif` lowers to `bv.if_else`,
+eager at tree-build time (short-circuit is a Rust-eval
+optimization, §5.3), so a recursive body otherwise builds both
+arms forever and surfaces as raw Python `RecursionError` deep in
+decorator internals. The static check catches the common case at
+the user's `def` site with a structured error.
+
+**Indirect / mutual recursion** (`f → g → f`, or longer cycles
+through plain helpers / attribute access / dispatch tables)
+escapes static AST analysis — decoration order, late binding, and
+dynamic resolution all defeat call-graph construction at
+decoration time. Caught instead at **call time** (= tree-building
+time, per §5.7's "invoking runs the rewritten body and returns a
+fresh `_Expr` tree") via a thread-local stack inside the wrapper,
+applying the standard DFS-recursion-stack cycle-detection pattern:
+
+```python
+import threading, functools, inspect, sys
+from dataclasses import dataclass
+
+_tls = threading.local()
+
+@dataclass(frozen=True)
+class _Frame:
+    qname: str                   # @bv.expr function being entered
+    file: str                    # where this function is defined
+    def_line: int                # def's first line in `file`
+    called_from_file: str        # file of the caller frame
+    called_from_line: int        # line in caller where this wrapper was invoked
+
+def _stack() -> list[_Frame]:
+    if not hasattr(_tls, "frames"):
+        _tls.frames = []
+    return _tls.frames
+
+def expr(fn):
+    # ... §5.7 rewrites + static self-recursion check ...
+    # (line numbers in the rewritten AST are aligned to file lines via
+    # ast.increment_lineno(tree, fn.__code__.co_firstlineno - 1), and
+    # compile() is given filename=inspect.getsourcefile(fn) so runtime
+    # frames report file-aligned f_lineno.)
+    compiled    = ...
+    qname       = fn.__qualname__
+    src_file    = inspect.getsourcefile(fn) or fn.__code__.co_filename
+    def_line    = fn.__code__.co_firstlineno
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        caller = sys._getframe(1)
+        frame  = _Frame(
+            qname=qname, file=src_file, def_line=def_line,
+            called_from_file=caller.f_code.co_filename,
+            called_from_line=caller.f_lineno,
+        )
+        stack = _stack()
+        if any(f.qname == qname for f in stack):
+            i     = next(k for k, f in enumerate(stack) if f.qname == qname)
+            cycle = stack[i:] + [frame]
+            raise RegistrationError(
+                code="expr_recursive_call",
+                message=_format_cycle(cycle),    # see "Error format" below
+            )
+        stack.append(frame)
+        try:
+            args = tuple(_coerce_literal(a) for a in args)
+            return compiled(*args, **kwargs)
+        finally:
+            stack.pop()
+    return wrapper
+```
+
+The list tracks **which `@bv.expr` functions are currently
+mid-tree-building** — not Python's interpreter call stack. Each
+wrapper checks membership before push; finding yourself already
+in the list means the current call path has looped back. Same
+`expr_recursive_call` code as the static check; the message names
+the cycle path (`a → b → c → a`) so the user sees which functions
+participate.
+
+Trace of `a → b → c → a`:
+
+| step | enter | stack before | in stack? | action |
+|---|---|---|---|---|
+| 1 | `a` | `[]` | no | push → `[a]` |
+| 2 | `b` | `[a]` | no | push → `[a, b]` |
+| 3 | `c` | `[a, b]` | no | push → `[a, b, c]` |
+| 4 | `a` | `[a, b, c]` | **yes** | raise `expr_recursive_call: a → b → c → a` |
+
+Catches every cycle that re-enters a `@bv.expr` regardless of
+what's between them on the interpreter stack (plain helpers,
+alias bindings, attribute access, runtime dispatch) — the entry
+check fires the moment any wrapper sees its own name on the
+stack. The only non-caught case — a cycle that never re-enters
+any `@bv.expr` — is by definition not a `@bv.expr` cycle.
+Thread-local so concurrent registration paths don't race. Cost:
+one push, one pop, one membership check per tree-building call;
+zero impact on the wire or server (lives entirely in the Python
+SDK).
+
+**Error message format (both checks).** Both `expr_recursive_call`
+errors include source file, line numbers, the offending source
+line text, and (for cycles) the full call order. Data sources:
+
+- File path: `inspect.getsourcefile(fn)` (fallback `fn.__code__.co_filename`).
+- Line alignment: `ast.increment_lineno(tree, fn.__code__.co_firstlineno - 1)`
+  after `inspect.getsource` + `ast.parse`. This makes `node.lineno`
+  (static check) and `frame.f_lineno` (runtime check) both file-aligned.
+  `compile(tree, filename=src_file, mode="exec")` propagates the
+  filename to runtime frames.
+- Source line text: `linecache.getline(file, lineno).rstrip()`.
+- Per-hop call site (mutual): `sys._getframe(1).f_code.co_filename` +
+  `.f_lineno` captured at wrapper entry — the line in the caller's
+  body where this wrapper was invoked. Stored on each `_Frame`
+  pushed on the stack, so the cycle reconstruction has a call line
+  for every hop.
+
+Direct self-recursion (static check, decoration time):
+
+```
+RegistrationError [expr_recursive_call]
+
+  @bv.expr 'f' calls itself directly.
+
+    File "helpers.py", line 42, in 'f':
+        return f(x - 1) + 1
+               ^
+
+  '@bv.expr' does not support recursive calls. See RFC §5.7.
+```
+
+(Caret column = `node.col_offset` of the offending `ast.Call`.)
+
+Mutual recursion (runtime stack, cycle `a → b → c → a`):
+
+```
+RegistrationError [expr_recursive_call]
+
+  @bv.expr call cycle: a → b → c → a
+
+    File "helpers.py", line 12, in 'a':
+        return b(x) + 1
+               ^                  →  calls 'b'
+
+    File "helpers.py", line 18, in 'b':
+        return c(x) + 1
+               ^                  →  calls 'c'
+
+    File "helpers.py", line 25, in 'c':
+        return a(x) + 1
+               ^                  →  calls 'a'   (cycle closes)
+
+  '@bv.expr' does not support recursive or mutually-recursive
+  composition. See RFC §5.7.
+```
+
+Each "in `<X>`" block prints the line where `<X>` calls the next
+function in the cycle (sourced from the *next* `_Frame`'s
+`called_from_{file,line}`). Cross-file cycles render each block
+with the participating function's own file path, so cycles that
+span modules are immediately visible. For cycles longer than 5
+hops the middle is elided as `... (k more) ...` to keep the
+error readable; the head and tail are always rendered so the
+closing edge is preserved.
 
 **Always-safe usage**: `@bv.expr` is a no-op on rewrite-free
 function bodies but still provides the decoration-time validation
@@ -497,8 +701,15 @@ Each phase gated by `check.sh` green.
    good-first-issues per §5.1.
 5. **`if_else` short-circuit**: special-case in `eval_depth`;
    defensive eval fn; `bv.when().then().otherwise()` sugar.
-6. **`@bv.expr`**: add `and`/`or`/`not`
-   rewriter.
+6. **`@bv.expr`**: implement the §5.7 lowering — five accepted
+   rewrites (if/elif/else, ternary, local assigns w/ per-branch
+   merging, `is None`, and/or/not); `+=` etc. desugar pre-pass;
+   stack-of-dicts binding analysis with loose-carry-over branch
+   merging; decoration-time static self-recursion check; call-time
+   thread-local stack for mutual-recursion cycles. Error
+   formatting (file path, line, source-line text, call chain) via
+   `inspect` + `linecache` + `sys._getframe` per §5.7's "Error
+   message format".
 7. **`CONTRIBUTING-OPS.md`**: walk one full op contribution end
    to end (e.g. adding `math.log1p`) — choice of `infer` helper
    vs inline primitive, `eval` fn, Python sugar method, null-rule
@@ -508,8 +719,6 @@ Each phase gated by `check.sh` green.
 8. **Docs / regeneration**: `__all__` updates; website per
    `SOURCE-OF-TRUTH.md`.
 9. **Out-of-scope catalog**: §4 + plan.
-
-Step-level detail in [`implementationplan.md`](./implementationplan.md).
 
 ## 7. Testing plan
 
@@ -542,11 +751,36 @@ Two test modules under `python/tests/v0/test_expr_translator/`:
   asserting the lowered `_Expr` tree matches the expected nested
   `_Call` / `_BinOp` structure. Plus integration cases combining
   multiple rules (the §8 canonical example reused as a fixture).
+  Per-branch assign fixtures explicitly covering the §5.7 #3
+  convergence table: (a) all-branches-assign simple merge; (b)
+  outer-binding + asymmetric branch via loose carry-over; (c)
+  early-return branch wrapping post-if continuation into the
+  not-taken arm; (d) sequential reassignment inside a branch;
+  (e) `+=`/`-=`/`*=`/`/=`/`%=` desugar producing the same lowered
+  tree as the explicit `x = x <op> rhs` form.
 - **Rejected**: one test per error code in the rejection list
   (`expr_unsupported_python_op`, `expr_bad_assign_target`,
-  `expr_branch_local_binding`, `expr_unsupported_if_branch`, …),
+  `expr_branch_local_binding`, `expr_recursive_call`, …),
   asserting both the code and the source line in the error
-  message.
+  message. `expr_branch_local_binding` covers the **non-converging
+  branch assign** case (assigned in some branches, no outer
+  binding to carry); assert the error names the assigning
+  branch(es), the post-if read site, and the missing branch /
+  "no outer binding" hint. `expr_recursive_call` covers (a)
+  **direct self-recursion** — unconditional self-call
+  (`return f(x)`) and self-call inside an `if`/`elif`/ternary
+  branch (caught at decoration time, after the `if_else`
+  lowering); (b) **mutual / indirect cycles** — `a → b → a` and
+  longer chains incl. via plain Python helpers, aliased names,
+  attribute access, and runtime dispatch tables (caught at call
+  time via the thread-local stack). Per §5.7's "Error message
+  format", each test asserts the rendered message contains:
+  the source file name, line number, offending source-line text,
+  and (for cycles) the full call order `a → b → c → a` plus one
+  per-hop block naming the call line in each participating
+  function. Cross-file mutual recursion has its own test asserting
+  per-hop file paths differ. >5-hop cycles assert the
+  `... (k more) ...` elision renders head + tail.
 
 Plus decoration-time validation runs once per `@bv.expr`;
 call-time literal coercion (`int` / `str` / `bool` / `None` →
@@ -611,20 +845,17 @@ def email_bucket(email: str | None):
 def is_external_secure(url: str):
     return 1 if url.starts_with("https://") and not url.contains("internal.") else 0
 
-# §5.7 #1 (if/elif/else) + #3 (local assigns) + #5 (and/or)
-# + math.log1p + math.clip + is_in + nested bv.if_else
+# §5.7 #1 (if/elif/else) + #2 (ternary) + #3 (local assigns)
+# + #5 (and/or) + math.log1p + math.clip + is_in
 @bv.expr
 def risk_score(amount_usd: float, dwell_ms: int, country: str):
     log_amount  = bv.log1p(amount_usd)
     short_dwell = bv.clip(dwell_ms, 0, 1_000)
-    geo_bonus   = bv.if_else(
-        bv.is_in(country.lower(), "ru", "kp", "ir"),
-        3.0,
-        0.0,
-    )
-    if   log_amount > 6.0 and short_dwell < 200: return geo_bonus + 5.0
-    elif log_amount > 4.0 or  short_dwell < 500: return geo_bonus + 2.0
-    else:                                        return geo_bonus
+    geo_bonus   = 3.0 if bv.is_in(country.lower(), "ru", "kp", "ir") else 0.0
+    if   log_amount > 6.0 and short_dwell < 200: geo_bonus = geo_bonus + 5.0
+    elif log_amount > 4.0 or  short_dwell < 500: geo_bonus += 2.0
+    
+    return geo_bonus
 
 # §5.7 #3 (local assign) + #2 (ternary) + #5 (or)
 # + method chaining (lower → replace → replace, then chained predicate)
@@ -663,8 +894,8 @@ trace, and edge-case behavior table live in
 ### 9.1 Why not new `Expr` / `Literal` variants
 
 Every `match Expr` / `match Literal` arm pays for new variants
-forever (~30 sites: eval, schema, serde, parser tests). 
-`Call` + special-cased names in the evaluator + the existing variadic
+forever (~30 sites: eval, schema, serde, parser tests). `Call`
++ special-cased names in the evaluator + the existing variadic
 call form cover every operator and literal shape this RFC needs.
 Zero AST growth keeps the entire change inside the function-pointer
 dispatch surface §5.1 establishes — easier to review, no
