@@ -401,7 +401,7 @@ def ClickFeatures(e: Click):
 
 ---
 
-# 10. RFC-001 — PR breakdown
+# 8. RFC-001 — PR breakdown
 
 Split the implementation into 6 PRs.
 
