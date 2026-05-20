@@ -348,27 +348,11 @@ Each "in `<X>`" block prints the line where `<X>` calls the next function (from 
 
 ---
 
-## 6. Implementation phases
-
-Each phase gated by `check.sh` green.
-
-1. **Python prep**: `_Call(name, args)` + `_BareIdent`; `__bool__`/`__iter__`/`__len__` guards; `_ChainMixin.__getattr__`.
-2. **Rust prep**: split `BUILTINS` per category; add `Arity::AtLeast(usize)`; add `infer` fn-pointer; create `_inference.rs` (helpers + primitives); backfill `infer` on `cast`/`isnull`/`quadkey` (`cast` dogfoods `read_literal_type_name`); replace `infer_call_type` match with dispatch; add name-uniqueness test. Coverage type-system-enforced.
-3. **Level 0 (fixed-arity) v0 builtins**: the 10 fixed-arity entries (`log1p`, `clip`, `lower`, `contains`, `starts_with`, `ends_with`, `replace`, `if_else`, `hour_of_day`, `hash_mod`). Per builtin: eval, row, sugar, tests. **No `schema_propagate.rs` edit per builtin.**
-4. **Level 1 (variadic) v0 builtins**: `is_in` (`AtLeast(2)`). Remaining variadics (`coalesce`, `any_of`, `all_of`, `concat`) → good-first-issues.
-5. **`if_else` short-circuit**: special-case in `eval_depth`; defensive eval fn; `bv.when().then().otherwise()` sugar.
-6. **`@bv.expr`**: five rewrites; `+=` etc. pre-pass; stack-of-dicts binding analysis with loose carry-over; static self-recursion check; thread-local mutual-recursion stack; error formatting via `inspect`+`linecache`+`sys._getframe`.
-7. **`CONTRIBUTING-OPS.md`**: walk one full op (e.g. `math.log1p`) end to end — infer helper vs inline primitive, eval, sugar, null rule, tests. Cite Phase 3/4 builtins as dogfood.
-8. **Docs / regen**: `__all__`; website per `SOURCE-OF-TRUTH.md`.
-9. **Out-of-scope catalog**: §4 + plan.
-
----
-
-## 7. Testing plan
+## 6. Testing plan
 
 Gated by `check.sh` at every phase boundary.
 
-### 7.1 Per-builtin (Phases 3–4)
+### 6.1 Per-builtin
 
 Four tests per builtin in per-category test module:
 
@@ -377,7 +361,7 @@ Four tests per builtin in per-category test module:
 - **Null-rule conformance** — verifies documented behavior per §5.1.
 - **SDK round-trip** — Python `_Expr` → wire → Rust `parse` → identical AST. Pins the wire form documented in the sugar's docstring.
 
-### 7.2 `@bv.expr` (Phase 6)
+### 6.2 `@bv.expr` 
 
 Two modules under `python/tests/v0/test_expr_translator/`:
 
@@ -386,25 +370,25 @@ Two modules under `python/tests/v0/test_expr_translator/`:
 
 Plus: decoration-time validation runs once per `@bv.expr`; call-time literal coercion (`int`/`str`/`bool`/`None` → `_Literal`); sequential reassignment threads the dict; nested `@bv.expr` composition.
 
-### 7.3 Type system (Phase 2)
+### 6.3 Type system
 
 - **Helper tests** in `builtins/_inference.rs`: each shared helper gets ≥1 positive (well-typed → expected `InferredType`) and ≥1 negative (mistyped → `TypeMismatch`).
 - **Unification corner cases**: `polymorphic_var0_unify` rejects `I64`/`F64` mixing, accepts `NullLiteral`, falls back to `FieldType::Str` when all bindings null.
 - **Name uniqueness across category tables** — compile-time test.
 - `infer` field coverage is type-system-enforced (no default; missing = compile error) → no runtime test needed.
 
-### 7.4 Backwards compatibility
+### 6.4 Backwards compatibility
 
 - Existing builtins (`cast`, `isnull`, `quadkey`) — especially `quadkey` — type correctly under fn-pointer dispatch where they previously fell through the deleted catch-all.
 - Wire round-trip stability: every expression in current `python/tests/v0` corpus continues to parse and eval identically.
 
-### 7.5 End-to-end
+### 6.5 End-to-end
 
 §8 canonical example registers against a v0 server, exercises every accepted `@bv.expr` rewrite + every v0 builtin, produces documented aggregations against a synthetic Click stream.
 
 ---
 
-## 8. End-to-end use case
+## 7. End-to-end use case
 
 ```python
 import beava as bv
@@ -472,27 +456,27 @@ Each function targets a distinct combination of rewrites + builtin families so t
 
 ---
 
-## 9. Rationale and alternatives
+## 8. Rationale and alternatives
 
-### 9.1 Why not new `Expr` / `Literal` variants
+### 8.1 Why not new `Expr` / `Literal` variants
 
 Every `match Expr` / `match Literal` arm pays for new variants forever (~30 sites: eval, schema, serde, parser tests). `Call` + special-cased names + the existing variadic call form cover every operator and literal shape this RFC needs. Zero AST growth keeps the change inside the fn-pointer dispatch surface — easier review, no parser/lexer touch, no wire-grammar change.
 
-### 9.2 Why defer list builtins + nested types together
+### 8.2 Why defer list builtins + nested types together
 
 `split` / `at` / `[i]` need `FieldType::List<T>` + `InferredType` extension. `Value::Map` indexing needs a parallel decision for object-typed fields with a different null-rule shape. Pulling these together couples several cross-cutting trades — design them in one follow-up rather than ship a v0 sidestep that constrains the eventual shape.
 
-### 9.3 Why defer runtime-mutable sets
+### 8.3 Why defer runtime-mutable sets
 
 Different primitive (not a generalization). Needs server state, admin API, persistence, versioning. Own design pass.
 
-### 9.4 The §D-04 anchor
+### 8.4 The §D-04 anchor
 
 Beava already has a runtime-tolerant convention: non-bool / non-null → `Null`, never panic. Referenced in `row.rs:146,174,198`, `eval.rs:133`, `op_chain.rs:184`. New builtins reference it rather than re-litigate.
 
 ---
 
-## 10. Drawbacks
+## 9. Drawbacks
 
 - **`@bv.expr` rejection error quality is load-bearing.** Needs concrete pointer messages, not generic "unsupported".
 - **`is_in` wire form is verbose for large allow-lists.** Readable `[...]` syntax waits for the list / nested-types follow-up.
@@ -500,7 +484,7 @@ Beava already has a runtime-tolerant convention: non-bool / non-null → `Null`,
 
 ---
 
-## 11. Future work
+## 10. Future work
 
 Triggers for revisiting §4 deferrals:
 
@@ -509,11 +493,17 @@ Triggers for revisiting §4 deferrals:
 - **List builtins + nested types + literal-list syntax** (`split`, `at`, `[i]`, `Value::Map`, `FieldType::List<T>`, `Literal::List`, `is_in(x, [...])` on wire): when first concrete need surfaces — domain extraction, JSON-field access, large allow-list ergonomics. Promotion is **strictly additive**: no currently-valid expression changes meaning.
 - **`Let` AST variant**: register-payload >100 KB from duplicated subexprs, or frequent convergent branch-local binding requests.
 
----
+# 11. RFC-001 — PR breakdown
 
-## 12. References
+Split the implementation into 6 PRs.
 
-- Issue #56 — original proposal
-- ADR-002 — Polars-style aggregation naming
-- `CONTEXT.md §D-04` — runtime-tolerant null convention
-- `CLAUDE.md`, `SOURCE-OF-TRUTH.md`
+
+| PR | What it does | LOC Estimate |
+|---|---|---|
+| 1 | Rust: add typechecking rules to each builtin row | ~600 |
+| 2 | Python: small SDK pieces every later PR needs | ~150 |
+| 3 | Add 10 of the 11 v0 builtins | ~900 |
+| 4 | Add `if_else` with its short-circuit rule | ~350 |
+| 5 | Build the `@bv.expr` decorator | ~1500 |
+| 6 | Write contributor docs, update the website | ~600 |
+| **Total** | | **~4100** |
