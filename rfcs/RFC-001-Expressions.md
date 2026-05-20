@@ -120,13 +120,7 @@ fn day_diff_infer(arg_types: &[InferredType], _: &[Expr])
 
 Each category of builtins get its own file, `expr_builtins.rs` performs the lookup.
 
-### 5.3 Event dot-access
-
-`__getattr__` on `_ChainMixin` so `e.email` works. Guarded against dunder/private (`name.startswith("_")` → `AttributeError`) so introspection isn't intercepted.
-
-Trade-off: typos (`e.eamil`) become register-time "field not in schema" errors. Matches pandas/Polars.
-
-### 5.4 The `@bv.expr` decorator
+### 5.3 The `@bv.expr` decorator
 
 Narrow Python→`_Expr` translator. Rewrites five constructs; rejects everything else.
 
@@ -238,59 +232,11 @@ Why a static check for direct recursion? `if`/`elif` lowers eagerly at tree-buil
 
 #### Indirect / mutual recursion
 
-`f → g → f` and longer cycles are caught during **tree building** via a thread-local stack — standard DFS cycle detection:
+`f → g → f` and longer cycles are caught during **tree building** via a thread-local stack — standard DFS cycle detection.
 
-```python
-import threading, functools, inspect, sys
-from dataclasses import dataclass
+The stack tracks **which `@bv.expr` are currently mid-tree-building** (not the interpreter call stack). 
 
-_tls = threading.local()
-
-@dataclass(frozen=True)
-class _Frame:
-    qname: str
-    file: str
-    def_line: int
-    called_from_file: str
-    called_from_line: int
-
-def _stack() -> list[_Frame]:
-    if not hasattr(_tls, "frames"):
-        _tls.frames = []
-    return _tls.frames
-
-def expr(fn):
-    # rewrites + static self-recursion check
-    # ast.increment_lineno(tree, fn.__code__.co_firstlineno - 1) aligns lines;
-    # compile(tree, filename=src_file) propagates filenames to runtime frames.
-    compiled = ...
-    qname    = fn.__qualname__
-    src_file = inspect.getsourcefile(fn) or fn.__code__.co_filename
-    def_line = fn.__code__.co_firstlineno
-
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        caller = sys._getframe(1)
-        frame  = _Frame(qname, src_file, def_line,
-                        caller.f_code.co_filename, caller.f_lineno)
-        stack = _stack()
-        if any(f.qname == qname for f in stack):
-            i     = next(k for k, f in enumerate(stack) if f.qname == qname)
-            cycle = stack[i:] + [frame]
-            raise RegistrationError(
-                code="expr_recursive_call",
-                message=_format_cycle(cycle),
-            )
-        stack.append(frame)
-        try:
-            args = tuple(_coerce_literal(a) for a in args)
-            return compiled(*args, **kwargs)
-        finally:
-            stack.pop()
-    return wrapper
-```
-
-The stack tracks **which `@bv.expr` are currently mid-tree-building** (not the interpreter call stack). Trace of `a → b → c → a`:
+Trace of `a → b → c → a`:
 
 | step | enter | stack before | in? | action |
 |---|---|---|---|---|
@@ -299,11 +245,12 @@ The stack tracks **which `@bv.expr` are currently mid-tree-building** (not the i
 | 3 | `c` | `[a, b]` | no | push → `[a, b, c]` |
 | 4 | `a` | `[a, b, c]` | **yes** | raise `expr_recursive_call: a → b → c → a` |
 
-Catches every cycle that re-enters any `@bv.expr` regardless of what's between (plain helpers, alias bindings, attribute access, dispatch). Thread-local so concurrent registration paths don't race. Cost: one push/pop/membership check per tree-build call; zero impact on wire/server.
+Catches every cycle that re-enters any `@bv.expr` regardless of what's between (plain helpers, attribute access, etc). Thread-local so concurrent registration paths don't race. Cost: one push/pop/membership check per tree-build call; zero impact on wire/server.
 
 #### Error format (both checks)
+Error messages will include offending line number, source file name and the sequence of calls that produced the error.
 
-Sources: file via `inspect.getsourcefile(fn)`; line via `ast.increment_lineno` (static) and `frame.f_lineno` (runtime); source text via `linecache.getline`; per-hop call site via `sys._getframe(1)` captured on each `_Frame`.
+Sources: file name via `inspect.getsourcefile(fn)`; line number via `ast.increment_lineno` (static) and `frame.f_lineno` (runtime); source text via `linecache.getline`; per-hop call site via `sys._getframe(1)` captured on each `_Frame`.
 
 **Direct (decoration-time):**
 
@@ -379,12 +326,12 @@ Plus: decoration-time validation runs once per `@bv.expr`; call-time literal coe
 
 ### 6.4 Backwards compatibility
 
-- Existing builtins (`cast`, `isnull`, `quadkey`) — especially `quadkey` — type correctly under fn-pointer dispatch where they previously fell through the deleted catch-all.
+- Existing builtins (`cast`, `isnull`, `quadkey`) — typechecks correctly under fn-pointer dispatch where they previously fell through the deleted catch-all.
 - Wire round-trip stability: every expression in current `python/tests/v0` corpus continues to parse and eval identically.
 
 ### 6.5 End-to-end
 
-§8 canonical example registers against a v0 server, exercises every accepted `@bv.expr` rewrite + every v0 builtin, produces documented aggregations against a synthetic Click stream.
+Canonical example below registers against a v0 server, exercises every accepted `@bv.expr` rewrite + every v0 builtin, produces documented aggregations against a synthetic Click stream.
 
 ---
 
@@ -403,20 +350,20 @@ class Click:
     dwell_ms: int
     ts: int
 
-# §5.7 #4 (is None) + hash_mod + string.lower
+# (is None) + hash_mod + string.lower
 @bv.expr
 def email_bucket(email: str | None):
     if email is None:
         return 0
     return bv.hash_mod(email.lower(), 1024)
 
-# §5.7 #2 (ternary) + #5 (and/not) + string predicates
+# (ternary) + (and/not) + string predicates
 @bv.expr
 def is_external_secure(url: str):
     return 1 if url.starts_with("https://") and not url.contains("internal.") else 0
 
-# §5.7 #1 (if/elif/else) + #2 (ternary) + #3 (local assigns)
-# + #5 (and/or) + log1p + clip + is_in
+# (if/elif/else) + (ternary) + (local assigns)
+# + (and/or) + log1p + clip + is_in
 @bv.expr
 def risk_score(amount_usd: float, dwell_ms: int, country: str):
     log_amount  = bv.log1p(amount_usd)
@@ -427,14 +374,14 @@ def risk_score(amount_usd: float, dwell_ms: int, country: str):
 
     return geo_bonus
 
-# §5.7 #3 (local assign) + #2 (ternary) + #5 (or)
+# (local assign) + (ternary) + (or)
 # + method chains + ends_with + contains
 @bv.expr
 def is_suspicious_referrer(referrer: str):
     clean = referrer.lower().replace("https://", "").replace("http://", "")
     return 1 if clean.ends_with(".xyz") or clean.ends_with(".tk") or clean.contains("bit.ly") else 0
 
-# §5.5 event dot-access (e.email rather than bv.col("email"))
+# event dot-access (e.email rather than bv.col("email"))
 def ClickFeatures(e: Click):
     e = e.with_columns(
         email_bkt      = email_bucket(e.email),
@@ -452,48 +399,9 @@ def ClickFeatures(e: Click):
     )
 ```
 
-Each function targets a distinct combination of rewrites + builtin families so the example doubles as a coverage checklist. Full walkthrough, register-time type-check trace, and edge-case table in [`canonexample2.md`](./canonexample2.md).
-
 ---
 
-## 8. Rationale and alternatives
-
-### 8.1 Why not new `Expr` / `Literal` variants
-
-Every `match Expr` / `match Literal` arm pays for new variants forever (~30 sites: eval, schema, serde, parser tests). `Call` + special-cased names + the existing variadic call form cover every operator and literal shape this RFC needs. Zero AST growth keeps the change inside the fn-pointer dispatch surface — easier review, no parser/lexer touch, no wire-grammar change.
-
-### 8.2 Why defer list builtins + nested types together
-
-`split` / `at` / `[i]` need `FieldType::List<T>` + `InferredType` extension. `Value::Map` indexing needs a parallel decision for object-typed fields with a different null-rule shape. Pulling these together couples several cross-cutting trades — design them in one follow-up rather than ship a v0 sidestep that constrains the eventual shape.
-
-### 8.3 Why defer runtime-mutable sets
-
-Different primitive (not a generalization). Needs server state, admin API, persistence, versioning. Own design pass.
-
-### 8.4 The §D-04 anchor
-
-Beava already has a runtime-tolerant convention: non-bool / non-null → `Null`, never panic. Referenced in `row.rs:146,174,198`, `eval.rs:133`, `op_chain.rs:184`. New builtins reference it rather than re-litigate.
-
----
-
-## 9. Drawbacks
-
-- **`@bv.expr` rejection error quality is load-bearing.** Needs concrete pointer messages, not generic "unsupported".
-- **`is_in` wire form is verbose for large allow-lists.** Readable `[...]` syntax waits for the list / nested-types follow-up.
-- **No list / map access in v0.** `email.split("@")[1]` not expressible until follow-up RFC ships. Users wanting domain-from-email today pre-extract in the event producer or wait.
-
----
-
-## 10. Future work
-
-Triggers for revisiting §4 deferrals:
-
-- **Full `@bv.expr`**: concrete user request for type-annotation schema checking / loops, or 3+ rejection errors/week in tooling.
-- **Runtime-mutable sets**: production deployment needing denylist freshness >1 register cycle.
-- **List builtins + nested types + literal-list syntax** (`split`, `at`, `[i]`, `Value::Map`, `FieldType::List<T>`, `Literal::List`, `is_in(x, [...])` on wire): when first concrete need surfaces — domain extraction, JSON-field access, large allow-list ergonomics. Promotion is **strictly additive**: no currently-valid expression changes meaning.
-- **`Let` AST variant**: register-payload >100 KB from duplicated subexprs, or frequent convergent branch-local binding requests.
-
-# 11. RFC-001 — PR breakdown
+# 10. RFC-001 — PR breakdown
 
 Split the implementation into 6 PRs.
 
