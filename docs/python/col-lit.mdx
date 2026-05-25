@@ -48,7 +48,7 @@ print(expr.to_expr_string())  # → '(amount > 100)'
 
 ### Shorthand: dot-access on `@bv.event` classes and chains
 
-Anywhere an event class or chain is in scope, `Cls.field` and `chain.field` are sugar for `bv.col("field")`.
+Wherever you have an event class or a chain expression, you can write `target.field` instead of `bv.col("field")`. Both produce the exact same thing.
 
 ```python title="dot-access.py"
 import beava as bv
@@ -59,16 +59,21 @@ class Click:
     email:   str
     amount:  float
 
-# These two forms are equivalent on the wire:
+# 1) On an event class — both lines build the same expression:
 bv.col("email") == bv.lit("a@b.com")
 Click.email     == "a@b.com"
 
-# On a chain, too:
-checkout = Click.filter(Click.amount > 100)
-checkout.email  # → bv.col("email")
+# 2) Inside an `@bv.event def`, the argument IS the class, so the same
+#    shortcut works:
+@bv.event
+def BigClick(click: Click):
+    return click.filter(click.amount > 100)   # click.amount means bv.col("amount")
+
 ```
 
-Names starting with `_` are **not** intercepted — `Click._chain`, `repr(Click)`, pickle, and IDE introspection keep working as normal. Typos surface at register / push time, same as `bv.col("typo")`.
+Names that start with `_` are left alone. So `Click._chain`, `repr(Click)`, saving the object with `pickle`, and your editor's autocomplete all keep working — only normal field names get the shortcut.
+
+If you misspell a field name (e.g. `Click.emial`), Python won't catch it. The SDK just builds a reference to a column called `"emial"`, same as if you had typed `bv.col("emial")` yourself. The error only shows up later, when you call `app.register(...)` or push an event and the server compares the field against the schema.
 
 ### bv.lit(value)
 
