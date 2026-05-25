@@ -26,13 +26,29 @@ post-v0.
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, get_type_hints
+from typing import Any, Callable, cast, get_type_hints
 
 from beava._col import _Expr
 
 _FORBIDDEN_FIELD_NAMES = ("event_time",)
 _FORBIDDEN_DECORATOR_KWARGS = ("tolerate_delay", "event_time_field")
 _VALID_CAST_TARGETS = ("str", "int", "float", "bool")
+
+
+def _event_attr_lookup(name: str) -> _Expr:
+    """Shared body for ``Click.email`` and ``derivation.email`` dot-access.
+
+    Names starting with ``_`` raise ``AttributeError`` so dunder lookups,
+    pickle probes, ``repr``, IDE introspection, and the framework's own
+    private attributes don't get intercepted.
+    """
+    if name.startswith("_"):
+        raise AttributeError(name)
+    # Lazy import — `_col` already imports from `_events` indirectly
+    # through some test paths, so keep this inside the function body.
+    from beava._col import col  # noqa: PLC0415
+
+    return col(name)
 
 
 class _ChainMixin:
@@ -109,6 +125,12 @@ class _ChainMixin:
         d = _make_derivation(self, {"op": "rename_self", "name": name})
         d._name = name
         return d
+
+    def __getattr__(self, name: str) -> _Expr:
+        # `__getattr__` runs ONLY after normal attribute lookup fails,
+        # so real attributes (`_chain`, `_name`, chain methods like
+        # `with_columns`) are unaffected.
+        return _event_attr_lookup(name)
 
 
 class EventSource(_ChainMixin):
@@ -244,7 +266,18 @@ def _make_event_source(cls: type, kwargs: dict[str, Any]) -> type:
     ):
         bound = getattr(src, method_name)
         setattr(cls, method_name, staticmethod(bound))
-    return cls
+
+    # Install a metaclass so `Click.email` returns `bv.col("email")`.
+    # Class attribute lookup goes through the *metaclass*, not the class
+    # itself, so a `__getattr__` defined on `cls` would never fire for
+    # `Click.email`. Each event class gets its own metaclass to avoid
+    # MRO conflicts when a user (rare) subclasses two @bv.event classes.
+    meta = type(
+        f"_BvEventMeta_{cls.__name__}",
+        (type,),
+        {"__getattr__": staticmethod(_event_attr_lookup)},
+    )
+    return cast(type, meta(cls.__name__, cls.__bases__, dict(cls.__dict__)))
 
 
 _EVENTS_MODULE_FILE = __file__
