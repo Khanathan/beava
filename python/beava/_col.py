@@ -96,6 +96,28 @@ class _Expr:
     # makes instances unhashable by default. Each concrete subclass restores
     # `__hash__` explicitly so AST nodes can live in sets/dict keys.
 
+    # Footgun guards. Python calls `__bool__` for `if`, `and`, `or`, `not`,
+    # and ternary `a if c else b`. Without this guard a beava expression is
+    # truthy by default, so `"yes" if (col > 0) else "no"` silently picks
+    # `"yes"` — a silent-first-branch bug. PR 5's `@bv.expr` rewrites these
+    # constructs at the source level *before* Python runs them, so the
+    # guard never fires inside `@bv.expr`. The asymmetry is the whole point.
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "expression objects don't have a truth value — use "
+            "`bv.if_else(cond, then, else)` for conditionals, or "
+            "`&` / `|` to combine predicates"
+        )
+
+    def __iter__(self) -> Any:
+        raise TypeError("expression objects are not iterable")
+
+    def __len__(self) -> int:
+        raise TypeError(
+            "expression objects don't have a length — use "
+            "`bv.length(x)` to take a string's length as a feature"
+        )
+
     def isnull(self) -> "_Expr":
         return _UnaryOp("isnull", self)
 
@@ -184,6 +206,27 @@ class _CastOp(_Expr):
 
     def __hash__(self) -> int:
         return hash(("_CastOp", self.target, id(self.operand)))
+
+
+@dataclass(frozen=True, eq=False)
+class _Call(_Expr):
+    """Generic function-call node. Renders ``name(a, b, ...)``.
+
+    Every builtin sugar added in PR 3+ returns one of these — e.g.
+    ``bv.log1p(x)`` is ``_Call("log1p", (x,))`` and ``bv.if_else(c, a, b)``
+    is ``_Call("if_else", (c, a, b))``. ``_CastOp`` stays a special case
+    because cast's second argument is a type tag, not a value.
+    """
+
+    name: str
+    args: tuple[_Expr, ...]
+
+    def to_expr_string(self) -> str:
+        rendered = ", ".join(a.to_expr_string() for a in self.args)
+        return f"{self.name}({rendered})"
+
+    def __hash__(self) -> int:
+        return hash(("_Call", self.name, tuple(id(a) for a in self.args)))
 
 
 def _coerce(v: Any) -> _Expr:
