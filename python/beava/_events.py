@@ -446,7 +446,12 @@ def event(cls_or_fn: Any = None, /, **kwargs: Any) -> Any:
 
         @bv.event
         def BigClick(click: Click):
-            return click.filter(bv.col("page") == "/checkout")
+            return click.filter(click.page == "/checkout")
+
+    Inside the function body, ``click.<field>`` is sugar for
+    ``bv.col("<field>")``. The same shorthand works on event classes
+    (``Click.page``) and on chain expressions (``derivation.page``).
+    Names starting with ``_`` are not intercepted.
 
     Decorator-factory form (per-source kwargs)::
 

@@ -46,6 +46,30 @@ expr = amount > 100
 print(expr.to_expr_string())  # → '(amount > 100)'
 ```
 
+### Shorthand: dot-access on `@bv.event` classes and chains
+
+Anywhere an event class or chain is in scope, `Cls.field` and `chain.field` are sugar for `bv.col("field")`.
+
+```python title="dot-access.py"
+import beava as bv
+
+@bv.event
+class Click:
+    user_id: str
+    email:   str
+    amount:  float
+
+# These two forms are equivalent on the wire:
+bv.col("email") == bv.lit("a@b.com")
+Click.email     == "a@b.com"
+
+# On a chain, too:
+checkout = Click.filter(Click.amount > 100)
+checkout.email  # → bv.col("email")
+```
+
+Names starting with `_` are **not** intercepted — `Click._chain`, `repr(Click)`, pickle, and IDE introspection keep working as normal. Typos surface at register / push time, same as `bv.col("typo")`.
+
 ### bv.lit(value)
 
 Wrap a Python constant as an explicit literal expression. The implicit form (`bv.col("a") > 100`) and the explicit form (`bv.col("a") > bv.lit(100)`) are wire-equivalent inside operator overloads — Python's dispatch coerces the right-hand side automatically. `bv.lit` is required when the literal stands on its own (a constant column in `with_columns`, the left-hand side of an arithmetic expression, or the only operand of a derivation).
