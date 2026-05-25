@@ -27,7 +27,7 @@ class Click:
 # Def form — derives a new event from the source above.
 @bv.event
 def BigClick(click: Click):
-    return click.filter(bv.col("page") == "/checkout")
+    return click.filter(click.page == "/checkout")
 ```
 
 <Note>
@@ -85,8 +85,10 @@ class Click:
 
 @bv.event
 def CheckoutClick(click: Click):
-    return click.filter(bv.col("page") == "/checkout")
+    return click.filter(click.page == "/checkout")
 ```
+
+Inside the function body, `click.<field>` is sugar for `bv.col("<field>")` — see [bv.col shorthand](./col-lit#shorthand-dot-access-on-bvevent-classes-and-chains).
 
 **Why the def form exists.** The chain methods (`filter`, `select`, `with_columns`, ...) return anonymous `EventDerivation` objects with auto-generated names like `Click__derived_1`. Those auto-names are **not addressable** on the wire — the server's apply-time routing index keys derivations by their declared upstream name, and only stable names survive the round-trip. `@bv.event def` wraps a chain into a stable name (`"CheckoutClick"`) so downstream `@bv.table`s can declare it as their upstream and so you can push it by name from the client.
 
