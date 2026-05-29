@@ -93,10 +93,18 @@ impl std::fmt::Debug for WalLsn {
 impl WalLsn {
     /// Create a new `WalLsn` with all watermarks at zero.
     pub fn new() -> Self {
+        Self::new_at(0)
+    }
+
+    /// Create a new `WalLsn` with all watermarks already advanced to `lsn`.
+    ///
+    /// Used after recovery so the hand-rolled WAL ring continues from the
+    /// recovered high-water mark instead of reusing low LSNs after restart.
+    pub fn new_at(lsn: Lsn) -> Self {
         Self {
-            committed: AtomicU64::new(0),
-            written: AtomicU64::new(0),
-            synced: AtomicU64::new(0),
+            committed: AtomicU64::new(lsn),
+            written: AtomicU64::new(lsn),
+            synced: AtomicU64::new(lsn),
             synced_condvar: Condvar::new(),
             synced_mutex: Mutex::new(()),
         }
@@ -133,6 +141,18 @@ impl WalLsn {
     #[inline]
     pub fn record(&self, n: u64) -> Lsn {
         self.committed.fetch_add(n, Ordering::AcqRel) + n
+    }
+
+    /// Raise the committed watermark to at least `lsn` without appending
+    /// bytes to the hand-rolled WAL.
+    ///
+    /// The server uses one logical LSN namespace across the legacy
+    /// `WalSink` registry WAL and the data-plane ring WAL. When a registry
+    /// bump advances the legacy WAL first, the next data-plane append must
+    /// jump past that durable point so snapshots can gate both WAL streams
+    /// with a single LSN.
+    pub fn mark_committed_at_least(&self, lsn: Lsn) {
+        self.committed.fetch_max(lsn, Ordering::AcqRel);
     }
 
     /// Advance `written_lsn` to at least `lsn`.

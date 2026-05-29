@@ -18,7 +18,10 @@ pub mod registry_debug;
 pub mod runtime_core_glue;
 pub mod server;
 pub mod shutdown;
+pub mod snapshot_fork;
+pub(crate) mod snapshot_metrics;
 pub mod snapshot_task;
+pub mod thp;
 pub mod wal_config;
 
 #[cfg(any(feature = "testing", test))]

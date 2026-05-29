@@ -19,6 +19,8 @@
 
 use beava_server::testing::TestServerBuilder;
 use serde_json::json;
+use std::path::Path;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex as TokioMutex;
 
 /// Plan 12.6-15: serialize ServerV18 boots so two restart-cycle tests don't
@@ -125,6 +127,34 @@ async fn get_feature(
     let body = r.text().await.unwrap_or_default();
     assert_eq!(status, 200, "/get expected 200, got {status}: {body}");
     serde_json::from_str(&body).expect("body json")
+}
+
+fn handrolled_wal_len(wal_dir: &Path) -> u64 {
+    std::fs::read_dir(wal_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wal"))
+        .filter_map(|p| p.metadata().ok().map(|m| m.len()))
+        .sum()
+}
+
+async fn wait_for_wal_len<F>(wal_dir: &Path, pred: F) -> u64
+where
+    F: Fn(u64) -> bool,
+{
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let len = handrolled_wal_len(wal_dir);
+        if pred(len) {
+            return len;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for hand-rolled WAL length condition; current len={len}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// SC1: snapshot atomic write → reproducible state after restart from
@@ -292,6 +322,236 @@ async fn sc4_schema_evolution_survives_restart() {
         assert_eq!(
             v_click["click_cnt"], 3,
             "post-restart click_cnt expected 3 (recovered v2 schema + replayed events), got {v_click}"
+        );
+
+        ts.shutdown().await.expect("shutdown 2nd");
+    }
+}
+
+/// Registry WAL records can advance the durable legacy LSN before the first
+/// data-plane push. The ring WAL must jump past that LSN so a later snapshot
+/// can use one LSN to cover both `.log` registry records and `.wal` events
+/// without skipping post-snapshot push records on restart.
+#[tokio::test]
+async fn registry_first_snapshot_replays_post_snapshot_push_tail() {
+    let _serializer_guard = RESTART_CYCLE_SERIALIZER.lock().await;
+    let wal = tempfile::tempdir().unwrap();
+    let snap = tempfile::tempdir().unwrap();
+
+    {
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .spawn()
+            .await
+            .expect("spawn 1st");
+
+        register(&ts, json!([txn_descriptor(), txn_agg_descriptor()])).await;
+        for i in 0..5_i64 {
+            push_event(
+                &ts,
+                "Txn",
+                json!({"user_id": "alice", "amount": 1.0, "event_time": 1_000_000 + i}),
+            )
+            .await;
+        }
+
+        ts.force_snapshot_now().await.expect("force snapshot");
+        let snapshots = beava_persistence::list_snapshots(snap.path()).expect("list snapshots");
+        let (_, snapshot_path) = snapshots.first().expect("snapshot exists after force");
+        let (_, snapshot_bytes) =
+            beava_persistence::SnapshotReader::open(snapshot_path).expect("open snapshot");
+        let snapshot_body =
+            beava_core::snapshot_body::SnapshotBody::decode(&snapshot_bytes).expect("decode");
+        assert_eq!(snapshot_body.registry.version, 1);
+        assert!(snapshot_body.next_event_id > 1);
+        assert_eq!(
+            snapshot_body
+                .state_tables
+                .get("TxnAgg")
+                .map(|entries| entries.len()),
+            Some(1),
+            "forced snapshot should include the pre-tail TxnAgg state"
+        );
+
+        for i in 0..4_i64 {
+            push_event(
+                &ts,
+                "Txn",
+                json!({"user_id": "alice", "amount": 1.0, "event_time": 2_000_000 + i}),
+            )
+            .await;
+        }
+
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(v["cnt"], 9, "pre-restart cnt expected 9, got {v}");
+
+        ts.shutdown().await.expect("shutdown 1st");
+    }
+
+    {
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .spawn()
+            .await
+            .expect("spawn 2nd");
+
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(
+            v["cnt"], 9,
+            "post-restart cnt expected 9 (snapshot + post-snapshot WAL tail), got {v}"
+        );
+
+        ts.shutdown().await.expect("shutdown 2nd");
+    }
+}
+
+#[tokio::test]
+async fn compacted_handrolled_wal_restarts_with_retained_tail() {
+    let _serializer_guard = RESTART_CYCLE_SERIALIZER.lock().await;
+    let wal = tempfile::tempdir().unwrap();
+    let snap = tempfile::tempdir().unwrap();
+
+    {
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .wal_tick_ms(1)
+            .spawn()
+            .await
+            .expect("spawn 1st");
+
+        register(&ts, json!([txn_descriptor(), txn_agg_descriptor()])).await;
+        for i in 0..12_i64 {
+            push_event(
+                &ts,
+                "Txn",
+                json!({"user_id": "alice", "amount": 1.0, "event_time": 1_000_000 + i}),
+            )
+            .await;
+        }
+
+        let before_len = wait_for_wal_len(wal.path(), |len| len > 0).await;
+        ts.force_snapshot_now().await.expect("force snapshot");
+        let compacted_len = wait_for_wal_len(wal.path(), |len| len < before_len).await;
+
+        for i in 0..3_i64 {
+            push_event(
+                &ts,
+                "Txn",
+                json!({"user_id": "alice", "amount": 1.0, "event_time": 2_000_000 + i}),
+            )
+            .await;
+        }
+        let _tail_len = wait_for_wal_len(wal.path(), |len| len > compacted_len).await;
+
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(v["cnt"], 15, "pre-restart cnt expected 15, got {v}");
+
+        ts.shutdown().await.expect("shutdown 1st");
+    }
+
+    {
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .wal_tick_ms(1)
+            .spawn()
+            .await
+            .expect("spawn 2nd");
+
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(
+            v["cnt"], 15,
+            "post-restart cnt expected 15: snapshot-covered prefix plus retained compacted WAL tail, got {v}"
+        );
+
+        ts.shutdown().await.expect("shutdown 2nd");
+    }
+}
+
+/// Regression for the recovery replay floor: a post-snapshot data-plane WAL
+/// record can have an LSN lower than a later registry `.log` bump. Recovery
+/// must still replay hand-rolled `.wal` records from `snapshot_lsn`, not from
+/// the higher registry persistence LSN.
+#[tokio::test]
+async fn snapshot_then_push_then_schema_bump_replays_pre_bump_tail() {
+    let _serializer_guard = RESTART_CYCLE_SERIALIZER.lock().await;
+    let wal = tempfile::tempdir().unwrap();
+    let snap = tempfile::tempdir().unwrap();
+
+    {
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .spawn()
+            .await
+            .expect("spawn 1st");
+
+        register(&ts, json!([txn_descriptor(), txn_agg_descriptor()])).await;
+        for i in 0..5_i64 {
+            push_event(
+                &ts,
+                "Txn",
+                json!({"user_id": "alice", "amount": 1.0, "event_time": 1_000_000 + i}),
+            )
+            .await;
+        }
+
+        ts.force_snapshot_now().await.expect("force snapshot");
+
+        push_event(
+            &ts,
+            "Txn",
+            json!({"user_id": "alice", "amount": 1.0, "event_time": 2_000_000}),
+        )
+        .await;
+
+        register(
+            &ts,
+            json!([
+                txn_descriptor(),
+                txn_agg_descriptor(),
+                click_descriptor(),
+                click_agg_descriptor()
+            ]),
+        )
+        .await;
+
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(
+            v["cnt"], 6,
+            "pre-restart cnt expected 6 after the post-snapshot pre-bump push, got {v}"
+        );
+
+        ts.shutdown().await.expect("shutdown 1st");
+    }
+
+    {
+        let ts = TestServerBuilder::new()
+            .dev_endpoints(true)
+            .wal_dir(wal.path().to_path_buf())
+            .snapshot_dir(snap.path().to_path_buf())
+            .fsync_interval_ms(1)
+            .spawn()
+            .await
+            .expect("spawn 2nd");
+
+        let v = get_feature(&ts, "TxnAgg", "alice", &["cnt"]).await;
+        assert_eq!(
+            v["cnt"], 6,
+            "post-restart cnt expected 6; replay must not skip the post-snapshot pre-bump WAL record even though the later RegistryBump has a higher LSN, got {v}"
         );
 
         ts.shutdown().await.expect("shutdown 2nd");

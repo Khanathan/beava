@@ -287,6 +287,7 @@ struct ServerV18State {
     wal_ring: Arc<beava_runtime_core::wal_buffer::WalBufferRing>,
     wal_lsn: Arc<beava_runtime_core::wal_lsn::WalLsn>,
     wal_writer_handle: std::thread::JoinHandle<()>,
+    wal_reclaim: Option<beava_runtime_core::wal_writer::WalReclaimHandle>,
     /// TCP frame-size cap plumbed through `WorkerConfig` rather than read
     /// from env per-frame, so parallel `TestServer` instances don't
     /// contaminate each other.
@@ -322,6 +323,12 @@ impl ServerV18 {
         tcp_addr: std::net::SocketAddr,
         admin_addr: std::net::SocketAddr,
     ) -> Result<Self, ServerError> {
+        // Opt this process out of Transparent Huge Pages (Linux), warn if
+        // the system default is `[always]`. THP makes fork()-snapshot COW
+        // granularity 2 MB instead of 4 KB — a 500× amplifier on COW
+        // memory overhead during BGSAVE-style work. See crate::thp.
+        crate::thp::detect_and_opt_out();
+
         // Bind event-plane listeners (std::net — they'll be handed to mio later).
         let http_listener =
             std::net::TcpListener::bind(http_addr).map_err(|e| ServerError::Bind {
@@ -769,8 +776,7 @@ async fn build_runtime_state_with_persistence(
     //   2. Replay `*.log` records with `lsn > snapshot_lsn` (RegistryBumps
     //      and any persistence-WAL events from the legacy `WalSink`
     //      path).
-    //   3. Replay `*.wal` data-plane events (v=2 binary format from
-    //      `apply_shard`).
+    //   3. Replay `*.wal` data-plane events from `apply_shard`.
     // Memory mode skips this whole block — state starts fresh.
     let initial_start_lsn = if is_memory {
         tracing::info!(
@@ -780,29 +786,34 @@ async fn build_runtime_state_with_persistence(
         );
         1
     } else {
-        let snapshot_lsn = crate::recovery::load_snapshot_if_any(&snapshot_dir, &dev_agg)
+        let snapshot_load = crate::recovery::load_snapshot_if_any(&snapshot_dir, &dev_agg)
             .ok()
-            .unwrap_or(0);
+            .unwrap_or_default();
+        let snapshot_lsn = snapshot_load.snapshot_lsn;
 
         let persistence_lsn = if wal_dir.exists() {
             match replay_wal_from_lsn(&wal_dir, snapshot_lsn, &dev_agg) {
-                Ok(outcome) => outcome.last_lsn,
+                Ok(outcome) => outcome.last_lsn.max(snapshot_lsn),
                 Err(_) => snapshot_lsn,
             }
         } else {
             snapshot_lsn
         };
 
-        // Replay hand-rolled `*.wal` data-plane events. Setting
-        // `lsn_start = persistence_lsn + 1` keeps LSNs monotonic across
-        // the snapshot, persistence, and hand-rolled paths.
-        let handrolled_lsn_start = persistence_lsn + 1;
+        // Replay hand-rolled `*.wal` data-plane events past the state already
+        // covered by the snapshot body. The snapshot header LSN is a mixed
+        // legacy/data-plane checkpoint; older snapshots can have a header LSN
+        // lower than their serialized data-plane state, and registry `.log`
+        // records can have higher LSNs than post-snapshot data-plane records.
+        // The body watermark is the only safe floor for hand-rolled replay.
+        let handrolled_from_lsn = snapshot_load.applied_lsn;
         let handrolled_outcome =
-            replay_handrolled_wal_dir(&wal_dir, handrolled_lsn_start, &dev_agg).unwrap_or_default();
+            replay_handrolled_wal_dir(&wal_dir, handrolled_from_lsn, &dev_agg).unwrap_or_default();
         let initial = handrolled_outcome
             .last_lsn
             .max(persistence_lsn)
             .max(snapshot_lsn)
+            .max(snapshot_load.applied_lsn)
             + 1;
 
         tracing::debug!(
@@ -866,7 +877,7 @@ async fn build_runtime_state_with_persistence(
         );
     }
 
-    let wal_lsn = Arc::new(WalLsn::new());
+    let wal_lsn = Arc::new(WalLsn::new_at(initial_start_lsn.saturating_sub(1)));
     // Resolve WAL config from explicit overrides — hot path never reads
     // env. Production resolves from `ServerV18Config::from_env()` at
     // boot; tests pass explicit values via `TestServerBuilder`. The
@@ -893,8 +904,10 @@ async fn build_runtime_state_with_persistence(
     // fsync. Memory mode: drain sealed buffers back to the free pool
     // with no file I/O so the apply hot path can't backpressure-block
     // once buffers fill.
-    let (wal_writer_shutdown, wal_writer_handle) = if is_memory {
-        spawn_no_op_wal_writer(Arc::clone(&wal_ring), Arc::clone(&wal_lsn), wal_cfg.tick_ms)
+    let (wal_writer_shutdown, wal_writer_handle, wal_reclaim) = if is_memory {
+        let (shutdown, handle) =
+            spawn_no_op_wal_writer(Arc::clone(&wal_ring), Arc::clone(&wal_lsn), wal_cfg.tick_ms);
+        (shutdown, handle, None)
     } else {
         let wal_writer = WalWriter::new(
             &wal_dir,
@@ -903,13 +916,14 @@ async fn build_runtime_state_with_persistence(
             wal_cfg.tick_ms,
         )
         .map_err(|e| ServerError::WalSpawn(e.to_string()))?;
+        let reclaim = wal_writer.reclaim_handle();
         // Capture the shutdown flag BEFORE `spawn()` consumes the writer.
         // Without it, the writer loop would never see the shutdown signal
         // and `JoinHandle` drop would detach the thread mid-tick, losing
         // any active-buffer contents that hadn't been sealed yet.
         let shutdown = wal_writer.shutdown_flag();
         let handle = wal_writer.spawn();
-        (shutdown, handle)
+        (shutdown, handle, Some(reclaim))
     };
 
     // Memory mode skips the snapshot task entirely (zero file I/O), but
@@ -932,9 +946,16 @@ async fn build_runtime_state_with_persistence(
                 interval: Duration::from_millis(snapshot_interval_ms.max(1)),
                 snapshot_dir: snapshot_dir.clone(),
                 retain: 2,
+                // Read env once at boot — these are the SOLE legitimate
+                // env-read sites. Tests pass config fields directly per
+                // `phase13_5_3_no_env_var_pokes_in_tests`.
+                min_events_per_snapshot: crate::snapshot_task::min_events_from_env(),
+                use_fork_snapshot: crate::snapshot_fork::fork_enabled(),
+                snapshot_lsn_capture_tx: None,
             },
             Arc::clone(&app_state),
             wal_sink.clone(),
+            wal_reclaim.clone(),
             snapshot_cancel.clone(),
         );
         (Some((snapshot_cancel, snapshot_worker)), snapshot_trigger)
@@ -949,6 +970,7 @@ async fn build_runtime_state_with_persistence(
         wal_ring,
         wal_lsn,
         wal_writer_handle,
+        wal_reclaim,
         wal_writer_shutdown,
         snapshot_task,
         snapshot_trigger,
@@ -1042,6 +1064,7 @@ where
         wal_ring,
         wal_lsn,
         wal_writer_handle,
+        wal_reclaim: _wal_reclaim,
         wal_writer_shutdown,
         snapshot_task,
         snapshot_trigger,
