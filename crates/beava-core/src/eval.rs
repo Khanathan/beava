@@ -97,6 +97,15 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
         // a direct `match self` jump table inside BuiltinFn::eval — no
         // string compare, no slice scan.
         Expr::Call { builtin, args, .. } => {
+            // Lazy builtins short-circuit here: `if_else` evaluates its
+            // condition and exactly one branch, never the other. See
+            // `builtins::cond::if_else_eval` / `if_else_select_branch` for the
+            // shared selection and why this is observably identical to eager
+            // evaluation (beava eval is pure + total). Eager builtins return
+            // `None` and fall through to the collect-all path below.
+            if let Some(v) = builtin.eval_lazy(args, |a| eval_depth(a, row, depth + 1)) {
+                return v;
+            }
             let arg_vals: Vec<Value> = args.iter().map(|a| eval_depth(a, row, depth + 1)).collect();
             builtin.eval(&arg_vals)
         }

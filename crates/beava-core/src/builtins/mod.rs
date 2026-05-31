@@ -4,15 +4,17 @@
 //!
 //! Builtins are a closed Rust enum `BuiltinFn` — one variant per builtin.
 //! Adding a new builtin is one variant + arms in the five `match self`
-//! methods (`name`, `from_name`, `arity`, `eval`, `infer`). The compiler
-//! enforces exhaustiveness — no `_ =>` fallback arm, so a missing
-//! handler is a hard compile error.
+//! methods (`name`, `from_name`, `arity`, `eval`, `infer`), plus an arm in
+//! `eval_lazy` (lazy builtins return `Some`; eager ones join its explicit
+//! `None` list). The compiler enforces exhaustiveness — no `_ =>` fallback
+//! arm, so a missing handler is a hard compile error.
 //!
 //! # File layout (PR 3 BUILTINS split, RFC-001 §5.2)
 //!
-//! - This file (`mod.rs`) — `BuiltinFn` enum + five `match self` methods
-//!   + `isnull_eval` (small, polymorphic, no clear category) + `cast_eval`
-//!     (called from `eval.rs`'s `Expr::Cast` arm, not via the enum).
+//! - This file (`mod.rs`) — `BuiltinFn` enum + six `match self` methods
+//!   (the five above + `eval_lazy`, the short-circuit hook) + `isnull_eval`
+//!   (small, polymorphic, no clear category) + `cast_eval` (called from
+//!   `eval.rs`'s `Expr::Cast` arm, not via the enum).
 //!
 //! - `math.rs`, `string.rs`, `time.rs`, `cond.rs`, `hash.rs` — per-category
 //!   `*_eval` free fns and one-off `*_infer` fns.
@@ -24,7 +26,8 @@
 //! Time: `hour_of_day` — body in `time.rs`.
 //! Hash: `quadkey`, `hash_mod` — bodies in `hash.rs`.
 //! String: `lower`, `length`, `contains`, `starts_with`, `ends_with`, `replace` — bodies in `string.rs`.
-//! Cond: `isnull` — body inline in this file (polymorphic null check, no category).
+//! Cond: `isnull` — body inline in this file (polymorphic null check, no category);
+//! `if_else` — lazy/short-circuit builtin, body in `cond.rs` (see `eval_lazy`).
 //!
 //! `cast(value, type)` is NOT a `BuiltinFn` variant — it's `Expr::Cast`,
 //! a dedicated AST node (RFC-001 §5.1). The parser detects `cast(...)`
@@ -45,7 +48,7 @@ pub(crate) mod _inference;
 
 // Per-category files — PR 3 BUILTINS split (RFC-001 §5.2). Each holds the
 // `*_eval` free fns (and one-off `*_infer` fns) for its category. The
-// `BuiltinFn` enum and its five `match self` methods stay in this module.
+// `BuiltinFn` enum and its `match self` methods stay in this module.
 mod cond;
 mod hash;
 mod math;
@@ -53,6 +56,7 @@ mod string;
 mod time;
 
 use crate::builtins::_inference::{numeric_to_f64, string_search_to_bool};
+use crate::builtins::cond::{if_else_eval, if_else_infer, if_else_select_branch};
 use crate::builtins::hash::{hash_mod_eval, hash_mod_infer, quadkey_eval, quadkey_infer};
 use crate::builtins::math::{clip_eval, clip_infer, log1p_eval};
 use crate::builtins::string::{
@@ -60,6 +64,7 @@ use crate::builtins::string::{
     starts_with_eval,
 };
 use crate::builtins::time::{hour_of_day_eval, hour_of_day_infer};
+use crate::expr::Expr;
 use crate::row::Value;
 use crate::schema_propagate::InferredType;
 use _inference::{any_to_bool, str_to_i64, str_to_str, InferError};
@@ -79,9 +84,10 @@ pub enum Arity {
 
 /// Closed enum of builtin functions.
 ///
-/// Each variant has arms in the five `match self` methods below; the
-/// compiler enforces exhaustiveness. To add a builtin: add a variant +
-/// one arm in each of `name`, `from_name`, `arity`, `eval`, `infer`.
+/// Each variant has arms in the `match self` methods below; the compiler
+/// enforces exhaustiveness. To add a builtin: add a variant + one arm in each
+/// of `name`, `from_name`, `arity`, `eval`, `infer`, and `eval_lazy` (eager
+/// builtins join `eval_lazy`'s `None` list; lazy ones return `Some`).
 ///
 /// `Copy + Hash + Eq` so callers can use `BuiltinFn` values freely
 /// (hash-map keys, equality checks, copy across boundaries) without
@@ -104,6 +110,11 @@ pub enum BuiltinFn {
     StartsWith,
     EndsWith,
     Replace,
+    /// `if_else(cond, then, else)` — the only **lazy** builtin: it
+    /// short-circuits in `eval.rs::eval_depth` via `eval_lazy`, evaluating the
+    /// condition and exactly one branch. `cond` must be `Bool`; the two
+    /// branches must share a type. Body in `cond.rs`.
+    IfElse,
     // Note: `cast` is NOT a variant here. It's `Expr::Cast`, a dedicated
     // AST node (RFC-001 §5.1). The parser detects `cast(...)` before
     // reaching `BuiltinFn::from_name` and routes directly to Expr::Cast.
@@ -127,6 +138,7 @@ impl BuiltinFn {
             Self::StartsWith => "starts_with",
             Self::EndsWith => "ends_with",
             Self::Replace => "replace",
+            Self::IfElse => "if_else",
         }
     }
 
@@ -149,6 +161,7 @@ impl BuiltinFn {
             "starts_with" => Some(Self::StartsWith),
             "ends_with" => Some(Self::EndsWith),
             "replace" => Some(Self::Replace),
+            "if_else" => Some(Self::IfElse),
             _ => None,
         }
     }
@@ -168,6 +181,7 @@ impl BuiltinFn {
             Self::StartsWith => Arity::Fixed(2),
             Self::EndsWith => Arity::Fixed(2),
             Self::Replace => Arity::Fixed(3),
+            Self::IfElse => Arity::Fixed(3),
         }
     }
 
@@ -187,6 +201,44 @@ impl BuiltinFn {
             Self::StartsWith => starts_with_eval(args),
             Self::EndsWith => ends_with_eval(args),
             Self::Replace => replace_eval(args),
+            // Eager reference path. In production `if_else` is intercepted by
+            // `eval_lazy` (short-circuit) before reaching here; this arm stays
+            // as the eager fallback the closed enum requires. See `cond.rs`.
+            Self::IfElse => if_else_eval(args),
+        }
+    }
+
+    /// Lazy/short-circuit dispatch. Eager builtins return `None` — the caller
+    /// (`eval.rs::eval_depth`) then evaluates all args and calls [`Self::eval`].
+    /// Lazy builtins evaluate only the args they need via `eval_arg` and return
+    /// `Some(result)`.
+    ///
+    /// `if_else` is the only lazy builtin today: it evaluates the condition,
+    /// then exactly one branch. Selection is shared with the eager path via
+    /// `cond::if_else_select_branch`, so the two cannot drift. The `eval_arg`
+    /// closure is injected by the caller, so this module never depends on the
+    /// evaluator (no module cycle); `impl Fn` is monomorphized — zero-cost.
+    ///
+    /// Eager builtins are listed explicitly (no `_ =>` fallback), matching the
+    /// file's exhaustiveness convention: adding a builtin forces a conscious
+    /// eager (`None`) vs lazy (`Some`) decision, which is correctness-relevant
+    /// once a non-total builtin exists (see `cond::if_else_eval` flip-trigger).
+    pub(crate) fn eval_lazy(
+        self,
+        args: &[Expr],
+        eval_arg: impl Fn(&Expr) -> Value,
+    ) -> Option<Value> {
+        match self {
+            Self::IfElse => {
+                debug_assert_eq!(
+                    args.len(),
+                    3,
+                    "if_else arity is Fixed(3), enforced at parse/register time"
+                );
+                let cond = eval_arg(&args[0]);
+                Some(if_else_select_branch(&cond).map_or(Value::Null, |i| eval_arg(&args[i])))
+            }
+            _ => None,
         }
     }
 
@@ -209,6 +261,7 @@ impl BuiltinFn {
             Self::StartsWith => string_search_to_bool(arg_types),
             Self::EndsWith => string_search_to_bool(arg_types),
             Self::Replace => replace_infer(arg_types),
+            Self::IfElse => if_else_infer(arg_types),
         }
     }
 
@@ -229,6 +282,7 @@ impl BuiltinFn {
             Self::StartsWith,
             Self::EndsWith,
             Self::Replace,
+            Self::IfElse,
         ]
     }
 }
@@ -423,12 +477,13 @@ mod tests {
                 | BuiltinFn::Contains
                 | BuiltinFn::StartsWith
                 | BuiltinFn::EndsWith
-                | BuiltinFn::Replace => b,
+                | BuiltinFn::Replace
+                | BuiltinFn::IfElse => b,
             };
         }
         assert_eq!(
             BuiltinFn::all().len(),
-            12,
+            13,
             "update all() and this match/count when adding a variant"
         );
     }
@@ -487,6 +542,69 @@ mod tests {
             BuiltinFn::Quadkey.infer(&quadkey_args),
             Ok(InferredType::Known(FieldType::I64))
         );
+    }
+
+    // ── eval_lazy (short-circuit hook) ────────────────────────────────────────
+
+    /// The defining short-circuit test: with a false condition, `if_else`
+    /// must evaluate the condition and the else-branch, and **never** the
+    /// then-branch. The injected closure records which args it's asked to
+    /// evaluate, which is the only way to prove the untaken branch was
+    /// skipped — a value-only assertion can't, because beava's eager path
+    /// would discard the untaken branch's value and return the same result.
+    #[test]
+    fn eval_lazy_if_else_skips_untaken_branch() {
+        use crate::expr::Span;
+        use std::cell::RefCell;
+
+        let field = |name: &str| Expr::Field {
+            name: name.to_string(),
+            span: Span { start: 0, end: 0 },
+        };
+        let args = [field("cond"), field("then"), field("else")];
+
+        let evaluated = RefCell::new(Vec::<String>::new());
+        let result = BuiltinFn::IfElse.eval_lazy(&args, |e| {
+            let Expr::Field { name, .. } = e else {
+                return Value::Null;
+            };
+            evaluated.borrow_mut().push(name.clone());
+            match name.as_str() {
+                "cond" => Value::Bool(false), // → else-branch wins
+                "then" => Value::I64(99),
+                "else" => Value::I64(7),
+                _ => Value::Null,
+            }
+        });
+
+        assert_eq!(result, Some(Value::I64(7)));
+        let log = evaluated.borrow();
+        assert!(
+            log.contains(&"cond".to_string()),
+            "condition must be evaluated"
+        );
+        assert!(
+            log.contains(&"else".to_string()),
+            "selected branch must be evaluated"
+        );
+        assert!(
+            !log.contains(&"then".to_string()),
+            "untaken (then) branch must NOT be evaluated — short-circuit broken; got {log:?}"
+        );
+    }
+
+    /// Eager builtins opt out of the hook (return `None`) so the caller falls
+    /// back to the collect-all-args + `eval` path.
+    #[test]
+    fn eval_lazy_eager_builtins_return_none() {
+        let args: [Expr; 0] = [];
+        assert!(BuiltinFn::IsNull
+            .eval_lazy(&args, |_| Value::Null)
+            .is_none());
+        assert!(BuiltinFn::Log1p.eval_lazy(&args, |_| Value::Null).is_none());
+        assert!(BuiltinFn::Replace
+            .eval_lazy(&args, |_| Value::Null)
+            .is_none());
     }
 
     // ── isnull tests ──────────────────────────────────────────────────────────
