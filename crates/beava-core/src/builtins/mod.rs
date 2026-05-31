@@ -4,10 +4,14 @@
 //!
 //! Builtins are a closed Rust enum `BuiltinFn` — one variant per builtin.
 //! Adding a new builtin is one variant + arms in the five `match self`
-//! methods (`name`, `from_name`, `arity`, `eval`, `infer`), plus an arm in
-//! `eval_lazy` (lazy builtins return `Some`; eager ones join its explicit
-//! `None` list). The compiler enforces exhaustiveness — no `_ =>` fallback
-//! arm, so a missing handler is a hard compile error.
+//! methods (`name`, `from_name`, `arity`, `eval`, `infer`), plus a choice
+//! about `eval_lazy` (the short-circuit hook). Four of these — `name`,
+//! `arity`, `eval`, and `infer` — list every variant by hand with no `_ =>`
+//! catch-all, so if you forget one the code will not compile. The other two
+//! are different: `from_name` looks up a name string, and `eval_lazy` only
+//! lists the lazy builtins (just `if_else` today) and ends in a `_ =>` that
+//! covers the rest. So a new builtin is treated as eager by default unless
+//! you give it its own `eval_lazy` arm.
 //!
 //! # File layout (PR 3 BUILTINS split, RFC-001 §5.2)
 //!
@@ -84,10 +88,11 @@ pub enum Arity {
 
 /// Closed enum of builtin functions.
 ///
-/// Each variant has arms in the `match self` methods below; the compiler
-/// enforces exhaustiveness. To add a builtin: add a variant + one arm in each
-/// of `name`, `from_name`, `arity`, `eval`, `infer`, and `eval_lazy` (eager
-/// builtins join `eval_lazy`'s `None` list; lazy ones return `Some`).
+/// To add a builtin: add a variant + one arm in each of `name`, `arity`,
+/// `eval`, and `infer` — those four list every variant by hand, so the
+/// compiler will refuse to build until you do. `from_name` matches on a name
+/// string instead. `eval_lazy` only needs an arm if the new builtin is lazy
+/// (like `if_else`); eager builtins fall through its `_ => None` line.
 ///
 /// `Copy + Hash + Eq` so callers can use `BuiltinFn` values freely
 /// (hash-map keys, equality checks, copy across boundaries) without
@@ -219,10 +224,14 @@ impl BuiltinFn {
     /// closure is injected by the caller, so this module never depends on the
     /// evaluator (no module cycle); `impl Fn` is monomorphized — zero-cost.
     ///
-    /// Eager builtins are listed explicitly (no `_ =>` fallback), matching the
-    /// file's exhaustiveness convention: adding a builtin forces a conscious
-    /// eager (`None`) vs lazy (`Some`) decision, which is correctness-relevant
-    /// once a non-total builtin exists (see `cond::if_else_eval` flip-trigger).
+    /// Only lazy builtins get their own arm here; every eager builtin falls
+    /// through the `_ => None` line at the bottom. So a new builtin is eager
+    /// by default unless it adds an arm. That default is safe today because
+    /// every builtin is total and pure — running the unused branch would give
+    /// the same answer anyway — so eager and lazy can't be told apart. The day
+    /// a builtin can fail, loop, or change something, that stops being true:
+    /// such a builtin MUST add its own arm here, or the unused branch could
+    /// cause a real bug (see the flip-trigger note on `cond::if_else_eval`).
     pub(crate) fn eval_lazy(
         self,
         args: &[Expr],
