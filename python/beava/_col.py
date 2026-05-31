@@ -96,6 +96,28 @@ class _Expr:
     # makes instances unhashable by default. Each concrete subclass restores
     # `__hash__` explicitly so AST nodes can live in sets/dict keys.
 
+    # Footgun guards. Python calls `__bool__` for `if`, `and`, `or`, `not`,
+    # and ternary `a if c else b`. Without this guard a beava expression is
+    # truthy by default, so `"yes" if (col > 0) else "no"` silently picks
+    # `"yes"` — a silent-first-branch bug. PR 5's `@bv.expr` rewrites these
+    # constructs at the source level *before* Python runs them, so the
+    # guard never fires inside `@bv.expr`. The asymmetry is the whole point.
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "expression objects don't have a truth value — use "
+            "`bv.if_else(cond, then, else)` for conditionals, or "
+            "`&` / `|` to combine predicates"
+        )
+
+    def __iter__(self) -> Any:
+        raise TypeError("expression objects are not iterable")
+
+    def __len__(self) -> int:
+        raise TypeError(
+            "expression objects don't have a length — use "
+            "`bv.length(x)` to take a string's length as a feature"
+        )
+
     def isnull(self) -> "_Expr":
         return _UnaryOp("isnull", self)
 
@@ -105,6 +127,24 @@ class _Expr:
                 f"cast target must be one of {_VALID_CAST_TARGETS}; got {target!r}"
             )
         return _CastOp(self, target)
+
+    def lower(self) -> "_Expr":
+        return _Call("lower", (self,))
+
+    def length(self) -> "_Expr":
+        return _Call("length", (self,))
+
+    def contains(self, s: Any) -> "_Expr":
+        return _Call("contains", (self, _coerce(s)))
+
+    def starts_with(self, s: Any) -> "_Expr":
+        return _Call("starts_with", (self, _coerce(s)))
+
+    def ends_with(self, s: Any) -> "_Expr":
+        return _Call("ends_with", (self, _coerce(s)))
+
+    def replace(self, old: Any, new: Any) -> "_Expr":
+        return _Call("replace", (self, _coerce(old), _coerce(new)))
 
     def to_expr_string(self) -> str:
         """Render this AST node to wire JSON expression-string form."""
@@ -186,6 +226,27 @@ class _CastOp(_Expr):
         return hash(("_CastOp", self.target, id(self.operand)))
 
 
+@dataclass(frozen=True, eq=False)
+class _Call(_Expr):
+    """Generic function-call node. Renders ``name(a, b, ...)``.
+
+    Every builtin sugar added in PR 3+ returns one of these — e.g.
+    ``bv.log1p(x)`` is ``_Call("log1p", (x,))`` and ``bv.if_else(c, a, b)``
+    is ``_Call("if_else", (c, a, b))``. ``_CastOp`` stays a special case
+    because cast's second argument is a type tag, not a value.
+    """
+
+    name: str
+    args: tuple[_Expr, ...]
+
+    def to_expr_string(self) -> str:
+        rendered = ", ".join(a.to_expr_string() for a in self.args)
+        return f"{self.name}({rendered})"
+
+    def __hash__(self) -> int:
+        return hash(("_Call", self.name, tuple(id(a) for a in self.args)))
+
+
 def _coerce(v: Any) -> _Expr:
     """Wrap a Python literal as a ``_Literal``; pass-through ``_Expr``."""
     return v if isinstance(v, _Expr) else _Literal(v)
@@ -202,6 +263,39 @@ def col(name: str) -> _Col:
     '(amount > 100)'
     """
     return _Col(name)
+
+
+def log1p(x: Any) -> _Expr:
+    """Natural log of (x + 1). Numerically stable near zero. Returns F64."""
+    return _Call("log1p", (_coerce(x),))
+
+
+def clip(x: Any, lo: Any, hi: Any) -> _Expr:
+    """Clamp x to the closed interval [lo, hi]. Preserves I64 vs F64."""
+    return _Call("clip", (_coerce(x), _coerce(lo), _coerce(hi)))
+
+
+def hour_of_day(dt: Any) -> _Expr:
+    """Extract the UTC hour (0–23) from a datetime value."""
+    return _Call("hour_of_day", (_coerce(dt),))
+
+
+def hash_mod(x: Any, m: int) -> _Expr:
+    """Hash x deterministically, then return the result modulo m.
+
+    m must be a positive integer. Used to bucket high-cardinality fields
+    into a fixed number of slots (e.g. ``hash_mod(user_id, 2)`` for A/B).
+    """
+    if not isinstance(m, int):
+        raise TypeError(
+            f"hash_mod: m must be a Python int (bucket count), got {type(m).__name__!r}"
+        )
+    return _Call("hash_mod", (_coerce(x), _coerce(m)))
+
+
+def length(x: Any) -> _Expr:
+    """Number of Unicode codepoints in string x. Matches Python's ``len()``."""
+    return _Call("length", (_coerce(x),))
 
 
 def lit(value: Union[int, float, str, bool, None]) -> _Literal:  # noqa: UP007
