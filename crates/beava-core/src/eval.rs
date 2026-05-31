@@ -29,7 +29,7 @@
 //!     which correctly returns `Bool(true/false)`.
 //!
 //! - **Builtins**: `Call` nodes dispatch through the `BUILTINS` table in
-//!   `expr_builtins.rs`. Unknown function names return `Null` (register-time
+//!   `builtins/mod.rs`. Unknown function names return `Null` (register-time
 //!   rejects these; runtime is defensive).
 //!
 //! - **`Literal::BareIdent`**: converted to `Value::Str` so that `cast`'s
@@ -37,7 +37,8 @@
 //!   `Value::Str("float")` — matching the builtin contract.
 
 use crate::expr::{Expr, Literal};
-use crate::expr_builtins::lookup_builtin;
+// BuiltinFn is reached via the `builtin` field on Expr::Call; the
+// evaluator calls its methods directly without needing a top-level import.
 use crate::row::{Row, Value};
 
 /// Maximum recursion depth for expression evaluation.
@@ -90,14 +91,28 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
         } => eval_binop(op, left, right, row, depth),
 
         // ── Call (builtins) ───────────────────────────────────────────────────
-        Expr::Call { fn_name, args, .. } => {
-            // Evaluate all args to Values first.
+        //
+        // After Step 7, `builtin` is the resolved BuiltinFn variant (parser
+        // did the name lookup once at registration). Per-event dispatch is
+        // a direct `match self` jump table inside BuiltinFn::eval — no
+        // string compare, no slice scan.
+        Expr::Call { builtin, args, .. } => {
             let arg_vals: Vec<Value> = args.iter().map(|a| eval_depth(a, row, depth + 1)).collect();
-            match lookup_builtin(fn_name) {
-                Some(builtin) => (builtin.eval)(&arg_vals),
-                // Unknown function → Null (register-time catches; runtime defensive).
-                None => Value::Null,
-            }
+            builtin.eval(&arg_vals)
+        }
+
+        // ── Cast (dedicated AST node, RFC-001 §5.1) ───────────────────────────
+        //
+        // Cast is not a value-shaped function; it has its own AST shape with
+        // a typed operand + a literal target. Eval evaluates both subexprs
+        // (target evaluates to Value::Str via the BareIdent → Str conversion)
+        // and dispatches to the existing cast_eval implementation.
+        Expr::Cast {
+            operand, target, ..
+        } => {
+            let v = eval_depth(operand, row, depth + 1);
+            let t = eval_depth(target, row, depth + 1);
+            crate::builtins::cast_eval(&[v, t])
         }
     }
 }
@@ -346,8 +361,22 @@ mod tests {
     }
 
     fn call(fn_name: &str, args: Vec<Expr>) -> Expr {
+        // Cast routes to Expr::Cast; everything else resolves through BuiltinFn.
+        if fn_name == "cast" {
+            assert_eq!(args.len(), 2, "test helper: cast needs 2 args");
+            let mut args = args;
+            let target = args.remove(1);
+            let operand = args.remove(0);
+            return Expr::Cast {
+                operand: Box::new(operand),
+                target: Box::new(target),
+                span: span(),
+            };
+        }
+        let builtin = crate::builtins::BuiltinFn::from_name(fn_name)
+            .unwrap_or_else(|| panic!("test helper: unknown builtin {:?}", fn_name));
         Expr::Call {
-            fn_name: fn_name.to_string(),
+            builtin,
             args,
             span: span(),
         }
@@ -728,14 +757,24 @@ mod tests {
         assert_eq!(eval(&expr, &row), Value::Bool(false));
     }
 
-    // ── Test 19: unknown function → Null ─────────────────────────────────────
+    // ── Test 19: unknown function → ParseError at parse time ─────────────────
+    //
+    // Pre-Step-7: unknown names parsed as Call, evaluator returned Null at
+    // run time (defensive). Post-Step-7: parser resolves names eagerly via
+    // BuiltinFn::from_name, so unknown names never reach the evaluator at
+    // all. The evaluator's `Expr::Call` arm now only ever sees resolved
+    // BuiltinFn variants — there's nothing left for it to fail on.
 
     #[test]
-    fn eval_call_unknown_fn_is_null() {
+    fn parse_unknown_fn_fails_before_eval() {
         use crate::expr::parse;
-        let row = row_with(&[("amount", Value::I64(1))]);
-        let expr = parse("foobar(amount)").expect("should parse foobar call");
-        assert_eq!(eval(&expr, &row), Value::Null);
+        let err = parse("foobar(amount)").expect_err("foobar is unknown");
+        assert!(
+            err.reason.contains("unknown function"),
+            "got: {:?}",
+            err.reason
+        );
+        assert!(err.reason.contains("foobar"), "got: {:?}", err.reason);
     }
 
     // ── Test 20: (x == null) via parser rewrite ───────────────────────────────
@@ -761,8 +800,14 @@ mod tests {
         // The parse result MUST be Call("isnull", ...) — not BinOp("==") — due
         // to Plan 04-02's Pass B.
         assert!(
-            matches!(&expr, crate::expr::Expr::Call { fn_name, .. } if fn_name == "isnull"),
-            "parser must have rewritten (amount == null) to Call('isnull', ...), got {expr:?}"
+            matches!(
+                &expr,
+                crate::expr::Expr::Call {
+                    builtin: crate::builtins::BuiltinFn::IsNull,
+                    ..
+                }
+            ),
+            "parser must have rewritten (amount == null) to Call(IsNull, ...), got {expr:?}"
         );
 
         // Row where amount IS null → Bool(true)
@@ -843,7 +888,104 @@ mod tests {
         );
     }
 
-    // ── Test 23 (proptest): evaluator is deterministic ────────────────────────
+    // ── Tests 23–24: if_else dispatch and short-circuit ──────────────────────
+
+    // ── Test 23: if_else basic dispatch ───────────────────────────────────────
+    //
+    // Pins the three condition states through the full eval stack (not just
+    // if_else_eval in isolation): true picks the then-branch, false picks the
+    // else-branch, null gives back null.
+
+    #[test]
+    fn eval_if_else_dispatch() {
+        let empty = Row::new();
+
+        // true → then-branch (I64(1))
+        assert_eq!(
+            eval(
+                &call("if_else", vec![lit_bool(true), lit_int(1), lit_int(2)]),
+                &empty
+            ),
+            Value::I64(1)
+        );
+
+        // false → else-branch (I64(2))
+        assert_eq!(
+            eval(
+                &call("if_else", vec![lit_bool(false), lit_int(1), lit_int(2)]),
+                &empty
+            ),
+            Value::I64(2)
+        );
+
+        // null condition → Null
+        assert_eq!(
+            eval(
+                &call("if_else", vec![lit_null(), lit_int(1), lit_int(2)]),
+                &empty
+            ),
+            Value::Null
+        );
+
+        // works with field references — condition from a row column
+        let row = row_with(&[("flag", Value::Bool(true))]);
+        assert_eq!(
+            eval(
+                &call(
+                    "if_else",
+                    vec![field_expr("flag"), lit_str("yes"), lit_str("no")]
+                ),
+                &row
+            ),
+            Value::Str("yes".into())
+        );
+    }
+
+    // ── Test 24: if_else short-circuit — inactive branch does not run ─────────
+    //
+    // This is the defining test for PR 4. Without the short-circuit guard in
+    // eval_depth, the evaluator would compute all three args eagerly before
+    // calling if_else_eval. If if_else_eval then propagated nulls from all
+    // args (a mistaken implementation), the result would be Null instead of
+    // the correct else-branch value.
+    //
+    // Concretely: if_else(denom != 0, num / denom, 0.0) where denom = 0.
+    // The then-branch (num / denom) evaluates to Null (division by zero).
+    // With correct short-circuit: condition is false, then-branch never runs,
+    // result is 0.0. This also pins against a wrong if_else_eval that does
+    // strict null-propagation across all three args.
+
+    #[test]
+    fn eval_if_else_short_circuit_inactive_branch_does_not_affect_result() {
+        let row = row_with(&[("num", Value::I64(10)), ("denom", Value::I64(0))]);
+
+        // if_else(denom != 0, num / denom, 0.0)
+        // denom = 0 → condition is false → result must be 0.0
+        // The then-branch num/denom = 10/0 would be Null if it ran.
+        let expr = call(
+            "if_else",
+            vec![
+                binop("!=", field_expr("denom"), lit_int(0)),
+                binop("/", field_expr("num"), field_expr("denom")),
+                lit_float(0.0),
+            ],
+        );
+        assert_eq!(eval(&expr, &row), Value::F64(0.0));
+
+        // Symmetric: true condition, else-branch would be a field miss (Null)
+        let row2 = row_with(&[("x", Value::I64(42))]);
+        let expr2 = call(
+            "if_else",
+            vec![
+                lit_bool(true),
+                field_expr("x"),
+                field_expr("does_not_exist"), // miss → Null if evaluated
+            ],
+        );
+        assert_eq!(eval(&expr2, &row2), Value::I64(42));
+    }
+
+    // ── Test 25 (proptest): evaluator is deterministic ────────────────────────
     //
     // For any (Expr, Row) pair, eval returns the same Value when called twice
     // with the same inputs (including on a clone of the Row).
