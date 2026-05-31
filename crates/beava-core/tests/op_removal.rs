@@ -6,7 +6,7 @@
 //!
 //!   - Tests 1+2: unique_cells / geo_entropy registration should FAIL after
 //!     removal; they currently SUCCEED → assertion inverted to prove RED.
-//!   - Tests 3+4: lookup_builtin("quadkey") returns None today (builtin absent) → RED.
+//!   - Tests 3+4: `BuiltinFn::from_name("quadkey")` returns None today (builtin absent) → RED.
 //!
 //! GREEN commit: after Task 1.b, all 4 tests pass.
 
@@ -135,7 +135,7 @@ fn test_geo_entropy_register_rejected() {
 }
 
 /// After Plan 19.2-06 Task 1.b adds the quadkey builtin in builtins/mod.rs,
-/// lookup_builtin("quadkey") must return Some(_) with arity Fixed(3).
+/// `BuiltinFn::from_name("quadkey")` must return Some(_) with arity Fixed(3).
 /// Before Task 1.b it returns None → RED.
 #[test]
 fn test_quadkey_builtin_exists() {

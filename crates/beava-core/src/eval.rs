@@ -28,9 +28,9 @@
 //!   - Users who write `(x == null)` in source get `isnull(x)` at eval time,
 //!     which correctly returns `Bool(true/false)`.
 //!
-//! - **Builtins**: `Call` nodes dispatch through the `BUILTINS` table in
-//!   `builtins/mod.rs`. Unknown function names return `Null` (register-time
-//!   rejects these; runtime is defensive).
+//! - **Builtins**: `Call` nodes dispatch through the closed `BuiltinFn` enum
+//!   in `builtins/mod.rs`. Unknown function names are rejected at parse time
+//!  (`BuiltinFn::from_name` returns `None` for unknown names).
 //!
 //! - **`Literal::BareIdent`**: converted to `Value::Str` so that `cast`'s
 //!   second argument (`cast(x, float)`) arrives at `cast_eval` as
