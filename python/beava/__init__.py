@@ -72,7 +72,7 @@ from beava._agg import (  # noqa: F401
     z_score,
 )
 from beava._app import App  # noqa: F401
-from beava._col import col, lit  # noqa: F401
+from beava._col import clip, col, hash_mod, hour_of_day, length, lit, log1p  # noqa: F401
 from beava._demo import demo  # noqa: F401
 from beava._errors import (  # noqa: F401
     BinaryNotFoundError,
@@ -152,4 +152,9 @@ __all__ = [
     "stddev",
     "count_distinct",
     "percentile",
+    "log1p",
+    "clip",
+    "hour_of_day",
+    "hash_mod",
+    "length",
 ]

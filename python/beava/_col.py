@@ -128,6 +128,24 @@ class _Expr:
             )
         return _CastOp(self, target)
 
+    def lower(self) -> "_Expr":
+        return _Call("lower", (self,))
+
+    def length(self) -> "_Expr":
+        return _Call("length", (self,))
+
+    def contains(self, s: Any) -> "_Expr":
+        return _Call("contains", (self, _coerce(s)))
+
+    def starts_with(self, s: Any) -> "_Expr":
+        return _Call("starts_with", (self, _coerce(s)))
+
+    def ends_with(self, s: Any) -> "_Expr":
+        return _Call("ends_with", (self, _coerce(s)))
+
+    def replace(self, old: Any, new: Any) -> "_Expr":
+        return _Call("replace", (self, _coerce(old), _coerce(new)))
+
     def to_expr_string(self) -> str:
         """Render this AST node to wire JSON expression-string form."""
         raise NotImplementedError
@@ -245,6 +263,39 @@ def col(name: str) -> _Col:
     '(amount > 100)'
     """
     return _Col(name)
+
+
+def log1p(x: Any) -> _Expr:
+    """Natural log of (x + 1). Numerically stable near zero. Returns F64."""
+    return _Call("log1p", (_coerce(x),))
+
+
+def clip(x: Any, lo: Any, hi: Any) -> _Expr:
+    """Clamp x to the closed interval [lo, hi]. Preserves I64 vs F64."""
+    return _Call("clip", (_coerce(x), _coerce(lo), _coerce(hi)))
+
+
+def hour_of_day(dt: Any) -> _Expr:
+    """Extract the UTC hour (0–23) from a datetime value."""
+    return _Call("hour_of_day", (_coerce(dt),))
+
+
+def hash_mod(x: Any, m: int) -> _Expr:
+    """Hash x deterministically, then return the result modulo m.
+
+    m must be a positive integer. Used to bucket high-cardinality fields
+    into a fixed number of slots (e.g. ``hash_mod(user_id, 2)`` for A/B).
+    """
+    if not isinstance(m, int):
+        raise TypeError(
+            f"hash_mod: m must be a Python int (bucket count), got {type(m).__name__!r}"
+        )
+    return _Call("hash_mod", (_coerce(x), _coerce(m)))
+
+
+def length(x: Any) -> _Expr:
+    """Number of Unicode codepoints in string x. Matches Python's ``len()``."""
+    return _Call("length", (_coerce(x),))
 
 
 def lit(value: Union[int, float, str, bool, None]) -> _Literal:  # noqa: UP007
