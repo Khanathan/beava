@@ -25,19 +25,50 @@ use crate::schema_propagate::InferredType;
 
 // ─── if_else ─────────────────────────────────────────────────────────────────
 
-/// Evaluate `if_else(cond, then_val, else_val)`.
+/// Choose which `if_else` branch a condition selects — the single source of
+/// branch-selection truth.
 ///
-/// Dispatches on `cond`:
-/// - `Bool(true)`  → return `then_val`
-/// - `Bool(false)` → return `else_val`
-/// - `Null`        → return `Null` (unknown condition → unknown result)
-/// - any other type → `Null` (defensive; register-time catches non-Bool cond)
+/// Returns the argument index to return, or `None` when the result is `Null`:
+/// - `Bool(true)`  → `Some(1)` (then-branch)
+/// - `Bool(false)` → `Some(2)` (else-branch)
+/// - `Null` / any other type → `None` (unknown or non-Bool condition → `Null`;
+///   register-time inference rejects non-Bool conditions, so the non-Bool case
+///   is defensive)
 ///
-/// # Short-circuit
-/// This fn receives values that have already been evaluated. The short-circuit
-/// that prevents the inactive branch from running lives in `eval.rs::eval_depth`,
-/// not here. The eager path through this fn is still correct — it just does
-/// unnecessary work if the inactive branch was expensive to compute.
+/// Both the eager path ([`if_else_eval`]) and the short-circuit path
+/// (`BuiltinFn::eval_lazy` in `mod.rs`) consult this, so the two cannot diverge.
+pub(super) fn if_else_select_branch(cond: &Value) -> Option<usize> {
+    match cond {
+        Value::Bool(true) => Some(1),
+        Value::Bool(false) => Some(2),
+        _ => None,
+    }
+}
+
+/// Eager reference evaluation of `if_else(cond, then_val, else_val)`.
+///
+/// Picks the branch chosen by [`if_else_select_branch`] from already-evaluated
+/// argument values.
+///
+/// # Short-circuit (this fn is the eager fallback, not the live path)
+/// `if_else` short-circuits in `eval.rs::eval_depth` via `BuiltinFn::eval_lazy`:
+/// only the selected branch is ever evaluated. This fn receives values that
+/// have *already* been evaluated, so once `eval_lazy` is wired it never runs in
+/// production — it stays as the eager reference (and the `BuiltinFn::eval` arm
+/// the closed enum requires). It shares `if_else_select_branch` with the lazy
+/// path, so they cannot drift.
+///
+/// Eager and short-circuit are **observably identical** here, because beava
+/// expressions are pure (no side effects) and eval is total (div-by-zero →
+/// `Null`/`Inf`, overflow saturates, depth-capped, no loops). The short-circuit
+/// is therefore a *performance* optimization (it avoids computing the unused
+/// branch — matters for nested `if`/`elif` chains), not a correctness fix.
+///
+/// # Flip-trigger
+/// The equivalence holds only while eval is pure + total. The day a partial or
+/// effectful builtin lands (one that can trap, loop, or have a side effect),
+/// eager evaluation of the untaken branch becomes a correctness bug and the
+/// short-circuit becomes load-bearing.
 ///
 /// # Arity
 /// Fixed(3). Wrong arity → `Null` (defensive; register-time catches).
@@ -45,11 +76,7 @@ pub(super) fn if_else_eval(args: &[Value]) -> Value {
     if args.len() != 3 {
         return Value::Null;
     }
-    match &args[0] {
-        Value::Bool(true) => args[1].clone(),
-        Value::Bool(false) => args[2].clone(),
-        _ => Value::Null, // null or non-Bool condition → Null
-    }
+    if_else_select_branch(&args[0]).map_or(Value::Null, |i| args[i].clone())
 }
 
 /// Register-time inference for `if_else(cond, then_val, else_val)`.

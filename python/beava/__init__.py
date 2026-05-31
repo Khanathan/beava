@@ -72,7 +72,17 @@ from beava._agg import (  # noqa: F401
     z_score,
 )
 from beava._app import App  # noqa: F401
-from beava._col import clip, col, hash_mod, hour_of_day, length, lit, log1p  # noqa: F401
+from beava._col import (  # noqa: F401
+    clip,
+    col,
+    hash_mod,
+    hour_of_day,
+    if_else,
+    length,
+    lit,
+    log1p,
+    when,
+)
 from beava._demo import demo  # noqa: F401
 from beava._errors import (  # noqa: F401
     BinaryNotFoundError,
@@ -157,4 +167,6 @@ __all__ = [
     "hour_of_day",
     "hash_mod",
     "length",
+    "if_else",
+    "when",
 ]
