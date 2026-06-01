@@ -16,6 +16,10 @@ path = "src/lib.rs"
 # the apply-loop uses pre-extraction. Enable via `--features test-utils` on the
 # test binary; never enabled in production builds.
 test-utils = []
+# Exposes `eval::eval_eager` (eager twin of `eval`) for the if_else
+# eager-vs-lazy microbench. Unlike `test-utils` it adds NO runtime
+# instrumentation (no Row::get counter), so it doesn't tax the benchmark.
+eager-eval = []
 
 [dependencies]
 serde = { workspace = true }

@@ -16,7 +16,9 @@ description = "Beava v2 end-to-end throughput harness — drives a live beava se
 default-run = "beava-bench"
 
 [dependencies]
-beava-core = { path = "../beava-core" }
+# `eager-eval` exposes `eval::eval_eager` for the if_else eager-vs-lazy bench
+# (no Row::get instrumentation, unlike `test-utils`).
+beava-core = { path = "../beava-core", features = ["eager-eval"] }
 beava-server = { path = "../beava-server", features = ["testing"] }
 beava-persistence = { path = "../beava-persistence" }
 anyhow = { workspace = true }
@@ -62,4 +64,8 @@ harness = false
 
 [[bench]]
 name = "cli_dispatch"
+harness = false
+
+[[bench]]
+name = "if_else_eager_vs_lazy"
 harness = false

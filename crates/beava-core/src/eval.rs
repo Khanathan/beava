@@ -55,10 +55,23 @@ const MAX_EVAL_DEPTH: usize = 512;
 /// Depth is bounded to `MAX_EVAL_DEPTH`; expressions exceeding that limit
 /// return `Value::Null` rather than overflowing the call stack.
 pub fn eval(expr: &Expr, row: &Row) -> Value {
-    eval_depth(expr, row, 0)
+    eval_depth::<true>(expr, row, 0)
 }
 
-fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
+/// Eager twin of [`eval`]: identical machinery, but the `if_else` short-circuit
+/// hook is skipped, so **every** branch is evaluated at **every** level. Pure +
+/// total eval means this is observably identical to [`eval`] on all inputs (see
+/// `builtins::cond::if_else_eval`) — it exists only to A/B benchmark the cost
+/// the short-circuit avoids. Test/bench only; never compiled into production.
+#[cfg(any(test, feature = "eager-eval"))]
+pub fn eval_eager(expr: &Expr, row: &Row) -> Value {
+    eval_depth::<false>(expr, row, 0)
+}
+
+/// `LAZY` is a compile-time flag: with `true` (production) the `if_else`
+/// short-circuit is taken and the const-`if` below compiles to exactly the
+/// pre-generic code (zero cost); with `false` ([`eval_eager`]) it is skipped.
+fn eval_depth<const LAZY: bool>(expr: &Expr, row: &Row, depth: usize) -> Value {
     if depth > MAX_EVAL_DEPTH {
         return Value::Null;
     }
@@ -81,14 +94,14 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
         // ── Unary NOT ─────────────────────────────────────────────────────────
         Expr::UnaryOp { operand, .. } => {
             // Only "not" exists in Phase 4; future ops would branch on `op`.
-            let v = eval_depth(operand, row, depth + 1);
+            let v = eval_depth::<LAZY>(operand, row, depth + 1);
             v.not_three_valued()
         }
 
         // ── Binary ops ────────────────────────────────────────────────────────
         Expr::BinOp {
             op, left, right, ..
-        } => eval_binop(op, left, right, row, depth),
+        } => eval_binop::<LAZY>(op, left, right, row, depth),
 
         // ── Call (builtins) ───────────────────────────────────────────────────
         //
@@ -103,10 +116,15 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
             // shared selection and why this is observably identical to eager
             // evaluation (beava eval is pure + total). Eager builtins return
             // `None` and fall through to the collect-all path below.
-            if let Some(v) = builtin.eval_lazy(args, |a| eval_depth(a, row, depth + 1)) {
-                return v;
+            if LAZY {
+                if let Some(v) = builtin.eval_lazy(args, |a| eval_depth::<LAZY>(a, row, depth + 1)) {
+                    return v;
+                }
             }
-            let arg_vals: Vec<Value> = args.iter().map(|a| eval_depth(a, row, depth + 1)).collect();
+            let arg_vals: Vec<Value> = args
+                .iter()
+                .map(|a| eval_depth::<LAZY>(a, row, depth + 1))
+                .collect();
             builtin.eval(&arg_vals)
         }
 
@@ -119,8 +137,8 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
         Expr::Cast {
             operand, target, ..
         } => {
-            let v = eval_depth(operand, row, depth + 1);
-            let t = eval_depth(target, row, depth + 1);
+            let v = eval_depth::<LAZY>(operand, row, depth + 1);
+            let t = eval_depth::<LAZY>(target, row, depth + 1);
             crate::builtins::cast_eval(&[v, t])
         }
     }
@@ -128,32 +146,38 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
 
 // ─── Binary operator dispatch ─────────────────────────────────────────────────
 
-fn eval_binop(op: &str, left: &Expr, right: &Expr, row: &Row, depth: usize) -> Value {
+fn eval_binop<const LAZY: bool>(
+    op: &str,
+    left: &Expr,
+    right: &Expr,
+    row: &Row,
+    depth: usize,
+) -> Value {
     match op {
         // Boolean operators: short-circuit evaluation delegated to three-valued helpers.
         "and" => {
-            let lv = eval_depth(left, row, depth + 1);
+            let lv = eval_depth::<LAZY>(left, row, depth + 1);
             // Short-circuit: false AND _ = false (skip right).
             if lv == Value::Bool(false) {
                 return Value::Bool(false);
             }
-            let rv = eval_depth(right, row, depth + 1);
+            let rv = eval_depth::<LAZY>(right, row, depth + 1);
             lv.and_three_valued(&rv)
         }
         "or" => {
-            let lv = eval_depth(left, row, depth + 1);
+            let lv = eval_depth::<LAZY>(left, row, depth + 1);
             // Short-circuit: true OR _ = true (skip right).
             if lv == Value::Bool(true) {
                 return Value::Bool(true);
             }
-            let rv = eval_depth(right, row, depth + 1);
+            let rv = eval_depth::<LAZY>(right, row, depth + 1);
             lv.or_three_valued(&rv)
         }
 
         // Arithmetic and comparison: evaluate both operands, then dispatch.
         _ => {
-            let lv = eval_depth(left, row, depth + 1);
-            let rv = eval_depth(right, row, depth + 1);
+            let lv = eval_depth::<LAZY>(left, row, depth + 1);
+            let rv = eval_depth::<LAZY>(right, row, depth + 1);
             // Null propagates for arithmetic and comparison (D-04).
             if matches!(lv, Value::Null) || matches!(rv, Value::Null) {
                 return Value::Null;
