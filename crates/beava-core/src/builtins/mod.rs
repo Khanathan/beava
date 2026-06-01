@@ -4,16 +4,40 @@
 //!
 //! Builtins are a closed Rust enum `BuiltinFn` — one variant per builtin.
 //! Adding a new builtin is one variant + arms in the five `match self`
-//! methods (`name`, `from_name`, `arity`, `eval`, `infer`). The compiler
-//! enforces exhaustiveness — no `_ =>` fallback arm, so a missing
-//! handler is a hard compile error.
+//! methods (`name`, `from_name`, `arity`, `eval`, `infer`), plus a choice
+//! about `eval_lazy` (the short-circuit hook). Four of these — `name`,
+//! `arity`, `eval`, and `infer` — list every variant by hand with no `_ =>`
+//! catch-all, so if you forget one the code will not compile. The other two
+//! are different: `from_name` looks up a name string, and `eval_lazy` only
+//! lists the lazy builtins (just `if_else` today) and ends in a `_ =>` that
+//! covers the rest. So a new builtin is treated as eager by default unless
+//! you give it its own `eval_lazy` arm.
 //!
-//! Three builtins ship in PR 1:
-//! - `cast(value, type)` — type-conversion operator. **TRANSITIONAL**:
-//!   removed from this enum in PR 1 Step 8 when cast is promoted to
-//!   `Expr::Cast` (its own AST variant).
-//! - `isnull(value)` — always returns `Bool(true/false)`, never `Null`.
-//! - `quadkey(lat, lon, zoom)` — geo cell ID.
+//! # File layout (PR 3 BUILTINS split, RFC-001 §5.2)
+//!
+//! - This file (`mod.rs`) — `BuiltinFn` enum + six `match self` methods
+//!   (the five above + `eval_lazy`, the short-circuit hook) + `isnull_eval`
+//!   (small, polymorphic, no clear category) + `cast_eval` (called from
+//!   `eval.rs`'s `Expr::Cast` arm, not via the enum).
+//!
+//! - `math.rs`, `string.rs`, `time.rs`, `cond.rs`, `hash.rs` — per-category
+//!   `*_eval` free fns and one-off `*_infer` fns.
+//! - `_inference.rs` — shared inference helpers, `InferError`, `TypeClass`.
+//!
+//! # Builtins reachable via the enum (PR 3 v0 set)
+//!
+//! Math: `log1p`, `clip` — bodies in `math.rs`.
+//! Time: `hour_of_day` — body in `time.rs`.
+//! Hash: `quadkey`, `hash_mod` — bodies in `hash.rs`.
+//! String: `lower`, `length`, `contains`, `starts_with`, `ends_with`, `replace` — bodies in `string.rs`.
+//! Cond: `isnull` — body inline in this file (polymorphic null check, no category);
+//! `if_else` — lazy/short-circuit builtin, body in `cond.rs` (see `eval_lazy`).
+//!
+//! `cast(value, type)` is NOT a `BuiltinFn` variant — it's `Expr::Cast`,
+//! a dedicated AST node (RFC-001 §5.1). The parser detects `cast(...)`
+//! before reaching `BuiltinFn::from_name` and routes directly to
+//! `Expr::Cast`; `cast_eval` is the `pub(crate)` free fn the evaluator's
+//! `Expr::Cast` arm calls.
 //!
 //! # Cast policy decisions (CONTEXT.md §D-05)
 //!
@@ -26,10 +50,28 @@
 
 pub(crate) mod _inference;
 
+// Per-category files — PR 3 BUILTINS split (RFC-001 §5.2). Each holds the
+// `*_eval` free fns (and one-off `*_infer` fns) for its category. The
+// `BuiltinFn` enum and its `match self` methods stay in this module.
+mod cond;
+mod hash;
+mod math;
+mod string;
+mod time;
+
+use crate::builtins::_inference::{numeric_to_f64, string_search_to_bool};
+use crate::builtins::cond::{if_else_eval, if_else_infer, if_else_select_branch};
+use crate::builtins::hash::{hash_mod_eval, hash_mod_infer, quadkey_eval, quadkey_infer};
+use crate::builtins::math::{clip_eval, clip_infer, log1p_eval};
+use crate::builtins::string::{
+    contains_eval, ends_with_eval, length_eval, lower_eval, replace_eval, replace_infer,
+    starts_with_eval,
+};
+use crate::builtins::time::{hour_of_day_eval, hour_of_day_infer};
+use crate::expr::Expr;
 use crate::row::Value;
-use crate::schema::FieldType;
 use crate::schema_propagate::InferredType;
-use _inference::{any_to_bool, require_arg_class, InferError, TypeClass};
+use _inference::{any_to_bool, str_to_i64, str_to_str, InferError};
 
 // ─── Arity ────────────────────────────────────────────────────────────────────
 
@@ -46,9 +88,11 @@ pub enum Arity {
 
 /// Closed enum of builtin functions.
 ///
-/// Each variant has arms in the five `match self` methods below; the
-/// compiler enforces exhaustiveness. To add a builtin: add a variant +
-/// one arm in each of `name`, `from_name`, `arity`, `eval`, `infer`.
+/// To add a builtin: add a variant + one arm in each of `name`, `arity`,
+/// `eval`, and `infer` — those four list every variant by hand, so the
+/// compiler will refuse to build until you do. `from_name` matches on a name
+/// string instead. `eval_lazy` only needs an arm if the new builtin is lazy
+/// (like `if_else`); eager builtins fall through its `_ => None` line.
 ///
 /// `Copy + Hash + Eq` so callers can use `BuiltinFn` values freely
 /// (hash-map keys, equality checks, copy across boundaries) without
@@ -61,6 +105,21 @@ pub enum BuiltinFn {
     /// `zoom` typed as numeric at register time (runtime requires
     /// strict `I64` in `1..=24`, otherwise `Null`).
     Quadkey,
+    Log1p,
+    Clip,
+    HourOfDay,
+    HashMod,
+    Lower,
+    Length,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Replace,
+    /// `if_else(cond, then, else)` — the only **lazy** builtin: it
+    /// short-circuits in `eval.rs::eval_depth` via `eval_lazy`, evaluating the
+    /// condition and exactly one branch. `cond` must be `Bool`; the two
+    /// branches must share a type. Body in `cond.rs`.
+    IfElse,
     // Note: `cast` is NOT a variant here. It's `Expr::Cast`, a dedicated
     // AST node (RFC-001 §5.1). The parser detects `cast(...)` before
     // reaching `BuiltinFn::from_name` and routes directly to Expr::Cast.
@@ -74,6 +133,17 @@ impl BuiltinFn {
         match self {
             Self::IsNull => "isnull",
             Self::Quadkey => "quadkey",
+            Self::Lower => "lower",
+            Self::Log1p => "log1p",
+            Self::Clip => "clip",
+            Self::HourOfDay => "hour_of_day",
+            Self::HashMod => "hash_mod",
+            Self::Length => "length",
+            Self::Contains => "contains",
+            Self::StartsWith => "starts_with",
+            Self::EndsWith => "ends_with",
+            Self::Replace => "replace",
+            Self::IfElse => "if_else",
         }
     }
 
@@ -86,6 +156,17 @@ impl BuiltinFn {
         match s {
             "isnull" => Some(Self::IsNull),
             "quadkey" => Some(Self::Quadkey),
+            "lower" => Some(Self::Lower),
+            "log1p" => Some(Self::Log1p),
+            "clip" => Some(Self::Clip),
+            "hour_of_day" => Some(Self::HourOfDay),
+            "hash_mod" => Some(Self::HashMod),
+            "length" => Some(Self::Length),
+            "contains" => Some(Self::Contains),
+            "starts_with" => Some(Self::StartsWith),
+            "ends_with" => Some(Self::EndsWith),
+            "replace" => Some(Self::Replace),
+            "if_else" => Some(Self::IfElse),
             _ => None,
         }
     }
@@ -95,6 +176,17 @@ impl BuiltinFn {
         match self {
             Self::IsNull => Arity::Fixed(1),
             Self::Quadkey => Arity::Fixed(3),
+            Self::Lower => Arity::Fixed(1),
+            Self::Log1p => Arity::Fixed(1),
+            Self::Clip => Arity::Fixed(3),
+            Self::HourOfDay => Arity::Fixed(1),
+            Self::HashMod => Arity::Fixed(2),
+            Self::Length => Arity::Fixed(1),
+            Self::Contains => Arity::Fixed(2),
+            Self::StartsWith => Arity::Fixed(2),
+            Self::EndsWith => Arity::Fixed(2),
+            Self::Replace => Arity::Fixed(3),
+            Self::IfElse => Arity::Fixed(3),
         }
     }
 
@@ -104,6 +196,58 @@ impl BuiltinFn {
         match self {
             Self::IsNull => isnull_eval(args),
             Self::Quadkey => quadkey_eval(args),
+            Self::Lower => lower_eval(args),
+            Self::Log1p => log1p_eval(args),
+            Self::Clip => clip_eval(args),
+            Self::HourOfDay => hour_of_day_eval(args),
+            Self::HashMod => hash_mod_eval(args),
+            Self::Length => length_eval(args),
+            Self::Contains => contains_eval(args),
+            Self::StartsWith => starts_with_eval(args),
+            Self::EndsWith => ends_with_eval(args),
+            Self::Replace => replace_eval(args),
+            // Eager reference path. In production `if_else` is intercepted by
+            // `eval_lazy` (short-circuit) before reaching here; this arm stays
+            // as the eager fallback the closed enum requires. See `cond.rs`.
+            Self::IfElse => if_else_eval(args),
+        }
+    }
+
+    /// Lazy/short-circuit dispatch. Eager builtins return `None` — the caller
+    /// (`eval.rs::eval_depth`) then evaluates all args and calls [`Self::eval`].
+    /// Lazy builtins evaluate only the args they need via `eval_arg` and return
+    /// `Some(result)`.
+    ///
+    /// `if_else` is the only lazy builtin today: it evaluates the condition,
+    /// then exactly one branch. Selection is shared with the eager path via
+    /// `cond::if_else_select_branch`, so the two cannot drift. The `eval_arg`
+    /// closure is injected by the caller, so this module never depends on the
+    /// evaluator (no module cycle); `impl Fn` is monomorphized — zero-cost.
+    ///
+    /// Only lazy builtins get their own arm here; every eager builtin falls
+    /// through the `_ => None` line at the bottom. So a new builtin is eager
+    /// by default unless it adds an arm. That default is safe today because
+    /// every builtin is total and pure — running the unused branch would give
+    /// the same answer anyway — so eager and lazy can't be told apart. The day
+    /// a builtin can fail, loop, or change something, that stops being true:
+    /// such a builtin MUST add its own arm here, or the unused branch could
+    /// cause a real bug (see the flip-trigger note on `cond::if_else_eval`).
+    pub(crate) fn eval_lazy(
+        self,
+        args: &[Expr],
+        eval_arg: impl Fn(&Expr) -> Value,
+    ) -> Option<Value> {
+        match self {
+            Self::IfElse => {
+                debug_assert_eq!(
+                    args.len(),
+                    3,
+                    "if_else arity is Fixed(3), enforced at parse/register time"
+                );
+                let cond = eval_arg(&args[0]);
+                Some(if_else_select_branch(&cond).map_or(Value::Null, |i| eval_arg(&args[i])))
+            }
+            _ => None,
         }
     }
 
@@ -116,6 +260,17 @@ impl BuiltinFn {
         match self {
             Self::IsNull => any_to_bool(arg_types),
             Self::Quadkey => quadkey_infer(arg_types),
+            Self::Log1p => numeric_to_f64(arg_types),
+            Self::Clip => clip_infer(arg_types),
+            Self::HourOfDay => hour_of_day_infer(arg_types),
+            Self::HashMod => hash_mod_infer(arg_types),
+            Self::Lower => str_to_str(arg_types),
+            Self::Length => str_to_i64(arg_types),
+            Self::Contains => string_search_to_bool(arg_types),
+            Self::StartsWith => string_search_to_bool(arg_types),
+            Self::EndsWith => string_search_to_bool(arg_types),
+            Self::Replace => replace_infer(arg_types),
+            Self::IfElse => if_else_infer(arg_types),
         }
     }
 
@@ -123,7 +278,21 @@ impl BuiltinFn {
     /// future iteration need (testing, doc generation).
     #[cfg(test)]
     pub const fn all() -> &'static [BuiltinFn] {
-        &[Self::IsNull, Self::Quadkey]
+        &[
+            Self::IsNull,
+            Self::Quadkey,
+            Self::Log1p,
+            Self::Clip,
+            Self::HourOfDay,
+            Self::HashMod,
+            Self::Lower,
+            Self::Length,
+            Self::Contains,
+            Self::StartsWith,
+            Self::EndsWith,
+            Self::Replace,
+            Self::IfElse,
+        ]
     }
 }
 
@@ -131,25 +300,6 @@ impl std::fmt::Display for BuiltinFn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
-}
-
-// ─── quadkey_infer ────────────────────────────────────────────────────────────
-//
-// Quadkey's signature (Numeric, Numeric, Numeric) → I64 is unique enough that
-// a shared helper wouldn't pull weight. Lives here next to quadkey_eval.
-
-/// Register-time inference for `quadkey(lat, lon, zoom)`.
-///
-/// All three args typed as `Numeric` (I64 or F64); `NullLiteral` accepted
-/// per the wildcard rule. Returns `I64`. Note: zoom is lenient at register
-/// time — runtime requires strict `I64` in `1..=24` and returns `Null`
-/// otherwise (matches existing `quadkey_eval` behavior).
-fn quadkey_infer(arg_types: &[InferredType]) -> Result<InferredType, InferError> {
-    require_arg_class(
-        arg_types,
-        &[TypeClass::Numeric, TypeClass::Numeric, TypeClass::Numeric],
-    )?;
-    Ok(InferredType::Known(FieldType::I64))
 }
 
 // ─── cast ─────────────────────────────────────────────────────────────────────
@@ -260,54 +410,6 @@ fn cast_to_bool(v: &Value) -> Value {
     }
 }
 
-// ─── quadkey ─────────────────────────────────────────────────────────────────
-
-/// Evaluate `quadkey(lat, lon, zoom)`.
-///
-/// Returns a deterministic `Value::I64` cell-id using a simplified-Mercator
-/// formula (NOT RFC slippy-tile — no external tile dependency required).
-///
-/// # Formula
-///
-/// ```text
-/// n   = 1 << zoom                         (tiles per axis)
-/// row = floor((sin(lat_clamped_rad) + 1) / 2 * n)
-/// col = floor((lon + 180) / 360 * n)
-/// cell_id = col * n + row.clamp(0, n-1)
-/// ```
-///
-/// # Null / range rules
-/// - Any `Null` argument → `Null`.
-/// - `zoom` outside `1..=24` → `Null`.
-/// - `lat` is clamped to `[-85.05112878, 85.05112878]` (Web-Mercator bounds).
-fn quadkey_eval(args: &[Value]) -> Value {
-    if args.len() != 3 {
-        return Value::Null;
-    }
-    let lat = match &args[0] {
-        Value::F64(v) => *v,
-        Value::I64(v) => *v as f64,
-        _ => return Value::Null,
-    };
-    let lon = match &args[1] {
-        Value::F64(v) => *v,
-        Value::I64(v) => *v as f64,
-        _ => return Value::Null,
-    };
-    let zoom = match &args[2] {
-        Value::I64(v) if (1..=24).contains(v) => *v,
-        _ => return Value::Null,
-    };
-    let n = 1i64 << zoom;
-    let lat_clamped = lat.clamp(-85.051_128_78, 85.051_128_78);
-    let row = ((lat_clamped.to_radians().sin() + 1.0) / 2.0 * (n as f64)).floor() as i64;
-    let col = ((lon + 180.0) / 360.0 * (n as f64)).floor() as i64;
-    Value::I64(
-        col.saturating_mul(n)
-            .saturating_add(row.clamp(0, n.saturating_sub(1))),
-    )
-}
-
 // ─── isnull ───────────────────────────────────────────────────────────────────
 
 /// Evaluate `isnull(value)`.
@@ -361,6 +463,38 @@ mod tests {
         assert!(BuiltinFn::from_name("foo").is_none());
         assert!(BuiltinFn::from_name("").is_none());
         assert!(BuiltinFn::from_name("COUNT").is_none());
+    }
+
+    // ── Exhaustiveness guard for BuiltinFn::all() ─────────────────────────────
+
+    #[test]
+    fn all_is_exhaustive() {
+        // The match below has no wildcard arm, so the compiler rejects a new
+        // variant that isn't listed here. After updating the match, also add
+        // the variant to `all()` and increment the expected count — if you
+        // do one but not the other, the assertion catches it at test time.
+        for &b in BuiltinFn::all() {
+            let _ = match b {
+                BuiltinFn::IsNull
+                | BuiltinFn::Quadkey
+                | BuiltinFn::Log1p
+                | BuiltinFn::Clip
+                | BuiltinFn::HourOfDay
+                | BuiltinFn::HashMod
+                | BuiltinFn::Lower
+                | BuiltinFn::Length
+                | BuiltinFn::Contains
+                | BuiltinFn::StartsWith
+                | BuiltinFn::EndsWith
+                | BuiltinFn::Replace
+                | BuiltinFn::IfElse => b,
+            };
+        }
+        assert_eq!(
+            BuiltinFn::all().len(),
+            13,
+            "update all() and this match/count when adding a variant"
+        );
     }
 
     // ── Name ↔ variant round-trip (permanent guard against mirror drift) ─────
@@ -417,6 +551,69 @@ mod tests {
             BuiltinFn::Quadkey.infer(&quadkey_args),
             Ok(InferredType::Known(FieldType::I64))
         );
+    }
+
+    // ── eval_lazy (short-circuit hook) ────────────────────────────────────────
+
+    /// The defining short-circuit test: with a false condition, `if_else`
+    /// must evaluate the condition and the else-branch, and **never** the
+    /// then-branch. The injected closure records which args it's asked to
+    /// evaluate, which is the only way to prove the untaken branch was
+    /// skipped — a value-only assertion can't, because beava's eager path
+    /// would discard the untaken branch's value and return the same result.
+    #[test]
+    fn eval_lazy_if_else_skips_untaken_branch() {
+        use crate::expr::Span;
+        use std::cell::RefCell;
+
+        let field = |name: &str| Expr::Field {
+            name: name.to_string(),
+            span: Span { start: 0, end: 0 },
+        };
+        let args = [field("cond"), field("then"), field("else")];
+
+        let evaluated = RefCell::new(Vec::<String>::new());
+        let result = BuiltinFn::IfElse.eval_lazy(&args, |e| {
+            let Expr::Field { name, .. } = e else {
+                return Value::Null;
+            };
+            evaluated.borrow_mut().push(name.clone());
+            match name.as_str() {
+                "cond" => Value::Bool(false), // → else-branch wins
+                "then" => Value::I64(99),
+                "else" => Value::I64(7),
+                _ => Value::Null,
+            }
+        });
+
+        assert_eq!(result, Some(Value::I64(7)));
+        let log = evaluated.borrow();
+        assert!(
+            log.contains(&"cond".to_string()),
+            "condition must be evaluated"
+        );
+        assert!(
+            log.contains(&"else".to_string()),
+            "selected branch must be evaluated"
+        );
+        assert!(
+            !log.contains(&"then".to_string()),
+            "untaken (then) branch must NOT be evaluated — short-circuit broken; got {log:?}"
+        );
+    }
+
+    /// Eager builtins opt out of the hook (return `None`) so the caller falls
+    /// back to the collect-all-args + `eval` path.
+    #[test]
+    fn eval_lazy_eager_builtins_return_none() {
+        let args: [Expr; 0] = [];
+        assert!(BuiltinFn::IsNull
+            .eval_lazy(&args, |_| Value::Null)
+            .is_none());
+        assert!(BuiltinFn::Log1p.eval_lazy(&args, |_| Value::Null).is_none());
+        assert!(BuiltinFn::Replace
+            .eval_lazy(&args, |_| Value::Null)
+            .is_none());
     }
 
     // ── isnull tests ──────────────────────────────────────────────────────────
