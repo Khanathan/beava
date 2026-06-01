@@ -28,9 +28,9 @@
 //!   - Users who write `(x == null)` in source get `isnull(x)` at eval time,
 //!     which correctly returns `Bool(true/false)`.
 //!
-//! - **Builtins**: `Call` nodes dispatch through the `BUILTINS` table in
-//!   `builtins/mod.rs`. Unknown function names return `Null` (register-time
-//!   rejects these; runtime is defensive).
+//! - **Builtins**: `Call` nodes dispatch through the closed `BuiltinFn` enum
+//!   in `builtins/mod.rs`. Unknown function names are rejected at parse time
+//!   (`BuiltinFn::from_name` returns `None` for unknown names).
 //!
 //! - **`Literal::BareIdent`**: converted to `Value::Str` so that `cast`'s
 //!   second argument (`cast(x, float)`) arrives at `cast_eval` as
@@ -97,6 +97,15 @@ fn eval_depth(expr: &Expr, row: &Row, depth: usize) -> Value {
         // a direct `match self` jump table inside BuiltinFn::eval — no
         // string compare, no slice scan.
         Expr::Call { builtin, args, .. } => {
+            // Lazy builtins short-circuit here: `if_else` evaluates its
+            // condition and exactly one branch, never the other. See
+            // `builtins::cond::if_else_eval` / `if_else_select_branch` for the
+            // shared selection and why this is observably identical to eager
+            // evaluation (beava eval is pure + total). Eager builtins return
+            // `None` and fall through to the collect-all path below.
+            if let Some(v) = builtin.eval_lazy(args, |a| eval_depth(a, row, depth + 1)) {
+                return v;
+            }
             let arg_vals: Vec<Value> = args.iter().map(|a| eval_depth(a, row, depth + 1)).collect();
             builtin.eval(&arg_vals)
         }
@@ -888,7 +897,104 @@ mod tests {
         );
     }
 
-    // ── Test 23 (proptest): evaluator is deterministic ────────────────────────
+    // ── Tests 23–24: if_else dispatch and short-circuit ──────────────────────
+
+    // ── Test 23: if_else basic dispatch ───────────────────────────────────────
+    //
+    // Pins the three condition states through the full eval stack (not just
+    // if_else_eval in isolation): true picks the then-branch, false picks the
+    // else-branch, null gives back null.
+
+    #[test]
+    fn eval_if_else_dispatch() {
+        let empty = Row::new();
+
+        // true → then-branch (I64(1))
+        assert_eq!(
+            eval(
+                &call("if_else", vec![lit_bool(true), lit_int(1), lit_int(2)]),
+                &empty
+            ),
+            Value::I64(1)
+        );
+
+        // false → else-branch (I64(2))
+        assert_eq!(
+            eval(
+                &call("if_else", vec![lit_bool(false), lit_int(1), lit_int(2)]),
+                &empty
+            ),
+            Value::I64(2)
+        );
+
+        // null condition → Null
+        assert_eq!(
+            eval(
+                &call("if_else", vec![lit_null(), lit_int(1), lit_int(2)]),
+                &empty
+            ),
+            Value::Null
+        );
+
+        // works with field references — condition from a row column
+        let row = row_with(&[("flag", Value::Bool(true))]);
+        assert_eq!(
+            eval(
+                &call(
+                    "if_else",
+                    vec![field_expr("flag"), lit_str("yes"), lit_str("no")]
+                ),
+                &row
+            ),
+            Value::Str("yes".into())
+        );
+    }
+
+    // ── Test 24: if_else short-circuit — inactive branch does not run ─────────
+    //
+    // This is the defining test for PR 4. Without the short-circuit guard in
+    // eval_depth, the evaluator would compute all three args eagerly before
+    // calling if_else_eval. If if_else_eval then propagated nulls from all
+    // args (a mistaken implementation), the result would be Null instead of
+    // the correct else-branch value.
+    //
+    // Concretely: if_else(denom != 0, num / denom, 0.0) where denom = 0.
+    // The then-branch (num / denom) evaluates to Null (division by zero).
+    // With correct short-circuit: condition is false, then-branch never runs,
+    // result is 0.0. This also pins against a wrong if_else_eval that does
+    // strict null-propagation across all three args.
+
+    #[test]
+    fn eval_if_else_short_circuit_inactive_branch_does_not_affect_result() {
+        let row = row_with(&[("num", Value::I64(10)), ("denom", Value::I64(0))]);
+
+        // if_else(denom != 0, num / denom, 0.0)
+        // denom = 0 → condition is false → result must be 0.0
+        // The then-branch num/denom = 10/0 would be Null if it ran.
+        let expr = call(
+            "if_else",
+            vec![
+                binop("!=", field_expr("denom"), lit_int(0)),
+                binop("/", field_expr("num"), field_expr("denom")),
+                lit_float(0.0),
+            ],
+        );
+        assert_eq!(eval(&expr, &row), Value::F64(0.0));
+
+        // Symmetric: true condition, else-branch would be a field miss (Null)
+        let row2 = row_with(&[("x", Value::I64(42))]);
+        let expr2 = call(
+            "if_else",
+            vec![
+                lit_bool(true),
+                field_expr("x"),
+                field_expr("does_not_exist"), // miss → Null if evaluated
+            ],
+        );
+        assert_eq!(eval(&expr2, &row2), Value::I64(42));
+    }
+
+    // ── Test 25 (proptest): evaluator is deterministic ────────────────────────
     //
     // For any (Expr, Row) pair, eval returns the same Value when called twice
     // with the same inputs (including on a clone of the Row).
