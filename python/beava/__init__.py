@@ -89,6 +89,7 @@ from beava._errors import (  # noqa: F401
     ValidationError,
 )
 from beava._events import event  # noqa: F401
+from beava._expr_translator import expr  # noqa: F401
 from beava._table import table  # noqa: F401
 
 __all__ = [
@@ -100,6 +101,7 @@ __all__ = [
     "lit",
     "event",
     "table",
+    "expr",
     "demo",
     "count",
     "sum",
