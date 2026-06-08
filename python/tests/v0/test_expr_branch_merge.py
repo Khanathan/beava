@@ -16,7 +16,6 @@ import pytest
 import beava as bv
 from beava._errors import RegistrationError
 
-
 # ── row: set in EVERY branch → plain merge into one if_else ───────────────────
 
 
@@ -61,7 +60,7 @@ def test_early_return_folds_continuation_into_not_taken_arm() -> None:
         y = x * 2
         return y + 1
 
-# The else branch folds the continuation into the merge, 
+# The else branch folds the continuation into the merge,
 # so the value of y is the whole expression after the if_else, not just x * 2.
     assert f(bv.col("c"), bv.col("early"), bv.col("x")).to_expr_string() == (
         "if_else(c, early, ((x * 2) + 1))"

@@ -28,7 +28,6 @@ import pytest
 import beava as bv
 from beava._errors import RegistrationError
 
-
 # ── direct self-recursion → rejected at decoration time ──────────────────────
 
 

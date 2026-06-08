@@ -20,7 +20,6 @@ import pytest
 import beava as bv
 from beava._errors import RegistrationError
 
-
 # ── expr_unsupported_python_op — explicit-reject arms ────────────────────────
 
 
@@ -43,7 +42,7 @@ def test_walrus_rejected() -> None:
 
         @bv.expr
         def f(x):
-            return (y := x) + 1
+            return (y := x) + 1  # noqa: F841 — walrus is the rejected construct
 
     assert exc.value.code == "expr_unsupported_python_op"
 
@@ -168,7 +167,7 @@ def test_name_used_before_assignment_rejected() -> None:
 
         @bv.expr
         def f(x):
-            return y + x
+            return y + x  # noqa: F821 — `y` is undefined on purpose (the reject)
 
     assert exc.value.code == "expr_unknown_name"
     assert "y + x" in str(exc.value)
